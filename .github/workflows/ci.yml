@@ -98,15 +98,23 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
-          $p = Start-Process -FilePath 'src-tauri\target\release\rhizomind.exe' -PassThru
-          Start-Sleep -Seconds 15
-          Write-Host "Процесс жив: $(-not $p.HasExited) код: $($p.ExitCode)"
-          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Select-Object Id, StartTime | Format-Table | Out-String | Write-Host
-          try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9333/json/version).Content | Write-Host } catch { Write-Warning "порт 9333 не открыт: $_" }
-          Get-ChildItem -Recurse -Filter DevToolsActivePort "$env:LOCALAPPDATA\io.github.rhizomind" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName }
-          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
-          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          function Probe($name, $envs) {
+            Write-Host "=== $name"
+            foreach ($k in $envs.Keys) { Set-Item "env:$k" $envs[$k] }
+            $p = Start-Process -FilePath 'src-tauri\target\release\rhizomind.exe' -PassThru
+            Start-Sleep -Seconds 12
+            Write-Host "Процесс жив: $(-not $p.HasExited)"
+            Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' } | ForEach-Object { Write-Host "браузер: $($_.CommandLine)" }
+            try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9333/json/version -TimeoutSec 3).Content | Write-Host } catch { Write-Host "порт 9333 закрыт" }
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            foreach ($k in $envs.Keys) { Remove-Item "env:$k" }
+          }
+          $udf = Join-Path $env:RUNNER_TEMP 'probe-udf'
+          Probe 'port' @{ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333' }
+          Probe 'port + user-data-dir' @{ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9333 --user-data-dir=$udf" }
+          Probe 'port + WEBVIEW2_USER_DATA_FOLDER' @{ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'; WEBVIEW2_USER_DATA_FOLDER = $udf }
 
       - name: Сценарный тест (Linux)
         if: runner.os == 'Linux'
