@@ -21,3 +21,10 @@ __pycache__/
 *.log
 .env
 .env.*
+
+# Сборки и отчёты тестов
+release/
+out/
+coverage/
+test-results/
+playwright-report/

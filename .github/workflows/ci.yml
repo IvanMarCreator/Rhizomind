@@ -1,0 +1,42 @@
+# Проверка репозитория на Windows и Linux.
+# Без секретов и сторонних сервисов; права только на чтение кода.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v5
+
+      - name: Установить Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Проверка запуска
+        run: |
+          node -e "console.log('CI работает: ' + process.platform)"
+
+      # Код выпуска 0.1 появится с задачей 0.2; до тех пор package.json в корне нет.
+      - name: npm run verify
+        shell: bash
+        run: |
+          if [ -f package.json ]; then
+            npm run verify
+          else
+            echo "package.json в корне нет — npm run verify пропущен"
+          fi
