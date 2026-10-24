@@ -2,7 +2,7 @@
 
 Документ для службы информационной безопасности. Каждая мера ссылается на файл, где она реализована, чтобы её можно было проверить в коде. Документ обновляется вместе с каждым выпуском; выпуск не считается готовым, пока его меры не внесены сюда.
 
-> **Состояние.** Меры с файлом в колонке «Где» реализованы в прототипе `src/` и будут перепроверены в выпуске 0.1. Меры с номером выпуска запланированы. Целевые требования — в [product/requirements.md](product/requirements.md#безопасность), план выпусков — там же.
+> **Состояние.** Меры с файлом в колонке «Где» реализованы в прототипе `prototype/src/` и будут перепроверены в выпуске 0.1. **Все файлы, указанные в колонке «Где», относятся к прототипу** (каталог `prototype/`, справочник, написанный до требований); в выпуске 0.1 ссылки заменятся на файлы нового кода. Меры с номером выпуска запланированы. Целевые требования — в [product/requirements.md](product/requirements.md#безопасность), план выпусков — там же.
 
 ## Ключевые гарантии
 
@@ -18,12 +18,12 @@
 
 | Мера | Где |
 |---|---|
-| Все запросы интерфейса, кроме `app://`, `data:`, `blob:`, отменяются до отправки | `src/main/security/lockdown.ts` |
-| Политика контента (CSP): `connect-src 'none'`, только свои скрипты | `src/main/app-protocol.ts`, `src/renderer/index.html` |
-| Проверка орфографии Chromium (скачивает словари) отключена | `src/main/security/lockdown.ts`, `src/main/main.ts` |
-| Загрузки файлов запрещены | `src/main/security/lockdown.ts` |
-| Каналы обновления отключены (`publish: null`), автообновлений нет | `electron-builder.yml` |
-| Автоматическая проверка исходников на сетевой код перед каждой сборкой | `scripts/check-no-network.mjs` |
+| Все запросы интерфейса, кроме `app://`, `data:`, `blob:`, отменяются до отправки | `prototype/src/main/security/lockdown.ts` |
+| Политика контента (CSP): `connect-src 'none'`, только свои скрипты | `prototype/src/main/app-protocol.ts`, `prototype/src/renderer/index.html` |
+| Проверка орфографии Chromium (скачивает словари) отключена | `prototype/src/main/security/lockdown.ts`, `prototype/src/main/main.ts` |
+| Загрузки файлов запрещены | `prototype/src/main/security/lockdown.ts` |
+| Каналы обновления отключены (`publish: null`), автообновлений нет | `prototype/electron-builder.yml` |
+| Автоматическая проверка исходников на сетевой код перед каждой сборкой | `prototype/scripts/check-no-network.mjs` |
 | Словари проверки орфографии не скачиваются: `setSpellCheckerLanguages([])` на каждой сессии (одного выключения проверки недостаточно — Electron issue #22995) | выпуск 0.1, ADR 0007 |
 | Нет поиска прокси в сети (WPAD): `--no-proxy-server` | выпуск 0.1, ADR 0007 |
 | Разрешение имён отключено: `--host-resolver-rules="MAP * ~NOTFOUND"`; отмена запросов на каждой сессии, включая сессию по умолчанию | выпуск 0.1, ADR 0007 |
@@ -46,9 +46,9 @@
 
 | Мера | Где |
 |---|---|
-| Доступ только внутри выбранной папки хранилища, защита от `..` и абсолютных путей | `src/main/vault/safe-path.ts` |
-| Символические ссылки не открываются и не перезаписываются (нельзя выйти за пределы хранилища) | `src/main/vault/vault.ts` |
-| Ограничение размера заметки | `src/main/vault/vault.ts` |
+| Доступ только внутри выбранной папки хранилища, защита от `..` и абсолютных путей | `prototype/src/main/vault/safe-path.ts` |
+| Символические ссылки не открываются и не перезаписываются (нельзя выйти за пределы хранилища) | `prototype/src/main/vault/vault.ts` |
+| Ограничение размера заметки | `prototype/src/main/vault/vault.ts` |
 | Удаление только в корзину ОС | выпуск 0.1 |
 | Слежение за папкой через уведомления ОС (`@parcel/watcher`, нативный модуль без сетевого кода); запись сверяется с версией файла на диске, внешние изменения не затираются | выпуск 0.1, ADR 0006 |
 | Вложения (в том числе из буфера обмена) сохраняются только внутри хранилища | выпуск 0.3 |
@@ -57,20 +57,20 @@
 
 | Мера | Где |
 |---|---|
-| `contextIsolation`, `sandbox`, без `nodeIntegration` | `src/main/main.ts` |
-| Интерфейс грузится через собственный протокол `app://`, без доступа к `file://` | `src/main/app-protocol.ts` |
-| Запрещены переходы на другие адреса, новые окна и `<webview>` | `src/main/security/lockdown.ts` |
-| Запрещены все разрешения браузера (камера, микрофон, геолокация и т.д.) | `src/main/security/lockdown.ts` |
-| Наружу выставлен только объект `window.rhizomind` с фиксированным API | `src/preload/preload.ts`, `src/shared/api.ts` |
-| Ядро принимает вызовы только от страницы `app://rhizomind` и проверяет типы параметров | `src/main/ipc.ts` |
-| Инструменты разработчика отключены в собранной версии | `src/main/main.ts` |
+| `contextIsolation`, `sandbox`, без `nodeIntegration` | `prototype/src/main/main.ts` |
+| Интерфейс грузится через собственный протокол `app://`, без доступа к `file://` | `prototype/src/main/app-protocol.ts` |
+| Запрещены переходы на другие адреса, новые окна и `<webview>` | `prototype/src/main/security/lockdown.ts` |
+| Запрещены все разрешения браузера (камера, микрофон, геолокация и т.д.) | `prototype/src/main/security/lockdown.ts` |
+| Наружу выставлен только объект `window.rhizomind` с фиксированным API | `prototype/src/preload/preload.ts`, `prototype/src/shared/api.ts` |
+| Ядро принимает вызовы только от страницы `app://rhizomind` и проверяет типы параметров | `prototype/src/main/ipc.ts` |
+| Инструменты разработчика отключены в собранной версии | `prototype/src/main/main.ts` |
 
 ### Исполняемый файл
 
 | Мера | Где |
 |---|---|
-| Electron Fuses: запрет запуска как Node.js, игнор `NODE_OPTIONS` и `--inspect` | `electron-builder.yml` |
-| Проверка целостности кода внутри архива asar, загрузка только из asar | `electron-builder.yml` |
+| Electron Fuses: запрет запуска как Node.js, игнор `NODE_OPTIONS` и `--inspect` | `prototype/electron-builder.yml` |
+| Проверка целостности кода внутри архива asar, загрузка только из asar | `prototype/electron-builder.yml` |
 
 ## Безопасность по выпускам
 
