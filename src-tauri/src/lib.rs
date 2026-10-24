@@ -9,13 +9,45 @@ use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 /// Метка главного окна; на неё выдаются права в `capabilities/main.json`.
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
+/// Флаги WebView2, которые wry 0.57 передаёт по умолчанию (`src/webview2/mod.rs`).
+const WRY_DEFAULT_BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+/// Флаги движка для сборки сценарных тестов (функция `webdriver`).
+///
+/// msedgedriver просит WebView2 открыть порт отладки через переменную
+/// `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, но WebView2 её не применяет, если
+/// приложение задаёт флаги само (wry задаёт всегда). Поэтому тестовая сборка
+/// добавляет флаги драйвера к флагам wry. Выпускные сборки собираются без
+/// функции `webdriver` и переменную не читают.
+#[cfg_attr(not(all(windows, feature = "webdriver")), allow(dead_code))]
+fn webdriver_browser_args(from_driver: Option<&str>) -> Option<String> {
+    let extra = from_driver?.trim();
+    if extra.is_empty() {
+        return None;
+    }
+    Some(format!("{WRY_DEFAULT_BROWSER_ARGS} {extra}"))
+}
+
 /// Создаёт главное окно со страницей интерфейса из сборки (`dist/index.html`).
 pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
-    WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
-        .title("Rhizomind")
-        .inner_size(1200.0, 800.0)
-        .min_inner_size(640.0, 480.0)
-        .build()
+    let builder =
+        WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
+            .title("Rhizomind")
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(640.0, 480.0);
+
+    #[cfg(all(windows, feature = "webdriver"))]
+    let builder = match webdriver_browser_args(
+        std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+            .ok()
+            .as_deref(),
+    ) {
+        Some(args) => builder.additional_browser_args(&args),
+        None => builder,
+    };
+
+    builder.build()
 }
 
 /// Запуск приложения.
@@ -46,5 +78,23 @@ mod tests {
         // проверяет сценарный тест (tests/e2e/).
         assert_eq!(window.label(), "main");
         assert!(app.get_webview_window(MAIN_WINDOW_LABEL).is_some());
+    }
+
+    #[test]
+    fn webdriver_args_extend_wry_defaults_with_driver_args() {
+        assert_eq!(
+            webdriver_browser_args(Some("--remote-debugging-port=9222 --user-data-dir=C:\\t")),
+            Some(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
+                 --remote-debugging-port=9222 --user-data-dir=C:\\t"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn webdriver_args_absent_without_driver() {
+        assert_eq!(webdriver_browser_args(None), None);
+        assert_eq!(webdriver_browser_args(Some("  ")), None);
     }
 }

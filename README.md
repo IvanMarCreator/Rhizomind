@@ -41,7 +41,8 @@ npm run dev               # запуск в режиме разработки (t
 npm run verify            # все проверки: типы, линтер, Vitest, сеть в интерфейсе, лицензии npm,
                           # cargo fmt, clippy, cargo test, cargo deny, cargo tree по целям
 npm run build             # выпускной исполняемый файл: src-tauri/target/release/rhizomind(.exe)
-npm run test:e2e          # сценарный тест на собранном приложении (после npm run build);
+npm run build:e2e         # сборка для сценарного теста (функция webdriver: порт отладки для msedgedriver)
+npm run test:e2e          # сценарный тест на этой сборке;
                           # на Linux без экрана: xvfb-run -a npm run test:e2e
 npm run package:portable  # Windows: release/rhizomind-<версия>-windows-x64-portable.zip
 npm run package:msi       # Windows: установщик MSI (для всех пользователей, нужны права администратора)

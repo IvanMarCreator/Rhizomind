@@ -15,6 +15,7 @@
     "dev:ui": "vite",
     "build:ui": "vite build",
     "build": "tauri build --no-bundle",
+    "build:e2e": "tauri build --no-bundle --features webdriver",
     "tauri": "tauri",
     "typecheck": "tsc -p tsconfig.json && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "eslint .",

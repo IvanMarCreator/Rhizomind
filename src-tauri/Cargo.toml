@@ -18,6 +18,11 @@ path = "src/lib.rs"
 name = "rhizomind"
 path = "src/main.rs"
 
+[features]
+# Только для сборки сценарных тестов (npm run build:e2e): передаёт WebView2
+# флаги msedgedriver (порт отладки). Выпускные сборки (build, package:*) — без неё.
+webdriver = []
+
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }
 

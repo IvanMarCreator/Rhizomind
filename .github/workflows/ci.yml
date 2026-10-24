@@ -92,29 +92,11 @@ jobs:
           "@`"$driver`" %* --verbose --log-path=`"$dir\msedgedriver.log`"" | Set-Content -Encoding ascii $wrapper
           "MSEDGEDRIVER=$wrapper" >> $env:GITHUB_ENV
 
-      # Диагностика: приложение само открывает порт отладки WebView2, если его
-      # просит переменная окружения (так его запускает msedgedriver).
-      - name: Диагностика запуска приложения (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          function Probe($name, $envs) {
-            Write-Host "=== $name"
-            foreach ($k in $envs.Keys) { Set-Item "env:$k" $envs[$k] }
-            $p = Start-Process -FilePath 'src-tauri\target\release\rhizomind.exe' -PassThru
-            Start-Sleep -Seconds 12
-            Write-Host "Процесс жив: $(-not $p.HasExited)"
-            Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' } | ForEach-Object { Write-Host "браузер: $($_.CommandLine)" }
-            try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9333/json/version -TimeoutSec 3).Content | Write-Host } catch { Write-Host "порт 9333 закрыт" }
-            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
-            Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            foreach ($k in $envs.Keys) { Remove-Item "env:$k" }
-          }
-          $udf = Join-Path $env:RUNNER_TEMP 'probe-udf'
-          Probe 'port' @{ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333' }
-          Probe 'port + user-data-dir' @{ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9333 --user-data-dir=$udf" }
-          Probe 'port + WEBVIEW2_USER_DATA_FOLDER' @{ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'; WEBVIEW2_USER_DATA_FOLDER = $udf }
+      # Сценарный тест идёт на сборке с функцией `webdriver`: она передаёт WebView2
+      # порт отладки от msedgedriver (src-tauri/src/lib.rs). Портативный zip ниже
+      # собирается заново, без этой функции.
+      - name: Сборка для сценарного теста
+        run: npm run build:e2e
 
       - name: Сценарный тест (Linux)
         if: runner.os == 'Linux'
