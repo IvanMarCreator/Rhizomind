@@ -1,5 +1,6 @@
-# Проверка репозитория на Windows и Linux.
+# Проверка, сборка и сценарный тест на Windows и Linux.
 # Без секретов и сторонних сервисов; права только на чтение кода.
+# Все actions закреплены по SHA коммита (ADR 0009); версия — в комментарии.
 name: CI
 
 on:
@@ -9,6 +10,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   verify:
@@ -20,23 +24,100 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Получить код
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Установить Node.js 22
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          cache: npm
 
-      - name: Проверка запуска
+      - name: Системные библиотеки (Linux)
+        if: runner.os == 'Linux'
         run: |
-          node -e "console.log('CI работает: ' + process.platform)"
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev webkit2gtk-driver xvfb
 
-      # Код выпуска 0.1 появится с задачей 0.2; до тех пор package.json в корне нет.
-      - name: npm run verify
+      # Версия Rust берётся из rust-toolchain.toml: rustup ставит её при первом вызове cargo.
+      - name: Rust из rust-toolchain.toml
         shell: bash
         run: |
-          if [ -f package.json ]; then
-            npm run verify
-          else
-            echo "package.json в корне нет — npm run verify пропущен"
-          fi
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - name: Кэш Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          cache-bin: true
+
+      - name: Инструменты проверки (cargo-deny, tauri-driver)
+        shell: bash
+        run: |
+          cargo install --locked cargo-deny@0.20.2
+          cargo install --locked tauri-driver@2.1.0
+
+      - name: Зависимости интерфейса
+        run: npm ci
+
+      - name: Проверки (типы, линтер, тесты, сеть, лицензии, cargo fmt/clippy/test/deny/tree)
+        run: npm run verify
+
+      - name: Сборка приложения
+        run: npm run build
+
+      # msedgedriver должен совпадать по версии с установленным WebView2 Runtime.
+      - name: msedgedriver под версию WebView2 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = (Get-ItemProperty -Path $key).pv
+          Write-Host "WebView2 Runtime: $version"
+          $dir = Join-Path $env:RUNNER_TEMP 'msedgedriver'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir 'edgedriver.zip'
+          try {
+            Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath $dir -Force
+            $driver = Join-Path $dir 'msedgedriver.exe'
+          } catch {
+            Write-Warning "Не удалось скачать msedgedriver $version ($_); беру предустановленный"
+            $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
+          }
+          & $driver --version
+          "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
+
+      - name: Сценарный тест (Linux)
+        if: runner.os == 'Linux'
+        env:
+          # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Сценарный тест (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:e2e
+
+      - name: Снимки экрана сценарных тестов
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-screenshots-${{ runner.os }}
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Портативная сборка (Windows)
+        if: runner.os == 'Windows'
+        run: npm run package:portable
+
+      - name: Загрузить портативную сборку (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rhizomind-portable-windows
+          path: release/*.zip
+          retention-days: 14
+          if-no-files-found: error

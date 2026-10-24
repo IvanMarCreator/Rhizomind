@@ -28,3 +28,7 @@ out/
 coverage/
 test-results/
 playwright-report/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/

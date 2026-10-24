@@ -1,0 +1,39 @@
+[package]
+name = "rhizomind"
+version = "0.1.0"
+description = "Local-only knowledge base with linked Markdown notes. No sync, no cloud, no telemetry."
+authors = ["Rhizomind contributors"]
+license = "GPL-3.0-only"
+repository = "https://github.com/IvanMarCreator/Rhizomind"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[lib]
+# Библиотека — чтобы ядро проверялось тестами без запуска окна.
+name = "rhizomind_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rhizomind"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+# Функции по умолчанию: wry, compression, common-controls-v6, dynamic-acl, x11, dbus.
+# Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls.
+tauri = { version = "=2.12.5", features = [] }
+
+[dev-dependencies]
+# Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
+# в выпускную сборку не попадает (только dev-зависимость).
+tauri = { version = "=2.12.5", features = ["test"] }
+serde_json = "=1.0.154"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

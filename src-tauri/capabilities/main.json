@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Главное окно. Прав нет: интерфейс пока не вызывает ядро. Свои команды добавляются задачей 0.4 (AppManifest::commands в build.rs и этот файл). Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009).",
+  "windows": ["main"],
+  "permissions": []
+}

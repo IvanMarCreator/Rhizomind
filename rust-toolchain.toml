@@ -1,0 +1,6 @@
+# Версия Rust закреплена точно: одинаковая сборка локально и в CI.
+# Обновление — отдельным коммитом с прогоном `npm run verify`.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

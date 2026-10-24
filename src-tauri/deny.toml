@@ -1,0 +1,75 @@
+# cargo-deny 0.20: лицензии, запрет сетевых крейтов и функций, источники.
+# Основа — исследование docs/research/2026-10-24-rust-crates.md, ADR 0009.
+# Запуск: cargo deny --manifest-path src-tauri/Cargo.toml check
+
+[graph]
+# Только десктопные цели: reqwest в Tauri есть лишь для мобильных целей.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+]
+# Проверяются нормальные зависимости и зависимости сборки; dev-зависимости
+# (тесты) в выпускной файл не попадают.
+exclude-dev = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # proc-macro-error 1.0.4 не сопровождается. Это макрос времени сборки (в
+  # программу не попадает), приходит только на Linux: tauri → gtk-rs 0.18 →
+  # glib-macros. Безопасного обновления нет; уйдёт с переходом Tauri на gtk4.
+  { id = "RUSTSEC-2024-0370", reason = "макрос сборки gtk-rs 0.18 на Linux, обновления нет" },
+]
+
+[licenses]
+version = 2
+# Совместимые с GPL-3.0 и реально встреченные в дереве (cargo deny list).
+# Новая лицензия — только с комментарием, кто её приносит.
+allow = [
+  "MIT",                            # большинство крейтов
+  "Apache-2.0",                     # tauri, wry, windows и др. (обычно «MIT OR Apache-2.0»)
+  "Apache-2.0 WITH LLVM-exception", # target-lexicon (сборка)
+  "BSD-3-Clause",                   # brotli, alloc-no-stdlib (сжатие интерфейса в исполняемом файле)
+  "MPL-2.0",                        # cssparser, selectors, dtoa-short, option-ext
+  "Unicode-3.0",                    # icu_* (нормализация URL), unicode-ident
+  "Unlicense",                      # memchr, aho-corasick, walkdir (Unlicense OR MIT)
+  "Zlib",                           # objc2-*, miniz_oxide, foldhash
+  "0BSD",                           # adler2 (0BSD OR MIT OR Apache-2.0)
+  "MIT-0",                          # dunce (CC0-1.0 OR MIT-0 OR Apache-2.0)
+  "CC0-1.0",                        # dunce
+  "GPL-3.0-only",                   # сам Rhizomind
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+deny = [
+  { crate = "reqwest" }, { crate = "hyper" }, { crate = "hyper-util" }, { crate = "h2" }, { crate = "h3" },
+  { crate = "ureq" }, { crate = "isahc" }, { crate = "curl" }, { crate = "curl-sys" }, { crate = "attohttpc" },
+  { crate = "surf" }, { crate = "quinn" }, { crate = "socket2" }, { crate = "rustls" }, { crate = "tokio-rustls" },
+  { crate = "native-tls" }, { crate = "openssl" }, { crate = "openssl-sys" }, { crate = "tungstenite" },
+  { crate = "tokio-tungstenite" }, { crate = "tauri-plugin-http" }, { crate = "tauri-plugin-updater" },
+  { crate = "tauri-plugin-websocket" }, { crate = "tauri-plugin-upload" }, { crate = "tauri-plugin-localhost" },
+  { crate = "tauri-plugin-shell" },
+]
+
+[[bans.features]]
+crate = "tokio"
+deny = ["net"]
+
+[[bans.features]]
+crate = "mio"
+deny = ["net"]
+
+[[bans.features]]
+crate = "tauri"
+deny = ["devtools", "native-tls", "native-tls-vendored", "rustls-tls"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
