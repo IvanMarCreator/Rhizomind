@@ -26,17 +26,49 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
+          cache: npm
 
-      - name: Проверка запуска
-        run: |
-          node -e "console.log('CI работает: ' + process.platform)"
+      - name: Установить зависимости
+        run: npm ci
 
-      # Код выпуска 0.1 появится с задачей 0.2; до тех пор package.json в корне нет.
-      - name: npm run verify
-        shell: bash
-        run: |
-          if [ -f package.json ]; then
-            npm run verify
-          else
-            echo "package.json в корне нет — npm run verify пропущен"
-          fi
+      - name: Проверки (типы, линтер, модульные тесты, сеть, лицензии)
+        run: npm run verify
+
+      - name: Сборка
+        run: npm run build
+
+      # Ubuntu 24.04 запрещает непривилегированные user namespaces через AppArmor,
+      # без них песочница Chromium не стартует. Включаем их только на машине CI.
+      - name: Разрешить песочницу Chromium (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Сценарные тесты (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:e2e
+
+      - name: Сценарные тесты (Windows)
+        if: runner.os == 'Windows'
+        run: npm run test:e2e
+
+      - name: Снимки экрана сценарных тестов
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-screenshots-${{ runner.os }}
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Портативная сборка (Windows)
+        if: runner.os == 'Windows'
+        run: npm run package:portable
+
+      - name: Загрузить портативную сборку (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhizomind-portable-windows
+          path: release/*.zip
+          retention-days: 14
+          if-no-files-found: error

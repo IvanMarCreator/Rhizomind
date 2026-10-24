@@ -28,7 +28,17 @@
 
 ## Разработка
 
-Код выпуска 0.1 в работе; инструкции появятся с задачей 0.2.
+Нужен Node.js 22.12 или новее (Linux или Windows).
+
+```sh
+npm ci                    # установить зависимости точно по package-lock.json
+npm run dev               # собрать и запустить приложение
+npm run verify            # типы, линтер, модульные тесты, проверка сети и лицензий
+npm run test:e2e          # сценарные тесты в Electron (сначала npm run build; на Linux без экрана — xvfb-run -a)
+npm run package:portable  # портативная сборка в release/ (Windows — zip, Linux — папка)
+```
+
+Ещё: `npm run package:installer` — установщик Windows (NSIS), `npm run sbom` — перечень зависимостей в формате CycloneDX (`release/sbom.json`). Зависимости и их лицензии — в [docs/dependencies.md](docs/dependencies.md).
 
 ## Лицензия
 

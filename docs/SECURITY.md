@@ -2,7 +2,7 @@
 
 Документ для службы информационной безопасности. Каждая мера ссылается на файл, где она реализована, чтобы её можно было проверить в коде. Документ обновляется вместе с каждым выпуском; выпуск не считается готовым, пока его меры не внесены сюда.
 
-> **Состояние.** Меры с файлом в колонке «Где» реализованы в прототипе `prototype/src/` и будут перепроверены в выпуске 0.1. **Все файлы, указанные в колонке «Где», относятся к прототипу** (каталог `prototype/`, справочник, написанный до требований); в выпуске 0.1 ссылки заменятся на файлы нового кода. Меры с номером выпуска запланированы. Целевые требования — в [product/requirements.md](product/requirements.md#безопасность), план выпусков — там же.
+> **Состояние.** Меры с файлом в колонке «Где» реализованы в прототипе `prototype/src/` и будут перепроверены в выпуске 0.1. Файлы с префиксом `prototype/` относятся к прототипу (справочник, написанный до требований); по мере выполнения задач выпуска 0.1 ссылки заменяются на файлы нового кода (с задачи 0.2 — `src/`, `scripts/`, `electron-builder.yml`). Меры с номером выпуска запланированы. Целевые требования — в [product/requirements.md](product/requirements.md#безопасность), план выпусков — там же.
 
 ## Ключевые гарантии
 
@@ -19,11 +19,12 @@
 | Мера | Где |
 |---|---|
 | Все запросы интерфейса, кроме `app://`, `data:`, `blob:`, отменяются до отправки | `prototype/src/main/security/lockdown.ts` |
-| Политика контента (CSP): `connect-src 'none'`, только свои скрипты | `prototype/src/main/app-protocol.ts`, `prototype/src/renderer/index.html` |
+| Политика контента (CSP): `connect-src 'none'`, только свои скрипты | `src/renderer/index.html` (выпуск 0.1, задача 0.2; заголовок CSP от протокола — задача 0.3) |
 | Проверка орфографии Chromium (скачивает словари) отключена | `prototype/src/main/security/lockdown.ts`, `prototype/src/main/main.ts` |
 | Загрузки файлов запрещены | `prototype/src/main/security/lockdown.ts` |
-| Каналы обновления отключены (`publish: null`), автообновлений нет | `prototype/electron-builder.yml` |
-| Автоматическая проверка исходников на сетевой код перед каждой сборкой | `prototype/scripts/check-no-network.mjs` |
+| Каналы обновления отключены (`publish: null`), автообновлений нет | `electron-builder.yml` |
+| Автоматическая проверка исходников `src/` на сетевой код (`npm run check:network`, входит в `npm run verify` и CI) | `scripts/check-no-network.mjs`, тест `tests/unit/check-no-network.test.ts` |
+| Лицензии production-зависимостей совместимы с GPL-3.0 (`npm run check:licenses`), перечень зависимостей — SBOM (`npm run sbom`) | `scripts/check-licenses.mjs`, `docs/dependencies.md` |
 | Словари проверки орфографии не скачиваются: `setSpellCheckerLanguages([])` на каждой сессии (одного выключения проверки недостаточно — Electron issue #22995) | выпуск 0.1, ADR 0007 |
 | Нет поиска прокси в сети (WPAD): `--no-proxy-server` | выпуск 0.1, ADR 0007 |
 | Разрешение имён отключено: `--host-resolver-rules="MAP * ~NOTFOUND"`; отмена запросов на каждой сессии, включая сессию по умолчанию | выпуск 0.1, ADR 0007 |
@@ -57,20 +58,20 @@
 
 | Мера | Где |
 |---|---|
-| `contextIsolation`, `sandbox`, без `nodeIntegration` | `prototype/src/main/main.ts` |
-| Интерфейс грузится через собственный протокол `app://`, без доступа к `file://` | `prototype/src/main/app-protocol.ts` |
+| `contextIsolation`, `sandbox`, без `nodeIntegration`, `webSecurity`, без `<webview>` | `src/main/main.ts` |
+| Интерфейс грузится через собственный протокол `app://rhizomind/`, без доступа к `file://`; протокол отдаёт файлы только из папки интерфейса | `src/main/app-protocol.ts`, `src/main/app-asset-path.ts`, тест `tests/unit/app-asset-path.test.ts` |
 | Запрещены переходы на другие адреса, новые окна и `<webview>` | `prototype/src/main/security/lockdown.ts` |
 | Запрещены все разрешения браузера (камера, микрофон, геолокация и т.д.) | `prototype/src/main/security/lockdown.ts` |
-| Наружу выставлен только объект `window.rhizomind` с фиксированным API | `prototype/src/preload/preload.ts`, `prototype/src/shared/api.ts` |
+| Наружу выставлен только объект `window.rhizomind` с фиксированным API (в задаче 0.2 — только `apiVersion`) | `src/preload/preload.ts`, `src/shared/api.ts` |
 | Ядро принимает вызовы только от страницы `app://rhizomind` и проверяет типы параметров | `prototype/src/main/ipc.ts` |
-| Инструменты разработчика отключены в собранной версии | `prototype/src/main/main.ts` |
+| Инструменты разработчика отключены в собранной версии | `src/main/main.ts` |
 
 ### Исполняемый файл
 
 | Мера | Где |
 |---|---|
-| Electron Fuses: запрет запуска как Node.js, игнор `NODE_OPTIONS` и `--inspect` | `prototype/electron-builder.yml` |
-| Проверка целостности кода внутри архива asar, загрузка только из asar | `prototype/electron-builder.yml` |
+| Electron Fuses: запрет запуска как Node.js, игнор `NODE_OPTIONS` и `--inspect`, `file://` без особых прав | `electron-builder.yml` |
+| Проверка целостности кода внутри архива asar, загрузка только из asar; в архив попадает только собранный `dist/` | `electron-builder.yml` |
 
 ## Безопасность по выпускам
 

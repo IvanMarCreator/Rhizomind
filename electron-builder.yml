@@ -1,0 +1,54 @@
+# Сборка дистрибутивов Rhizomind (electron-builder 26).
+# Портативная сборка:  npm run package:portable  (Windows — zip и папка, Linux — папка)
+# Установщик:          npm run package:installer (Windows, NSIS)
+appId: io.github.ivanmarcreator.rhizomind
+productName: Rhizomind
+copyright: Rhizomind contributors, GPL-3.0
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+directories:
+  output: release
+
+# В архив приложения попадает только собранный код. Зависимости уже
+# встроены сборщиком в dist/, поэтому node_modules в сборку не копируются.
+files:
+  - dist/**/*
+  - package.json
+  - "!node_modules/**/*"
+
+asar: true
+# Нативные модули (будущий @parcel/watcher) нельзя грузить из asar.
+asarUnpack:
+  - "**/*.node"
+
+# Никаких каналов обновления: приложение не ходит в сеть за обновлениями.
+publish: null
+
+# Electron Fuses — защитные переключатели, вшиваемые в исполняемый файл.
+electronFuses:
+  runAsNode: false # exe нельзя запустить как голый Node.js (ELECTRON_RUN_AS_NODE)
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false # NODE_OPTIONS игнорируется
+  enableNodeCliInspectArguments: false # нельзя подключить отладчик через --inspect
+  enableEmbeddedAsarIntegrityValidation: true # подмена кода в app.asar обнаруживается
+  onlyLoadAppFromAsar: true # код грузится только из app.asar
+  grantFileProtocolExtraPrivileges: false # file:// без особых прав: интерфейс идёт через app://
+
+win:
+  target:
+    - zip
+    - dir
+  # Подписи пока нет (решение плана 0.1); на неподписанный exe Windows SmartScreen может предупредить.
+  signAndEditExecutable: true
+
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  runAfterFinish: false
+
+linux:
+  target:
+    - dir
+  category: Office
