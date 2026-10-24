@@ -107,7 +107,8 @@ jobs:
           name: e2e-screenshots-${{ runner.os }}
           path: test-results/
           retention-days: 14
-          if-no-files-found: error
+          # Шаг идёт и после сбоя раньше теста; отсутствие снимка при успехе ловит сам тест.
+          if-no-files-found: warn
 
       - name: Портативная сборка (Windows)
         if: runner.os == 'Windows'
