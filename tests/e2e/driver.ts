@@ -54,15 +54,22 @@ export async function startApp(): Promise<Session> {
   const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', 'inherit', 'inherit'] });
   await waitForPort(PORT, 30_000);
 
-  const browser = await remote({
-    hostname: '127.0.0.1',
-    port: PORT,
-    logLevel: 'warn',
-    capabilities: {
-      // tauri-driver принимает путь к приложению в своём расширении возможностей.
-      'tauri:options': { application: applicationPath() },
-    } as WebdriverIO.Capabilities,
-  });
+  let browser: WebdriverIO.Browser;
+  try {
+    browser = await remote({
+      hostname: '127.0.0.1',
+      port: PORT,
+      logLevel: 'warn',
+      capabilities: {
+        // tauri-driver принимает путь к приложению в своём расширении возможностей.
+        'tauri:options': { application: applicationPath() },
+      } as WebdriverIO.Capabilities,
+    });
+  } catch (error) {
+    // Сессия не создана — afterAll не сможет остановить драйвер, останавливаем здесь.
+    driver.kill();
+    throw error;
+  }
 
   return {
     browser,

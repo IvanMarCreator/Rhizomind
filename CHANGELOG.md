@@ -8,7 +8,7 @@
 - Каркас приложения на Tauri 2.12.5 (задача 0.2): ядро на Rust 1.99.1 (`rust-toolchain.toml`), главное окно создаётся в ядре; интерфейс на Svelte 5 + Vite 8 + TypeScript strict показывает заголовок «Rhizomind» на фоне светлой или тёмной темы; `src/api/` — обёртка над вызовами ядра.
 - Безопасность каркаса: CSP без внешних хостов, `freezePrototype`, без `window.__TAURI__`, у окна нет прав (capabilities), список своих команд пуст, установщики без загрузки WebView2 (`skip`), NSIS для текущего пользователя.
 - Проверки в `npm run verify`: сетевой код интерфейса по синтаксическому дереву (исходники и сборка), лицензии npm с разбором SPDX, `cargo fmt`, `clippy`, `cargo test`, `cargo deny check`, `cargo tree` по пяти десктопным целям без сетевых крейтов.
-- Сценарный тест (tauri-driver + WebdriverIO): окно открывается, снимок экрана сохраняется на Windows и Linux.
+- Сценарный тест (tauri-driver + WebdriverIO): окно открывается, снимок экрана сохраняется на Windows и Linux. Тест идёт на сборке с функцией `webdriver` (`npm run build:e2e`): WebView2 155 не принимает порт отладки от msedgedriver через переменную окружения, если приложение задаёт свои флаги; выпускные сборки — без этой функции.
 - CI: Windows и Linux, actions закреплены по SHA, кэш Rust и npm, снимки экрана и портативная сборка Windows как артефакты; сборки `package:portable`, `package:msi`, `package:nsis`, SBOM (`npm run sbom`).
 - `docs/dependencies.md` — перечень зависимостей с лицензиями и ответом про сетевой код.
 - Требования и план выпусков Secure-редакции 1.0.
