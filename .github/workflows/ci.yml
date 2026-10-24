@@ -87,7 +87,26 @@ jobs:
             $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
           }
           & $driver --version
-          "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
+          # Обёртка пишет подробный журнал msedgedriver (выкладывается артефактом).
+          $wrapper = Join-Path $dir 'msedgedriver-logged.cmd'
+          "@`"$driver`" %* --verbose --log-path=`"$dir\msedgedriver.log`"" | Set-Content -Encoding ascii $wrapper
+          "MSEDGEDRIVER=$wrapper" >> $env:GITHUB_ENV
+
+      # Диагностика: приложение само открывает порт отладки WebView2, если его
+      # просит переменная окружения (так его запускает msedgedriver).
+      - name: Диагностика запуска приложения (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
+          $p = Start-Process -FilePath 'src-tauri\target\release\rhizomind.exe' -PassThru
+          Start-Sleep -Seconds 15
+          Write-Host "Процесс жив: $(-not $p.HasExited) код: $($p.ExitCode)"
+          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Select-Object Id, StartTime | Format-Table | Out-String | Write-Host
+          try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:9333/json/version).Content | Write-Host } catch { Write-Warning "порт 9333 не открыт: $_" }
+          Get-ChildItem -Recurse -Filter DevToolsActivePort "$env:LOCALAPPDATA\io.github.rhizomind" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
       - name: Сценарный тест (Linux)
         if: runner.os == 'Linux'
@@ -109,6 +128,15 @@ jobs:
           retention-days: 14
           # Шаг идёт и после сбоя раньше теста; отсутствие снимка при успехе ловит сам тест.
           if-no-files-found: warn
+
+      - name: Журнал msedgedriver (Windows)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msedgedriver-log
+          path: ${{ runner.temp }}/msedgedriver/msedgedriver.log
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Портативная сборка (Windows)
         if: runner.os == 'Windows'
