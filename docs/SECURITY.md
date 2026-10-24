@@ -2,7 +2,7 @@
 
 Документ для службы информационной безопасности. Каждая мера ссылается на файл, где она реализована, чтобы её можно было проверить в коде. Документ обновляется вместе с каждым выпуском; выпуск не считается готовым, пока его меры не внесены сюда.
 
-> **Состояние.** Платформа — Tauri 2: ядро на Rust, интерфейс в системном WebView2 ([ADR 0008](adr/0008-platform-tauri2.md)). Код выпуска 0.1 ещё не написан: в колонке «Где» указаны файлы, в которых мера будет реализована, и пометка «выпуск 0.1, ADR …». По мере выполнения задач пометка заменяется ссылкой на код и тест. Прототип `prototype/` и ветка `archive/electron-skeleton` (Electron) — справочные, их меры к выпуску не относятся. Целевые требования — в [product/requirements.md](product/requirements.md#безопасность).
+> **Состояние.** Платформа — Tauri 2: ядро на Rust, интерфейс в системном WebView2 ([ADR 0008](adr/0008-platform-tauri2.md)). Код выпуска 0.1 пишется по задачам плана. Пометка **«реализовано»** — мера есть в коде, рядом ссылка на файл и тест; пометка «выпуск 0.1, ADR …» — мера ещё в работе, указан файл, где она будет. Каркас приложения (задача 0.2) реализовал проверки цепочки поставок, CSP, `freezePrototype`, права окна и режим установщика. Прототип `prototype/` и ветка `archive/electron-skeleton` (Electron) — справочные, их меры к выпуску не относятся. Целевые требования — в [product/requirements.md](product/requirements.md#безопасность).
 
 ## Ключевые гарантии
 
@@ -25,13 +25,13 @@ WebView2 — компонент Windows (движок Microsoft Edge), на ко
 
 | Мера | Где |
 |---|---|
-| Запрет сетевых крейтов (`reqwest`, `hyper`, `h2`, `rustls`, `native-tls`, `openssl`, `socket2`, `tungstenite` и др.), сетевых плагинов Tauri (`http`, `updater`, `websocket`, `upload`, `localhost`, `shell`) и функций `tokio/net`, `mio/net`; неизвестные реестры и git-источники запрещены | `src-tauri/deny.toml` — выпуск 0.1, ADR 0009 |
-| Независимая проверка `cargo tree` по каждой десктопной цели (Windows, macOS, Linux): сетевых крейтов нет | `tools/check-cargo-tree/`, CI — выпуск 0.1, ADR 0009 |
-| Проверка интерфейса на сетевой код по синтаксическому дереву (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, внешний `import()`), включая собранный интерфейс | `tools/check-no-network/` — выпуск 0.1, ADR 0009 |
-| Политика контента (CSP) без внешних хостов: `connect-src ipc: http://ipc.localhost`, только свои скрипты и стили | `src-tauri/tauri.conf.json` — выпуск 0.1, ADR 0009 |
+| Запрет сетевых крейтов (`reqwest`, `hyper`, `h2`, `rustls`, `native-tls`, `openssl`, `socket2`, `tungstenite` и др.), сетевых плагинов Tauri (`http`, `updater`, `websocket`, `upload`, `localhost`, `shell`) и функций `tokio/net`, `mio/net`; неизвестные реестры и git-источники запрещены | **реализовано:** [src-tauri/deny.toml](../src-tauri/deny.toml), запуск в `npm run verify` и CI ([.github/workflows/ci.yml](../.github/workflows/ci.yml)), ADR 0009 |
+| Независимая проверка `cargo tree` по каждой десктопной цели (Windows, macOS, Linux): сетевых крейтов нет | **реализовано:** [tools/check-cargo-tree/](../tools/check-cargo-tree/) (`cargo tree -e normal --target <цель>` для `x86_64`/`aarch64` Windows и macOS и `x86_64` Linux; кроме имён ловит `tokio`/`mio` с функцией `net`), тесты `tree.test.ts`, ADR 0009 |
+| Проверка интерфейса на сетевой код по синтаксическому дереву, в исходниках (`src/`) и в собранном интерфейсе (`dist/`): сетевые модули Node в любом виде импорта, сетевые плагины Tauri и `opener`/`shell`; `fetch`, `Request`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, `RTCPeerConnection`, `WebTransport`, `Worker`/`SharedWorker`/`serviceWorker`; `window.open`, присваивание `location`, `location.assign/replace`; внешний и вычисляемый `import()`/`require()`; как подозрительное — обращение к глобальному объекту по вычисляемому имени (в том числе через псевдоним), `eval`/`Function`, элементы `<iframe>`, `<script>`, `<form>` и др. в разметке; файл, который не разобрался, — тоже находка | **реализовано:** [tools/check-no-network/](../tools/check-no-network/), тесты `scan.test.ts`, `paths.test.ts`, ADR 0009 |
+| Политика контента (CSP) без внешних хостов: `connect-src ipc: http://ipc.localhost`, только свои скрипты и стили. Для `npm run dev` отдельная `devCsp` добавляет только сервер разработки `ws://localhost:5173` и встроенные стили Vite; в выпускную сборку она не попадает | **реализовано:** `app.security.csp` в [src-tauri/tauri.conf.json](../src-tauri/tauri.conf.json), тест [src-tauri/tests/security_config.rs](../src-tauri/tests/security_config.rs), ADR 0009 |
 | Запрещены переходы на другие адреса, новые окна и загрузки | `src-tauri/src/security/` — выпуск 0.1, ADR 0009 |
 | Внешняя ссылка: только `http`, `https`, `mailto`; подтверждение в окне ядра с полным адресом; передача ОС после подтверждения | `src-tauri/src/external_links/` — выпуск 0.1, ADR 0009 |
-| Автообновлений нет: плагин `updater` запрещён | `src-tauri/deny.toml` — выпуск 0.1 |
+| Автообновлений нет: плагин `updater` запрещён | **реализовано:** [src-tauri/deny.toml](../src-tauri/deny.toml) |
 | Свои CSS-темы не могут загрузить внешние ресурсы (`@import`, `url()` наружу блокируются CSP) | выпуск 0.5 |
 
 ### Сеть WebView2
@@ -76,23 +76,26 @@ WebView2 — компонент Windows (движок Microsoft Edge), на ко
 
 | Мера | Где |
 |---|---|
-| Интерфейсу не выданы права `fs:*`, `opener:*`, `shell:*`, `http:*`; плагин `dialog` используется только из ядра | `src-tauri/capabilities/main.json` — выпуск 0.1, ADR 0009 |
-| Свои команды ядра перечислены явно; команда вне списка интерфейсу недоступна | `src-tauri/build.rs` (`AppManifest::commands`), `src-tauri/capabilities/main.json` — выпуск 0.1, ADR 0009 |
+| Интерфейсу не выданы права `fs:*`, `opener:*`, `shell:*`, `http:*`, `dialog:*`; плагины не подключены. Сейчас у главного окна прав нет совсем (даже `core:default`: окну без вызовов ядра он не нужен, это проверено сценарным тестом); подключена только эта одна capability | **реализовано:** [src-tauri/capabilities/main.json](../src-tauri/capabilities/main.json), `app.security.capabilities` в [tauri.conf.json](../src-tauri/tauri.conf.json), тест [src-tauri/tests/security_config.rs](../src-tauri/tests/security_config.rs), ADR 0009 |
+| Свои команды ядра перечислены явно; команда вне списка интерфейсу недоступна | **реализовано (пустой список):** `AppManifest::commands(&[])` в [src-tauri/build.rs](../src-tauri/build.rs); команды и тест недоступности — задача 0.4, ADR 0009 |
 | Ядро проверяет типы и границы всех параметров и работает только с хранилищем своего окна | `src-tauri/src/commands/` — выпуск 0.1, ADR 0009 |
-| Isolation pattern: вызовы ядра идут через изолированный iframe с шифрованием; `freezePrototype` | `src-tauri/tauri.conf.json` — выпуск 0.1, ADR 0009 |
+| `freezePrototype`: прототипы встроенных объектов заморожены; глобальный объект `window.__TAURI__` не создаётся (`withGlobalTauri: false`) | **реализовано:** [src-tauri/tauri.conf.json](../src-tauri/tauri.conf.json), тест [src-tauri/tests/security_config.rs](../src-tauri/tests/security_config.rs), ADR 0009 |
+| Isolation pattern: вызовы ядра идут через изолированный iframe с шифрованием | `src-tauri/tauri.conf.json` — выпуск 0.1 (задача 0.3), ADR 0009 |
+| Главное окно создаётся в ядре (`WebviewWindowBuilder`), в конфигурации окон нет — это нужно, чтобы задать движку временную папку данных и флаги до создания окна | **реализовано:** [src-tauri/src/lib.rs](../src-tauri/src/lib.rs), тест `security_config.rs`; настройки движка — задача 0.3, ADR 0007 |
 | Интерфейс отдаётся из процесса приложения (`http://tauri.localhost` на Windows перехватывается внутри процесса, в сеть не уходит) | Tauri/wry, ADR 0009 |
 | Разрешения браузера (камера, микрофон, геолокация, уведомления) отклоняются | `src-tauri/src/security/` — выпуск 0.1, ADR 0009 |
-| Инструменты разработчика выключены в выпуске: функция `devtools` крейта `tauri` запрещена | `src-tauri/deny.toml` — выпуск 0.1, ADR 0007 |
+| Инструменты разработчика выключены в выпуске: функция `devtools` крейта `tauri` не включена и запрещена | **реализовано:** [src-tauri/Cargo.toml](../src-tauri/Cargo.toml), [src-tauri/deny.toml](../src-tauri/deny.toml), ADR 0007 |
 
 ### Сборка и поставка
 
 | Мера | Где |
 |---|---|
-| Лицензии всех крейтов совместимы с GPL-3.0 (`cargo-deny`); лицензии npm — с разбором выражений SPDX; список лицензий для ИБ — `cargo-about` | `src-tauri/deny.toml`, `tools/check-licenses/` — выпуск 0.1, ADR 0009 |
-| SBOM (перечень всех зависимостей) — `cargo-cyclonedx` и npm, прикладывается к выпуску | CI — выпуск 0.1 |
-| Версии зависимостей фиксируются точно; `Cargo.lock` и `package-lock.json` в репозитории | выпуск 0.1 |
-| GitHub Actions закреплены по SHA коммита | `.github/workflows/` — выпуск 0.1, ADR 0009 |
-| Установщики MSI и NSIS не содержат загрузчика WebView2 (режим `skip`) — установка не обращается к сети | `src-tauri/tauri.conf.json` — выпуск 0.1, ADR 0007 |
+| Лицензии всех крейтов совместимы с GPL-3.0 (`cargo-deny`); лицензии npm — с разбором выражений SPDX; список лицензий для ИБ — `cargo-about` | **реализовано:** [src-tauri/deny.toml](../src-tauri/deny.toml) (разрешены только лицензии, встреченные в дереве), [tools/check-licenses/](../tools/check-licenses/) (production-зависимости npm, тесты `licenses.test.ts`); `cargo-about` — задача 3.3, ADR 0009 |
+| SBOM (перечень всех зависимостей) — `cargo-cyclonedx` и npm, прикладывается к выпуску | **реализовано:** `npm run sbom` ([tools/sbom/](../tools/sbom/)); приложение к выпуску — задача 3.4 |
+| Версии зависимостей фиксируются точно; `Cargo.lock` и `package-lock.json` в репозитории; версия Rust закреплена | **реализовано:** [package.json](../package.json), [src-tauri/Cargo.toml](../src-tauri/Cargo.toml) (`=версия`), [src-tauri/Cargo.lock](../src-tauri/Cargo.lock), [package-lock.json](../package-lock.json), [rust-toolchain.toml](../rust-toolchain.toml), перечень — [dependencies.md](dependencies.md) |
+| GitHub Actions закреплены по SHA коммита, права workflow — только чтение кода | **реализовано:** [.github/workflows/ci.yml](../.github/workflows/ci.yml), ADR 0009 |
+| Установщики MSI и NSIS не содержат загрузчика WebView2 (режим `skip`) — установка не обращается к сети; NSIS ставит для текущего пользователя | **реализовано:** `bundle.windows` в [src-tauri/tauri.conf.json](../src-tauri/tauri.conf.json), тест `security_config.rs`, ADR 0007 |
+| Выпускная сборка не прерывается через `abort` при панике (`panic = "unwind"` по умолчанию): на Windows `abort` может запустить отчёт об ошибке Windows с дампом | [src-tauri/Cargo.toml](../src-tauri/Cargo.toml) (`[profile.release]` без `panic = "abort"`) |
 
 ## Безопасность по выпускам
 

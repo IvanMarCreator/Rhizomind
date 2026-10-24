@@ -1,5 +1,8 @@
 // SBOM (перечень зависимостей) для выпуска: ядро — cargo-cyclonedx 0.5,
-// интерфейс — npm sbom (только production-зависимости). Результат — в release/.
+// интерфейс — npm sbom. Результат — в release/.
+// npm sbom берётся полным (с инструментами сборки): с `--omit dev` npm 10
+// теряет svelte (пакет одновременно peer-зависимость dev-пакетов), а перечень
+// без пропусков ИБ важнее краткости. Что попадает в сборку — docs/dependencies.md.
 // Нужен установленный cargo-cyclonedx: cargo install --locked cargo-cyclonedx@0.5.9
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -11,7 +14,7 @@ mkdirSync(outDir, { recursive: true });
 
 const npmSbom = execFileSync(
   process.platform === 'win32' ? 'npm.cmd' : 'npm',
-  ['sbom', '--omit', 'dev', '--sbom-format', 'cyclonedx', '--sbom-type', 'application'],
+  ['sbom', '--sbom-format', 'cyclonedx', '--sbom-type', 'application'],
   { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, shell: process.platform === 'win32' },
 );
 writeFileSync(path.join(outDir, 'sbom-npm.cdx.json'), npmSbom);

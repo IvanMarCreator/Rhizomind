@@ -28,15 +28,30 @@
 
 ## Разработка
 
-Команды ниже появятся вместе с каркасом приложения (задача 0.2 плана 0.1).
-
-Нужно: Rust stable (версия закреплена в `rust-toolchain.toml`), Node.js 22, на Windows — WebView2 (есть в Windows 11 и почти во всех Windows 10).
+Нужно:
+- **Rust** через [rustup](https://rustup.rs/). Версия закреплена в `rust-toolchain.toml` (сейчас 1.99.1) и ставится сама при первом вызове `cargo`.
+- **Node.js 22** (не ниже 22.19).
+- Windows: WebView2 Runtime (есть в Windows 11 и почти во всех Windows 10) и Visual Studio Build Tools с компонентом «Разработка классических приложений на C++».
+- Linux (Ubuntu 24.04): `sudo apt-get install libwebkit2gtk-4.1-dev librsvg2-dev`; для сценарных тестов ещё `webkit2gtk-driver xvfb`.
+- Для `npm run verify`: `cargo install --locked cargo-deny@0.20.2`. Для сценарных тестов: `cargo install --locked tauri-driver@2.1.0`, на Windows — msedgedriver той же версии, что WebView2 (путь — в переменной `MSEDGEDRIVER`).
 
 ```
-npm ci              # зависимости интерфейса
-npm run tauri dev   # запуск в режиме разработки
-npm run verify      # все проверки: тесты Rust и интерфейса, cargo deny, проверка сети
+npm ci                    # зависимости интерфейса строго по package-lock.json
+npm run dev               # запуск в режиме разработки (tauri dev, Vite на localhost:5173)
+npm run verify            # все проверки: типы, линтер, Vitest, сеть в интерфейсе, лицензии npm,
+                          # cargo fmt, clippy, cargo test, cargo deny, cargo tree по целям
+npm run build             # выпускной исполняемый файл: src-tauri/target/release/rhizomind(.exe)
+npm run test:e2e          # сценарный тест на собранном приложении (после npm run build);
+                          # на Linux без экрана: xvfb-run -a npm run test:e2e
+npm run package:portable  # Windows: release/rhizomind-<версия>-windows-x64-portable.zip
+npm run package:msi       # Windows: установщик MSI (для всех пользователей, нужны права администратора)
+npm run package:nsis      # Windows: установщик NSIS для текущего пользователя
+npm run sbom              # перечень зависимостей (CycloneDX) в release/; нужен cargo-cyclonedx 0.5.9
 ```
+
+Сборки не подписаны. Установщики не скачивают WebView2 (`webviewInstallMode: skip`); сам бандлер Tauri при сборке MSI и NSIS скачивает инструменты WiX и NSIS — это происходит только на машине сборки.
+
+Проверки для ИБ лежат в `tools/` (у каждой свои тесты), конфигурация `cargo-deny` — в `src-tauri/deny.toml`, зависимости и их лицензии — в [docs/dependencies.md](docs/dependencies.md).
 
 ## Лицензия
 
