@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Rhizomind</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <header class="sidebar__header">
+        <span class="brand">Rhizomind</span>
+        <span class="badge" id="edition"></span>
+      </header>
+
+      <button class="btn btn--primary" id="open-vault">Открыть хранилище</button>
+      <div class="vault-name" id="vault-name">Хранилище не открыто</div>
+
+      <form class="new-note" id="new-note-form" hidden>
+        <input id="new-note-title" type="text" placeholder="Новая заметка" maxlength="120" autocomplete="off" />
+        <button class="btn" type="submit">+</button>
+      </form>
+
+      <ul class="note-list" id="note-list"></ul>
+    </aside>
+
+    <main class="editor">
+      <div class="editor__bar">
+        <span class="editor__title" id="note-title"></span>
+        <span class="editor__status" id="save-status"></span>
+      </div>
+      <textarea
+        id="editor"
+        class="editor__text"
+        spellcheck="false"
+        placeholder="Откройте хранилище и выберите заметку"
+        disabled
+      ></textarea>
+    </main>
+
+    <aside class="links">
+      <section>
+        <h2>Ссылки из заметки</h2>
+        <ul id="outgoing" class="link-list"></ul>
+      </section>
+      <section>
+        <h2>Обратные ссылки</h2>
+        <ul id="backlinks" class="link-list"></ul>
+      </section>
+    </aside>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

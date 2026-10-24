@@ -1,0 +1,212 @@
+:root {
+  --bg: #1e1f22;
+  --bg-panel: #26272b;
+  --bg-hover: #303136;
+  --border: #36373c;
+  --text: #dcddde;
+  --text-muted: #8b8d93;
+  --accent: #8b7cf6;
+  --accent-text: #ffffff;
+  --link: #a99cf8;
+  --link-unresolved: #8b8d93;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --bg-panel: #f5f5f7;
+    --bg-hover: #ebebef;
+    --border: #e0e0e5;
+    --text: #222326;
+    --text-muted: #6b6d73;
+    --accent: #6d5ce8;
+    --link: #5b4bd6;
+    --link-unresolved: #8b8d93;
+    color-scheme: light;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: grid;
+  grid-template-columns: 260px 1fr 260px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+.sidebar,
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  overflow: auto;
+  background: var(--bg-panel);
+}
+
+.sidebar {
+  border-right: 1px solid var(--border);
+}
+
+.links {
+  border-left: 1px solid var(--border);
+}
+
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.badge {
+  padding: 1px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.vault-name {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.btn {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--bg-hover);
+}
+
+.btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.new-note {
+  display: flex;
+  gap: 6px;
+}
+
+.new-note input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.note-list,
+.link-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.note-list li,
+.link-list li {
+  padding: 4px 8px;
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.note-list li:hover,
+.link-list li:hover {
+  background: var(--bg-hover);
+}
+
+.note-list li.active {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.link-list li {
+  color: var(--link);
+}
+
+.link-list li.unresolved {
+  color: var(--link-unresolved);
+  font-style: italic;
+}
+
+.link-list li.empty {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.link-list li.empty:hover {
+  background: none;
+}
+
+.links h2 {
+  margin: 6px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.editor__bar {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.editor__title {
+  font-weight: 600;
+}
+
+.editor__status {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.editor__text {
+  flex: 1;
+  width: 100%;
+  padding: 20px 28px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.7 ui-monospace, 'Cascadia Code', Consolas, monospace;
+}

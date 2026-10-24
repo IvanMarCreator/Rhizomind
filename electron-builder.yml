@@ -1,0 +1,41 @@
+appId: io.github.rhizomind.app
+productName: Rhizomind
+copyright: Rhizomind contributors, GPL-3.0
+
+directories:
+  output: release
+
+files:
+  - dist/**
+  - package.json
+
+asar: true
+
+# Никаких каналов обновления: приложение не ходит в сеть за апдейтами.
+publish: null
+
+# Electron Fuses — защита, которая вшивается в бинарник при сборке.
+electronFuses:
+  runAsNode: false                            # нельзя запустить exe как голый Node.js
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false # NODE_OPTIONS игнорируется
+  enableNodeCliInspectArguments: false        # нельзя подключить отладчик через --inspect
+  enableEmbeddedAsarIntegrityValidation: true # подмена кода внутри asar обнаруживается
+  onlyLoadAppFromAsar: true                   # код грузится только из подписанного архива
+
+win:
+  target: nsis
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target: dmg
+  category: public.app-category.productivity
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Office
