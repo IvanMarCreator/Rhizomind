@@ -77,7 +77,15 @@ jobs:
       # именам не дольше 20 мс; в verify не входит — нужен выпускной профиль.
       - name: Производительность поиска ядра
         shell: bash
-        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture
+        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --skip watcher::load_tests
+
+      # Слежение за папкой под нагрузкой (задача 1.4, ADR 0006): 10 000 файлов,
+      # массовая замена как при git checkout, переименования, переполнение.
+      # Тестовая сборка — та же, что в verify (отладочный профиль).
+      - name: Слежение за папкой под нагрузкой
+        timeout-minutes: 15
+        shell: bash
+        run: cargo test -p rhizomind --locked --lib watcher::load_tests -- --ignored --nocapture --test-threads=1
 
       - name: Сборка приложения
         run: npm run build

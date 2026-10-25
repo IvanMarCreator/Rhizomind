@@ -40,7 +40,8 @@ serde_json = "=1.0.154"
 # Разбор и нормализация адреса внешней ссылки (punycode, процентное
 # кодирование); уже был в дереве через tauri. Без функций serde/std-сети.
 url = "=2.5.8"
-# Хранилище (vault, задача 1.2): версия файла — хэш содержимого.
+# Хранилище (vault, задача 1.2): версия файла — хэш содержимого; он же — в
+# журнале своих записей наблюдателя (watcher, задача 1.4).
 # Без функций по умолчанию лишнего нет: std, без rayon и mmap.
 blake3 = "=1.8.7"
 # Атомарная запись: временный файл в .rhizomind/tmp/ (раньше — только в тестах).
@@ -58,6 +59,12 @@ icu_casemap = "=2.4.0"
 # `unicode-normalization` — встроенные таблицы без зависимостей, без них крейт
 # не собирается.
 nucleo-matcher = { version = "=0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
+# Слежение за папкой хранилища (ADR 0006, задача 1.4). Кандидаты в выпуск —
+# версии точные, обновление только с прогоном нагрузочных тестов.
+notify = "=9.0.0-rc.6"
+notify-debouncer-full = "=0.8.0-rc.2"
+# Идентификатор файла (FileId NTFS, inode) — распознавание переименований.
+file-id = "=0.2.3"
 
 [target.'cfg(windows)'.dependencies]
 # ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
@@ -95,7 +102,8 @@ tauri = { version = "=2.12.5", features = ["test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
 # Генератор тестового хранилища: образцы кодировок в тестах vault, ожидаемые
-# разрешения ссылок и кратчайшие пути в тестах links.
+# разрешения ссылок и кратчайшие пути в тестах links, нагрузочные тесты
+# наблюдателя.
 gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
 
 [target.'cfg(windows)'.dev-dependencies]
