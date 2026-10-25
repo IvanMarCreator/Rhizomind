@@ -189,3 +189,161 @@ impl Switcher {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(path: &str) -> VaultPath {
+        VaultPath::from_components(path.split('/'))
+    }
+
+    fn switcher(paths: &[&str]) -> Switcher {
+        Switcher::new(paths.iter().map(|path| p(path)).collect())
+    }
+
+    fn found(s: &Switcher, query: &str) -> Vec<String> {
+        s.search(query)
+            .unwrap()
+            .into_iter()
+            .map(|item| item.path.components().join("/"))
+            .collect()
+    }
+
+    #[test]
+    fn empty_query_lists_notes_in_list_order() {
+        let s = switcher(&["Б.md", "А.md", "В/Г.md"]);
+        assert_eq!(found(&s, ""), ["Б.md", "А.md", "В/Г.md"]);
+        assert_eq!(found(&s, "   "), ["Б.md", "А.md", "В/Г.md"]);
+        let many: Vec<String> = (0..120).map(|i| format!("Заметка {i}.md")).collect();
+        let s = Switcher::new(many.iter().map(|path| p(path)).collect());
+        assert_eq!(s.search("").unwrap().len(), MAX_RESULTS);
+        assert_eq!(s.search("заметка").unwrap().len(), MAX_RESULTS);
+    }
+
+    #[test]
+    fn matches_by_name_key() {
+        let s = switcher(&[
+            "Проекты/Альфа/Встреча.md",
+            "Мой план.md",
+            "Straße.md",
+            "Итоги.md",
+        ]);
+        assert_eq!(found(&s, "встр"), ["Проекты/Альфа/Встреча.md"]);
+        assert_eq!(found(&s, "ВСТРЕЧА"), ["Проекты/Альфа/Встреча.md"]);
+        assert_eq!(found(&s, "Мои\u{306}"), ["Мой план.md"]);
+        assert_eq!(found(&s, "STRASSE"), ["Straße.md"]);
+        assert_eq!(found(&s, "втч"), ["Проекты/Альфа/Встреча.md"]);
+        assert!(found(&s, "нет такого").is_empty());
+    }
+
+    #[test]
+    fn item_shows_name_without_extension() {
+        let s = switcher(&["Проекты/Встреча.md"]);
+        let items = s.search("встреча").unwrap();
+        assert_eq!(items[0].name, "Встреча");
+        assert_eq!(items[0].path, p("Проекты/Встреча.md"));
+    }
+
+    #[test]
+    fn yo_and_e_are_different_letters() {
+        let s = switcher(&["Учёба/Ёлка.md"]);
+        assert!(found(&s, "елка").is_empty());
+        assert_eq!(found(&s, "ёлка"), ["Учёба/Ёлка.md"]);
+    }
+
+    #[test]
+    fn searches_folders_too_and_name_match_ranks_first() {
+        let s = switcher(&["Встреча/Отчёт.md", "Архив/Встреча.md"]);
+        assert_eq!(
+            found(&s, "встреча"),
+            ["Архив/Встреча.md", "Встреча/Отчёт.md"]
+        );
+        let s = switcher(&["Проекты/Бета/Встреча.md", "Проекты/Альфа/Встреча.md"]);
+        assert_eq!(found(&s, "альфа встр"), ["Проекты/Альфа/Встреча.md"]);
+        assert_eq!(found(&s, "альфа/встр"), ["Проекты/Альфа/Встреча.md"]);
+    }
+
+    #[test]
+    fn equal_scores_shorter_name_then_natural_path() {
+        let s = switcher(&["Встреча с отделом.md", "Б/Встреча.md", "А/Встреча.md"]);
+        assert_eq!(
+            found(&s, "встреча"),
+            ["А/Встреча.md", "Б/Встреча.md", "Встреча с отделом.md"]
+        );
+    }
+
+    #[test]
+    fn no_special_query_syntax() {
+        let s = switcher(&["!Важно.md", "Итоги$.md", "^Начало.md"]);
+        assert_eq!(found(&s, "!важ"), ["!Важно.md"]);
+        assert_eq!(found(&s, "итоги$"), ["Итоги$.md"]);
+        assert_eq!(found(&s, "^нач"), ["^Начало.md"]);
+    }
+
+    #[test]
+    fn replace_notes_takes_effect() {
+        let mut s = switcher(&["Встреча.md"]);
+        s.replace_notes(vec![p("Итоги.md")]);
+        assert!(found(&s, "встреча").is_empty());
+        assert_eq!(found(&s, "итоги"), ["Итоги.md"]);
+    }
+
+    /// План 1.1: поиск по 10 000 именам — не дольше 20 мс. Только в выпускной
+    /// сборке: `cargo test -p rhizomind --release --lib -- --ignored` (шаг CI).
+    #[test]
+    #[ignore = "тест производительности: запускается отдельным шагом CI в выпускной сборке"]
+    fn search_10k_names_within_20ms() {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        gen_vault::generate(dir.path(), &gen_vault::Config::new(10_000, 1)).unwrap();
+        let mut notes = Vec::new();
+        collect_notes(dir.path(), &mut Vec::new(), &mut notes);
+        assert_eq!(notes.len(), 10_000);
+
+        let started = Instant::now();
+        let s = Switcher::new(notes);
+        println!("replace_notes, 10 000 заметок: {:?}", started.elapsed());
+
+        let limit = Duration::from_millis(20);
+        for query in [
+            "в",
+            "встр",
+            "заметка 1",
+            "проекты альфа",
+            "глубокая",
+            "nonexistent xyz",
+            "ёлка",
+        ] {
+            let mut times: Vec<Duration> = (0..7)
+                .map(|_| {
+                    let started = Instant::now();
+                    let items = s.search(query).unwrap();
+                    assert!(items.len() <= MAX_RESULTS);
+                    started.elapsed()
+                })
+                .collect();
+            times.sort();
+            let (median, worst) = (times[times.len() / 2], times[times.len() - 1]);
+            println!("{query:?}: медиана {median:?}, худшее {worst:?}");
+            assert!(median <= limit, "{query:?}: {median:?} > {limit:?}");
+        }
+    }
+
+    fn collect_notes(dir: &std::path::Path, prefix: &mut Vec<String>, out: &mut Vec<VaultPath>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            if name.starts_with('.') {
+                continue;
+            }
+            prefix.push(name.clone());
+            if entry.path().is_dir() {
+                collect_notes(&entry.path(), prefix, out);
+            } else if names::is_note(&name) {
+                out.push(VaultPath::from_components(prefix.clone()));
+            }
+            prefix.pop();
+        }
+    }
+}
