@@ -216,7 +216,6 @@
       <p class="field-error" id="quick-switcher-error" role="alert">{createError}</p>
     {/if}
 
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <ul class="list" id={LISTBOX_ID} role="listbox" aria-label={t('quickSwitcher.results')} onmousedown={keepFocus}>
       {#each options as option, index (option.kind === 'note' ? option.item.path.join('/') : '\u0000create')}
         <!-- Выбор с клавиатуры — из поля (aria-activedescendant), мышью — кликом. -->
@@ -257,7 +256,6 @@
       <p class="message">{t('quickSwitcher.noNotes')}</p>
     {/if}
 
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="hints" aria-hidden="true" onmousedown={keepFocus}>
       <span><kbd>{t('quickSwitcher.key.arrows')}</kbd>{t('quickSwitcher.hint.select')}</span>
       <span><kbd>{t('quickSwitcher.key.enter')}</kbd>{t('quickSwitcher.hint.open')}</span>
