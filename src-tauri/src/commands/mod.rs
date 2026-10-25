@@ -144,6 +144,11 @@ struct WindowVault {
 pub struct Core {
     registry: Arc<Registry>,
     windows: Mutex<HashMap<String, WindowVault>>,
+    /// Открытия, которые идут сейчас: метка окна → номер открытия. Окно,
+    /// закрытое во время открытия ([`Core::unbind_window`]), теряет запись —
+    /// открытие это видит и не оставляет живого наблюдателя.
+    opening: Mutex<HashMap<String, u64>>,
+    next_opening: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for Core {
@@ -157,7 +162,7 @@ impl Core {
     pub fn new(registry: Registry) -> Self {
         Self {
             registry: Arc::new(registry),
-            windows: Mutex::default(),
+            ..Self::default()
         }
     }
 
@@ -213,6 +218,61 @@ impl Core {
         emit: Arc<dyn Emit>,
         trash: Option<TrashBackend>,
     ) -> CoreResult<Arc<OpenVault>> {
+        self.open_vault_observed(window_label, summary, root, emit, trash, &|| {})
+    }
+
+    /// [`Core::open_vault_with`] с тестовым швом `before_index`: вызывается
+    /// после обхода папки, до записи списка заметок.
+    pub(crate) fn open_vault_observed(
+        &self,
+        window_label: &str,
+        summary: VaultSummary,
+        root: &Path,
+        emit: Arc<dyn Emit>,
+        trash: Option<TrashBackend>,
+        before_index: &dyn Fn(),
+    ) -> CoreResult<Arc<OpenVault>> {
+        let token = self
+            .next_opening
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.opening_map().insert(window_label.to_owned(), token);
+        let result =
+            self.build_window_vault(window_label, summary, root, emit, trash, before_index);
+        let mut windows = self.windows();
+        let mut opening = self.opening_map();
+        let still_open = opening.get(window_label) == Some(&token);
+        if still_open {
+            opening.remove(window_label);
+        }
+        drop(opening);
+        let entry = result?;
+        if !still_open {
+            // Окно закрыли, пока хранилище открывалось: наблюдатель
+            // останавливается здесь же (вне замков), окно ничего не получает.
+            drop(windows);
+            drop(entry);
+            return Err(CoreError::new(ErrorCode::NoVaultOpen));
+        }
+        let open = Arc::clone(&entry.open);
+        let previous = windows.insert(window_label.to_owned(), entry);
+        drop(windows);
+        drop(previous);
+        Ok(open)
+    }
+
+    /// Хранилище, наблюдатель и список заметок. Замок списка заметок
+    /// берётся **до** обхода папки и держится до записи списка: события
+    /// наблюдателя об изменениях во время открытия ждут и применяются уже к
+    /// полному списку (повтор безвреден), а не затираются им.
+    fn build_window_vault(
+        &self,
+        _window_label: &str,
+        summary: VaultSummary,
+        root: &Path,
+        emit: Arc<dyn Emit>,
+        trash: Option<TrashBackend>,
+        before_index: &dyn Fn(),
+    ) -> CoreResult<WindowVault> {
         let own_writes = OwnWrites::new();
         let vault = Vault::open_with(
             root,
@@ -226,30 +286,44 @@ impl Core {
             vault,
             index: RwLock::default(),
         });
-        // Сначала слежение, потом список заметок: изменения между ними
-        // придут событиями (повтор безвреден).
-        let watcher = VaultWatcher::start_with(
+        let mut index = open.write_index();
+        let watcher = match VaultWatcher::start_with(
             open.vault.root(),
             own_writes,
             VaultEvents::new(Arc::clone(&open), emit).into_sink(),
-        )?;
-        let notes = open.vault.notes()?;
-        open.write_index().replace(notes);
-        let previous = self.windows().insert(
-            window_label.to_owned(),
-            WindowVault {
-                open: Arc::clone(&open),
-                _watcher: Some(watcher),
-            },
-        );
-        drop(previous);
-        Ok(open)
+        ) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                drop(index);
+                return Err(error);
+            }
+        };
+        let notes = open.vault.notes();
+        before_index();
+        let indexed = notes.map(|notes| index.replace(notes));
+        // Замок отпускается до возможной остановки наблюдателя: его поток
+        // может ждать этот замок.
+        drop(index);
+        indexed?;
+        Ok(WindowVault {
+            open,
+            _watcher: Some(watcher),
+        })
+    }
+
+    fn opening_map(&self) -> std::sync::MutexGuard<'_, HashMap<String, u64>> {
+        self.opening
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Отвязывает окно от хранилища (окно закрыто): наблюдатель
     /// останавливается.
     pub fn unbind_window(&self, window_label: &str) {
-        let removed = self.windows().remove(window_label);
+        let mut windows = self.windows();
+        let removed = windows.remove(window_label);
+        self.opening_map().remove(window_label);
+        drop(windows);
         drop(removed);
     }
 

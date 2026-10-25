@@ -6,7 +6,7 @@ use tauri::{Runtime, State, Window};
 use super::error::{CoreError, CoreResult};
 use super::limits;
 use super::types::VaultPath;
-use super::{Core, blocking};
+use super::{Core, blocking, checked_path};
 
 /// Тема интерфейса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +180,15 @@ pub async fn settings_write<R: Runtime>(
 ) -> CoreResult<()> {
     limits::settings(&request.settings)?;
     if let NewNoteLocation::Folder { path } = &request.settings.new_note_location {
-        path.check()?;
+        checked_path(path, "settings.new_note_location.path")?;
+        // Новые заметки — не в служебную папку (в любом регистре).
+        if path
+            .components()
+            .iter()
+            .any(|c| crate::vault::is_service_dir(c))
+        {
+            return Err(CoreError::new(super::error::ErrorCode::InvalidPath));
+        }
     }
     let open = core.require_vault(window.label())?;
     blocking(move || open.vault.write_settings(&request.settings)).await

@@ -112,7 +112,24 @@ impl VaultEvents {
 
     fn changed(&self, payload: VaultChangedPayload) {
         let vault = &self.open.vault;
-        let created_ms = |path: &VaultPath| vault.note_created_ms(path);
+        // Всё, что читается с диска, — до замка списка заметок: дата
+        // создания новых заметок и (после полной сверки) полный список.
+        let created: std::collections::HashMap<VaultPath, i64> = payload
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                TreeChange::Created { path, .. } | TreeChange::Renamed { to: path, .. } => {
+                    vault.note_created_ms(path).map(|ms| (path.clone(), ms))
+                }
+                _ => None,
+            })
+            .collect();
+        let created_ms = |path: &VaultPath| created.get(path).copied();
+        let all_notes = if payload.rescan {
+            vault.notes().ok()
+        } else {
+            None
+        };
         // `note:*` выводятся по списку заметок до каждого изменения: какие
         // заметки лежали по удалённому или переименованному пути.
         let mut notes: Vec<(&'static str, serde_json::Value)> = Vec::new();
@@ -157,9 +174,7 @@ impl VaultEvents {
                     _ => {}
                 },
             );
-            if payload.rescan
-                && let Ok(all) = vault.notes()
-            {
+            if let Some(all) = all_notes {
                 index.replace(all);
             }
         }

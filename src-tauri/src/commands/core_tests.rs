@@ -391,48 +391,71 @@ fn wrong_types_extra_fields_and_paths_outside_the_vault_are_rejected() {
     // Неверные типы и лишние поля — отказ разбора (строка Tauri, не ошибка
     // ядра), команда не вызывается.
     let bad_requests = [
-        ("note_read", json!({ "path": "Своя.md" })),
-        ("note_read", json!({ "path": [1] })),
-        ("note_read", json!({ "path": ["Своя.md"], "extra": 1 })),
+        ("note_read", json!({ "path": "Своя.md" }), "invalid type"),
+        ("note_read", json!({ "path": [1] }), "invalid type"),
+        (
+            "note_read",
+            json!({ "path": ["Своя.md"], "extra": 1 }),
+            "unknown field `extra`",
+        ),
         (
             "note_write",
             json!({ "path": ["Своя.md"], "text": 5, "expected_version": null }),
+            "invalid type",
         ),
         (
             "note_write",
             json!({ "path": ["Своя.md"], "text": "", "expected_version": { "hash": "0", "size": -1, "modified_ms": 0 } }),
+            "invalid value",
         ),
-        ("note_create", json!({ "dir": [], "name": ["a.md"] })),
+        (
+            "note_create",
+            json!({ "dir": [], "name": ["a.md"] }),
+            "invalid type",
+        ),
         (
             "entry_rename",
             json!({ "path": ["Своя.md"], "new_name": "b.md", "force": true }),
+            "unknown field `force`",
         ),
         (
             "links_resolve",
             json!({ "from": ["Своя.md"], "targets": "x" }),
+            "invalid type",
         ),
-        ("switcher_search", json!({ "query": null })),
-        ("settings_write", json!({ "settings": { "theme": "dark" } })),
+        ("switcher_search", json!({ "query": null }), "invalid type"),
+        (
+            "settings_write",
+            json!({ "settings": { "theme": "dark" } }),
+            "missing field",
+        ),
         (
             "name_check",
             json!({ "dir": [], "name": "a.md", "renaming": "a.md" }),
+            "invalid type",
         ),
         (
             "open_external",
             json!({ "url": "https://example.org", "confirmed": true }),
+            "unknown field `confirmed`",
         ),
     ];
-    for (command, request) in bad_requests {
+    for (command, request, expected) in bad_requests {
         let error = call(&w, command, request.clone()).expect_err(command);
+        let text = error.as_str().unwrap_or_else(|| {
+            panic!("{command} {request}: ожидался отказ разбора, получено {error}")
+        });
         assert!(
-            error.is_string(),
-            "{command} {request}: ожидался отказ разбора, получено {error}"
+            text.contains(expected) && text.contains("invalid args `request`"),
+            "{command} {request}: ожидалось «{expected}», получено {text}"
         );
     }
+    let error = invoke(&w, "note_read", json!({})).expect_err("нет request");
     assert!(
-        invoke(&w, "note_read", json!({}))
-            .expect_err("нет request")
-            .is_string()
+        error
+            .as_str()
+            .is_some_and(|text| text.contains("missing required key request")),
+        "{error}"
     );
 
     // Путь за контуром — `invalid_path` из слоя команд, снаружи ничего не
@@ -866,4 +889,139 @@ fn switcher_search_on_10k_notes_answers_within_100ms() {
         assert!(found.items.len() <= 50);
     }
     eprintln!("switcher_search на 10 000 заметках: худший ответ {worst:?}");
+}
+
+// ---- Открытие хранилища -------------------------------------------------------
+
+fn summary(id: &str, root: &Path) -> VaultSummary {
+    VaultSummary {
+        id: VaultId(id.into()),
+        name: id.into(),
+        path: root.display().to_string(),
+    }
+}
+
+/// Изменения снаружи между обходом папки и записью списка заметок не
+/// теряются: события наблюдателя ждут замка списка и применяются к полному
+/// списку, а не затираются им.
+#[test]
+fn changes_during_vault_opening_are_not_lost() {
+    let app = app();
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    put(&root, "Уйдёт.md", b"1");
+    put(&root, "Останется.md", b"1");
+    let core = app.state::<Core>();
+
+    let open = core
+        .open_vault_observed(
+            "opening-race",
+            summary("race", &root),
+            &root,
+            Arc::new(WindowEmitter::new(app.handle().clone(), "opening-race")),
+            Some(trash_into(dir.path().join("bin"), true)),
+            &|| {
+                // Обход уже прошёл: этих изменений в нём нет.
+                put(&root, "Новая.md", b"");
+                std::fs::remove_file(root.join("Уйдёт.md")).expect("удаление");
+                // Время наблюдателю увидеть изменения (раньше он успевал
+                // применить их до записи списка, и список их затирал).
+                std::thread::sleep(Duration::from_millis(1500));
+            },
+        )
+        .expect("открыто");
+
+    let start = std::time::Instant::now();
+    loop {
+        let index = open.read_index();
+        let fresh = index.contains(&VaultPath::from_components(["Новая.md"]))
+            && !index.contains(&VaultPath::from_components(["Уйдёт.md"]));
+        if fresh {
+            break;
+        }
+        drop(index);
+        assert!(
+            start.elapsed() < WAIT,
+            "изменения во время открытия потеряны"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        open.read_index()
+            .contains(&VaultPath::from_components(["Останется.md"]))
+    );
+}
+
+/// Окно закрыли, пока хранилище открывалось: хранилище к окну не
+/// привязывается, наблюдатель не остаётся.
+#[test]
+fn window_closed_during_opening_gets_no_vault() {
+    let app = app();
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    put(&root, "Заметка.md", b"1");
+    let core = app.state::<Core>();
+
+    let result = core.open_vault_observed(
+        "closed-early",
+        summary("closed", &root),
+        &root,
+        Arc::new(WindowEmitter::new(app.handle().clone(), "closed-early")),
+        Some(trash_into(dir.path().join("bin"), true)),
+        &|| core.unbind_window("closed-early"),
+    );
+
+    let open = match result {
+        Err(error) => {
+            assert_eq!(error.code, ErrorCode::NoVaultOpen);
+            None
+        }
+        Ok(open) => Some(open),
+    };
+    assert!(open.is_none(), "открытие закрытого окна должно отказать");
+    assert!(core.window_vault("closed-early").is_none());
+    assert!(core.window_of_vault(&VaultId("closed".into())).is_none());
+
+    // Следующее открытие того же окна работает.
+    core.open_vault_with(
+        "closed-early",
+        summary("closed", &root),
+        &root,
+        Arc::new(WindowEmitter::new(app.handle().clone(), "closed-early")),
+        Some(trash_into(dir.path().join("bin"), true)),
+    )
+    .expect("открыто");
+    assert!(core.window_vault("closed-early").is_some());
+}
+
+/// Папка новых заметок в настройках — путь по компонентам и не служебная.
+#[test]
+fn settings_new_note_folder_must_be_a_vault_path() {
+    let app = app();
+    let w = window(&app, "settings-path");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    put(&root, "Заметка.md", b"1");
+    open_vault(
+        &app,
+        "settings-path",
+        "settings",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let mut settings = example("settings_write")["settings"].clone();
+
+    for (path, code) in [
+        (json!([".."]), ErrorCode::InvalidPath),
+        (json!(["a", ".Rhizomind"]), ErrorCode::InvalidPath),
+        (json!([".rhizomind"]), ErrorCode::InvalidPath),
+        (json!(["C:"]), ErrorCode::InvalidPath),
+    ] {
+        settings["new_note_location"] = json!({ "kind": "folder", "path": path });
+        let error =
+            call(&w, "settings_write", json!({ "settings": settings })).expect_err("плохая папка");
+        assert_eq!(core_error("settings_write", error).code, code, "{path}");
+    }
+    settings["new_note_location"] = json!({ "kind": "folder", "path": ["Входящие"] });
+    call(&w, "settings_write", json!({ "settings": settings })).expect("обычная папка");
 }
