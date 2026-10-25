@@ -1,5 +1,5 @@
 import { clearMocks } from '@tauri-apps/api/mocks';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CoreError, Settings } from '../api/index.ts';
 import { mockCore, type CoreMocks } from '../api/testing.ts';
@@ -21,6 +21,7 @@ const WITH_VAULT: CoreMocks = {
   settings_read: () => ({ settings: SETTINGS }),
   workspace_read: () => ({ workspace: null }),
   workspace_write: () => null,
+  tree_list: () => ({ entries: [] }),
 };
 
 function savedLayout(path: string[]) {
@@ -39,6 +40,8 @@ async function renderShell(mocks: CoreMocks, model = new WindowModel()) {
 }
 
 afterEach(() => {
+  // Сначала размонтировать (дерево файлов отписывается от событий), потом снять подмену.
+  cleanup();
   clearMocks();
   delete document.documentElement.dataset.theme;
 });
@@ -155,16 +158,16 @@ describe('оболочка окна', () => {
 
     model.open(['А.md']);
     model.open(['Папка', 'Б.md']);
-    await screen.findByText('Б');
+    await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('Б');
     expect(back.disabled).toBe(false);
     expect(forward.disabled).toBe(true);
 
     await fireEvent.keyDown(window, { key: 'ArrowLeft', altKey: true });
-    await screen.findByText('А');
+    await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('А');
     expect(forward.disabled).toBe(false);
 
     await fireEvent.click(forward);
-    await screen.findByText('Б');
+    await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('Б');
 
     await waitFor(() => {
       const writes = calls.filter(([command]) => command === 'workspace_write');

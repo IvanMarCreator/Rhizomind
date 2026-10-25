@@ -15,6 +15,32 @@ export const ru = {
   'shell.sidebar.label': 'Боковая панель',
   'shell.sidebar.files': 'Файлы',
 
+  // Дерево файлов (С3.2)
+  'tree.label': 'Файлы хранилища',
+  'tree.empty': 'В хранилище пока нет файлов.',
+  'tree.untitled': 'Без названия',
+  'tree.newNote': 'Новая заметка',
+  'tree.newFolder': 'Новая папка',
+  'tree.rename': 'Переименовать',
+  'tree.delete': 'Удалить',
+  'tree.key.rename': 'F2',
+  'tree.key.delete': 'Delete',
+  'tree.menu.label': 'Действия с файлами',
+  'tree.rename.label': 'Новое имя',
+  'tree.notOpenable': 'В этой версии открываются только заметки. Файл можно переименовать, переместить или удалить.',
+  'tree.delete.titleFile': 'Удалить «{name}»?',
+  'tree.delete.titleFolder': 'Удалить папку «{name}»?',
+  'tree.delete.bodyFile': 'Файл будет перемещён в корзину.',
+  'tree.delete.bodyFolder': 'Папка и всё, что в ней, будут перемещены в корзину.',
+  'tree.delete.confirm': 'Удалить',
+  'tree.delete.cancel': 'Отмена',
+  'tree.deletedPermanently': '«{name}» удалено безвозвратно: на этом диске нет корзины.',
+
+  // Заголовок заметки над текстом (Э4б)
+  'note.title.label': 'Имя заметки',
+  'note.title.renameHint': 'Нажмите, чтобы переименовать',
+  'note.title.editHint': 'Enter — сохранить · Esc — отменить',
+
   // Переключатель хранилищ
   'vaults.switcher.current': 'Хранилище «{name}»',
   'vaults.switcher.none': 'Хранилище не открыто',
