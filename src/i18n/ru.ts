@@ -99,5 +99,7 @@ export const ru = {
 
   // Предупреждения о допустимом имени: names.warning.<warning>
   'names.warning.unlinkable': 'На эту заметку нельзя будет сослаться.',
+  'names.warning.unlinkable_folder': 'На заметки в этой папке нельзя будет сослаться с путём.',
+  'names.warning.unlinkable_attachment': 'На этот файл нельзя будет сослаться.',
   'names.warning.hidden': 'Имя с точкой в начале: элемент будет скрыт в дереве файлов.',
 } as const satisfies Record<string, string>;

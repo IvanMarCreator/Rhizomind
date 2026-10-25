@@ -5,12 +5,13 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { VaultPath } from '../api/index.ts';
+  import type { EntryKind, VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
   import { NameInput } from './nameInput.svelte.ts';
 
   let {
+    kind,
     dir,
     stem,
     ext,
@@ -19,6 +20,7 @@
     onDone,
     variant = 'row',
   }: {
+    kind: EntryKind;
     dir: VaultPath;
     stem: string;
     ext: string;
@@ -35,7 +37,7 @@
   let closed = false;
 
   function createField(): NameInput {
-    return new NameInput({ dir, stem, ext, renaming, submit });
+    return new NameInput({ kind, dir, stem, ext, renaming, submit });
   }
 
   onMount(() => {

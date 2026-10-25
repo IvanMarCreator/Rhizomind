@@ -290,6 +290,7 @@
         {#if editing}
           {@const parts = splitName(row.node)}
           <NameField
+            kind={row.node.kind}
             dir={parentOf(row.node.path)}
             stem={parts.stem}
             ext={parts.ext}

@@ -16,6 +16,7 @@
   const isFolder = $derived(entry.kind === 'folder');
   const name = $derived(displayName(entry));
   let confirmButton: HTMLButtonElement | undefined = $state();
+  let dialog: HTMLDivElement | undefined = $state();
 
   onMount(() => confirmButton?.focus());
 
@@ -24,12 +25,19 @@
       event.preventDefault();
       event.stopPropagation();
       onCancel();
+    } else if (event.key === 'Tab') {
+      // Окно модальное: фокус ходит по его кнопкам по кругу.
+      event.preventDefault();
+      const buttons = dialog ? [...dialog.querySelectorAll('button')] : [];
+      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+      const step = event.shiftKey ? -1 : 1;
+      buttons[(index + step + buttons.length) % buttons.length]?.focus();
     }
   }
 </script>
 
 <div class="scrim">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" {onkeydown}>
+  <div bind:this={dialog} class="dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" {onkeydown}>
     <div class="content">
       <h2 class="title" id={titleId}>
         <span class="badge"><Icon name="triangle-alert" size={16} /></span>

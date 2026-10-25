@@ -5,37 +5,58 @@
   новое имя сразу было видно и в дереве, и в пути над заметкой.
 -->
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import NameField from './NameField.svelte';
-  import { parentOf, splitName } from './model.ts';
+  import { parentOf, samePath, splitName } from './model.ts';
   import type { FileTreeState } from './tree.svelte.ts';
 
   let { tree, path }: { tree: FileTreeState; path: VaultPath } = $props();
 
   const parts = $derived(splitName({ kind: 'note', path }));
-  let editing = $state(false);
+  /**
+   * Заметка, на которой открыто поле. Путь фиксируется при открытии: сохранение
+   * переименовывает именно её, даже если тем временем открыли другую заметку;
+   * смена заметки закрывает поле.
+   */
+  let editingPath = $state.raw<VaultPath | null>(null);
+  const editing = $derived(editingPath !== null && samePath(editingPath, path));
+  let button: HTMLButtonElement | undefined = $state();
+
+  function startEditing() {
+    editingPath = [...path];
+  }
+
+  async function finishEditing() {
+    editingPath = null;
+    await tick();
+    button?.focus();
+  }
 </script>
 
 <div class="note-title">
-  {#if editing}
+  {#if editing && editingPath}
+    {@const target = editingPath}
     <NameField
       variant="title"
-      dir={parentOf(path)}
+      kind="note"
+      dir={parentOf(target)}
       stem={parts.stem}
       ext={parts.ext}
-      renaming={path}
-      submit={(name) => tree.rename(path, name)}
-      onDone={() => (editing = false)}
+      renaming={target}
+      submit={(name) => tree.rename(target, name)}
+      onDone={() => void finishEditing()}
     />
   {:else}
     <h1 class="heading">
       <button
+        bind:this={button}
         type="button"
         class="name"
         title={t('note.title.renameHint')}
         aria-label={parts.stem}
-        onclick={() => (editing = true)}
+        onclick={startEditing}
       >
         {parts.stem}
       </button>

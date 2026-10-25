@@ -4,7 +4,7 @@ import { clearMocks } from '@tauri-apps/api/mocks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TreeEntry } from '../api/index.ts';
-import { mockCore } from '../api/testing.ts';
+import { mockCore, type CoreMocks } from '../api/testing.ts';
 import NoteTitle from './NoteTitle.svelte';
 import { FakeVault } from './fakeVault.ts';
 import { FileTreeState, type TreeHost } from './tree.svelte.ts';
@@ -15,9 +15,9 @@ const ENTRIES: TreeEntry[] = [
   { kind: 'note', path: ['Проекты', 'План.md'] },
 ];
 
-async function setup() {
+async function setup(mocks: CoreMocks = {}) {
   const vault = new FakeVault(ENTRIES);
-  const calls = mockCore(vault.mocks());
+  const calls = mockCore({ ...vault.mocks(), ...mocks });
   const host: TreeHost = {
     currentPath: ['Проекты', 'Встреча по запуску.md'],
     confirmDelete: true,
@@ -76,5 +76,64 @@ describe('заголовок заметки над текстом', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.getByRole('button', { name: 'Встреча по запуску' })).toBeTruthy();
     expect(calls.some(([c]) => c === 'entry_rename')).toBe(false);
+  });
+
+  it('путь сменился, пока идёт сохранение: переименовывается та заметка, на которой открыли поле', async () => {
+    let answer: (() => void) | undefined;
+    const vault = new FakeVault(ENTRIES);
+    const check = vault.mocks().name_check;
+    const { calls, view } = await setup({
+      name_check: (request) =>
+        new Promise((resolve) => {
+          answer = () => resolve(check!(request) as never);
+        }),
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
+    await fireEvent.input(field(), { target: { value: 'Итоги' } });
+    await fireEvent.keyDown(field(), { key: 'Enter' });
+    // Пока ждём проверку имени, пользователь открыл другую заметку.
+    await view.rerender({ path: ['Проекты', 'План.md'] });
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.getByRole('button', { name: 'План' })).toBeTruthy();
+    await waitFor(() => expect(answer).toBeDefined());
+    answer?.();
+    answer?.();
+    await waitFor(() => expect(calls.some(([c]) => c === 'entry_rename')).toBe(true));
+    expect(calls.filter(([c]) => c === 'entry_rename').map(([, a]) => a)).toEqual([
+      { request: { path: ['Проекты', 'Встреча по запуску.md'], new_name: 'Итоги.md' } },
+    ]);
+  });
+
+  it('смена заметки закрывает поле имени без сохранения', async () => {
+    const { calls, view } = await setup();
+    await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
+    await view.rerender({ path: ['Проекты', 'План.md'] });
+    expect(screen.queryByRole('textbox')).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'План' }));
+    expect(field().value).toBe('План');
+    expect(calls.some(([c]) => c === 'entry_rename')).toBe(false);
+  });
+
+  it('после Esc и после Enter фокус возвращается на заголовок', async () => {
+    await setup();
+    await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
+    await fireEvent.keyDown(field(), { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Встреча по запуску' })));
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
+    await fireEvent.input(field(), { target: { value: 'Итоги' } });
+    await fireEvent.keyDown(field(), { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    await waitFor(() => expect((document.activeElement as HTMLElement).getAttribute('title')).toBe('Нажмите, чтобы переименовать'));
+  });
+
+  it('переименование из заголовка не закрывает поле имени, открытое в дереве на другом элементе', async () => {
+    const { tree } = await setup();
+    tree.startRename(['Проекты', 'План.md']);
+    await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
+    await fireEvent.input(field(), { target: { value: 'Итоги' } });
+    await fireEvent.keyDown(field(), { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    expect(tree.renaming).toEqual(['Проекты', 'План.md']);
   });
 });

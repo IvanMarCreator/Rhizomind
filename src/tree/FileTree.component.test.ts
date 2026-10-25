@@ -358,6 +358,18 @@ describe('С3.2: переименование (F2) с проверкой име�
     await waitFor(() => expect(commands(calls, 'entry_rename')).toHaveLength(1));
   });
 
+  it.each([
+    ['Входящие', 'На заметки в этой папке нельзя будет сослаться с путём.'],
+    ['ТЗ', 'На этот файл нельзя будет сослаться.'],
+  ])('«%s»: предупреждение unlinkable — текст для папки и файла', async (name, warning) => {
+    const { tree } = await setup();
+    await fireEvent.click(row(name));
+    await fireEvent.keyDown(tree, { key: 'F2' });
+    await type('#тег');
+    const status = await screen.findByRole('status');
+    await waitFor(() => expect(status.textContent?.trim()).toBe(warning));
+  });
+
   it('смена только регистра разрешена (переименование самого себя)', async () => {
     const { calls } = await startRename('Заметка 2');
     await type('заметка 2');
@@ -523,6 +535,54 @@ describe('С3.2: удаление в корзину', () => {
     await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(commands(calls, 'entry_trash')).toEqual([]);
+  });
+
+  it('Tab не уходит из окна подтверждения', async () => {
+    const { tree } = await setup();
+    await fireEvent.click(row('ТЗ'));
+    await fireEvent.keyDown(tree, { key: 'Delete' });
+    const dialog = screen.getByRole('dialog');
+    const [cancel, confirm] = within(dialog).getAllByRole('button');
+    expect(document.activeElement).toBe(confirm);
+    await fireEvent.keyDown(confirm as HTMLElement, { key: 'Tab' });
+    expect(document.activeElement).toBe(cancel);
+    await fireEvent.keyDown(cancel as HTMLElement, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(confirm);
+    await fireEvent.keyDown(confirm as HTMLElement, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(cancel);
+  });
+
+  it('повторный Delete, пока идёт удаление, не вызывает второй entry_trash', async () => {
+    let finish: (() => void) | undefined;
+    const { calls, tree } = await setup(SAMPLE, {
+      mocks: {
+        entry_trash: () => new Promise((resolve) => (finish = () => resolve({ outcome: 'trashed' }))),
+      },
+    });
+    await fireEvent.click(row('ТЗ'));
+    await fireEvent.keyDown(tree, { key: 'Delete' });
+    await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Удалить' }));
+    await waitFor(() => expect(finish).toBeDefined());
+    tree.focus();
+    await fireEvent.keyDown(tree, { key: 'Delete' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    finish?.();
+    await waitFor(() => expect(rowNames(tree)).not.toContain('ТЗ'));
+    expect(commands(calls, 'entry_trash')).toHaveLength(1);
+  });
+
+  it('без подтверждения: два Delete подряд — одно удаление', async () => {
+    let finish: (() => void) | undefined;
+    const { calls, tree } = await setup(SAMPLE, {
+      host: { confirmDelete: false },
+      mocks: { entry_trash: () => new Promise((resolve) => (finish = () => resolve({ outcome: 'trashed' }))) },
+    });
+    await fireEvent.click(row('ТЗ'));
+    await fireEvent.keyDown(tree, { key: 'Delete' });
+    await fireEvent.keyDown(tree, { key: 'Delete' });
+    finish?.();
+    await waitFor(() => expect(rowNames(tree)).not.toContain('ТЗ'));
+    expect(commands(calls, 'entry_trash')).toHaveLength(1);
   });
 
   it('подтверждение выключено в настройках — сразу в корзину', async () => {

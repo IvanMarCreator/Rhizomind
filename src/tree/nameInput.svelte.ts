@@ -3,12 +3,14 @@
 // сохранение только допустимого имени. Общее для строки дерева и заголовка
 // заметки (Э4, Э4б).
 import { core } from '../api/index.ts';
-import type { NameCheck, VaultPath } from '../api/index.ts';
+import type { EntryKind, NameCheck, VaultPath } from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
-import { hasMessage, t } from '../i18n/index.ts';
+import { hasMessage, t, type MessageKey } from '../i18n/index.ts';
 import { joinName } from './model.ts';
 
 export interface NameInputOptions {
+  /** Что переименовывается: от этого зависит текст предупреждения `unlinkable`. */
+  kind: EntryKind;
   /** Папка, в которой лежит элемент. */
   dir: VaultPath;
   /** Правится имя без расширения; расширение (`.md`, `.png`) добавляется само. */
@@ -19,6 +21,13 @@ export interface NameInputOptions {
   /** Сохранение полного имени; `null` — успех, иначе текст отказа. */
   submit: (fullName: string) => Promise<string | null>;
 }
+
+/** `unlinkable` (С3.2) сказано про заметку; для папки и файла — свои тексты. */
+const UNLINKABLE: Record<EntryKind, MessageKey> = {
+  note: 'names.warning.unlinkable',
+  folder: 'names.warning.unlinkable_folder',
+  attachment: 'names.warning.unlinkable_attachment',
+};
 
 export type CommitResult = 'saved' | 'unchanged' | 'rejected';
 
@@ -56,6 +65,7 @@ export class NameInput {
   /** Предупреждение о допустимом имени (`unlinkable`, `hidden`). */
   get warning(): string | null {
     if (this.error || this.check?.status !== 'ok' || !this.check.warning) return null;
+    if (this.check.warning === 'unlinkable') return t(UNLINKABLE[this.#options.kind]);
     const key = `names.warning.${this.check.warning}`;
     return hasMessage(key) ? t(key) : null;
   }
@@ -91,9 +101,11 @@ export class NameInput {
     if (this.busy) return 'rejected';
     this.busy = true;
     try {
+      // Сохраняется ровно то имя, которое проверило ядро.
+      const name = this.fullName;
       const result = await this.#check();
       if (result?.status !== 'ok') return 'rejected';
-      this.failure = await this.#options.submit(this.fullName);
+      this.failure = await this.#options.submit(name);
       return this.failure ? 'rejected' : 'saved';
     } finally {
       this.busy = false;
