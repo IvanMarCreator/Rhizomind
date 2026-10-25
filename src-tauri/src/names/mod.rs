@@ -160,4 +160,126 @@ mod tests {
     fn key_ignores_case() {
         assert_eq!(key("Заметка.MD"), key("заметка.md"));
     }
+
+    #[test]
+    fn key_uses_full_case_folding() {
+        // Полное приведение регистра: ß = SS, ς = σ, ﬁ = fi.
+        assert_eq!(key("Straße.md"), key("STRASSE.md"));
+        assert_eq!(key("ΌΣΟΣ"), key("όσος"));
+        assert_eq!(key("ﬁle"), key("FILE"));
+        assert_eq!(key("ВСТРЕЧА"), key("встреча"));
+    }
+
+    #[test]
+    fn key_normalizes_unicode() {
+        // «й» составная (U+0439) и разложенная (и + U+0306).
+        assert_eq!(key("Мой план"), key("Мои\u{306} план"));
+        // «Й» заглавная разложенная против строчной составной.
+        assert_eq!(key("Йод"), key("И\u{306}од"));
+        assert_eq!(key("Café"), key("CAFE\u{301}"));
+        assert_eq!(key("Мои\u{306}").as_str(), "мой");
+    }
+
+    #[test]
+    fn key_keeps_yo_and_e_apart() {
+        assert_ne!(key("Ёлка"), key("Елка"));
+        assert_eq!(key("ЁЛКА"), key("ёлка"));
+    }
+
+    #[test]
+    fn reserved_names_with_superscript_digits_and_zero() {
+        for name in [
+            "COM¹", "com²", "Com³.md", "LPT¹", "lpt².txt", "LPT³", "COM0", "lpt0.md", "COM9",
+            "LPT9.md", "AUX", "prn.md", "conin$", "CONOUT$.md", "NUL.tar.gz", "nul .md",
+        ] {
+            assert_eq!(check(name), Some(NameProblem::ReservedName), "{name}");
+        }
+        for name in ["COM10", "COM⁴", "LPT", "Конференция.md", "AUX1", "NULL.md", "com1x"] {
+            assert_eq!(check(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn forbidden_chars_each() {
+        for c in ['\\', '/', ':', '*', '?', '"', '<', '>', '|', '\0', '\u{1f}', '\u{7f}'] {
+            let name = format!("План{c}2.md");
+            assert_eq!(check(&name), Some(NameProblem::ForbiddenChars), "{name:?}");
+        }
+        assert_eq!(check("Встреча: итоги.md"), Some(NameProblem::ForbiddenChars));
+    }
+
+    #[test]
+    fn trailing_dot_or_space_everywhere() {
+        for name in ["Папка.", "Папка ", "Заметка.md.", "Заметка.md ", "Итоги..md", "План .md", ".", "..", "   "] {
+            assert_eq!(check(name), Some(NameProblem::TrailingDotOrSpace), "{name:?}");
+        }
+        for name in [" Ведущий пробел.md", ".скрытая.md", "v1.2.md", "Отчёт 2024.pdf"] {
+            assert_eq!(check(name), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn too_long_counts_utf16_units() {
+        // 255 единиц UTF-16 — можно, 256 — нет; эмодзи — две единицы.
+        assert_eq!(check(&format!("{}.md", "я".repeat(252))), None);
+        assert_eq!(check(&format!("{}.md", "я".repeat(253))), Some(NameProblem::TooLong));
+        assert_eq!(check(&"😀".repeat(128)), Some(NameProblem::TooLong));
+        assert_eq!(check(&"😀".repeat(127)), None);
+    }
+
+    #[test]
+    fn require_valid_maps_problem_to_invalid_name() {
+        assert!(require_valid("Встреча.md").is_ok());
+        let err = require_valid("CON.md").unwrap_err();
+        assert_eq!(err.name_problem, Some(NameProblem::ReservedName));
+    }
+
+    #[test]
+    fn note_stem_without_extension() {
+        assert_eq!(note_stem("Встреча.md"), Some("Встреча"));
+        assert_eq!(note_stem("Встреча.MD"), Some("Встреча"));
+        assert_eq!(note_stem("v1.2.md"), Some("v1.2"));
+        assert_eq!(note_stem("схема.png"), None);
+    }
+
+    #[test]
+    fn natural_order_of_names() {
+        use std::cmp::Ordering::*;
+        assert_eq!(natural_cmp("Заметка 2", "Заметка 10"), Less);
+        assert_eq!(natural_cmp("Заметка 10", "Заметка 2"), Greater);
+        assert_eq!(natural_cmp("Альфа", "бета"), Less);
+        assert_eq!(natural_cmp("Елка", "Ёлка"), Less);
+        assert_eq!(natural_cmp("Ёлка", "Жук"), Less);
+        assert_eq!(natural_cmp("a01", "a1"), Greater);
+        assert_eq!(natural_cmp("a1", "a1"), Equal);
+        assert_ne!(natural_cmp("Заметка", "заметка"), Equal);
+    }
+
+    mod props {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn key_is_idempotent(name in "\\PC{0,40}") {
+                let once = key(&name);
+                prop_assert_eq!(key(once.as_str()), once);
+            }
+
+            #[test]
+            fn key_ignores_case_of_any_name(name in "\\PC{0,40}") {
+                prop_assert_eq!(key(&name.to_uppercase()), key(&name.to_lowercase()));
+            }
+
+            #[test]
+            fn check_never_panics(name in "\\PC{0,300}") {
+                let _ = check(&name);
+            }
+
+            #[test]
+            fn natural_cmp_is_antisymmetric(a in "\\PC{0,12}", b in "\\PC{0,12}") {
+                prop_assert_eq!(natural_cmp(&a, &b), natural_cmp(&b, &a).reverse());
+            }
+        }
+    }
 }
