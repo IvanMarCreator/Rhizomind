@@ -142,7 +142,7 @@ pub fn open_with_confirmation<R: tauri::Runtime>(
         window.label(),
         url,
         |confirmation| ask(window, confirmation),
-        |target| open::that_detached(target),
+        os::launch,
     )
 }
 
