@@ -13,9 +13,15 @@ const PORT = 4444;
 
 export const SCREENSHOT_DIR = path.join(ROOT, 'test-results', 'e2e');
 
+/** Папка сборки Cargo: CARGO_TARGET_DIR (общая папка сборки) или src-tauri/target (.cargo/config.toml). */
+function targetDir(): string {
+  const fromEnv = process.env.CARGO_TARGET_DIR;
+  return fromEnv ? path.resolve(ROOT, fromEnv) : path.join(ROOT, 'src-tauri', 'target');
+}
+
 export function applicationPath(): string {
   const exe = process.platform === 'win32' ? 'rhizomind.exe' : 'rhizomind';
-  return path.join(ROOT, 'src-tauri', 'target', 'release', exe);
+  return path.join(targetDir(), 'release', exe);
 }
 
 function tauriDriverPath(): string {
