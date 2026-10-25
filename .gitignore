@@ -32,3 +32,4 @@ playwright-report/
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+src-tauri/target-e2e/
