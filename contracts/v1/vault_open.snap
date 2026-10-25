@@ -1,0 +1,22 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_open",
+  "errors": [
+    {
+      "code": "vault_not_found",
+      "message_key": "errors.vault_not_found"
+    },
+    {
+      "code": "vault_unavailable",
+      "message_key": "errors.vault_unavailable"
+    }
+  ],
+  "request": {
+    "id": "7f3c9a1e5b2d4c60"
+  },
+  "response": {
+    "outcome": "focused"
+  }
+}

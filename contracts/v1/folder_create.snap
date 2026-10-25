@@ -1,0 +1,22 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "folder_create",
+  "errors": [
+    {
+      "code": "invalid_name",
+      "message_key": "errors.invalid_name",
+      "name_problem": "trailing_dot_or_space"
+    }
+  ],
+  "request": {
+    "dir": [],
+    "name": "Архив"
+  },
+  "response": {
+    "path": [
+      "Архив"
+    ]
+  }
+}

@@ -1,0 +1,88 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "EditorMode": [
+    "live_preview",
+    "source"
+  ],
+  "EntryKind": [
+    "folder",
+    "note",
+    "attachment"
+  ],
+  "ErrorCode": [
+    "not_implemented",
+    "invalid_argument",
+    "no_vault_open",
+    "vault_not_found",
+    "vault_unavailable",
+    "invalid_path",
+    "outside_vault",
+    "not_found",
+    "already_exists",
+    "invalid_name",
+    "not_a_note",
+    "read_only",
+    "scheme_not_allowed",
+    "io_failed"
+  ],
+  "NameCheck.status": [
+    "ok",
+    "rejected"
+  ],
+  "NameProblem": [
+    "empty",
+    "forbidden_chars",
+    "reserved_name",
+    "trailing_dot_or_space",
+    "too_long",
+    "duplicate",
+    "note_extension"
+  ],
+  "NewNoteLocation.kind": [
+    "vault_root",
+    "current_folder",
+    "folder"
+  ],
+  "NoteWriteResponse.outcome": [
+    "saved",
+    "conflict_saved"
+  ],
+  "OpenExternalOutcome.outcome": [
+    "opened",
+    "cancelled"
+  ],
+  "ReadOnlyReason.reason": [
+    "too_large",
+    "invalid_utf8"
+  ],
+  "TextWidth": [
+    "column",
+    "full"
+  ],
+  "Theme": [
+    "system",
+    "light",
+    "dark"
+  ],
+  "TrashOutcome.outcome": [
+    "trashed",
+    "deleted_permanently",
+    "cancelled"
+  ],
+  "TreeChange.kind": [
+    "created",
+    "modified",
+    "removed",
+    "renamed"
+  ],
+  "VaultChooseOutcome.outcome": [
+    "opened",
+    "cancelled"
+  ],
+  "VaultOpenOutcome.outcome": [
+    "opened",
+    "focused"
+  ]
+}

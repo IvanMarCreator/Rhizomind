@@ -99,7 +99,14 @@ fn main_window_has_no_file_network_shell_or_dialog_permissions() {
             "окну выдано запрещённое право {id}"
         );
     }
-    // Пока интерфейс не вызывает ядро, прав нет совсем; задача 0.4 добавляет
-    // свои команды и меняет этот тест вместе с файлом разрешений.
-    assert!(permissions.is_empty(), "неожиданные права: {permissions:?}");
+    // Из прав ядра Tauri (`core:*`) — только подписка на события. Точный
+    // состав (свои команды по списку) проверяет src/commands/acl_tests.rs.
+    for permission in permissions {
+        let id = permission.as_str().unwrap_or_default();
+        assert!(
+            !id.contains(':')
+                || ["core:event:allow-listen", "core:event:allow-unlisten"].contains(&id),
+            "окну выдано лишнее право Tauri {id}"
+        );
+    }
 }

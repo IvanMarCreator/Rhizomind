@@ -1,0 +1,33 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "note_create",
+  "errors": [
+    {
+      "code": "invalid_name",
+      "message_key": "errors.invalid_name",
+      "name_problem": "duplicate"
+    },
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "outside_vault",
+      "message_key": "errors.outside_vault"
+    }
+  ],
+  "request": {
+    "dir": [
+      "Проекты"
+    ],
+    "name": "Без названия.md"
+  },
+  "response": {
+    "path": [
+      "Проекты",
+      "Без названия.md"
+    ]
+  }
+}

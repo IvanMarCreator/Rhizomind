@@ -1,0 +1,17 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "note:changed",
+  "payload": {
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ],
+    "version": {
+      "hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "modified_ms": 1761382800000,
+      "size": 50
+    }
+  }
+}
