@@ -156,7 +156,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   const temp = isWindows ? env('TEMP') : '';
   const real = (p: string) => realpathSync.native(p);
   const roots = isWindows ? [env('LOCALAPPDATA'), env('APPDATA'), temp].map(real) : [];
-  // Известный локальный след (docs/SECURITY.md, «Известные ограничения»):
+  // Учтённая запись вне хранилища (docs/SECURITY.md, «Записи вне хранилища»):
   // при закрытии окна появляется новый файл диспетчера учётных данных Windows
   // прямо в %LOCALAPPDATA%\Microsoft\Credentials\. Создатель не установлен
   // (движок WebView2 или код ядра) — расследование в бэклоге (docs/reviews/
@@ -235,7 +235,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     const noise = outside.filter(isHarnessNoise);
     console.log(`во время работы: ${changed.length} новых/изменённых путей, вне временной папки: ${outside.length} (из них инструменты теста: ${noise.length})`);
     const known = outside.filter(isKnownTrace);
-    if (known.length > 0) console.log(`известный след (SECURITY.md): ${known.join(', ')}`);
+    if (known.length > 0) console.log(`учтённая запись (SECURITY.md, «Записи вне хранилища»): ${known.join(', ')}`);
     expect(outside.filter(unexpected)).toEqual([]);
     expect(path.dirname(dataDir)).toBe(path.resolve(temp));
   });
@@ -286,7 +286,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     const after = snapshot(roots);
     const { changed, removed } = diff(before, after);
     const known = changed.filter(isKnownTrace);
-    if (known.length > 0) console.log(`известный след после выхода (SECURITY.md): ${known.join(', ')}`);
+    if (known.length > 0) console.log(`учтённая запись после выхода (SECURITY.md, «Записи вне хранилища»): ${known.join(', ')}`);
     expect(changed.filter(unexpected)).toEqual([]);
     const leftoverReal = path.join(real(temp), path.basename(leftover));
     expect(removed.filter((p) => !p.startsWith(leftoverReal))).toEqual([]);
