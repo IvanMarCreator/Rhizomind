@@ -82,6 +82,16 @@ pub struct OwnWrite {
 /// Получатель своих записей.
 pub type OwnWriteHook = Box<dyn Fn(&OwnWrite) + Send + Sync + 'static>;
 
+/// Почему корзина ОС не приняла элемент.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrashFailure {
+    /// На томе нет корзины (флешка, сетевая папка) или корзина отказала.
+    NoTrash,
+}
+
+/// Удаление в корзину ОС по абсолютному пути (подменяется в тестах).
+pub type TrashBackend = Box<dyn Fn(&Path) -> Result<(), TrashFailure> + Send + Sync + 'static>;
+
 /// Открытое хранилище: корень и операции над файлами внутри контура.
 ///
 /// Все методы принимают пути [`VaultPath`] от интерфейса как есть и сами
@@ -389,6 +399,9 @@ impl Vault {
         self.contour.resolve(new_dir)?;
         Err(CoreError::not_implemented())
     }
+
+    /// Подменяет корзину ОС (тесты; диалоги и корзина — задача 1.7).
+    pub fn set_trash_backend(&self, _backend: TrashBackend) {}
 
     /// Удаляет в корзину ОС. На томе без корзины спрашивает
     /// `confirm_permanent` (окно подтверждения ядра) и удаляет безвозвратно

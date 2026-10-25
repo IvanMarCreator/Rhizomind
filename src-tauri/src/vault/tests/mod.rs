@@ -3,6 +3,7 @@
 //! проверок контура.
 
 mod contour;
+mod ops;
 mod read;
 mod write;
 
