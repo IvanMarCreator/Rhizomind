@@ -20,7 +20,9 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let crash: bool = args.next().unwrap().parse().unwrap();
     let udf = args.next().unwrap();
-    let browser_args = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --no-proxy-server";
+    let extra = args.next().unwrap_or_default();
+    let browser_args = format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --no-proxy-server {extra}");
+    println!("args: {browser_args}");
     println!("== crash_reporting={crash} udf={udf}");
     for (k, v) in std::env::vars() {
         if k.starts_with("WEBVIEW2") {
@@ -31,7 +33,7 @@ fn main() {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
         let options = CoreWebView2EnvironmentOptions::default();
-        options.set_additional_browser_arguments(browser_args.to_owned());
+        options.set_additional_browser_arguments(browser_args.clone());
         options.set_is_custom_crash_reporting_enabled(crash);
         let (tx, rx) = mpsc::channel();
         let udf_h = HSTRING::from(udf.as_str());
