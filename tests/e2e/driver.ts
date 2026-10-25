@@ -10,7 +10,9 @@ import { remote } from 'webdriverio';
 
 const ROOT = path.join(import.meta.dirname, '..', '..');
 const PORT = 4444;
-const SESSION_TIMEOUT_MS = 60_000;
+// Создание сессии в CI на Linux занимает ~30 с (холодный запуск WebKitGTK в
+// Xvfb): предел с запасом, но меньше hookTimeout (120 с).
+const SESSION_TIMEOUT_MS = 100_000;
 
 export const SCREENSHOT_DIR = path.join(ROOT, 'test-results', 'e2e');
 
@@ -78,14 +80,14 @@ export async function startApp(): Promise<Session> {
   let browser: WebdriverIO.Browser;
   let timer: NodeJS.Timeout | undefined;
   try {
-    // Зависание при создании сессии превращается в ошибку за минуту, а не в
-    // бесконечное ожидание CI: одна повторная попытка, общий предел.
+    // Зависание при создании сессии превращается в ошибку, а не в бесконечное
+    // ожидание CI: одна попытка без повторов и общий предел.
     const session = remote({
       hostname: '127.0.0.1',
       port: PORT,
       logLevel: 'warn',
-      connectionRetryTimeout: 30_000,
-      connectionRetryCount: 1,
+      connectionRetryTimeout: 90_000,
+      connectionRetryCount: 0,
       capabilities: {
         // tauri-driver принимает путь к приложению в своём расширении возможностей.
         'tauri:options': { application: applicationPath() },

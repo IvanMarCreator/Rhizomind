@@ -122,6 +122,9 @@ jobs:
         env:
           # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          # Без шины доступности GTK ждёт её по D-Bus (предупреждение AT-SPI) —
+          # это замедляет запуск окна под WebDriver.
+          NO_AT_BRIDGE: "1"
         run: xvfb-run -a npm run test:e2e
 
       - name: Сценарный тест (Windows)
