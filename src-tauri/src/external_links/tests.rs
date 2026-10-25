@@ -549,3 +549,30 @@ fn scheme_for_protocol_class_is_taken_from_target() {
     assert_eq!(os::scheme_of("mailto:a@example.org").ok(), Some("mailto"));
     assert!(os::scheme_of("no-colon").is_err());
 }
+
+/// Повторное ревью 1.5, п. 2 и п. 4: `%` — только как `%HH`; в `body` у
+/// `mailto` допустимы из управляющих только `\r`, `\n`, `\t`.
+#[test]
+fn lone_percent_and_control_characters_in_mail_body_are_rejected() {
+    for url in [
+        "https://example.org/100%",
+        "https://example.org/?q=%zz",
+        "https://example.org/%4",
+        "mailto:a@example.org?body=50%",
+        "mailto:a@example.org?body=a%00b",
+        "mailto:a@example.org?body=a%1Bb",
+        "mailto:a@example.org?body=a%7Fb",
+    ] {
+        assert_eq!(
+            check_url(url),
+            Err(CoreError::invalid_argument("url")),
+            "{url}"
+        );
+    }
+    for url in [
+        "https://example.org/100%25",
+        "mailto:a@example.org?body=a%09b%0D%0Ac",
+    ] {
+        assert_eq!(check_url(url), Ok(()), "{url}");
+    }
+}

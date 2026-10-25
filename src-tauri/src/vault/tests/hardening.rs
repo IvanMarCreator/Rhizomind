@@ -352,6 +352,37 @@ fn note_larger_than_hard_limit_opens_read_only_with_empty_text() {
     assert_eq!(note.version.size, 100 * 1024 * 1024 + 1);
 }
 
+/// Повторное ревью 1.2, п. 7: запись поверх файла больше 100 МБ сразу
+/// отклоняется — файл не читается в память ни для сравнения, ни для копии
+/// конфликта, и не меняется.
+#[test]
+fn write_over_note_larger_than_hard_limit_is_rejected_without_reading_it() {
+    let t = TestVault::new();
+    let path = t.file("Огромная.md");
+    let file = std::fs::File::create(&path).expect("файл");
+    file.set_len(100 * 1024 * 1024 + 1).expect("размер");
+    drop(file);
+    let any = crate::commands::FileVersion {
+        hash: "0".repeat(64),
+        size: 0,
+        modified_ms: 0,
+    };
+
+    assert_eq!(
+        code(t.vault.write_note(&vp("Огромная.md"), "текст", &any)),
+        ErrorCode::ReadOnly
+    );
+    assert_eq!(
+        std::fs::metadata(&path).expect("файл").len(),
+        100 * 1024 * 1024 + 1
+    );
+    let names: Vec<_> = std::fs::read_dir(t.root())
+        .expect("корень")
+        .map(|e| e.expect("элемент").file_name())
+        .collect();
+    assert_eq!(names.len(), 2, "копии конфликта нет: {names:?}");
+}
+
 // П. 11 — испорченный settings.json не затирается молча.
 
 #[test]

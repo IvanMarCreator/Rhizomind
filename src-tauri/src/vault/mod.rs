@@ -497,6 +497,13 @@ impl Vault {
         let mut copied: Vec<String> = Vec::new();
         let mut copy_path: Option<VaultPath> = None;
         for _ in 0..WRITE_ATTEMPTS {
+            // Файл больше жёсткого потолка открыт только для чтения и в
+            // память не читается — ни для сравнения, ни для копии конфликта.
+            if std::fs::metadata(&abs).map_err(io_error)?.len()
+                > crate::commands::limits::MAX_NOTE_BYTES
+            {
+                return Err(CoreError::new(ErrorCode::ReadOnly));
+            }
             let (disk, disk_version) = self.read_existing_note(&abs)?;
             let decoded = text::decode(&disk);
             let same_content =

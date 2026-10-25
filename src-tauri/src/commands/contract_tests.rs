@@ -821,7 +821,7 @@ fn enums() {
     settings().bind(|| insta::assert_json_snapshot!("enums", enums));
 }
 
-/// Пределы параметров — те же числа читает `src/api/limits.test.ts`.
+/// Пределы параметров — те же числа читает `src/api/contract.test.ts` (константы — `src/api/limits.ts`).
 #[test]
 fn limits() {
     settings().bind(|| insta::assert_json_snapshot!("limits", super::limits::LIMITS));
