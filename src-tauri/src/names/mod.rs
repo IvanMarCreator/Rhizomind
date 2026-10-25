@@ -140,6 +140,54 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     natural_cmp_keys(ka.as_str(), kb.as_str()).then_with(|| a.cmp(b))
 }
 
+/// Путь с заранее посчитанными ключами компонентов — для частых сравнений
+/// без повторного приведения (разрешение ссылок, поиск).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyedPath {
+    raw: Vec<String>,
+    keys: Vec<NameKey>,
+}
+
+impl KeyedPath {
+    /// Ключи компонентов пути.
+    pub fn new(components: &[String]) -> Self {
+        Self {
+            raw: components.to_vec(),
+            keys: components.iter().map(|c| key(c)).collect(),
+        }
+    }
+
+    /// Ключи компонентов.
+    pub fn keys(&self) -> &[NameKey] {
+        &self.keys
+    }
+}
+
+/// Естественный порядок путей: по компонентам, каждый — как [`natural_cmp`];
+/// путь-начало другого пути — раньше.
+impl Ord for KeyedPath {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for ((ka, ra), (kb, rb)) in self
+            .keys
+            .iter()
+            .zip(&self.raw)
+            .zip(other.keys.iter().zip(&other.raw))
+        {
+            let ord = natural_cmp_keys(ka.as_str(), kb.as_str()).then_with(|| ra.cmp(rb));
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        self.keys.len().cmp(&other.keys.len())
+    }
+}
+
+impl PartialOrd for KeyedPath {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// Естественный порядок двух уже приведённых ключей.
 fn natural_cmp_keys(a: &str, b: &str) -> Ordering {
     let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
@@ -277,31 +325,77 @@ mod tests {
     #[test]
     fn reserved_names_with_superscript_digits_and_zero() {
         for name in [
-            "COM¹", "com²", "Com³.md", "LPT¹", "lpt².txt", "LPT³", "COM0", "lpt0.md", "COM9",
-            "LPT9.md", "AUX", "prn.md", "conin$", "CONOUT$.md", "NUL.tar.gz", "nul .md",
+            "COM¹",
+            "com²",
+            "Com³.md",
+            "LPT¹",
+            "lpt².txt",
+            "LPT³",
+            "COM0",
+            "lpt0.md",
+            "COM9",
+            "LPT9.md",
+            "AUX",
+            "prn.md",
+            "conin$",
+            "CONOUT$.md",
+            "NUL.tar.gz",
+            "nul .md",
         ] {
             assert_eq!(check(name), Some(NameProblem::ReservedName), "{name}");
         }
-        for name in ["COM10", "COM⁴", "LPT", "Конференция.md", "AUX1", "NULL.md", "com1x"] {
+        for name in [
+            "COM10",
+            "COM⁴",
+            "LPT",
+            "Конференция.md",
+            "AUX1",
+            "NULL.md",
+            "com1x",
+        ] {
             assert_eq!(check(name), None, "{name}");
         }
     }
 
     #[test]
     fn forbidden_chars_each() {
-        for c in ['\\', '/', ':', '*', '?', '"', '<', '>', '|', '\0', '\u{1f}', '\u{7f}'] {
+        for c in [
+            '\\', '/', ':', '*', '?', '"', '<', '>', '|', '\0', '\u{1f}', '\u{7f}',
+        ] {
             let name = format!("План{c}2.md");
             assert_eq!(check(&name), Some(NameProblem::ForbiddenChars), "{name:?}");
         }
-        assert_eq!(check("Встреча: итоги.md"), Some(NameProblem::ForbiddenChars));
+        assert_eq!(
+            check("Встреча: итоги.md"),
+            Some(NameProblem::ForbiddenChars)
+        );
     }
 
     #[test]
     fn trailing_dot_or_space_everywhere() {
-        for name in ["Папка.", "Папка ", "Заметка.md.", "Заметка.md ", "Итоги..md", "План .md", ".", "..", "   "] {
-            assert_eq!(check(name), Some(NameProblem::TrailingDotOrSpace), "{name:?}");
+        for name in [
+            "Папка.",
+            "Папка ",
+            "Заметка.md.",
+            "Заметка.md ",
+            "Итоги..md",
+            "План .md",
+            ".",
+            "..",
+            "   ",
+        ] {
+            assert_eq!(
+                check(name),
+                Some(NameProblem::TrailingDotOrSpace),
+                "{name:?}"
+            );
         }
-        for name in [" Ведущий пробел.md", ".скрытая.md", "v1.2.md", "Отчёт 2024.pdf"] {
+        for name in [
+            " Ведущий пробел.md",
+            ".скрытая.md",
+            "v1.2.md",
+            "Отчёт 2024.pdf",
+        ] {
             assert_eq!(check(name), None, "{name:?}");
         }
     }
@@ -310,7 +404,10 @@ mod tests {
     fn too_long_counts_utf16_units() {
         // 255 единиц UTF-16 — можно, 256 — нет; эмодзи — две единицы.
         assert_eq!(check(&format!("{}.md", "я".repeat(252))), None);
-        assert_eq!(check(&format!("{}.md", "я".repeat(253))), Some(NameProblem::TooLong));
+        assert_eq!(
+            check(&format!("{}.md", "я".repeat(253))),
+            Some(NameProblem::TooLong)
+        );
         assert_eq!(check(&"😀".repeat(128)), Some(NameProblem::TooLong));
         assert_eq!(check(&"😀".repeat(127)), None);
     }

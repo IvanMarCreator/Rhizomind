@@ -2654,6 +2654,7 @@ dependencies = [
 name = "rhizomind"
 version = "0.1.0"
 dependencies = [
+ "gen-vault",
  "icu_casemap",
  "insta",
  "nucleo-matcher",

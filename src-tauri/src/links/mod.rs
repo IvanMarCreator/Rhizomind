@@ -8,8 +8,11 @@
 //! `[[/Встреча]]` — заметка в корне. Модуль чистый: работает со списком
 //! заметок в памяти, к диску не обращается.
 
-use crate::commands::{CoreError, CoreResult, LinkSuggestion, VaultPath};
-use crate::names;
+use std::collections::HashMap;
+
+use crate::commands::{CoreError, CoreResult, ErrorCode, LinkSuggestion, VaultPath};
+use crate::names::{self, KeyedPath, NameKey};
+use crate::switcher::{self, Haystack};
 use crate::vault::NoteRef;
 
 /// Цель вики-ссылки после разбора текста между `[[` и `]]`.
@@ -72,7 +75,10 @@ fn non_empty(text: &str) -> Option<String> {
 pub fn parse_target(inner: &str) -> Result<LinkTarget, InvalidTarget> {
     let (target, alias) = match inner.split_once('|') {
         // `\|` — разделитель псевдонима в таблице Markdown.
-        Some((target, alias)) => (target.strip_suffix('\\').unwrap_or(target), non_empty(alias)),
+        Some((target, alias)) => (
+            target.strip_suffix('\\').unwrap_or(target),
+            non_empty(alias),
+        ),
         None => (inner, None),
     };
     let (path, heading) = match target.split_once('#') {
@@ -111,38 +117,174 @@ pub fn parse_target(inner: &str) -> Result<LinkTarget, InvalidTarget> {
     })
 }
 
+/// Заметка в списке ссылок с заранее посчитанными ключами.
+#[derive(Debug)]
+struct Entry {
+    path: VaultPath,
+    created_ms: i64,
+    /// Папки и имя без `.md` — как пишется путь в ссылке.
+    link_path: Vec<String>,
+    /// Ключи `link_path`.
+    keys: Vec<NameKey>,
+    /// Место в естественном порядке путей (при равной дате создания).
+    rank: u32,
+    haystack: Haystack,
+}
+
+impl Entry {
+    fn name(&self) -> &str {
+        self.link_path.last().map_or("", String::as_str)
+    }
+}
+
 /// Ссылки одного хранилища. Список заметок заменяется целиком при изменении
 /// дерева (`replace_notes`); запросы не меняют состояние.
 #[derive(Debug, Default)]
 pub struct Links {
-    #[allow(dead_code)]
-    notes: Vec<NoteRef>,
+    entries: Vec<Entry>,
+    /// Заметки по ключу имени без `.md`.
+    by_name: HashMap<NameKey, Vec<usize>>,
 }
 
 impl Links {
     /// Ссылки по списку заметок хранилища (`Vault::notes`).
     pub fn new(notes: Vec<NoteRef>) -> Self {
-        Self { notes }
+        let mut links = Self::default();
+        links.replace_notes(notes);
+        links
     }
 
-    /// Заменяет список заметок (после изменения дерева).
+    /// Заменяет список заметок (после изменения дерева). Файлы не `.md` в
+    /// списке пропускаются. Ключи считаются здесь, один раз.
     pub fn replace_notes(&mut self, notes: Vec<NoteRef>) {
-        self.notes = notes;
+        let notes: Vec<NoteRef> = notes
+            .into_iter()
+            .filter(|n| n.path.file_name().is_some_and(names::is_note))
+            .collect();
+        let keyed: Vec<KeyedPath> = notes
+            .iter()
+            .map(|n| KeyedPath::new(n.path.components()))
+            .collect();
+        let ranks = switcher::natural_ranks(&keyed);
+        self.entries = notes
+            .into_iter()
+            .zip(keyed.iter().zip(ranks))
+            .map(|(note, (keyed, rank))| {
+                let mut link_path = note.path.components().to_vec();
+                if let Some(file) = link_path.last_mut() {
+                    *file = names::note_stem(file).unwrap_or(file).to_owned();
+                }
+                let keys = link_path.iter().map(|c| names::key(c)).collect();
+                Entry {
+                    path: note.path,
+                    created_ms: note.created_ms,
+                    link_path,
+                    keys,
+                    rank,
+                    haystack: Haystack::new(keyed),
+                }
+            })
+            .collect();
+        self.by_name.clear();
+        for (i, entry) in self.entries.iter().enumerate() {
+            if let Some(name) = entry.keys.last() {
+                self.by_name.entry(name.clone()).or_default().push(i);
+            }
+        }
     }
 
-    /// Куда ведёт цель ссылки `target` (текст между `[[` и `|`/`#`) из
-    /// заметки `from`. `Ok(None)` — неразрешённая ссылка, в том числе для
-    /// цели, которая не может быть путём (`..`, зарезервированное имя и
-    /// т.п.): плохая цель — не ошибка. `Err` — только отказ самого модуля.
-    pub fn resolve(&self, _from: &VaultPath, _target: &str) -> CoreResult<Option<VaultPath>> {
-        Err(CoreError::not_implemented())
+    /// Куда ведёт цель ссылки `target` (текст между `[[` и `|`/`#`; если
+    /// они есть, разбор их отбрасывает) из заметки `from`. `Ok(None)` —
+    /// неразрешённая ссылка, в том числе для цели, которая не может быть
+    /// путём (`..`, `:` и т.п.): плохая цель — не ошибка.
+    ///
+    /// Правила (С3.4), сравнение по ключу имени:
+    /// - `/путь/имя` — ровно этот путь от корня;
+    /// - `папка/имя` — заметка по этому пути от корня, если она есть, иначе
+    ///   заметки, чей путь кончается на `папка/имя`;
+    /// - `имя` — заметки с этим именем;
+    ///
+    /// из нескольких подходящих — самая старая по дате создания, при равной
+    /// дате — первая по пути в естественном порядке. `from` в 0.1 на выбор
+    /// не влияет.
+    pub fn resolve(&self, _from: &VaultPath, target: &str) -> CoreResult<Option<VaultPath>> {
+        let Ok(target) = parse_target(target) else {
+            return Ok(None);
+        };
+        let want: Vec<NameKey> = target
+            .folders
+            .iter()
+            .chain(std::iter::once(&target.name))
+            .map(|c| names::key(c))
+            .collect();
+        let Some(group) = want.last().and_then(|name| self.by_name.get(name)) else {
+            return Ok(None);
+        };
+        let exact: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&i| self.entries[i].keys == want)
+            .collect();
+        let hits = if target.from_root || (want.len() > 1 && !exact.is_empty()) {
+            exact
+        } else {
+            group
+                .iter()
+                .copied()
+                .filter(|&i| self.entries[i].keys.ends_with(&want))
+                .collect()
+        };
+        Ok(self.oldest(&hits).map(|i| self.entries[i].path.clone()))
     }
 
-    /// Подсказки автодополнения по части имени: вставляемый текст — имя для
-    /// уникальных заметок, кратчайший различающий путь для повторяющихся
-    /// (с правилом вложенных путей из [`Links::shortest_unique_path`]).
-    pub fn suggest(&self, _from: &VaultPath, _query: &str) -> CoreResult<Vec<LinkSuggestion>> {
-        Err(CoreError::not_implemented())
+    /// Самая старая по дате создания, при равной дате — первая по пути.
+    fn oldest(&self, candidates: &[usize]) -> Option<usize> {
+        candidates.iter().copied().min_by_key(|&i| {
+            let e = &self.entries[i];
+            (e.created_ms, e.rank)
+        })
+    }
+
+    /// Подсказки автодополнения по части имени или пути, не больше
+    /// [`switcher::MAX_RESULTS`], лучшие первыми (нечёткий поиск как в
+    /// быстром переходе; при равной оценке — короче имя, затем по пути).
+    /// Пустой запрос — заметки в естественном порядке имён. Вставляемый
+    /// текст — имя для уникальных заметок, кратчайший различающий путь для
+    /// повторяющихся (с правилом вложенных путей из
+    /// [`Links::shortest_unique_path`]).
+    pub fn suggest(&self, _from: &VaultPath, query: &str) -> CoreResult<Vec<LinkSuggestion>> {
+        let chosen = switcher::best_matches(
+            query,
+            &self.entries,
+            |e| &e.haystack,
+            |a, b| {
+                let (a, b) = (&self.entries[a], &self.entries[b]);
+                a.haystack
+                    .name_len()
+                    .cmp(&b.haystack.name_len())
+                    .then(a.rank.cmp(&b.rank))
+            },
+        )
+        .unwrap_or_else(|| {
+            let mut all: Vec<usize> = (0..self.entries.len()).collect();
+            all.sort_by(|&a, &b| {
+                let (a, b) = (&self.entries[a], &self.entries[b]);
+                names::natural_cmp(a.name(), b.name()).then(a.rank.cmp(&b.rank))
+            });
+            all.truncate(switcher::MAX_RESULTS);
+            all
+        });
+        Ok(chosen
+            .into_iter()
+            .map(|i| {
+                let e = &self.entries[i];
+                LinkSuggestion {
+                    insert: self.shortest_of(i),
+                    name: e.name().to_owned(),
+                    path: e.path.clone(),
+                }
+            })
+            .collect())
     }
 
     /// Кратчайший различающий путь заметки без `.md`: `Встреча`,
@@ -152,9 +294,42 @@ impl Links {
     /// другой, включая корень (`Здоровье/Звонок.md` и
     /// `Команда/Здоровье/Звонок.md`): обе получают полный путь от корня,
     /// верхняя — с `/` в начале: `/Здоровье/Звонок` и
-    /// `Команда/Здоровье/Звонок` (С3.4).
-    pub fn shortest_unique_path(&self, _note: &VaultPath) -> CoreResult<String> {
-        Err(CoreError::not_implemented())
+    /// `Команда/Здоровье/Звонок` (С3.4). Заметки нет в списке — `not_found`.
+    pub fn shortest_unique_path(&self, note: &VaultPath) -> CoreResult<String> {
+        self.entries
+            .iter()
+            .position(|e| &e.path == note)
+            .map(|i| self.shortest_of(i))
+            .ok_or_else(|| CoreError::new(ErrorCode::NotFound))
+    }
+
+    fn shortest_of(&self, i: usize) -> String {
+        let me = &self.entries[i];
+        let others: Vec<&[NameKey]> = me
+            .keys
+            .last()
+            .and_then(|name| self.by_name.get(name))
+            .into_iter()
+            .flatten()
+            .filter(|&&j| j != i)
+            .map(|&j| self.entries[j].keys.as_slice())
+            .collect();
+        if others.is_empty() {
+            return me.name().to_owned();
+        }
+        let full = me.link_path.join("/");
+        // Мой путь — конец пути другой заметки: только путь от корня.
+        if others.iter().any(|o| o.ends_with(&me.keys)) {
+            return format!("/{full}");
+        }
+        // Путь другой заметки — конец моего: полный путь (С3.4).
+        if others.iter().any(|o| me.keys.ends_with(o)) {
+            return full;
+        }
+        let n = me.keys.len();
+        (2..=n)
+            .find(|&k| !others.iter().any(|o| o.ends_with(&me.keys[n - k..])))
+            .map_or(full, |k| me.link_path[n - k..].join("/"))
     }
 }
 
@@ -252,12 +427,26 @@ mod tests {
     #[test]
     fn resolves_unique_name_by_name_key() {
         let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("План.md", 2)]);
-        for target in ["Встреча", "встреча", "ВСТРЕЧА", "Встреча.md", "Встреча#Итоги", "Встреча|встречи"] {
-            assert_eq!(resolve(&l, target).as_deref(), Some("Проекты/Альфа/Встреча.md"), "{target}");
+        for target in [
+            "Встреча",
+            "встреча",
+            "ВСТРЕЧА",
+            "Встреча.md",
+            "Встреча#Итоги",
+            "Встреча|встречи",
+        ] {
+            assert_eq!(
+                resolve(&l, target).as_deref(),
+                Some("Проекты/Альфа/Встреча.md"),
+                "{target}"
+            );
         }
         // Разложенная «й» в ссылке и составная в имени файла.
         let l = links(&[("Мой план.md", 1)]);
-        assert_eq!(resolve(&l, "Мои\u{306} план").as_deref(), Some("Мой план.md"));
+        assert_eq!(
+            resolve(&l, "Мои\u{306} план").as_deref(),
+            Some("Мой план.md")
+        );
         // Полное приведение регистра.
         let l = links(&[("Straße.md", 1)]);
         assert_eq!(resolve(&l, "STRASSE").as_deref(), Some("Straße.md"));
@@ -272,10 +461,22 @@ mod tests {
 
     #[test]
     fn resolves_link_with_path_to_exactly_that_note() {
-        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("Проекты/Бета/Встреча.md", 2)]);
-        assert_eq!(resolve(&l, "Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
-        assert_eq!(resolve(&l, "Бета/Встреча").as_deref(), Some("Проекты/Бета/Встреча.md"));
-        assert_eq!(resolve(&l, "проекты/бета/встреча").as_deref(), Some("Проекты/Бета/Встреча.md"));
+        let l = links(&[
+            ("Проекты/Альфа/Встреча.md", 1),
+            ("Проекты/Бета/Встреча.md", 2),
+        ]);
+        assert_eq!(
+            resolve(&l, "Альфа/Встреча").as_deref(),
+            Some("Проекты/Альфа/Встреча.md")
+        );
+        assert_eq!(
+            resolve(&l, "Бета/Встреча").as_deref(),
+            Some("Проекты/Бета/Встреча.md")
+        );
+        assert_eq!(
+            resolve(&l, "проекты/бета/встреча").as_deref(),
+            Some("Проекты/Бета/Встреча.md")
+        );
         assert_eq!(resolve(&l, "Гамма/Встреча"), None);
         assert_eq!(resolve(&l, "Альфа/Проекты/Встреча"), None);
     }
@@ -284,7 +485,10 @@ mod tests {
     fn resolves_link_from_root() {
         let l = links(&[("Встреча.md", 5), ("Проекты/Альфа/Встреча.md", 1)]);
         assert_eq!(resolve(&l, "/Встреча").as_deref(), Some("Встреча.md"));
-        assert_eq!(resolve(&l, "/Проекты/Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        assert_eq!(
+            resolve(&l, "/Проекты/Альфа/Встреча").as_deref(),
+            Some("Проекты/Альфа/Встреча.md")
+        );
         assert_eq!(resolve(&l, "/Альфа/Встреча"), None);
         let l = links(&[("Проекты/Альфа/Встреча.md", 1)]);
         assert_eq!(resolve(&l, "/Встреча"), None);
@@ -292,36 +496,64 @@ mod tests {
 
     #[test]
     fn bare_link_to_duplicates_goes_to_the_oldest() {
-        let l = links(&[("Проекты/Бета/Встреча.md", 100), ("Проекты/Альфа/Встреча.md", 200)]);
-        assert_eq!(resolve(&l, "Встреча").as_deref(), Some("Проекты/Бета/Встреча.md"));
+        let l = links(&[
+            ("Проекты/Бета/Встреча.md", 100),
+            ("Проекты/Альфа/Встреча.md", 200),
+        ]);
+        assert_eq!(
+            resolve(&l, "Встреча").as_deref(),
+            Some("Проекты/Бета/Встреча.md")
+        );
         let l = links(&[("Работа/План.md", 50), ("План.md", 70)]);
         assert_eq!(resolve(&l, "План").as_deref(), Some("Работа/План.md"));
     }
 
     #[test]
     fn equal_dates_go_to_first_path_in_natural_order() {
-        let l = links(&[("Б/Встреча.md", 100), ("А/Встреча.md", 100), ("В/Встреча.md", 100)]);
+        let l = links(&[
+            ("Б/Встреча.md", 100),
+            ("А/Встреча.md", 100),
+            ("В/Встреча.md", 100),
+        ]);
         assert_eq!(resolve(&l, "Встреча").as_deref(), Some("А/Встреча.md"));
         let l = links(&[("Папка 10/Итоги.md", 7), ("Папка 2/Итоги.md", 7)]);
         assert_eq!(resolve(&l, "Итоги").as_deref(), Some("Папка 2/Итоги.md"));
-        // Короче путь — раньше: корень перед папкой при равной дате.
+        // Сравнение по компонентам пути: «План.md» раньше «Работа/…»,
+        // «Альфа/…» раньше «Яблоко.md».
         let l = links(&[("Работа/План.md", 3), ("План.md", 3)]);
         assert_eq!(resolve(&l, "План").as_deref(), Some("План.md"));
+        let l = links(&[("Яблоко.md", 3), ("Альфа/Яблоко.md", 3)]);
+        assert_eq!(resolve(&l, "Яблоко").as_deref(), Some("Альфа/Яблоко.md"));
     }
 
     #[test]
     fn path_link_prefers_exact_path_from_root_over_longer_suffix() {
         let l = links(&[("Команда/Здоровье/Звонок.md", 1), ("Здоровье/Звонок.md", 9)]);
-        assert_eq!(resolve(&l, "Здоровье/Звонок").as_deref(), Some("Здоровье/Звонок.md"));
+        assert_eq!(
+            resolve(&l, "Здоровье/Звонок").as_deref(),
+            Some("Здоровье/Звонок.md")
+        );
         // Без точного совпадения от корня — самая старая из подходящих по концу пути.
         let l = links(&[("X/Альфа/Встреча.md", 200), ("Y/Альфа/Встреча.md", 100)]);
-        assert_eq!(resolve(&l, "Альфа/Встреча").as_deref(), Some("Y/Альфа/Встреча.md"));
+        assert_eq!(
+            resolve(&l, "Альфа/Встреча").as_deref(),
+            Some("Y/Альфа/Встреча.md")
+        );
     }
 
     #[test]
     fn bad_or_missing_targets_are_unresolved() {
         let l = links(&[("Встреча.md", 1), ("CON/Встреча.md", 2)]);
-        for target in ["Нет такой", "", "../Встреча", "Альфа//Встреча", "Встреча: итоги", "CON", "Встреча.", "#Итоги"] {
+        for target in [
+            "Нет такой",
+            "",
+            "../Встреча",
+            "Альфа//Встреча",
+            "Встреча: итоги",
+            "CON",
+            "Встреча.",
+            "#Итоги",
+        ] {
             assert_eq!(resolve(&l, target), None, "{target:?}");
         }
         assert_eq!(resolve(&Links::default(), "Встреча"), None);
@@ -343,19 +575,28 @@ mod tests {
 
     #[test]
     fn shortest_path_is_name_for_unique_note() {
-        let l = links(&[("Проекты/Альфа/Уникальная.md", 1), ("Проекты/Альфа/Встреча.MD", 1)]);
+        let l = links(&[
+            ("Проекты/Альфа/Уникальная.md", 1),
+            ("Проекты/Альфа/Встреча.MD", 1),
+        ]);
         assert_eq!(shortest(&l, "Проекты/Альфа/Уникальная.md"), "Уникальная");
         assert_eq!(shortest(&l, "Проекты/Альфа/Встреча.MD"), "Встреча");
     }
 
     #[test]
     fn shortest_path_adds_folders_from_the_end() {
-        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("Проекты/Бета/Встреча.md", 2)]);
+        let l = links(&[
+            ("Проекты/Альфа/Встреча.md", 1),
+            ("Проекты/Бета/Встреча.md", 2),
+        ]);
         assert_eq!(shortest(&l, "Проекты/Альфа/Встреча.md"), "Альфа/Встреча");
         assert_eq!(shortest(&l, "Проекты/Бета/Встреча.md"), "Бета/Встреча");
         let l = links(&[("Архив/2024/Отчёт.md", 1), ("Черновики/2024/Отчёт.md", 2)]);
         assert_eq!(shortest(&l, "Архив/2024/Отчёт.md"), "Архив/2024/Отчёт");
-        assert_eq!(shortest(&l, "Черновики/2024/Отчёт.md"), "Черновики/2024/Отчёт");
+        assert_eq!(
+            shortest(&l, "Черновики/2024/Отчёт.md"),
+            "Черновики/2024/Отчёт"
+        );
         // Регистр имени различается, ключ — один; путь — в написании с диска.
         let l = links(&[("Учёба/Идеи.md", 1), ("Личное/идеи.md", 2)]);
         assert_eq!(shortest(&l, "Учёба/Идеи.md"), "Учёба/Идеи");
@@ -368,10 +609,16 @@ mod tests {
         // верхняя — с косой чертой в начале.
         let l = links(&[("Встреча.md", 1), ("Проекты/Альфа/Встреча.md", 2)]);
         assert_eq!(shortest(&l, "Встреча.md"), "/Встреча");
-        assert_eq!(shortest(&l, "Проекты/Альфа/Встреча.md"), "Проекты/Альфа/Встреча");
+        assert_eq!(
+            shortest(&l, "Проекты/Альфа/Встреча.md"),
+            "Проекты/Альфа/Встреча"
+        );
         let l = links(&[("Здоровье/Звонок.md", 1), ("Команда/Здоровье/Звонок.md", 2)]);
         assert_eq!(shortest(&l, "Здоровье/Звонок.md"), "/Здоровье/Звонок");
-        assert_eq!(shortest(&l, "Команда/Здоровье/Звонок.md"), "Команда/Здоровье/Звонок");
+        assert_eq!(
+            shortest(&l, "Команда/Здоровье/Звонок.md"),
+            "Команда/Здоровье/Звонок"
+        );
         let l = links(&[("План.md", 1), ("Работа/План.md", 2)]);
         assert_eq!(shortest(&l, "План.md"), "/План");
         assert_eq!(shortest(&l, "Работа/План.md"), "Работа/План");
@@ -387,13 +634,23 @@ mod tests {
         ]);
         assert_eq!(shortest(&l, "Встреча.md"), "/Встреча");
         assert_eq!(shortest(&l, "Альфа/Встреча.md"), "Альфа/Встреча");
-        assert_eq!(shortest(&l, "Проекты/Бета/Встреча.md"), "Проекты/Бета/Встреча");
+        assert_eq!(
+            shortest(&l, "Проекты/Бета/Встреча.md"),
+            "Проекты/Бета/Встреча"
+        );
         assert_eq!(shortest(&l, "Архив/Бета/Встреча.md"), "Архив/Бета/Встреча");
         // Цепочка вложенных: средняя — и конец пути верхней, и сама — конец нижней.
-        let l = links(&[("Звонок.md", 1), ("Здоровье/Звонок.md", 2), ("Команда/Здоровье/Звонок.md", 3)]);
+        let l = links(&[
+            ("Звонок.md", 1),
+            ("Здоровье/Звонок.md", 2),
+            ("Команда/Здоровье/Звонок.md", 3),
+        ]);
         assert_eq!(shortest(&l, "Звонок.md"), "/Звонок");
         assert_eq!(shortest(&l, "Здоровье/Звонок.md"), "/Здоровье/Звонок");
-        assert_eq!(shortest(&l, "Команда/Здоровье/Звонок.md"), "Команда/Здоровье/Звонок");
+        assert_eq!(
+            shortest(&l, "Команда/Здоровье/Звонок.md"),
+            "Команда/Здоровье/Звонок"
+        );
     }
 
     #[test]
@@ -408,7 +665,11 @@ mod tests {
         ];
         let l = links(&notes);
         for (path, _) in notes {
-            assert_eq!(resolve(&l, &shortest(&l, path)).as_deref(), Some(path), "{path}");
+            assert_eq!(
+                resolve(&l, &shortest(&l, path)).as_deref(),
+                Some(path),
+                "{path}"
+            );
         }
     }
 
@@ -436,7 +697,10 @@ mod tests {
 
     #[test]
     fn suggest_by_path_when_query_has_slash() {
-        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("Проекты/Бета/Встреча.md", 2)]);
+        let l = links(&[
+            ("Проекты/Альфа/Встреча.md", 1),
+            ("Проекты/Бета/Встреча.md", 2),
+        ]);
         let items = l.suggest(&p("Откуда.md"), "бета/вст").unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].insert, "Бета/Встреча");
@@ -444,7 +708,9 @@ mod tests {
 
     #[test]
     fn suggest_ranks_exact_name_first_and_caps_results() {
-        let mut notes: Vec<(String, i64)> = (0..80).map(|i| (format!("Встречи/Встреча с отделом {i}.md"), i)).collect();
+        let mut notes: Vec<(String, i64)> = (0..80)
+            .map(|i| (format!("Встречи/Встреча с отделом {i}.md"), i))
+            .collect();
         notes.push(("План встречи.md".into(), 1));
         notes.push(("Встреча.md".into(), 1));
         let l = Links::new(notes.iter().map(|(path, at)| note(path, *at)).collect());
@@ -506,6 +772,92 @@ mod tests {
                 let _ = l.resolve(&p("Откуда.md"), &target);
                 let _ = l.suggest(&p("Откуда.md"), &target);
             }
+        }
+    }
+}
+
+/// Сверка с манифестом генератора тестового хранилища (`tools/gen-vault`).
+#[cfg(test)]
+mod gen_vault_tests {
+    use super::*;
+    use gen_vault::{Config, Resolution, generate};
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    fn note_paths(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                note_paths(root, &path, out);
+            } else if names::is_note(&name) {
+                let rel = path.strip_prefix(root).unwrap();
+                let parts: Vec<_> = rel.iter().map(|c| c.to_str().unwrap()).collect();
+                out.push(parts.join("/"));
+            }
+        }
+    }
+
+    fn vp(path: &str) -> VaultPath {
+        VaultPath::from_components(path.split('/'))
+    }
+
+    #[test]
+    fn matches_generator_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = generate(dir.path(), &Config::new(800, 7)).unwrap();
+        let mut paths = Vec::new();
+        note_paths(dir.path(), dir.path(), &mut paths);
+        assert_eq!(paths.len(), manifest.notes);
+
+        // Дата создания задаётся тестом: первая заметка группы дубликатов —
+        // самая старая (на диске даты могут совпасть).
+        let first: HashSet<&str> = manifest
+            .duplicates
+            .iter()
+            .map(|g| g.created_first.as_str())
+            .collect();
+        let later: HashSet<&str> = manifest
+            .duplicates
+            .iter()
+            .flat_map(|g| g.notes.iter().map(|n| n.path.as_str()))
+            .filter(|p| !first.contains(p))
+            .collect();
+        let links = Links::new(
+            paths
+                .iter()
+                .map(|p| NoteRef {
+                    path: vp(p),
+                    created_ms: if later.contains(p.as_str()) { 2 } else { 1 },
+                })
+                .collect(),
+        );
+
+        assert!(!manifest.duplicates.is_empty());
+        for group in &manifest.duplicates {
+            for n in &group.notes {
+                assert_eq!(
+                    links.shortest_unique_path(&vp(&n.path)).unwrap(),
+                    n.shortest_link,
+                    "{}",
+                    n.path
+                );
+            }
+        }
+
+        assert!(manifest.expected_links.len() > 100);
+        for link in &manifest.expected_links {
+            let inner = link.link.trim_start_matches("[[").trim_end_matches("]]");
+            let got = links.resolve(&vp(&link.source), inner).unwrap();
+            let expected = match link.resolution {
+                Resolution::Unresolved => None,
+                Resolution::Unique | Resolution::Oldest => link.target.as_deref().map(vp),
+            };
+            assert_eq!(got, expected, "{} в {}", link.link, link.source);
         }
     }
 }
