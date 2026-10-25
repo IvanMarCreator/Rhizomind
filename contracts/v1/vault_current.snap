@@ -9,8 +9,7 @@ source: src/commands/contract_tests.rs
     "api_version": 1,
     "vault": {
       "id": "7f3c9a1e5b2d4c60",
-      "name": "Работа",
-      "path": "C:\\Users\\ivan\\Documents\\Работа"
+      "name": "Работа"
     }
   }
 }

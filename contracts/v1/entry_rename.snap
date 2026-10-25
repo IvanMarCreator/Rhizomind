@@ -12,6 +12,11 @@ source: src/commands/contract_tests.rs
       "code": "invalid_name",
       "message_key": "errors.invalid_name",
       "name_problem": "forbidden_chars"
+    },
+    {
+      "code": "invalid_name",
+      "message_key": "errors.invalid_name",
+      "name_problem": "note_extension"
     }
   ],
   "request": {

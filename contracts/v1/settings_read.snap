@@ -15,7 +15,6 @@ source: src/commands/contract_tests.rs
       "confirm_delete": true,
       "editor_mode": "live_preview",
       "font_size": 16,
-      "format_version": 1,
       "max_edit_size_bytes": 10485760,
       "new_note_location": {
         "kind": "folder",

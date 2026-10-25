@@ -7,15 +7,24 @@ source: src/commands/contract_tests.rs
     {
       "code": "invalid_path",
       "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "invalid_argument",
+      "field": "dir",
+      "message_key": "errors.invalid_argument"
     }
   ],
   "request": {
-    "dir": [],
-    "name": "CON.md"
+    "dir": [
+      "Проекты"
+    ],
+    "name": "Встреча.md",
+    "renaming": [
+      "Проекты",
+      "встреча.md"
+    ]
   },
   "response": {
-    "message_key": "names.reserved_name",
-    "problem": "reserved_name",
-    "status": "rejected"
+    "status": "ok"
   }
 }

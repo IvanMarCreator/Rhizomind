@@ -11,6 +11,11 @@ source: src/commands/contract_tests.rs
     {
       "code": "not_found",
       "message_key": "errors.not_found"
+    },
+    {
+      "code": "invalid_argument",
+      "field": "text",
+      "message_key": "errors.invalid_argument"
     }
   ],
   "request": {
@@ -18,10 +23,6 @@ source: src/commands/contract_tests.rs
       "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "modified_ms": 1761382800000,
       "size": 43
-    },
-    "format": {
-      "bom": false,
-      "line_ending": "lf"
     },
     "path": [
       "Проекты",

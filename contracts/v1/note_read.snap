@@ -28,15 +28,11 @@ source: src/commands/contract_tests.rs
     ]
   },
   "response": {
-    "format": {
-      "bom": true,
-      "line_ending": "crlf"
-    },
     "read_only": {
       "limit_bytes": 10485760,
       "reason": "too_large"
     },
-    "text": "# Встреча\r\nСм. [[Альфа/План]]\r\n",
+    "text": "# Встреча\nСм. [[Альфа/План]]\n",
     "version": {
       "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "modified_ms": 1761382800000,

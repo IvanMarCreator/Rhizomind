@@ -9,8 +9,8 @@ source: src/commands/contract_tests.rs
       "message_key": "errors.no_vault_open"
     },
     {
-      "code": "not_implemented",
-      "message_key": "errors.not_implemented"
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
     }
   ],
   "request": null,
@@ -30,7 +30,7 @@ source: src/commands/contract_tests.rs
         ]
       },
       {
-        "kind": "file",
+        "kind": "attachment",
         "path": [
           "Проекты",
           "схема.png"
