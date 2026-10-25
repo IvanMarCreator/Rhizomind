@@ -342,3 +342,28 @@ fn file_replaced_by_folder_is_removed_and_created() {
         ]
     );
 }
+
+#[test]
+fn deleted_file_and_new_file_with_reused_id_are_not_a_rename() {
+    // На Linux номер inode удалённого файла сразу достаётся новому.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "старая.md", "старый текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::remove_file(dir.path().join("старая.md")).expect("удаление");
+    write(dir.path(), "новая.md", "н");
+
+    let changes = model.reconcile([vp("старая.md"), vp("новая.md")], &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Removed {
+                path: vp("старая.md")
+            },
+            TreeChange::Created {
+                path: vp("новая.md"),
+                entry_kind: EntryKind::Note
+            },
+        ]
+    );
+}
