@@ -16,6 +16,12 @@
 | `tauri-plugin-dialog` | 2.8.3 | Apache-2.0 OR MIT | Системные диалоги, которые вызывает ядро из Rust: выбор папки хранилища, подтверждение внешней ссылки и безвозвратного удаления (ADR 0009). Права `dialog:*` интерфейсу не выдаются. Приносит `rfd` 0.16.1 (системные диалоги ОС) и `tauri-plugin-fs` 2.7.1 (только типы области; плагин fs не регистрируется) | Нет: `cargo tree` по десктопным целям — пусто. Версия задана спецификацией (С5.7); выпущена 14.10.2026 — моложе двух недель на момент добавления |
 | `serde` | 1.0.229 | MIT OR Apache-2.0 | Типы команд ядра в JSON и обратно (`derive`); уже был в дереве через `tauri` | Нет |
 | `serde_json` | 1.0.154 | MIT OR Apache-2.0 | Раскладка окна — JSON-объект как есть; тест конфигурации безопасности. Уже был в дереве через `tauri`; раньше — только dev-зависимость | Нет |
+| `blake3` | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Хранилище (задача 1.2): версия файла — хэш содержимого. Функции по умолчанию (`std`), без `rayon` и `mmap`; приносит `arrayvec`, `constant_time_eq`, `cpufeatures`, `cfg-if` (MIT/Apache-2.0/CC0), при сборке — `cc` | Нет |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Атомарная запись: временный файл в `.rhizomind/tmp/`, `persist_noclobber` без затирания. Раньше — только в тестах; уже был в дереве | Нет |
+| `dunce` | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 | Канонизация корня хранилища и итогового пути без префикса `\\?\` на Windows; уже был в дереве через `tauri` | Нет |
+| `trash` | 5.2.9 | MIT | Удаление в корзину ОС. Без функций по умолчанию (`chrono` нужен только для списка корзины), с `coinit_apartmentthreaded` (COM в отдельном потоке удаления). Windows: `IFileOperation` через `windows` 0.62.2 (уже в дереве); Linux: freedesktop-корзина в файлах (`libc`, `log`, `once_cell`, `scopeguard`, `urlencoding` 2.1.3 — новый, MIT); macOS: `objc2` | Нет: только файловые операции и COM/Objective-C вызовы корзины |
+| `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | Только Windows: `ReplaceFileW` (замена с сохранением даты создания), `GetFinalPathNameByHandleW` (итоговый путь по дескриптору), `MoveFileExW` без замены, `GetVolumePathNameW`/`GetDriveTypeW` (есть ли корзина), `FileTimeToSystemTime`/`SystemTimeToTzSpecificLocalTime` (имя копии при конфликте). Функции `Win32_Foundation`, `Win32_Storage_FileSystem`, `Win32_System_Time`; уже был в дереве | Нет |
+| `libc` | 0.2.191 | MIT OR Apache-2.0 | Только Unix: `renameat2(RENAME_NOREPLACE)` (переименование без затирания), `localtime_r` (имя копии при конфликте); уже был в дереве | Нет |
 
 Транзитивно приходят `wry` 0.57.1 (WebView), `tao` 0.37.2 (окна), `webview2-com` 0.39.1 (Windows), `webkit2gtk` 2.0.2 и `soup3` 0.5.0 (Linux — привязки к системным WebKitGTK и libsoup, через которые WebKitGTK обслуживает свои схемы адресов), `tokio` 1.54.1 без функции `net`. Лицензии всего дерева: MIT, Apache-2.0, BSD-3-Clause, MPL-2.0, Unicode-3.0, Unlicense, Zlib, 0BSD, MIT-0, CC0-1.0 — все совместимы с GPL-3.0.
 
@@ -26,7 +32,8 @@
 | `tauri-build` | 2.7.4 | MIT OR Apache-2.0 | `build.rs`: встраивание конфигурации, `AppManifest::commands` | Нет |
 | `tauri` с функцией `test` | 2.12.5 | MIT OR Apache-2.0 | Подменный runtime для тестов ядра без окна | Нет |
 | `insta` | 1.49.0 | Apache-2.0 | Снимки контракта команд ядра `contracts/v1/*.snap` (функция `json`); те же файлы читает Vitest | Нет |
-| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Временная папка для заглушки хранилища в тестах прав команд | Нет |
+| `gen-vault` | 0.1.0 (путь `tools/gen-vault`) | GPL-3.0-only | Генератор тестового хранилища в тестах `vault`: образцы кодировок, невалидный UTF-8, большой файл | Нет |
+| `junction` | 2.1.0 | MIT | Только Windows: точки соединения NTFS в тестах контура хранилища | Нет |
 
 ## Генератор тестового хранилища (`tools/gen-vault/Cargo.toml`) — в программу не попадает
 
