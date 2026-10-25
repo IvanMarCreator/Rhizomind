@@ -104,6 +104,9 @@ fn every_name_is_valid_on_windows_and_unique_in_its_folder() {
         );
     }
     assert!(!dirs.iter().any(|d| d.split('/').any(|c| c == ".rhizomind")));
+    // Запас до MAX_PATH (260) для пути к самому хранилищу на Windows.
+    let longest = tree.keys().map(|p| p.encode_utf16().count()).max().unwrap();
+    assert!(longest < 160, "слишком длинный путь: {longest} символов");
 
     let depth = dirs.iter().map(|d| d.split('/').count()).max().unwrap();
     assert_eq!(depth, 5, "глубина папок");
