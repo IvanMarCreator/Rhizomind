@@ -318,3 +318,41 @@ fn own_writes_during_external_storm_are_not_external() {
     assert!(modified > 0, "внешние правки дошли");
     assert_eq!(mirror.tree, disk_tree(dir.path()));
 }
+
+/// Ревью 1.4, Б1: точка соединения NTFS на внешнюю папку не обходится ни
+/// моделью, ни кэшем склейки (`FileIdMap` ходил по ссылкам и открывал
+/// каждый файл). Кэша нет — запуск не зависит от размера внешней папки.
+#[cfg(windows)]
+#[test]
+#[ignore = "нагрузочный: отдельный шаг CI"]
+fn junction_to_outside_folder_is_not_walked() {
+    const OUTSIDE_FILES: usize = 30_000;
+    let outside = tempfile::tempdir().expect("внешняя папка");
+    for n in 0..OUTSIDE_FILES {
+        fs::write(outside.path().join(format!("{n}.md")), "").expect("файл");
+    }
+    let control = tempfile::tempdir().expect("хранилище без ссылки");
+    let vault = tempfile::tempdir().expect("хранилище со ссылкой");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(vault.path().join("ссылка"))
+        .arg(outside.path())
+        .status()
+        .expect("mklink");
+    assert!(status.success(), "точка соединения создана");
+
+    let started = Instant::now();
+    drop(VaultWatcher::start(control.path(), Collector::default().sink()).expect("слежение"));
+    let without = started.elapsed();
+    let started = Instant::now();
+    drop(VaultWatcher::start(vault.path(), Collector::default().sink()).expect("слежение"));
+    let with = started.elapsed();
+
+    eprintln!(
+        "[нагрузка] запуск: без ссылки {without:?}, с точкой соединения на {OUTSIDE_FILES} файлов {with:?}"
+    );
+    assert!(
+        with < without + Duration::from_millis(700),
+        "запуск со ссылкой {with:?} против {without:?}: внешняя папка обходится"
+    );
+}

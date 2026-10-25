@@ -52,8 +52,21 @@ use crate::commands::{
 };
 use tree::TreeModel;
 
-/// Получатель пачек изменений. Вызывается из потока наблюдателя.
-pub type ChangeSink = Box<dyn Fn(VaultChangedPayload) + Send + Sync + 'static>;
+/// Что наблюдатель сообщает ядру.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatcherEvent {
+    /// Пачка изменений дерева — данные события `vault:changed`.
+    Changed(VaultChangedPayload),
+    /// Корня хранилища нет или он недоступен.
+    Unavailable,
+    /// Корень снова доступен.
+    Available,
+    /// Получатель упал на предыдущем сообщении.
+    DeliveryFailed,
+}
+
+/// Получатель сообщений наблюдателя. Вызывается из потока наблюдателя.
+pub type ChangeSink = Box<dyn Fn(WatcherEvent) + Send + Sync + 'static>;
 
 /// Сколько события ОС по одному пути склеиваются, прежде чем уйти в
 /// сверку. Вместе со сверкой укладывается в «дерево в течение секунды»
@@ -237,12 +250,13 @@ fn run(mut model: TreeModel, own: OwnWrites, inbox: Receiver<Message>, sink: Cha
             model.rescan(&own)
         } else {
             model.reconcile(batch.paths, &own)
-        };
+        }
+        .changes;
         if batch.rescan || !changes.is_empty() {
-            sink(VaultChangedPayload {
+            sink(WatcherEvent::Changed(VaultChangedPayload {
                 rescan: batch.rescan,
                 changes,
-            });
+            }));
         }
     }
 }

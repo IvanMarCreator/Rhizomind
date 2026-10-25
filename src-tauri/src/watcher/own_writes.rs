@@ -33,6 +33,9 @@ struct Expected {
     size: u64,
 }
 
+/// Общий предел записей журнала.
+pub(crate) const MAX_TOTAL: usize = 4096;
+
 /// Журнал своих записей «путь → (хэш, размер)». Клон указывает на тот же
 /// журнал.
 #[derive(Debug, Clone, Default)]
@@ -85,6 +88,24 @@ impl OwnWrites {
             .retain(|key, _| !key.components().starts_with(prefix));
     }
 
+    /// Число версий по пути — для тестов.
+    #[cfg(test)]
+    pub(crate) fn versions(&self, path: &VaultPath) -> usize {
+        usize::from(self.lock().contains_key(path))
+    }
+
+    /// Запись с заданным временем — для тестов.
+    #[cfg(test)]
+    pub(crate) fn record_at(
+        &self,
+        path: &VaultPath,
+        hash: &str,
+        size: u64,
+        _at: std::time::Instant,
+    ) {
+        self.record(path, hash, size);
+    }
+
     /// Число записей — для тестов.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
@@ -104,4 +125,51 @@ fn hash_file(file: &Path) -> io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(File::open(file)?)?;
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn vp(path: &str) -> VaultPath {
+        VaultPath::from_components(path.split('/'))
+    }
+
+    #[test]
+    fn keeps_at_most_four_versions_per_path() {
+        let own = OwnWrites::new();
+        for n in 0..6 {
+            own.record(&vp("a.md"), &format!("{n:064x}"), n);
+        }
+        assert_eq!(own.versions(&vp("a.md")), 4);
+    }
+
+    #[test]
+    fn versions_expire() {
+        let own = OwnWrites::new();
+        own.record_at(
+            &vp("a.md"),
+            &"0".repeat(64),
+            1,
+            Instant::now() - Duration::from_secs(121),
+        );
+        own.record(&vp("b.md"), &"1".repeat(64), 1);
+        assert_eq!(own.versions(&vp("a.md")), 0, "запись старше 120 с забыта");
+        assert_eq!(own.versions(&vp("b.md")), 1);
+    }
+
+    #[test]
+    fn total_number_of_versions_is_bounded() {
+        let own = OwnWrites::new();
+        for n in 0..(MAX_TOTAL + 100) {
+            own.record(&vp(&format!("{n}.md")), &"0".repeat(64), 1);
+        }
+        assert!(own.len() <= MAX_TOTAL);
+        assert_eq!(
+            own.versions(&vp(&format!("{}.md", MAX_TOTAL + 99))),
+            1,
+            "новые остаются"
+        );
+    }
 }

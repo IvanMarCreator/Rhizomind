@@ -208,3 +208,123 @@ fn no_changes_are_delivered_after_watcher_is_dropped() {
 
     assert!(collector.payloads().is_empty());
 }
+
+// --- Ревью 1.4 ---
+
+#[cfg(unix)]
+#[test]
+fn vault_folder_disappearing_signals_unavailable_without_removals() {
+    // Как отключённая флешка: корня по этому пути больше нет. На Windows
+    // папку под наблюдением переименовать нельзя — там проверка в tree_tests.
+    use super::WatcherEvent;
+    let parent = tempfile::tempdir().expect("временная папка");
+    let root = parent.path().join("хранилище");
+    write(&root, "1.md", "1");
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(&root, collector.sink()).expect("слежение");
+
+    let away = parent.path().join("отключено");
+    fs::rename(&root, &away).expect("отключение");
+    write(&away, "2.md", "2");
+    assert!(
+        collector.wait_for(WAIT, |_| collector
+            .signals()
+            .contains(&WatcherEvent::Unavailable)),
+        "нет сигнала «хранилище недоступно»: {:?}",
+        collector.signals()
+    );
+    assert!(
+        !collector
+            .changes()
+            .iter()
+            .any(|c| matches!(c, TreeChange::Removed { .. })),
+        "{:?}",
+        collector.payloads()
+    );
+
+    fs::rename(&away, &root).expect("подключение");
+    assert!(
+        collector.wait_for(WAIT, |p| collector
+            .signals()
+            .contains(&WatcherEvent::Available)
+            && p.iter().any(|p| p.rescan
+                && p.changes.contains(&TreeChange::Created {
+                    path: vp("2.md"),
+                    entry_kind: EntryKind::Note
+                }))),
+        "после возвращения — сигнал и полная сверка: {:?} {:?}",
+        collector.signals(),
+        collector.payloads()
+    );
+}
+
+#[test]
+fn panicking_sink_does_not_stop_the_watcher() {
+    use super::WatcherEvent;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().expect("временная папка");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let (c, r) = (calls.clone(), received.clone());
+    let _watcher = VaultWatcher::start(
+        dir.path(),
+        Box::new(move |event| {
+            if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("получатель упал");
+            }
+            r.lock().expect("список").push(event);
+        }),
+    )
+    .expect("слежение");
+
+    write(dir.path(), "1.md", "1");
+    std::thread::sleep(Duration::from_secs(2));
+    write(dir.path(), "2.md", "2");
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < WAIT {
+        let got = received.lock().expect("список").clone();
+        let failed = got.contains(&WatcherEvent::DeliveryFailed);
+        let rescued = got.iter().any(|e| {
+            matches!(e, WatcherEvent::Changed(p) if p.rescan && p.changes.iter().any(|c|
+                matches!(c, TreeChange::Created { path, .. } if *path == vp("2.md"))))
+        });
+        if failed && rescued {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "после паники получателя — сигнал и полная сверка: {:?}",
+        received.lock().expect("список")
+    );
+}
+
+#[test]
+fn rescan_flag_and_watcher_errors_from_notify_request_full_rescan() {
+    use super::EventPaths;
+    use notify::event::{EventKind, Flag};
+    use notify_debouncer_full::DebouncedEvent;
+    let dir = tempfile::tempdir().expect("временная папка");
+    let paths = EventPaths::new(dir.path());
+    let now = std::time::Instant::now();
+
+    let flagged = paths.batch(Ok(vec![DebouncedEvent::new(
+        notify::Event::new(EventKind::Other).set_flag(Flag::Rescan),
+        now,
+    )]));
+    assert!(flagged.rescan);
+
+    let failed = paths.batch(Err(vec![notify::Error::generic("переполнение")]));
+    assert!(failed.rescan);
+
+    let filtered = paths.batch(Ok(vec![DebouncedEvent::new(
+        notify::Event::new(EventKind::Any)
+            .add_path(dir.path().join(".rhizomind").join("tmp").join("x"))
+            .add_path(dir.path().join("Папка").join("a.md")),
+        now,
+    )]));
+    assert!(!filtered.rescan);
+    assert_eq!(filtered.paths, vec![vp("Папка/a.md")]);
+}

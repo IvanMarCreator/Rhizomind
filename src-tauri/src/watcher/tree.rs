@@ -59,11 +59,27 @@ impl Node {
     }
 }
 
+/// Итог сверки.
+#[derive(Debug, Default)]
+pub(crate) struct Reconciled {
+    pub(crate) changes: Vec<TreeChange>,
+    pub(crate) retry: Vec<VaultPath>,
+    pub(crate) unavailable: bool,
+}
+
 /// Модель дерева одного хранилища.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct TreeModel {
     root: PathBuf,
     nodes: BTreeMap<Key, Node>,
+    #[cfg(test)]
+    failing: HashSet<Key>,
+}
+
+impl PartialEq for TreeModel {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.nodes == other.nodes
+    }
 }
 
 impl TreeModel {
@@ -72,6 +88,8 @@ impl TreeModel {
         let mut model = Self {
             root: root.to_path_buf(),
             nodes: BTreeMap::new(),
+            #[cfg(test)]
+            failing: HashSet::new(),
         };
         fs::metadata(root)?;
         let mut nodes = BTreeMap::new();
@@ -90,7 +108,19 @@ impl TreeModel {
     }
 
     /// Полная сверка с диском (Rescan, массовые операции).
-    pub(crate) fn rescan(&mut self, own: &OwnWrites) -> Vec<TreeChange> {
+    /// Тестовый шов: чтение папки даёт ошибку доступа.
+    #[cfg(test)]
+    pub(crate) fn fail_listing(&mut self, path: &VaultPath) {
+        self.failing.insert(path.components().to_vec());
+    }
+
+    /// Тестовый шов: ошибки чтения папок прошли.
+    #[cfg(test)]
+    pub(crate) fn clear_failures(&mut self) {
+        self.failing.clear();
+    }
+
+    pub(crate) fn rescan(&mut self, own: &OwnWrites) -> Reconciled {
         self.reconcile([VaultPath::root()], own)
     }
 
@@ -103,7 +133,7 @@ impl TreeModel {
         &mut self,
         paths: impl IntoIterator<Item = VaultPath>,
         own: &OwnWrites,
-    ) -> Vec<TreeChange> {
+    ) -> Reconciled {
         let mut targets = self.targets(paths);
         let (mut disk, mut model) = self.collect(&targets);
         // Появился элемент с идентификатором, который модель знает под другим
@@ -136,7 +166,10 @@ impl TreeModel {
             }
         }
         self.nodes.extend(disk);
-        changes
+        Reconciled {
+            changes,
+            ..Reconciled::default()
+        }
     }
 
     /// Пути модели вне путей сверки с идентификатором элемента, который на
@@ -546,5 +579,157 @@ fn absorb_content(
         }
         removed.remove(&old_key);
         created.remove(&new_key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Распознавание переименований на синтетических элементах: совпадение
+    //! идентификаторов, которого на NTFS не бывает (FAT/exFAT, inode Linux).
+
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn file(size: u64, secs: u64, id: Option<u64>) -> Node {
+        Node {
+            kind: EntryKind::Note,
+            size,
+            modified: Some(UNIX_EPOCH + Duration::from_secs(secs)),
+            id: id.map(|n| FileId::new_inode(1, n)),
+        }
+    }
+
+    fn folder(id: u64) -> Node {
+        Node {
+            kind: EntryKind::Folder,
+            size: 0,
+            modified: None,
+            id: Some(FileId::new_inode(1, id)),
+        }
+    }
+
+    fn key(path: &str) -> Key {
+        path.split('/').map(str::to_owned).collect()
+    }
+
+    fn model() -> TreeModel {
+        TreeModel {
+            root: PathBuf::from("нет-такой-папки"),
+            nodes: BTreeMap::new(),
+            #[cfg(test)]
+            failing: HashSet::new(),
+        }
+    }
+
+    fn resolve(removed: &[(&str, Node)], created: &[(&str, Node)]) -> Vec<TreeChange> {
+        let diff = Diff {
+            removed: removed.iter().map(|(k, n)| (key(k), n.clone())).collect(),
+            created: created.iter().map(|(k, n)| (key(k), n.clone())).collect(),
+            changed: Vec::new(),
+        };
+        let disk = created.iter().map(|(k, n)| (key(k), n.clone())).collect();
+        model().resolve(diff, &disk, &OwnWrites::new())
+    }
+
+    fn vp(path: &str) -> VaultPath {
+        VaultPath::from_components(path.split('/'))
+    }
+
+    #[test]
+    fn same_file_id_with_other_size_or_date_is_not_a_rename() {
+        let changes = resolve(
+            &[("чужая.md", file(10, 1, Some(7)))],
+            &[("новая.md", file(99, 5, Some(7)))],
+        );
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Removed {
+                    path: vp("чужая.md")
+                },
+                TreeChange::Created {
+                    path: vp("новая.md"),
+                    entry_kind: EntryKind::Note
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn unique_same_size_and_date_is_a_rename_even_with_other_ids() {
+        // FAT/exFAT: идентификатор меняется при переносе между папками.
+        let changes = resolve(
+            &[("а.md", file(10, 1, Some(7)))],
+            &[("б.md", file(10, 1, Some(8)))],
+        );
+        assert_eq!(
+            changes,
+            vec![TreeChange::Renamed {
+                from: vp("а.md"),
+                to: vp("б.md")
+            }]
+        );
+    }
+
+    #[test]
+    fn two_candidates_with_same_size_and_date_are_not_guessed() {
+        let changes = resolve(
+            &[
+                ("а.md", file(10, 1, Some(7))),
+                ("б.md", file(10, 1, Some(8))),
+            ],
+            &[("в.md", file(10, 1, Some(9)))],
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, TreeChange::Renamed { .. }))
+        );
+    }
+
+    #[test]
+    fn folder_with_reused_id_and_foreign_content_is_not_a_rename() {
+        let changes = resolve(
+            &[("Старая", folder(5)), ("Старая/x.md", file(10, 1, Some(7)))],
+            &[("Новая", folder(5)), ("Новая/x.md", file(20, 9, Some(8)))],
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, TreeChange::Renamed { .. })),
+            "{changes:?}"
+        );
+    }
+
+    #[test]
+    fn folder_rename_absorbs_only_confirmed_children() {
+        let changes = resolve(
+            &[
+                ("Старая", folder(5)),
+                ("Старая/своя.md", file(10, 1, Some(7))),
+                ("Старая/x.md", file(10, 1, Some(17))),
+            ],
+            &[
+                ("Новая", folder(5)),
+                ("Новая/своя.md", file(10, 1, Some(7))),
+                ("Новая/x.md", file(33, 9, Some(18))),
+            ],
+        );
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Renamed {
+                    from: vp("Старая"),
+                    to: vp("Новая")
+                },
+                TreeChange::Removed {
+                    path: vp("Новая/x.md")
+                },
+                TreeChange::Created {
+                    path: vp("Новая/x.md"),
+                    entry_kind: EntryKind::Note
+                },
+            ]
+        );
     }
 }

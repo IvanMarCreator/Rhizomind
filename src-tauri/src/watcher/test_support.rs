@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::ChangeSink;
+use super::{ChangeSink, WatcherEvent};
 use crate::commands::{EntryKind, TreeChange, VaultChangedPayload, VaultPath};
 
 pub(crate) fn vp(path: &str) -> VaultPath {
@@ -58,15 +58,21 @@ pub(crate) struct Collector {
 #[derive(Default)]
 struct Received {
     payloads: Vec<VaultChangedPayload>,
+    signals: Vec<WatcherEvent>,
     last: Option<Instant>,
 }
 
 impl Collector {
     pub(crate) fn sink(&self) -> ChangeSink {
         let inner = self.inner.clone();
-        Box::new(move |payload| {
-            let mut received = inner.lock().expect("сборщик");
-            received.payloads.push(payload);
+        Box::new(move |event| {
+            let mut received = inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match event {
+                WatcherEvent::Changed(payload) => received.payloads.push(payload),
+                other => received.signals.push(other),
+            }
             received.last = Some(Instant::now());
         })
     }
@@ -74,6 +80,11 @@ impl Collector {
     /// Все пачки, полученные до сих пор.
     pub(crate) fn payloads(&self) -> Vec<VaultChangedPayload> {
         self.inner.lock().expect("сборщик").payloads.clone()
+    }
+
+    /// Сигналы наблюдателя (кроме пачек изменений).
+    pub(crate) fn signals(&self) -> Vec<WatcherEvent> {
+        self.inner.lock().expect("сборщик").signals.clone()
     }
 
     /// Все изменения подряд.
@@ -168,39 +179,72 @@ impl Mirror {
         }
     }
 
+    /// Применяет изменения строго по порядку, как интерфейс: родитель
+    /// появившегося уже есть, переименуемое и удаляемое существует, места
+    /// назначения нет. Иначе — паника с описанием.
     pub(crate) fn apply(&mut self, payload: &VaultChangedPayload) {
         for change in &payload.changes {
             match change {
                 TreeChange::Created { path, entry_kind } => {
                     let key = path.components().to_vec();
-                    for n in 1..key.len() {
-                        self.tree
-                            .entry(key[..n].to_vec())
-                            .or_insert(EntryKind::Folder);
-                    }
-                    self.tree.insert(key, *entry_kind);
+                    self.expect_parent(&key, change);
+                    assert!(
+                        self.tree.insert(key, *entry_kind).is_none(),
+                        "появился уже существующий: {change:?}"
+                    );
                 }
                 TreeChange::Removed { path } => {
                     let key = path.components();
+                    assert!(
+                        self.tree.contains_key(key),
+                        "исчез несуществующий: {change:?}"
+                    );
                     self.tree.retain(|k, _| !k.starts_with(key));
                 }
                 TreeChange::Renamed { from, to } => {
                     let from = from.components();
+                    assert!(
+                        self.tree.contains_key(from),
+                        "переименован несуществующий: {change:?}"
+                    );
+                    let to_key = to.components().to_vec();
+                    assert!(
+                        !self.tree.contains_key(&to_key) || to_key.starts_with(from),
+                        "место назначения занято: {change:?}"
+                    );
+                    self.expect_parent(&to_key, change);
                     let moved: Vec<_> = self
                         .tree
                         .iter()
                         .filter(|(k, _)| k.starts_with(from))
                         .map(|(k, v)| (k.clone(), *v))
                         .collect();
+                    for (key, _) in &moved {
+                        self.tree.remove(key);
+                    }
                     for (key, kind) in moved {
-                        self.tree.remove(&key);
-                        let mut new_key = to.components().to_vec();
+                        let mut new_key = to_key.clone();
                         new_key.extend_from_slice(&key[from.len()..]);
                         self.tree.insert(new_key, kind);
                     }
                 }
-                TreeChange::Modified { .. } => {}
+                TreeChange::Modified { path } => {
+                    assert!(
+                        self.tree.contains_key(path.components()),
+                        "изменён несуществующий: {change:?}"
+                    );
+                }
             }
+        }
+    }
+
+    fn expect_parent(&self, key: &[String], change: &TreeChange) {
+        if key.len() > 1 {
+            assert_eq!(
+                self.tree.get(&key[..key.len() - 1]),
+                Some(&EntryKind::Folder),
+                "нет папки-родителя: {change:?}"
+            );
         }
     }
 }

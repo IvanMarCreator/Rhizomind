@@ -18,6 +18,24 @@ fn write(root: &Path, rel: &str, text: &str) {
     fs::write(path, text).expect("запись");
 }
 
+/// Изменения сверки (без недоступности и повторов).
+fn changes(
+    model: &mut TreeModel,
+    paths: impl IntoIterator<Item = VaultPath>,
+    own: &OwnWrites,
+) -> Vec<TreeChange> {
+    let result = model.reconcile(paths, own);
+    assert!(!result.unavailable, "хранилище доступно");
+    assert!(result.retry.is_empty(), "повторов нет: {:?}", result.retry);
+    result.changes
+}
+
+fn rescan_changes(model: &mut TreeModel, own: &OwnWrites) -> Vec<TreeChange> {
+    let result = model.rescan(own);
+    assert!(!result.unavailable && result.retry.is_empty());
+    result.changes
+}
+
 fn hash(text: &str) -> String {
     blake3::hash(text.as_bytes()).to_hex().to_string()
 }
@@ -49,7 +67,7 @@ fn created_file_is_reported_with_its_kind() {
     let mut model = TreeModel::scan(dir.path()).expect("обход");
     write(dir.path(), "Новая.md", "текст");
 
-    let changes = model.reconcile([vp("Новая.md")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("Новая.md")], &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -70,7 +88,7 @@ fn event_inside_new_folder_creates_folder_and_all_its_content() {
     write(dir.path(), "А/Б/1.md", "1");
     write(dir.path(), "А/Б/2.md", "2");
 
-    let changes = model.reconcile([vp("А/Б/1.md")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("А/Б/1.md")], &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -102,7 +120,7 @@ fn removed_folder_reports_children_first() {
     let mut model = TreeModel::scan(dir.path()).expect("обход");
     fs::remove_dir_all(dir.path().join("А")).expect("удаление");
 
-    let changes = model.reconcile([vp("А")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("А")], &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -123,7 +141,7 @@ fn changed_content_is_modified() {
     let mut model = TreeModel::scan(dir.path()).expect("обход");
     write(dir.path(), "a.md", "больше текста");
 
-    let changes = model.reconcile([vp("a.md")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("a.md")], &OwnWrites::new());
 
     assert_eq!(changes, vec![TreeChange::Modified { path: vp("a.md") }]);
 }
@@ -134,11 +152,7 @@ fn event_without_change_on_disk_reports_nothing() {
     write(dir.path(), "a.md", "1");
     let mut model = TreeModel::scan(dir.path()).expect("обход");
 
-    assert!(
-        model
-            .reconcile([vp("a.md"), vp("нет.md")], &OwnWrites::new())
-            .is_empty()
-    );
+    assert!(changes(&mut model, [vp("a.md"), vp("нет.md")], &OwnWrites::new()).is_empty());
 }
 
 #[test]
@@ -152,9 +166,9 @@ fn own_write_with_same_hash_and_size_is_not_external() {
     own.record(&vp("a.md"), &hash(text), text.len() as u64);
     write(dir.path(), "a.md", text);
 
-    assert!(model.reconcile([vp("a.md")], &own).is_empty());
+    assert!(changes(&mut model, [vp("a.md")], &own).is_empty());
     // Модель знает новую версию: повторное событие тоже не изменение.
-    assert!(model.reconcile([vp("a.md")], &own).is_empty());
+    assert!(changes(&mut model, [vp("a.md")], &own).is_empty());
 }
 
 #[test]
@@ -168,7 +182,7 @@ fn external_write_after_own_write_is_modified() {
     write(dir.path(), "a.md", "чужой текст другой длины");
 
     assert_eq!(
-        model.reconcile([vp("a.md")], &own),
+        changes(&mut model, [vp("a.md")], &own),
         vec![TreeChange::Modified { path: vp("a.md") }]
     );
 }
@@ -184,7 +198,7 @@ fn own_write_with_same_size_but_other_content_is_modified() {
     write(dir.path(), "a.md", "xyz");
 
     assert_eq!(
-        model.reconcile([vp("a.md")], &own),
+        changes(&mut model, [vp("a.md")], &own),
         vec![TreeChange::Modified { path: vp("a.md") }]
     );
 }
@@ -201,7 +215,11 @@ fn renamed_file_is_recognised_by_file_id() {
     )
     .expect("перенос");
 
-    let changes = model.reconcile([vp("старое.md"), vp("Папка/новое.md")], &OwnWrites::new());
+    let changes = changes(
+        &mut model,
+        [vp("старое.md"), vp("Папка/новое.md")],
+        &OwnWrites::new(),
+    );
 
     assert_eq!(
         changes,
@@ -226,7 +244,7 @@ fn renamed_folder_moves_its_content_in_one_change() {
     let mut model = TreeModel::scan(dir.path()).expect("обход");
     fs::rename(dir.path().join("А"), dir.path().join("В")).expect("перенос");
 
-    let changes = model.reconcile([vp("А"), vp("В")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("А"), vp("В")], &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -253,7 +271,11 @@ fn case_only_rename_is_a_rename() {
     let mut model = TreeModel::scan(dir.path()).expect("обход");
     fs::rename(dir.path().join("заметка.md"), dir.path().join("Заметка.md")).expect("перенос");
 
-    let changes = model.reconcile([vp("заметка.md"), vp("Заметка.md")], &OwnWrites::new());
+    let changes = changes(
+        &mut model,
+        [vp("заметка.md"), vp("Заметка.md")],
+        &OwnWrites::new(),
+    );
 
     assert_eq!(
         changes,
@@ -281,7 +303,7 @@ fn rescan_finds_everything_changed_without_events() {
     .expect("перенос");
     write(dir.path(), "новая.md", "н");
 
-    let changes = model.rescan(&OwnWrites::new());
+    let changes = rescan_changes(&mut model, &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -314,7 +336,7 @@ fn replaced_file_like_git_checkout_is_modified_not_removed() {
     fs::remove_file(dir.path().join("a.md")).expect("удаление");
     write(dir.path(), "a.md", "22");
 
-    let changes = model.reconcile([vp("a.md")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("a.md")], &OwnWrites::new());
 
     assert_eq!(changes, vec![TreeChange::Modified { path: vp("a.md") }]);
 }
@@ -327,7 +349,7 @@ fn file_replaced_by_folder_is_removed_and_created() {
     fs::remove_file(dir.path().join("x")).expect("удаление");
     fs::create_dir(dir.path().join("x")).expect("папка");
 
-    let changes = model.reconcile([vp("x")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("x")], &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -350,7 +372,11 @@ fn deleted_file_and_new_file_with_reused_id_are_not_a_rename() {
     fs::remove_file(dir.path().join("старая.md")).expect("удаление");
     write(dir.path(), "новая.md", "н");
 
-    let changes = model.reconcile([vp("старая.md"), vp("новая.md")], &OwnWrites::new());
+    let changes = changes(
+        &mut model,
+        [vp("старая.md"), vp("новая.md")],
+        &OwnWrites::new(),
+    );
 
     assert_eq!(
         changes,
@@ -378,7 +404,7 @@ fn journal_forgets_removed_and_renamed_paths() {
 
     fs::remove_file(dir.path().join("а.md")).expect("удаление");
     fs::rename(dir.path().join("б.md"), dir.path().join("в.md")).expect("перенос");
-    model.reconcile([vp("а.md"), vp("б.md"), vp("в.md")], &own);
+    changes(&mut model, [vp("а.md"), vp("б.md"), vp("в.md")], &own);
 
     assert_eq!(own.len(), 0);
 }
@@ -403,7 +429,8 @@ fn changes_inside_renamed_folder_apply_in_order() {
     fs::remove_file(dir.path().join("Ф/удалить.md")).expect("удаление");
     fs::rename(dir.path().join("Ф"), dir.path().join("Переименованная")).expect("перенос");
 
-    let changes = model.reconcile(
+    let changes = changes(
+        &mut model,
         [vp("Ф"), vp("Переименованная"), vp("Перенесённые")],
         &OwnWrites::new(),
     );
@@ -433,7 +460,7 @@ fn rename_is_recognised_when_event_about_old_path_was_lost() {
     )
     .expect("перенос");
 
-    let changes = model.reconcile([vp("Б")], &OwnWrites::new());
+    let changes = changes(&mut model, [vp("Б")], &OwnWrites::new());
 
     assert_eq!(
         changes,
@@ -449,4 +476,122 @@ fn rename_is_recognised_when_event_about_old_path_was_lost() {
         ]
     );
     assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+// --- Ревью 1.4: Б2 — недоступность не равна удалению ---
+
+#[test]
+fn vault_root_gone_like_unplugged_drive_reports_unavailable_without_removals() {
+    let parent = tempfile::tempdir().expect("временная папка");
+    let root = parent.path().join("хранилище");
+    write(&root, "А/1.md", "1");
+    write(&root, "2.md", "2");
+    let mut model = TreeModel::scan(&root).expect("обход");
+    let before = model.entries();
+    fs::rename(&root, parent.path().join("отключено")).expect("отключение");
+
+    let result = model.rescan(&OwnWrites::new());
+
+    assert!(result.unavailable, "корня нет — хранилище недоступно");
+    assert!(
+        result.changes.is_empty(),
+        "ни одного изменения: {:?}",
+        result.changes
+    );
+    assert_eq!(model.entries(), before, "модель не тронута");
+
+    fs::rename(parent.path().join("отключено"), &root).expect("подключение");
+    assert!(rescan_changes(&mut model, &OwnWrites::new()).is_empty());
+}
+
+#[test]
+fn unreadable_folder_keeps_its_content_and_is_retried() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Закрыто/1.md", "1");
+    write(dir.path(), "Закрыто/Вложено/2.md", "2");
+    write(dir.path(), "открыто.md", "о");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let before = model.entries();
+    // Тестовый шов: чтение папки даёт ошибку доступа (не «нет папки»).
+    model.fail_listing(&vp("Закрыто"));
+
+    let result = model.rescan(&OwnWrites::new());
+
+    assert!(!result.unavailable);
+    assert!(
+        result.changes.is_empty(),
+        "содержимое не исчезло: {:?}",
+        result.changes
+    );
+    assert_eq!(result.retry, vec![vp("Закрыто")]);
+    assert_eq!(model.entries(), before);
+
+    // Доступ вернулся, а внутри за это время удалили файл.
+    model.clear_failures();
+    fs::remove_file(dir.path().join("Закрыто/1.md")).expect("удаление");
+    assert_eq!(
+        changes(&mut model, result.retry, &OwnWrites::new()),
+        vec![TreeChange::Removed {
+            path: vp("Закрыто/1.md")
+        }]
+    );
+}
+
+#[test]
+fn unreadable_parent_of_event_path_keeps_entry() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Закрыто/1.md", "1");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    model.fail_listing(&vp("Закрыто"));
+
+    let result = model.reconcile([vp("Закрыто/1.md")], &OwnWrites::new());
+
+    assert!(result.changes.is_empty(), "{:?}", result.changes);
+    assert_eq!(result.retry, vec![vp("Закрыто/1.md")]);
+}
+
+// --- Ревью 1.4: Б3 — быстрые автосохранения ---
+
+#[test]
+fn quick_successive_own_writes_are_not_external() {
+    // Сценарий ревьюера: запись v2 начинается до того, как событие о v1
+    // дошло до сверки.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "исходный текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let own = OwnWrites::new();
+    let v1 = "версия 1";
+    let v2 = "версия 2, длиннее";
+
+    own.record(&vp("a.md"), &hash(v1), v1.len() as u64);
+    write(dir.path(), "a.md", v1);
+    own.record(&vp("a.md"), &hash(v2), v2.len() as u64);
+    assert!(
+        changes(&mut model, [vp("a.md")], &own).is_empty(),
+        "v1 — своя"
+    );
+    write(dir.path(), "a.md", v2);
+    assert!(
+        changes(&mut model, [vp("a.md")], &own).is_empty(),
+        "v2 — своя"
+    );
+}
+
+#[test]
+fn foreign_content_between_own_writes_does_not_drop_own_versions() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "исходный");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let own = OwnWrites::new();
+    let mine = "моя версия";
+    own.record(&vp("a.md"), &hash(mine), mine.len() as u64);
+
+    write(dir.path(), "a.md", "чужая правка снаружи");
+    assert_eq!(
+        changes(&mut model, [vp("a.md")], &own),
+        vec![TreeChange::Modified { path: vp("a.md") }]
+    );
+    // Своя версия всё ещё в журнале: её запись следом не внешняя.
+    write(dir.path(), "a.md", mine);
+    assert!(changes(&mut model, [vp("a.md")], &own).is_empty());
 }
