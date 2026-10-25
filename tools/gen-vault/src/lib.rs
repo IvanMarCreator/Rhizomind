@@ -16,6 +16,7 @@ mod shortest;
 mod text;
 mod words;
 
+use names::name_key;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -66,25 +67,62 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     for folder in &layout.folders {
         fs::create_dir_all(out.join(folder.join("/")))?;
     }
+    // Содержимое считается последовательно (детерминированно), запись — потом.
     let mut links = links::Links::new(&layout);
     let mut counts = EolCounts::default();
+    let mut ordered = Vec::new();
+    let mut files = Vec::new();
     for idx in 0..layout.notes.len() {
         let bytes = text::note_bytes(&mut links, idx, &mut rng, cfg.big_mb);
         counts.add(&bytes);
         if layout.notes[idx].special == layout::Special::Big {
             counts.big_bytes = bytes.len() as u64;
         }
-        fs::write(out.join(layout.note_path(idx)), bytes)?;
+        let file = (out.join(layout.note_path(idx)), bytes);
+        if layout.by_key[&name_key(&layout.notes[idx].name)].len() > 1 {
+            ordered.push(file);
+        } else {
+            files.push(file);
+        }
     }
     for idx in 0..layout.attachments.len() {
         let bytes = match layout.attachments[idx].kind {
             layout::AttachmentKind::Png => binary::png(&mut rng),
             layout::AttachmentKind::Pdf => binary::pdf(&mut rng),
         };
-        fs::write(out.join(layout.attachment_path(idx)), bytes)?;
+        files.push((out.join(layout.attachment_path(idx)), bytes));
     }
+    // Заметки с повторяющимися именами пишутся по порядку создания: ссылка без
+    // пути ведёт на самую старую (С3.4), манифест называет её `created_first`.
+    for (path, bytes) in &ordered {
+        fs::write(path, bytes)?;
+    }
+    write_parallel(&files)?;
 
     Ok(build_manifest(&layout, cfg, &links, counts))
+}
+
+/// Запись файлов в несколько потоков: на Windows создание файла дорогое
+/// (антивирус проверяет каждый), а порядок этих файлов не важен.
+fn write_parallel(files: &[(std::path::PathBuf, Vec<u8>)]) -> io::Result<()> {
+    let threads = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 8);
+    let chunk = files.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .try_for_each(|(path, bytes)| fs::write(path, bytes))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .try_for_each(|h| h.join().expect("поток записи упал"))
+    })
 }
 
 /// Подсчёт переносов строк и BOM по записанным заметкам.
