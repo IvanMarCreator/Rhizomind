@@ -48,7 +48,7 @@ describe('оболочка окна', () => {
     await renderShell(WITH_VAULT);
 
     expect(await screen.findByText('Нет открытой заметки')).toBeTruthy();
-    const ribbon = screen.getByRole('toolbar', { name: 'Панель действий' });
+    const ribbon = screen.getByRole('toolbar', { name: 'Лента иконок' });
     expect(within(ribbon).getByRole('button', { name: 'Файлы' })).toBeTruthy();
     expect(within(ribbon).getByRole('button', { name: 'Быстрый переход (Ctrl+O)' })).toBeTruthy();
     expect(within(ribbon).getByRole('button', { name: 'Настройки' })).toBeTruthy();

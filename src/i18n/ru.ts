@@ -6,7 +6,7 @@ export const ru = {
   'app.name': 'Rhizomind',
 
   // Лента иконок
-  'shell.ribbon.label': 'Панель действий',
+  'shell.ribbon.label': 'Лента иконок',
   'shell.ribbon.files': 'Файлы',
   'shell.ribbon.quickSwitcher': 'Быстрый переход (Ctrl+O)',
   'shell.ribbon.settings': 'Настройки',
