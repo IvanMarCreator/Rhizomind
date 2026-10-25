@@ -133,7 +133,7 @@ WebView2 — компонент Windows (движок Microsoft Edge), на ко
 ## Как проверить самостоятельно
 
 - **Сетевой монитор** (Wireshark или брандмауэр Windows с журналом): запустить приложение, пройти обычную работу. Процесс `rhizomind.exe` не устанавливает соединений; запущенные им процессы `msedgewebview2.exe` обращаются только к службам Microsoft, описанным выше.
-- **Process Monitor** (фильтр по `rhizomind.exe` и дочерним `msedgewebview2.exe`): вне хранилища запись только в `%APPDATA%\Rhizomind\vaults.json` и во временную папку `rhizomind-*`; после выхода временной папки нет.
+- **Process Monitor** (фильтр по `rhizomind.exe` и дочерним `msedgewebview2.exe`): вне хранилища запись только в места из раздела «Записи вне хранилища» (`%LOCALAPPDATA%\Rhizomind\vaults.json`, временная папка `rhizomind-*` и учтённые там следы); после выхода временной папки нет.
 - **`cargo deny check`** в папке `src-tauri/`: проверка лицензий, запрещённых сетевых крейтов и функций.
 - **`cargo tree -e normal --target x86_64-pc-windows-msvc`** (и для других целей): в выводе нет `reqwest`, `hyper`, `h2`, `rustls`, `native-tls`, `openssl`, `socket2`, `tungstenite`.
 - Прочитать файлы из таблиц выше: весь код открыт.
