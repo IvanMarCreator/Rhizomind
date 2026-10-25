@@ -51,7 +51,9 @@ pub struct NoteReadRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoteReadResponse {
-    /// Текст без BOM, переносы строк — `\n`.
+    /// Текст без BOM, переносы строк — `\n`. Файл больше
+    /// [`limits::MAX_NOTE_BYTES`] (100 МБ) не читается целиком: текст пустой,
+    /// `read_only` — `too_large`.
     pub text: String,
     /// Версия файла — вернуть в `note_write` как ожидаемую.
     pub version: FileVersion,
@@ -65,8 +67,9 @@ pub struct NoteReadResponse {
 pub struct NoteWriteRequest {
     /// Заметка.
     pub path: VaultPath,
-    /// Текст с переносами `\n`, без BOM. Не больше лимита из настроек
-    /// хранилища и не больше [`limits::MAX_NOTE_BYTES`].
+    /// Текст с переносами `\n`, без BOM. Не больше
+    /// [`limits::MAX_NOTE_BYTES`] (100 МБ); лимит из настроек хранилища
+    /// действует при открытии заметки (`read_only`).
     pub text: String,
     /// Версия, от которой редактор начинал правки. После `note:renamed`
     /// интерфейс пишет по новому пути с прежней ожидаемой версией.
@@ -115,9 +118,9 @@ pub async fn note_write<R: Runtime>(
 ) -> CoreResult<NoteWriteResponse> {
     limits::path(&request.path, "path")?;
     limits::note_text(&request.text, limits::MAX_NOTE_BYTES)?;
+    // Лимит из настроек действует при открытии (`read_only`, С3.3), здесь —
+    // только жёсткий потолок: снижение лимита не роняет автосохранение.
     let open = core.require_vault(window.label())?;
-    let limit = open.vault.read_settings()?.max_edit_size_bytes;
-    limits::note_text(&request.text, limit)?;
     open.vault
         .write_note(&request.path, &request.text, &request.expected_version)
 }
