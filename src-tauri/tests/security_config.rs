@@ -85,11 +85,37 @@ fn read_text(relative: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// Файл из корня рабочего пространства Cargo (`Cargo.toml`, `Cargo.lock`):
+/// профили и `[patch]` действуют только там.
+fn read_workspace_text(relative: &str) -> String {
+    read_text(&format!("../{relative}"))
+}
+
+#[test]
+fn member_manifest_has_no_profiles_or_patches_that_cargo_would_ignore() {
+    // В члене рабочего пространства Cargo молча игнорирует [profile.*] и
+    // [patch.*]: правка wry и профиль выпуска перестали бы действовать без ошибки.
+    let member = read_text("Cargo.toml");
+    for header in ["[profile.", "[patch."] {
+        assert!(
+            !member
+                .lines()
+                .any(|line| line.trim_start().starts_with(header)),
+            "{header} в src-tauri/Cargo.toml не действует — только в корневом Cargo.toml"
+        );
+    }
+    let root = read_workspace_text("Cargo.toml");
+    assert!(
+        root.lines().any(|line| line.trim() == "[workspace]"),
+        "корневой Cargo.toml — рабочее пространство"
+    );
+}
+
 #[test]
 fn release_profile_keeps_debug_assertions_off_and_does_not_abort() {
     // debug-assertions = true в выпуске включили бы cfg(debug_assertions) и с
     // ним отладочные ветки Tauri; panic = "abort" запускал бы WER с дампом.
-    let release = toml_section(&read_text("Cargo.toml"), "[profile.release]");
+    let release = toml_section(&read_workspace_text("Cargo.toml"), "[profile.release]");
     let compact = release.replace(' ', "");
     assert!(!compact.contains("debug-assertions=true"), "{release}");
     assert!(!compact.contains("panic=\"abort\""), "{release}");
@@ -175,8 +201,7 @@ fn main_window_has_no_file_network_shell_or_dialog_permissions() {
 
 /// Блок `[[package]]` из Cargo.lock по имени крейта.
 fn lock_package(name: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
-    let lock = std::fs::read_to_string(&path).expect("Cargo.lock");
+    let lock = read_workspace_text("Cargo.lock");
     let blocks: Vec<&str> = lock
         .split("[[package]]")
         .filter(|block| block.contains(&format!("\nname = \"{name}\"\n")))
@@ -197,13 +222,10 @@ fn wry_comes_from_own_patched_copy_of_the_same_version() {
         "wry берётся из crates.io, а не из vendor/wry: {wry}"
     );
 
-    let manifest = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .expect("Cargo.toml");
+    let manifest = read_workspace_text("Cargo.toml");
     assert!(
-        manifest.contains("[patch.crates-io]\nwry = { path = \"../vendor/wry\" }"),
-        "нет [patch.crates-io] для wry"
+        manifest.contains("[patch.crates-io]\nwry = { path = \"vendor/wry\" }"),
+        "нет [patch.crates-io] для wry в корневом Cargo.toml"
     );
 
     let vendor = std::fs::read_to_string(
