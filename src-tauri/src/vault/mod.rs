@@ -257,7 +257,10 @@ impl SettingsFile {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod settings_tests {
     use super::*;
     use crate::commands::Theme;
     use serde_json::json;

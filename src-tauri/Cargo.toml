@@ -37,6 +37,21 @@ tauri-plugin-dialog = "=2.8.3"
 # Типы команд ядра и их JSON (контракт API v1).
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+# Хранилище (vault, задача 1.2): версия файла — хэш содержимого.
+# Без функций по умолчанию лишнего нет: std, без rayon и mmap.
+blake3 = "=1.8.7"
+# Атомарная запись: временный файл в .rhizomind/tmp/ (раньше — только в тестах).
+tempfile = "=3.27.0"
+# Канонизация корня хранилища без префикса \\?\ на Windows.
+dunce = "=1.0.5"
+# Удаление в корзину ОС. Без chrono (нужен только для списка корзины);
+# COM на Windows — однопоточная модель в отдельном потоке удаления.
+trash = { version = "=5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
+
+[target.'cfg(windows)'.dependencies]
+# ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
+# (итоговый путь открытого файла) — хранилище, задача 1.2.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
@@ -44,7 +59,11 @@ serde_json = "=1.0.154"
 tauri = { version = "=2.12.5", features = ["test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
-# Временная папка для заглушки хранилища в тестах прав.
-tempfile = "=3.27.0"
+# Генератор тестового хранилища: образцы кодировок и переносов в тестах vault.
+gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Точки соединения NTFS в тестах контура хранилища.
+junction = "=2.1.0"
 
 # Профиль выпуска — в корневом Cargo.toml (рабочее пространство).
