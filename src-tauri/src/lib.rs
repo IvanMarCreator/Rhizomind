@@ -5,6 +5,7 @@
 //! данных во временной папке, InPrivate и флаги (ADR 0007).
 
 pub mod security;
+pub mod webview_traces;
 
 use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
