@@ -366,3 +366,28 @@ fn capabilities_grant_no_opener_shell_fs_or_dialog() {
     }
     assert!(files > 0, "в {} нет файлов разрешений", dir.display());
 }
+
+// ---- Вызов через настоящий тип окна в тестах -----------------------------
+
+/// Тесты крейта (в том числе тесты прав команд, которые вызывают
+/// `open_external` с правильным адресом) не показывают системное окно и не
+/// открывают браузер: ответ — `cancelled`, без зависания.
+#[test]
+fn tests_never_show_system_dialog_or_open_browser() {
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_dialog::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("тестовое приложение");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "w-real", Default::default())
+            .build()
+            .expect("тестовое окно");
+        let window = webview.as_ref().window();
+        let _ = done.send(open_with_confirmation(&window, "https://example.org/"));
+    });
+    let outcome = result
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("open_with_confirmation завис");
+    assert_eq!(outcome, Ok(OpenExternalOutcome::Cancelled));
+}
