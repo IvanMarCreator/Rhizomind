@@ -165,6 +165,11 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 /// Обработка событий приложения: после выхода удаляется папка данных движка.
+///
+/// Приложение завершается закрытием окон, а не `AppHandle::exit`: при `exit`
+/// событие `Exit` приходит, пока WebView и процесс браузера ещё живы, — папка
+/// занята и останется до уборки остатков при следующем запуске. Будущая команда
+/// «Выход» должна закрывать окна (проверка — `tests/webview2_runtime.rs`).
 pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
     if let RunEvent::Exit = event
         && let Some(shell) = app.try_state::<Shell>()

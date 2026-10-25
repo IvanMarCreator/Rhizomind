@@ -127,7 +127,7 @@ mod windows_only {
                     let window = handle
                         .get_webview_window(MAIN_WINDOW_LABEL)
                         .expect("главное окно");
-                    let exit_handle = handle.clone();
+                    let window_to_close = window.clone();
                     let _ = window.with_webview(move |webview| {
                         let failures = check_live_webview(
                             &webview.controller(),
@@ -135,7 +135,11 @@ mod windows_only {
                             &browser_args,
                         );
                         *outcome_for_check.lock().unwrap() = failures;
-                        exit_handle.exit(0);
+                        // Выход как у пользователя — закрытием окна: WebView
+                        // уничтожается, процесс браузера завершается, затем
+                        // приходит RunEvent::Exit. С `exit(0)` окно и процесс
+                        // браузера ещё живы в момент Exit, папку удалить нельзя.
+                        let _ = window_to_close.close();
                     });
                 });
                 Ok(())
