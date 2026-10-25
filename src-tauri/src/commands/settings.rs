@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
 use super::Core;
-use super::error::{CoreError, CoreResult};
+use super::error::{CoreError, CoreResult, ErrorCode};
 use super::limits;
 use super::types::VaultPath;
 
@@ -213,5 +213,10 @@ pub async fn open_external<R: Runtime>(
     request: OpenExternalRequest,
 ) -> CoreResult<OpenExternalOutcome> {
     limits::url(&request.url)?;
-    crate::external_links::open_with_confirmation(&window, &request.url)
+    // Окно подтверждения блокирует поток до ответа — не рабочий поток async.
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::external_links::open_with_confirmation(&window, &request.url)
+    })
+    .await
+    .map_err(|_| CoreError::new(ErrorCode::IoFailed))?
 }

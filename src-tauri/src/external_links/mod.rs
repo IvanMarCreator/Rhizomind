@@ -1,4 +1,4 @@
-//! Внешние ссылки — интерфейс модуля, реализация в задаче 1.5.
+//! Внешние ссылки (задача 1.5).
 //!
 //! Спецификация 0.1, С3.7 и ADR 0009: только схемы `http`, `https`,
 //! `mailto`; окно подтверждения с полным адресом показывает ядро
@@ -6,50 +6,164 @@
 //! «Открыть в браузере»; после согласия адрес передаётся ОС крейтом `open`.
 //! У интерфейса нет ни прав `opener:*`, ни другой команды открытия, поэтому
 //! обойти подтверждение он не может.
+//!
+//! Шов для тестов — [`open_checked`]: «показать окно подтверждения» и
+//! «передать адрес ОС» передаются замыканиями.
 
+mod address;
+
+use std::collections::BTreeSet;
 use std::io;
+use std::sync::{Mutex, PoisonError};
 
-use crate::commands::{CoreError, CoreResult, OpenExternalOutcome};
+pub use address::ExternalAddress;
+
+use crate::commands::{CoreError, CoreResult, ErrorCode, OpenExternalOutcome};
 
 /// Схемы, которые можно открыть.
 pub const ALLOWED_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
 
-/// Содержимое окна подтверждения.
+/// Содержимое окна подтверждения (тексты — макет Э6б).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirmation {
+    /// Заголовок окна.
     pub title: String,
+    /// Текст окна; полный адрес — отдельной строкой, ровно как уйдёт в ОС.
     pub message: String,
+    /// Кнопка согласия — первая, выбрана по умолчанию.
     pub open_label: String,
+    /// Кнопка отказа.
     pub cancel_label: String,
 }
 
-/// Проверяет схему адреса; другая схема или неразборчивый адрес —
-/// `scheme_not_allowed`. Заглушка 0.4: реализация — задача 1.5.
-pub fn check_url(_url: &str) -> CoreResult<()> {
-    Err(CoreError::not_implemented())
+impl Confirmation {
+    /// Окно подтверждения для проверенного адреса.
+    pub fn for_address(address: &ExternalAddress) -> Self {
+        let mut message = String::new();
+        if address.is_mail() {
+            message.push_str(
+                "Открыть ссылку в почтовой программе?\n\n\
+                 Ссылка из заметки откроется в почтовой программе, которая \
+                 установлена в системе. Сам Rhizomind в сеть не выходит.\n\n",
+            );
+        } else {
+            message.push_str(
+                "Открыть ссылку в браузере?\n\n\
+                 Ссылка из заметки откроется в браузере, который установлен \
+                 в системе. Сам Rhizomind в сеть не выходит.\n\n",
+            );
+        }
+        if let Some(host) = address.host_line() {
+            message.push_str("Сайт: ");
+            message.push_str(&host);
+            message.push_str("\n\n");
+        }
+        message.push_str("Полный адрес:\n");
+        message.push_str(address.as_str());
+        Self {
+            title: "Rhizomind — внешняя ссылка".into(),
+            message,
+            open_label: "Открыть в браузере".into(),
+            cancel_label: "Отмена".into(),
+        }
+    }
 }
 
-/// Шов для тестов: `ask` показывает окно подтверждения, `launch` передаёт
-/// адрес ОС.
+/// Проверяет адрес: схема (`scheme_not_allowed`), скрытые символы, длина,
+/// вложения `mailto` (`invalid_argument`). Подробности — [`ExternalAddress::parse`].
+pub fn check_url(url: &str) -> CoreResult<()> {
+    ExternalAddress::parse(url).map(|_| ())
+}
+
+/// Окна, в которых сейчас открыто окно подтверждения ядра.
+static DIALOG_WINDOWS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Занятость окна диалогом ядра; снимается при выходе из области видимости.
+struct DialogSlot(String);
+
+impl DialogSlot {
+    /// `None`, если в окне уже открыт диалог ядра.
+    fn take(window: &str) -> Option<Self> {
+        let mut busy = DIALOG_WINDOWS.lock().unwrap_or_else(PoisonError::into_inner);
+        busy.insert(window.to_owned())
+            .then(|| Self(window.to_owned()))
+    }
+}
+
+impl Drop for DialogSlot {
+    fn drop(&mut self) {
+        DIALOG_WINDOWS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// Проверяет адрес, спрашивает пользователя через `ask` и только после
+/// согласия передаёт ОС через `launch` ровно ту строку, что была в окне.
+///
+/// В одном окне — не больше одного окна подтверждения: пока первое открыто,
+/// второй вызов сразу получает `cancelled` (окно не показывается, адрес в ОС
+/// не уходит).
 pub(crate) fn open_checked(
-    _window: &str,
-    _url: &str,
-    _ask: impl FnOnce(&Confirmation) -> bool,
-    _launch: impl FnOnce(&str) -> io::Result<()>,
+    window: &str,
+    url: &str,
+    ask: impl FnOnce(&Confirmation) -> bool,
+    launch: impl FnOnce(&str) -> io::Result<()>,
 ) -> CoreResult<OpenExternalOutcome> {
-    Err(CoreError::not_implemented())
+    let address = ExternalAddress::parse(url)?;
+    let Some(_slot) = DialogSlot::take(window) else {
+        return Ok(OpenExternalOutcome::Cancelled);
+    };
+    if !ask(&Confirmation::for_address(&address)) {
+        return Ok(OpenExternalOutcome::Cancelled);
+    }
+    launch(address.as_str()).map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
+    Ok(OpenExternalOutcome::Opened)
 }
 
 /// Проверяет адрес, показывает окно подтверждения ядра — модально к окну
 /// `window`, из которого пришла ссылка, — и после согласия передаёт адрес
-/// ОС. Блокирует поток до ответа пользователя. Длина и управляющие символы
-/// уже проверены слоем команд (`commands::limits::url`).
+/// ОС. Блокирует поток до ответа пользователя: вызывать вне рабочих потоков
+/// async (`spawn_blocking`) и не из главного потока. Длина и управляющие
+/// символы уже проверены слоем команд (`commands::limits::url`).
 pub fn open_with_confirmation<R: tauri::Runtime>(
-    _window: &tauri::Window<R>,
+    window: &tauri::Window<R>,
     url: &str,
 ) -> CoreResult<OpenExternalOutcome> {
-    check_url(url)?;
-    Err(CoreError::not_implemented())
+    open_checked(
+        window.label(),
+        url,
+        |confirmation| ask_in_dialog(window, confirmation),
+        |target| open::that_detached(target),
+    )
+}
+
+/// Системное окно подтверждения `tauri-plugin-dialog`. Кнопка согласия —
+/// первая: в Windows (TaskDialog, `nDefaultButton = 0`) и macOS (NSAlert)
+/// первая кнопка выбрана по умолчанию, Enter открывает, Esc — отмена.
+/// Если окно показать не удалось — ответ «отмена».
+fn ask_in_dialog<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    confirmation: &Confirmation,
+) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let (answer, reply) = std::sync::mpsc::sync_channel(1);
+    window
+        .dialog()
+        .message(&confirmation.message)
+        .title(&confirmation.title)
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            confirmation.open_label.clone(),
+            confirmation.cancel_label.clone(),
+        ))
+        .parent(window)
+        .show(move |confirmed| {
+            let _ = answer.send(confirmed);
+        });
+    reply.recv().unwrap_or(false)
 }
 
 #[cfg(test)]
