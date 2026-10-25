@@ -56,6 +56,8 @@ use contour::Contour;
 const TMP_DIR: &str = "tmp";
 /// Настройки хранилища — `.rhizomind/settings.json`.
 const SETTINGS_FILE: &str = "settings.json";
+/// Раскладка окна — `.rhizomind/workspace.json`.
+const WORKSPACE_FILE: &str = "workspace.json";
 /// Служебный файл больше этого не читается (правка руками) — значения по
 /// умолчанию.
 const MAX_SERVICE_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -123,8 +125,12 @@ impl Vault {
     /// Создаёт папку нового хранилища `parent/name` (не существующую).
     /// Имя уже проверено правилами имён и [`check_component`]; возвращает
     /// путь к созданной папке. `.rhizomind/` создаёт [`Vault::open`].
-    pub fn create(_parent: &Path, _name: &str) -> CoreResult<PathBuf> {
-        Err(CoreError::not_implemented())
+    pub fn create(parent: &Path, name: &str) -> CoreResult<PathBuf> {
+        check_component(name)?;
+        let parent = dunce::canonicalize(parent).map_err(|_| unavailable())?;
+        let target = parent.join(name);
+        std::fs::create_dir(&target).map_err(io_error)?;
+        dunce::canonicalize(&target).map_err(io_error)
     }
 
     /// Открывает папку как хранилище: канонизирует корень, создаёт
@@ -674,18 +680,56 @@ impl Vault {
     }
 
     /// Записывает настройки хранилища атомарно ([`SettingsFile::update`]).
-    pub fn write_settings(&self, _settings: &Settings) -> CoreResult<()> {
-        Err(CoreError::not_implemented())
+    pub fn write_settings(&self, settings: &Settings) -> CoreResult<()> {
+        let mut file = self.read_settings_file()?;
+        file.update(settings);
+        let bytes =
+            serde_json::to_vec_pretty(&file).map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
+        self.write_service_file(SETTINGS_FILE, &bytes)
     }
 
     /// Раскладка окна из `.rhizomind/workspace.json`; файла нет — `None`.
+    /// Не JSON-объект — как будто раскладки нет. Модель раскладки v1 и её
+    /// версия — внутри объекта (ADR 0003, интерфейс); ядро хранит как есть.
     pub fn read_workspace(&self) -> CoreResult<Option<Workspace>> {
-        Err(CoreError::not_implemented())
+        Ok(self
+            .read_service_file(WORKSPACE_FILE)?
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| match value {
+                serde_json::Value::Object(map) => Some(Workspace(map)),
+                _ => None,
+            }))
     }
 
     /// Записывает раскладку окна атомарно.
-    pub fn write_workspace(&self, _workspace: &Workspace) -> CoreResult<()> {
-        Err(CoreError::not_implemented())
+    pub fn write_workspace(&self, workspace: &Workspace) -> CoreResult<()> {
+        let bytes = serde_json::to_vec_pretty(workspace)
+            .map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
+        self.write_service_file(WORKSPACE_FILE, &bytes)
+    }
+
+    /// Атомарно пишет служебный файл `.rhizomind/<name>`; файл-ссылка не
+    /// заменяется (`outside_vault`).
+    fn write_service_file(&self, name: &str, bytes: &[u8]) -> CoreResult<()> {
+        let path = self.service.join(name);
+        let exists = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+                return Err(contour::outside_vault());
+            }
+            Ok(_) => true,
+            Err(_) => false,
+        };
+        let temp = atomic::write_temp(&self.tmp_dir(), bytes).map_err(io_error)?;
+        if exists {
+            return atomic::replace(temp, &path).map_err(io_error);
+        }
+        match atomic::create_new(temp, &path, None) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let temp = atomic::write_temp(&self.tmp_dir(), bytes).map_err(io_error)?;
+                atomic::replace(temp, &path).map_err(io_error)
+            }
+            other => other.map_err(io_error),
+        }
     }
 }
 

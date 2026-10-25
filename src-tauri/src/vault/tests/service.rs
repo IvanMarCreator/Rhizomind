@@ -16,9 +16,11 @@ fn settings_round_trip_with_format_version() {
     let t = TestVault::new();
     assert_eq!(t.vault.read_settings(), Ok(Settings::default()));
 
-    let mut settings = Settings::default();
-    settings.theme = Theme::Dark;
-    settings.font_size = 18;
+    let settings = Settings {
+        theme: Theme::Dark,
+        font_size: 18,
+        ..Settings::default()
+    };
     t.vault.write_settings(&settings).expect("запись");
 
     assert_eq!(t.vault.read_settings(), Ok(settings));

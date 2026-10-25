@@ -115,9 +115,9 @@ pub async fn note_write<R: Runtime>(
 ) -> CoreResult<NoteWriteResponse> {
     limits::path(&request.path, "path")?;
     limits::note_text(&request.text, limits::MAX_NOTE_BYTES)?;
+    // Лимит из настроек действует при открытии (`read_only`, С3.3), здесь —
+    // только жёсткий потолок: снижение лимита не роняет автосохранение.
     let open = core.require_vault(window.label())?;
-    let limit = open.vault.read_settings()?.max_edit_size_bytes;
-    limits::note_text(&request.text, limit)?;
     open.vault
         .write_note(&request.path, &request.text, &request.expected_version)
 }

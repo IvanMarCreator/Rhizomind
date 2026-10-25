@@ -85,9 +85,21 @@ impl SettingsFile {
     /// Записывает настройки поверх файла: известные поля заменяются,
     /// неизвестные сохраняются, версия формата — [`SETTINGS_FORMAT_VERSION`]
     /// (не ниже прочитанной: более новый файл не понижается).
+    ///
+    /// Значение на диске, которое это ядро не понимает (`"theme": "sepia"`
+    /// из более новой версии), не затирается, пока пользователь не выбрал
+    /// в этой настройке другое: интерфейс получил вместо него значение по
+    /// умолчанию и вернул его же.
     pub fn update(&mut self, settings: &Settings) {
+        let presented = serde_json::to_value(self.to_settings()).ok();
         if let Ok(Value::Object(known)) = serde_json::to_value(settings) {
-            self.values.extend(known);
+            for (key, value) in known {
+                let unchanged = presented.as_ref().and_then(|p| p.get(&key)) == Some(&value);
+                if unchanged && self.values.contains_key(&key) {
+                    continue;
+                }
+                self.values.insert(key, value);
+            }
         }
         self.format_version = self.format_version.max(SETTINGS_FORMAT_VERSION);
     }
