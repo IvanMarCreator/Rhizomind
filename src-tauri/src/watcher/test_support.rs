@@ -82,7 +82,9 @@ impl Collector {
         self.inner.lock().expect("сборщик").payloads.clone()
     }
 
-    /// Сигналы наблюдателя (кроме пачек изменений).
+    /// Сигналы наблюдателя (кроме пачек изменений). На Windows тест с
+    /// сигналами не идёт: папку под наблюдением там не переименовать.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn signals(&self) -> Vec<WatcherEvent> {
         self.inner.lock().expect("сборщик").signals.clone()
     }
