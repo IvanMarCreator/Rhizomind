@@ -1,0 +1,498 @@
+{
+  "format_version": 1,
+  "description": "Разбор цели вики-ссылки — текста между [[ и ]]. Одинаково проверяется Rust (src-tauri/src/links) и Vitest (src/core/wikilinks). Правила: псевдоним — после первой | (\\| перед ней — тоже разделитель, как в таблицах), заголовок — после первого # до псевдонима; вокруг цели, заголовка и псевдонима убираются пробелы и табуляции, пустой заголовок или псевдоним — null; ведущая / — путь от корня; компоненты пути через /; последнее .md отбрасывается без учёта регистра. Недопустима (в редакторе — обычный текст): empty_target — нет имени (в том числе [[#Заголовок]]: ссылки только на другие заметки, якоря внутри заметки — другим синтаксисом позже, С3.4); empty_component — пустой компонент пути; dot_component — компонент . или ..; forbidden_chars — \\ : * ? \" < > или управляющий символ (в том числе символы направления текста U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069). Остальные правила имён (зарезервированные имена, точка или пробел в конце) разбор не проверяет: такая ссылка просто не разрешается.",
+  "cases": [
+    {
+      "input": "Встреча",
+      "note": "имя",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка|псевдоним",
+      "note": "псевдоним",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": null,
+        "alias": "псевдоним",
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка#Заголовок",
+      "note": "заголовок",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": "Заголовок",
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Проекты/Альфа/Встреча",
+      "note": "путь",
+      "expected": {
+        "folders": [
+          "Проекты",
+          "Альфа"
+        ],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "/Встреча",
+      "note": "от корня",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": true
+      }
+    },
+    {
+      "input": "/Проекты/Альфа/Встреча#Итоги|встречи",
+      "note": "всё вместе",
+      "expected": {
+        "folders": [
+          "Проекты",
+          "Альфа"
+        ],
+        "name": "Встреча",
+        "heading": "Итоги",
+        "alias": "встречи",
+        "from_root": true
+      }
+    },
+    {
+      "input": "Альфа/Встреча|встречи",
+      "note": "путь и псевдоним",
+      "expected": {
+        "folders": [
+          "Альфа"
+        ],
+        "name": "Встреча",
+        "heading": null,
+        "alias": "встречи",
+        "from_root": false
+      }
+    },
+    {
+      "input": " Встреча ",
+      "note": "пробелы вокруг цели убираются",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "\tВстреча",
+      "note": "табуляция вокруг цели убирается",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Встреча # Итоги | на встрече ",
+      "note": "пробелы вокруг заголовка и псевдонима убираются",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": "Итоги",
+        "alias": "на встрече",
+        "from_root": false
+      }
+    },
+    {
+      "input": "Встреча ",
+      "note": "неразрывный пробел не убирается: Windows разрешает его в конце имени",
+      "expected": {
+        "folders": [],
+        "name": "Встреча ",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Встреча.md",
+      "note": "расширение .md отбрасывается",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Встреча.MD#Цели",
+      "note": "расширение .md без учёта регистра",
+      "expected": {
+        "folders": [],
+        "name": "Встреча",
+        "heading": "Цели",
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Проекты/Альфа/Встреча.md",
+      "note": "путь с .md",
+      "expected": {
+        "folders": [
+          "Проекты",
+          "Альфа"
+        ],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": ".md",
+      "note": "имя из одного расширения не укорачивается",
+      "expected": {
+        "folders": [],
+        "name": ".md",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Итоги..md",
+      "note": "отбрасывается только последнее .md",
+      "expected": {
+        "folders": [],
+        "name": "Итоги.",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "отчёт.pdf",
+      "note": "другое расширение остаётся в имени",
+      "expected": {
+        "folders": [],
+        "name": "отчёт.pdf",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка#",
+      "note": "пустой заголовок — нет заголовка",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка|",
+      "note": "пустой псевдоним — нет псевдонима",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка#Глава#Раздел",
+      "note": "заголовок — всё после первого #",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": "Глава#Раздел",
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка|а|б",
+      "note": "псевдоним — всё после первой |",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": null,
+        "alias": "а|б",
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка\\|псевдоним",
+      "note": "\\| в таблице Markdown — разделитель псевдонима",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": null,
+        "alias": "псевдоним",
+        "from_root": false
+      }
+    },
+    {
+      "input": "Заметка|текст#не заголовок",
+      "note": "# в псевдониме — часть псевдонима",
+      "expected": {
+        "folders": [],
+        "name": "Заметка",
+        "heading": null,
+        "alias": "текст#не заголовок",
+        "from_root": false
+      }
+    },
+    {
+      "input": "Язык C#",
+      "note": "# в имени начинает заголовок (на такую заметку ссылки нет)",
+      "expected": {
+        "folders": [],
+        "name": "Язык C",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Ёлка",
+      "note": "ё сохраняется",
+      "expected": {
+        "folders": [],
+        "name": "Ёлка",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Мой план",
+      "note": "разложенная форма Unicode не меняется при разборе (ключ — при разрешении)",
+      "expected": {
+        "folders": [],
+        "name": "Мой план",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "ВСТРЕЧА",
+      "note": "регистр не меняется при разборе",
+      "expected": {
+        "folders": [],
+        "name": "ВСТРЕЧА",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "😀 Эмодзи/Заметка 2",
+      "note": "эмодзи и цифры",
+      "expected": {
+        "folders": [
+          "😀 Эмодзи"
+        ],
+        "name": "Заметка 2",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "CON",
+      "note": "зарезервированное имя разбирается, но не разрешается: такой заметки быть не может",
+      "expected": {
+        "folders": [],
+        "name": "CON",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "Папка /Встреча",
+      "note": "пробел внутри пути не убирается",
+      "expected": {
+        "folders": [
+          "Папка "
+        ],
+        "name": "Встреча",
+        "heading": null,
+        "alias": null,
+        "from_root": false
+      }
+    },
+    {
+      "input": "",
+      "note": "пусто",
+      "expected": {
+        "invalid": "empty_target"
+      }
+    },
+    {
+      "input": "   ",
+      "note": "только пробелы",
+      "expected": {
+        "invalid": "empty_target"
+      }
+    },
+    {
+      "input": "#Заголовок",
+      "note": "якорь внутри заметки — не вики-ссылка, обычный текст (С3.4)",
+      "expected": {
+        "invalid": "empty_target"
+      }
+    },
+    {
+      "input": "|псевдоним",
+      "note": "только псевдоним",
+      "expected": {
+        "invalid": "empty_target"
+      }
+    },
+    {
+      "input": "/",
+      "note": "только косая черта",
+      "expected": {
+        "invalid": "empty_target"
+      }
+    },
+    {
+      "input": "/#Заголовок",
+      "note": "корень с заголовком",
+      "expected": {
+        "invalid": "empty_target"
+      }
+    },
+    {
+      "input": "Альфа//Встреча",
+      "note": "пустая папка в пути",
+      "expected": {
+        "invalid": "empty_component"
+      }
+    },
+    {
+      "input": "Альфа/",
+      "note": "нет имени после папки",
+      "expected": {
+        "invalid": "empty_component"
+      }
+    },
+    {
+      "input": "//Встреча",
+      "note": "две косые в начале",
+      "expected": {
+        "invalid": "empty_component"
+      }
+    },
+    {
+      "input": "../Встреча",
+      "note": "выход из папки",
+      "expected": {
+        "invalid": "dot_component"
+      }
+    },
+    {
+      "input": "Альфа/./Встреча",
+      "note": "текущая папка",
+      "expected": {
+        "invalid": "dot_component"
+      }
+    },
+    {
+      "input": "..",
+      "note": "только ..",
+      "expected": {
+        "invalid": "dot_component"
+      }
+    },
+    {
+      "input": "Встреча: итоги",
+      "note": "двоеточие",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "Альфа\\Встреча",
+      "note": "обратная косая — не разделитель",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "Что?",
+      "note": "вопросительный знак",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "a*b",
+      "note": "звёздочка",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "\"кавычки\"",
+      "note": "кавычки",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "<тег>",
+      "note": "угловые скобки",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "a\u0001b",
+      "note": "управляющий символ",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "Альфа/Встреча",
+      "note": "управляющий символ в имени после папки",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    },
+    {
+      "input": "Отчёт\u202egpj",
+      "note": "символ направления текста — как управляющий",
+      "expected": {
+        "invalid": "forbidden_chars"
+      }
+    }
+  ]
+}

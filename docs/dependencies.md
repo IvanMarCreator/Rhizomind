@@ -4,7 +4,7 @@
 
 Автоматические проверки при каждом `npm run verify`:
 - лицензии крейтов, запрещённые крейты и функции — `cargo deny check` ([src-tauri/deny.toml](../src-tauri/deny.toml));
-- сетевые крейты по каждой десктопной цели — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
+- сетевые крейты по каждой десктопной цели и крейты только для тестов (`gen-vault`, `proptest`) в программе и сборке — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
 - лицензии production-зависимостей npm с разбором SPDX — [tools/check-licenses/](../tools/check-licenses/);
 - сетевой код в исходниках и собранном интерфейсе — [tools/check-no-network/](../tools/check-no-network/).
 
@@ -16,6 +16,9 @@
 | `tauri-plugin-dialog` | 2.8.3 | Apache-2.0 OR MIT | Системные диалоги, которые вызывает ядро из Rust: выбор папки хранилища, подтверждение внешней ссылки и безвозвратного удаления (ADR 0009). Права `dialog:*` интерфейсу не выдаются. Приносит `rfd` 0.16.1 (системные диалоги ОС) и `tauri-plugin-fs` 2.7.1 (только типы области; плагин fs не регистрируется) | Нет: `cargo tree` по десктопным целям — пусто. Версия задана спецификацией (С5.7); выпущена 14.10.2026 — моложе двух недель на момент добавления |
 | `serde` | 1.0.229 | MIT OR Apache-2.0 | Типы команд ядра в JSON и обратно (`derive`); уже был в дереве через `tauri` | Нет |
 | `serde_json` | 1.0.154 | MIT OR Apache-2.0 | Раскладка окна — JSON-объект как есть; тест конфигурации безопасности. Уже был в дереве через `tauri`; раньше — только dev-зависимость | Нет |
+| `unicode-normalization` | 0.1.26 | MIT OR Apache-2.0 | Ключ имени (модуль `names`): NFC до и после приведения регистра. Уже был в дереве (генератор, `tauri`) | Нет |
+| `icu_casemap` | 2.4.0 | Unicode-3.0 | Ключ имени: полное приведение регистра Unicode (`ß` = `ss`, `ς` = `σ`) по встроенным данным (`compiled_data`, функция по умолчанию). Приносит `icu_casemap_data`, `icu_collections`, `icu_properties`, `icu_provider`, `icu_locale_core`, `zerovec`, `zerotrie`, `yoke`, `zerofrom`, `writeable`, `potential_utf`, `tinystr`, `litemap` (Unicode-3.0; часть уже была в дереве через нормализацию URL в `tauri`) | Нет: только таблицы данных и функции над строками |
+| `nucleo-matcher` | 0.3.1 | MPL-2.0 | Нечёткий поиск быстрого перехода (Ctrl+O) и подсказок вики-ссылок (модули `switcher`, `links`). Без функций по умолчанию, только `unicode-casefold` и `unicode-normalization` (встроенные таблицы, без них 0.3.1 не собирается); `unicode-segmentation` не подключается. Приносит только `memchr` (уже в дереве). Последний выпуск — 02.2024; запасной вариант — `frizbee` (исследование крейтов) | Нет |
 | `url` | 2.5.8 | MIT OR Apache-2.0 | Разбор и нормализация адреса внешней ссылки (схема, punycode, процентное кодирование, параметры `mailto`) — задача 1.5. Уже был в дереве через `tauri`; функции по умолчанию (`std`), без `serde`. Приносит `idna` 1.1.0, `form_urlencoded`, `percent-encoding` (уже были) | Нет сетевых соединений. Оговорка: у крейта есть вспомогательный метод `Url::socket_addrs`, который разрешает имя через `std::net::ToSocketAddrs` (запрос DNS). В нашем коде он запрещён линтером ([clippy.toml](../clippy.toml), `cargo clippy -D warnings` в CI); используются только разбор и чтение частей адреса ([external_links/address.rs](../src-tauri/src/external_links/address.rs)) |
 | `open` | 5.4.5 | MIT | **Только macOS и Linux** (`[target.'cfg(not(windows))'.dependencies]`): передача подтверждённого адреса ОС (ADR 0009, задача 1.5) — `open` в macOS, `xdg-open` и др. в Linux. Без функций `insecure` (запуск через оболочку) и `shellexecute-on-windows` (она делает `fs::metadata(адрес)`). Приносит `is-wsl` 0.4.0 и `is-docker` 0.2.0 (MIT, только Linux: читают системные файлы `/proc` и `/.dockerenv`, чтобы выбрать способ открытия), `libc` | Нет: запускает системную программу открытия, сам в сеть не выходит |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | **Только Windows**: свой вызов `ShellExecuteExW` с классом протокола и `CoInitializeEx` для передачи подтверждённого адреса ОС ([external_links/os.rs](../src-tauri/src/external_links/os.rs)). Функции `Win32_Foundation`, `Win32_System_Com`, `Win32_System_Registry`, `Win32_UI_Shell`. Уже был в дереве через `tauri` | Нет: привязки к функциям Windows; вызываются только перечисленные |
@@ -29,7 +32,9 @@
 | `tauri-build` | 2.7.4 | MIT OR Apache-2.0 | `build.rs`: встраивание конфигурации, `AppManifest::commands` | Нет |
 | `tauri` с функцией `test` | 2.12.5 | MIT OR Apache-2.0 | Подменный runtime для тестов ядра без окна | Нет |
 | `insta` | 1.49.0 | Apache-2.0 | Снимки контракта команд ядра `contracts/v1/*.snap` (функция `json`); те же файлы читает Vitest | Нет |
-| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Временная папка для заглушки хранилища в тестах прав команд | Нет |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Временная папка для заглушки хранилища в тестах прав команд и для хранилищ генератора в тестах `links`, `switcher` | Нет |
+| `proptest` | 1.12.0 | MIT OR Apache-2.0 | Свойства: ключ имени идемпотентен, кратчайший различающий путь разрешается обратно, разбор ссылок и проверка имён не падают на любой строке. Без функций по умолчанию (`fork`, `timeout` не нужны), только `std`. Приносит `rand` 0.10, `rand_xorshift`, `chacha20`, `regex-syntax`, `num-traits`, `core_detect` и др. (только тесты) | Нет |
+| `gen-vault` (путь `tools/gen-vault`) | 0.1.0 | GPL-3.0-only | Генератор тестового хранилища (задача 1.6): сверка `links` с манифестом (`expected_links`, `duplicates`) и 10 000 имён для теста производительности `switcher` | Нет |
 
 ## Генератор тестового хранилища (`tools/gen-vault/Cargo.toml`) — в программу не попадает
 

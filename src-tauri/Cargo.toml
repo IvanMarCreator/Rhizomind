@@ -40,6 +40,14 @@ serde_json = "=1.0.154"
 # Разбор и нормализация адреса внешней ссылки (punycode, процентное
 # кодирование); уже был в дереве через tauri. Без функций serde/std-сети.
 url = "=2.5.8"
+# Ключ имени (модуль names): NFC → полное приведение регистра → NFC.
+unicode-normalization = "=0.1.26"
+icu_casemap = "=2.4.0"
+# Нечёткий поиск быстрого перехода (модуль switcher). Без `unicode-segmentation`
+# (лишний крейт): строки уже приведены ключом имени; `unicode-casefold` и
+# `unicode-normalization` — встроенные таблицы без зависимостей, без них крейт
+# не собирается.
+nucleo-matcher = { version = "=0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
 
 # Передача подтверждённого адреса ОС на Windows: свой вызов ShellExecuteExW
 # с классом протокола (external_links/os.rs). Уже был в дереве через tauri.
@@ -57,6 +65,8 @@ windows-sys = { version = "=0.61.2", features = [
 open = "=5.4.5"
 
 [dev-dependencies]
+# Свойства ключа имени, кратчайшего пути и разбора ссылок (модули names, links).
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
 tauri = { version = "=2.12.5", features = ["test"] }
@@ -64,5 +74,8 @@ tauri = { version = "=2.12.5", features = ["test"] }
 insta = { version = "=1.49.0", features = ["json"] }
 # Временная папка для заглушки хранилища в тестах прав.
 tempfile = "=3.27.0"
+# Генератор тестового хранилища (задача 1.6): ожидаемые разрешения ссылок и
+# кратчайшие пути из манифеста проверяют модуль links.
+gen-vault = { path = "../tools/gen-vault" }
 
 # Профиль выпуска — в корневом Cargo.toml (рабочее пространство).
