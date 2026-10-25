@@ -313,10 +313,11 @@ mod tests {
         // Доступ страницы к буферу обмена и инструменты разработчика не
         // включаются нигде в коде ядра (ADR 0007, 0009).
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // Имена собраны из частей, чтобы этот список сам не попал под проверку.
         let forbidden = [
-            "enable_clipboard_access",
-            ".devtools(true)",
-            "open_devtools",
+            concat!("enable_", "clipboard_access"),
+            concat!(".devtools", "(true)"),
+            concat!("open_", "devtools"),
         ];
         let mut stack = vec![src];
         let mut checked = 0;
@@ -327,11 +328,10 @@ mod tests {
                     stack.push(path);
                 } else if path.extension().is_some_and(|e| e == "rs") {
                     let text = std::fs::read_to_string(&path).expect("исходник");
-                    // Комментарии и сам список запрещённых имён не считаются.
+                    // Комментарии не считаются.
                     let body: String = text
                         .lines()
                         .filter(|line| !line.trim_start().starts_with("//"))
-                        .filter(|line| !line.contains("let forbidden = ["))
                         .collect::<Vec<_>>()
                         .join("\n");
                     for name in forbidden {

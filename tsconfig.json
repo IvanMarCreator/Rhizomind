@@ -19,5 +19,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "tools", "tests", "*.config.ts", "*.config.js"]
+  "include": ["src", "src-isolation", "tools", "tests", "*.config.ts", "*.config.js"]
 }
