@@ -637,11 +637,26 @@ fn events_reach_only_the_window_of_their_vault() {
         seen_b.lock().expect("журнал")
     );
 
+    // Переименование снаружи — note:renamed (история переходов интерфейса
+    // ждёт его), только окну А.
+    std::fs::rename(root_a.join("Заметка.md"), root_a.join("Переименована.md")).expect("перенос");
+    assert!(
+        wait_for(&seen_a, |events| events
+            .iter()
+            .any(|(name, payload)| name == "note:renamed"
+                && payload["from"] == json!(["Заметка.md"])
+                && payload["to"] == json!(["Переименована.md"]))),
+        "окно А не получило note:renamed: {:?}",
+        seen_a.lock().expect("журнал")
+    );
+    assert!(seen_b.lock().expect("журнал").is_empty());
+
     // Удаление снаружи — note:deleted, тоже только окну А.
-    std::fs::remove_file(root_a.join("Заметка.md")).expect("удаление");
-    assert!(wait_for(&seen_a, |events| events.iter().any(
-        |(name, payload)| name == "note:deleted" && payload["path"] == json!(["Заметка.md"])
-    )));
+    std::fs::remove_file(root_a.join("Переименована.md")).expect("удаление");
+    assert!(wait_for(&seen_a, |events| events
+        .iter()
+        .any(|(name, payload)| name == "note:deleted"
+            && payload["path"] == json!(["Переименована.md"]))));
     assert!(seen_b.lock().expect("журнал").is_empty());
 }
 
@@ -806,4 +821,49 @@ fn core_dialogs_share_one_lock_per_window() {
         core_error("vault_open_folder", error).code,
         ErrorCode::NotImplemented
     );
+}
+
+// ---- Скорость ---------------------------------------------------------------
+
+/// Индекс быстрого перехода живёт в состоянии окна: строится при открытии
+/// хранилища и обновляется по изменениям, а не на каждый запрос. Ответ
+/// `switcher_search` на 10 000 заметках — не дольше 100 мс (задача 2.7).
+/// Только в выпускной сборке, как другие тесты скорости:
+/// `cargo test -p rhizomind --release --lib -- --ignored` (шаг CI).
+#[test]
+#[ignore = "тест производительности: запускается отдельным шагом CI в выпускной сборке"]
+fn switcher_search_on_10k_notes_answers_within_100ms() {
+    let app = app();
+    let w = window(&app, "speed");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("большое");
+    for folder in 0..100 {
+        let path = root.join(format!("Папка {folder}"));
+        std::fs::create_dir_all(&path).expect("папка");
+        for note in 0..100 {
+            std::fs::write(path.join(format!("Заметка {folder}-{note}.md")), b"").expect("заметка");
+        }
+    }
+    open_vault(
+        &app,
+        "speed",
+        "speed",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+
+    let mut worst = Duration::ZERO;
+    for query in ["зам 42", "папка 7 99", "з", "нет такой", "заметка 99-99"]
+    {
+        let start = std::time::Instant::now();
+        let found: SwitcherSearchResponse = typed(
+            "switcher_search",
+            call(&w, "switcher_search", json!({ "query": query })).expect("поиск"),
+        );
+        let took = start.elapsed();
+        worst = worst.max(took);
+        assert!(took < Duration::from_millis(100), "«{query}»: {took:?}");
+        assert!(found.items.len() <= 50);
+    }
+    eprintln!("switcher_search на 10 000 заметках: худший ответ {worst:?}");
 }
