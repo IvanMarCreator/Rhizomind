@@ -50,13 +50,16 @@ const PROTECTED_BROWSER_ARGS: &[&str] = &[
 
 /// Строка `additional_browser_args` для выпускной сборки.
 pub fn browser_args() -> String {
-    todo!("задача 0.3")
+    PROTECTED_BROWSER_ARGS.join(" ")
 }
 
 /// Строка флагов для тестовой сборки (функция `webdriver`): защищённый набор и
 /// порт отладки для msedgedriver поверх него. Без порта — защищённый набор.
 pub fn browser_args_with_debug_port(port: Option<u16>) -> String {
-    todo!("задача 0.3")
+    match port {
+        Some(port) => format!("{} --remote-debugging-port={port}", browser_args()),
+        None => browser_args(),
+    }
 }
 
 /// Порт отладки из строки флагов msedgedriver (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`).
@@ -65,7 +68,12 @@ pub fn browser_args_with_debug_port(port: Option<u16>) -> String {
 /// (`--user-data-dir` и др.) отбрасываются, чтобы тестовая сборка работала с
 /// теми же временной папкой и флагами, что и выпускная.
 pub fn webdriver_debug_port(driver_args: Option<&str>) -> Option<u16> {
-    todo!("задача 0.3")
+    driver_args?
+        .split_whitespace()
+        .filter_map(|arg| arg.strip_prefix("--remote-debugging-port="))
+        .find(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|digits| digits.parse::<u16>().ok())
+        .filter(|port| *port != 0)
 }
 
 /// Удалять ли переменную окружения до создания окна.
@@ -78,7 +86,13 @@ pub fn webdriver_debug_port(driver_args: Option<&str>) -> Option<u16> {
 ///   извне (WebDriver). Сохраняется только в тестовой сборке, где этим
 ///   управляет tauri-driver.
 pub fn is_webview_override_var(name: &OsStr, keep_automation: bool) -> bool {
-    todo!("задача 0.3")
+    let Some(name) = name.to_str() else {
+        // Имя не в Unicode — не наша переменная: загрузчик WebView2 и Tauri
+        // таких не читают.
+        return false;
+    };
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("WEBVIEW2_") || (!keep_automation && upper == "TAURI_WEBVIEW_AUTOMATION")
 }
 
 /// Имена переменных, которые нужно удалить, из перечня окружения.
@@ -86,7 +100,10 @@ pub fn webview_override_vars(
     vars: impl IntoIterator<Item = (OsString, OsString)>,
     keep_automation: bool,
 ) -> Vec<OsString> {
-    todo!("задача 0.3")
+    vars.into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| is_webview_override_var(name, keep_automation))
+        .collect()
 }
 
 /// Удаляет из окружения процесса переменные, которые могли бы переопределить
@@ -94,7 +111,13 @@ pub fn webview_override_vars(
 ///
 /// Вызывается первым делом в `crate::run`, до создания потоков и окна.
 pub fn remove_webview_overrides(keep_automation: bool) -> Vec<OsString> {
-    todo!("задача 0.3")
+    let names = webview_override_vars(std::env::vars_os(), keep_automation);
+    for name in &names {
+        // SAFETY: вызывается в начале `run()` из `main`, пока в процессе один
+        // поток и окружение никто не читает параллельно.
+        unsafe { std::env::remove_var(name) };
+    }
+    names
 }
 
 /// Может ли главное окно перейти по адресу.
@@ -106,7 +129,17 @@ pub fn remove_webview_overrides(keep_automation: bool) -> Vec<OsString> {
 /// `file:`, `data:`, `javascript:` — отклоняется: внешняя ссылка открывается
 /// только своей командой ядра с подтверждением (ADR 0009).
 pub fn is_allowed_navigation(url: &tauri::Url, dev_url: Option<&tauri::Url>) -> bool {
-    todo!("задача 0.3")
+    let own_app = match url.scheme() {
+        "http" => url.host_str() == Some("tauri.localhost") && url.port().is_none(),
+        "tauri" => url.host_str() == Some("localhost") && url.port().is_none(),
+        _ => false,
+    };
+    let dev_server = dev_url.is_some_and(|dev| {
+        url.scheme() == dev.scheme()
+            && url.host_str() == dev.host_str()
+            && url.port_or_known_default() == dev.port_or_known_default()
+    });
+    own_app && url.username().is_empty() && url.password().is_none() || dev_server
 }
 
 #[cfg(test)]
