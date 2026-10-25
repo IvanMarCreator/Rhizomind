@@ -73,6 +73,14 @@ jobs:
           cargo test -p gen-vault --release --locked -- --ignored --nocapture
           cargo run -p gen-vault --release --locked -- --notes 10000 --out "$RUNNER_TEMP/vault-10k" --manifest "$RUNNER_TEMP/vault-10k.json"
 
+      # Слежение за папкой под нагрузкой (задача 1.4, ADR 0006): 10 000 файлов,
+      # массовая замена как при git checkout, переименования, переполнение.
+      # Тестовая сборка — та же, что в verify (отладочный профиль).
+      - name: Слежение за папкой под нагрузкой
+        timeout-minutes: 15
+        shell: bash
+        run: cargo test -p rhizomind --locked --lib watcher::load_tests -- --ignored --nocapture --test-threads=1
+
       - name: Сборка приложения
         run: npm run build
 
