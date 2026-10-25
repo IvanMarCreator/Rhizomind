@@ -77,10 +77,10 @@ pub fn visible(entry: &std::fs::DirEntry) -> Option<(String, std::fs::FileType)>
     (!kind.is_symlink()).then_some((name, kind))
 }
 
-/// Корзина ОС в отдельном потоке (COM на Windows, D-Bus-независимая
-/// freedesktop-корзина на Linux). На Windows сначала проверяется тип тома:
-/// корзина есть только на несъёмных локальных дисках — на флешке и в
-/// сетевой папке оболочка удалила бы файл безвозвратно сама.
+/// Корзина ОС в отдельном потоке (COM на Windows, freedesktop-корзина в
+/// файлах на Linux). На Windows сначала проверяется тип тома: корзина есть
+/// только на несъёмных локальных дисках — на флешке и в сетевой папке
+/// оболочка удалила бы файл безвозвратно сама (`NoTrash` → подтверждение).
 pub fn os_trash(path: &Path) -> Result<(), TrashFailure> {
     #[cfg(windows)]
     if !volume_has_recycle_bin(path) {
@@ -89,7 +89,10 @@ pub fn os_trash(path: &Path) -> Result<(), TrashFailure> {
     let owned = path.to_path_buf();
     match std::thread::spawn(move || trash::delete(&owned)).join() {
         Ok(Ok(())) => Ok(()),
-        _ => Err(TrashFailure::NoTrash),
+        // Корзина есть, но отказала (файл занят, нет прав) — ошибка, без
+        // безвозвратного удаления. На Linux и macOS отличить «нет корзины»
+        // от отказа нельзя: безвозвратное удаление там не предлагается.
+        _ => Err(TrashFailure::Failed),
     }
 }
 
@@ -109,7 +112,37 @@ fn volume_has_recycle_bin(path: &Path) -> bool {
     unsafe { GetDriveTypeW(volume.as_ptr()) == DRIVE_FIXED }
 }
 
-/// Следующая смена только регистра в этом потоке пойдёт в два шага и
-/// «упадёт» после первого (тесты).
+/// Журнал двухшаговой смены регистра (`.rhizomind/rename.json`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RenameJournal {
+    /// Прежнее имя.
+    pub from: crate::commands::VaultPath,
+    /// Промежуточное скрытое имя.
+    pub step: crate::commands::VaultPath,
+    /// Новое имя.
+    pub to: crate::commands::VaultPath,
+}
+
 #[cfg(test)]
-pub fn crash_after_first_rename_step() {}
+thread_local! {
+    static CRASH_AFTER_FIRST_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Следующая смена только регистра в этом потоке пойдёт в два шага и
+/// «упадёт» после первого — как завершение процесса (тесты).
+#[cfg(test)]
+pub fn crash_after_first_rename_step() {
+    CRASH_AFTER_FIRST_STEP.with(|cell| cell.set(true));
+}
+
+/// Подмена [`crash_after_first_rename_step`] сработала (и сброшена).
+pub fn take_crash_after_first_step() -> bool {
+    #[cfg(test)]
+    {
+        CRASH_AFTER_FIRST_STEP.with(std::cell::Cell::take)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}

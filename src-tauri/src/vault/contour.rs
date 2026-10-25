@@ -30,9 +30,9 @@ pub const SERVICE_DIR: &str = ".rhizomind";
 /// `\\.\` и абсолютные пути); `:` (буквы дисков и потоки NTFS `имя:поток`);
 /// NUL, управляющие символы и прочие запрещённые в Windows `* ? " < > |`;
 /// зарезервированные имена Windows, в том числе с расширением (`nul.md`);
-/// точка или пробел в конце; имена вида короткого имени 8.3 (`RHIZOM~1`,
-/// `ПРОЕКТ~2.MD`) — через них NTFS открыла бы элемент под другим именем, в
-/// том числе служебную папку.
+/// точка или пробел в конце. Имена вида короткого имени 8.3 (`RHIZOM~1`)
+/// проверяются по диску в [`Contour::resolve`]: настоящий файл `Итог~1.md`
+/// разрешён, псевдоним другого элемента — нет.
 pub fn check_component(component: &str) -> CoreResult<()> {
     let forbidden = |c: char| {
         c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
@@ -43,14 +43,13 @@ pub fn check_component(component: &str) -> CoreResult<()> {
         && !component.chars().any(forbidden)
         && !component.ends_with('.')
         && !component.ends_with(' ')
-        && !is_reserved_device(component)
-        && !looks_like_short_name(component);
+        && !is_reserved_device(component);
     if ok { Ok(()) } else { Err(invalid_path()) }
 }
 
 /// Зарезервированное имя устройства Windows: основа до первой точки (без
 /// пробелов в конце) — `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
-/// `COM1`–`COM9`, `LPT1`–`LPT9` и `COM¹`–`COM³`, `LPT¹`–`LPT³`.
+/// `COM0`–`COM9`, `LPT0`–`LPT9` и `COM¹`–`COM³`, `LPT¹`–`LPT³`.
 fn is_reserved_device(component: &str) -> bool {
     let base = component
         .split('.')
@@ -65,7 +64,7 @@ fn is_reserved_device(component: &str) -> bool {
         upper.strip_prefix(prefix).is_some_and(|rest| {
             matches!(
                 rest,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
             )
         })
     })
@@ -135,14 +134,25 @@ impl Contour {
             return Err(invalid_path());
         }
         let mut current = self.root.clone();
+        let mut exists = true;
         for component in path.components() {
+            let parent = current.clone();
             current.push(component);
+            if !exists {
+                // Дальше по пути ничего нет: оставшиеся компоненты просто
+                // дописываются; появление ссылки проверит дескриптор.
+                continue;
+            }
             match std::fs::symlink_metadata(&current) {
                 Ok(meta) if meta.file_type().is_symlink() => return Err(outside_vault()),
-                Ok(_) => {}
-                // Дальше по пути ничего нет: ссылкой он стать уже не может —
-                // это проверит дескриптор после открытия.
-                Err(_) => break,
+                Ok(_) => {
+                    if looks_like_short_name(component) && !named_on_disk(&parent, component) {
+                        // Короткое имя 8.3 другого элемента: NTFS открыла бы
+                        // его под чужим именем (например, `RHIZOM~1`).
+                        return Err(invalid_path());
+                    }
+                }
+                Err(_) => exists = false,
             }
         }
         if !current.starts_with(&self.root) {
@@ -170,6 +180,20 @@ impl Contour {
         self.check_real_path(&real, allow_service)
     }
 
+    /// Итоговый путь открытого файла лежит внутри папки `dir` (например,
+    /// `.rhizomind/tmp`) — для временных и служебных файлов ядра.
+    pub fn check_opened_in(&self, file: &File, fallback: &Path, dir: &Path) -> CoreResult<()> {
+        let real = final_path(file).or_else(|| {
+            std::fs::canonicalize(fallback)
+                .ok()
+                .map(|p| dunce::simplified(&p).to_path_buf())
+        });
+        match real {
+            Some(real) if strip_root(dir, &real).is_some() => Ok(()),
+            _ => Err(outside_vault()),
+        }
+    }
+
     /// Проверка уже разрешённого (итогового) пути.
     pub fn check_real_path(&self, real: &Path, allow_service: bool) -> CoreResult<()> {
         let rest = strip_root(&self.root, real).ok_or_else(outside_vault)?;
@@ -189,22 +213,55 @@ impl Contour {
     }
 }
 
+/// В папке `parent` есть элемент, который на диске называется `name`
+/// (по ключу имени) — а не только откликается на него как короткое имя.
+fn named_on_disk(parent: &Path, name: &str) -> bool {
+    let key = crate::names::key(name);
+    std::fs::read_dir(parent).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| crate::names::key(n) == key)
+        })
+    })
+}
+
 /// Остаток пути после корня. На Windows компоненты сравниваются без учёта
-/// регистра (NTFS), на других ОС — как есть.
+/// регистра (NTFS), а `C:` и `\\?\C:` (длинные пути больше 260 символов
+/// `GetFinalPathNameByHandleW` и `dunce` оставляют с префиксом) — один и тот
+/// же диск; так же `\\server\share` и `\\?\UNC\server\share`. На других
+/// ОС — как есть.
 fn strip_root<'a>(root: &Path, real: &'a Path) -> Option<&'a Path> {
     if cfg!(windows) {
         let mut real_parts = real.components();
         for root_part in root.components() {
             let real_part = real_parts.next()?;
-            let same = root_part.as_os_str().to_string_lossy().to_lowercase()
-                == real_part.as_os_str().to_string_lossy().to_lowercase();
-            if !same {
+            if component_key(root_part) != component_key(real_part) {
                 return None;
             }
         }
         Some(real_parts.as_path())
     } else {
         real.strip_prefix(root).ok()
+    }
+}
+
+/// Компонент пути для сравнения на Windows.
+fn component_key(component: Component<'_>) -> String {
+    use std::path::Prefix;
+    match component {
+        Component::Prefix(prefix) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                format!("{}:", char::from(letter).to_ascii_lowercase())
+            }
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => format!(
+                r"\\{}\{}",
+                server.to_string_lossy().to_lowercase(),
+                share.to_string_lossy().to_lowercase()
+            ),
+            _ => prefix.as_os_str().to_string_lossy().to_lowercase(),
+        },
+        other => other.as_os_str().to_string_lossy().to_lowercase(),
     }
 }
 

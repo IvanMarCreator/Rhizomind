@@ -49,6 +49,7 @@ fn tmp_folder_replaced_by_link_after_open_is_not_used() {
         0,
         "снаружи пусто"
     );
+    assert_eq!(outside_names(&t), ["secret.md", "ловушка"]);
     assert_eq!(t.bytes("Заметка.md"), "старое\n".as_bytes());
     assert_eq!(
         code(t.vault.write_settings(&Settings::default())),

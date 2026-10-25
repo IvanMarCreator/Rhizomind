@@ -58,6 +58,10 @@ const TMP_DIR: &str = "tmp";
 const SETTINGS_FILE: &str = "settings.json";
 /// Раскладка окна — `.rhizomind/workspace.json`.
 const WORKSPACE_FILE: &str = "workspace.json";
+/// Журнал двухшаговой смены регистра — `.rhizomind/rename.json`.
+const RENAME_JOURNAL: &str = "rename.json";
+/// Попыток записи, если файл менялся снаружи во время подготовки.
+const WRITE_ATTEMPTS: usize = 3;
 /// Служебный файл больше этого не читается (правка руками) — значения по
 /// умолчанию.
 const MAX_SERVICE_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -90,7 +94,7 @@ pub type OwnWriteHook = Box<dyn Fn(&OwnWrite) + Send + Sync + 'static>;
 /// Почему корзина ОС не приняла элемент.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrashFailure {
-    /// На томе нет корзины (флешка, сетевая папка) или корзина отказала.
+    /// На томе нет корзины (флешка, сетевая папка).
     NoTrash,
     /// Корзина есть, но не приняла элемент.
     Failed,
@@ -166,7 +170,8 @@ impl Vault {
             own_writes: own_writes::OwnWrites::default(),
             trash_backend: RwLock::new(None),
         };
-        vault.clean_tmp();
+        vault.finish_interrupted_rename();
+        vault.recover_tmp();
         Ok(vault)
     }
 
@@ -175,15 +180,88 @@ impl Vault {
         self.contour.root()
     }
 
-    /// Убирает остатки временных файлов прерванных записей.
-    fn clean_tmp(&self) {
-        if let Ok(entries) = std::fs::read_dir(self.tmp_dir()) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_file()) {
-                    let _ = std::fs::remove_file(entry.path());
+    /// Разбирает остатки в `.rhizomind/tmp/` после аварийного завершения.
+    /// Текст заметки (`.note-*`, в том числе резервная копия замены) не
+    /// удаляется молча: он переносится в корень хранилища заметкой
+    /// «Восстановлено ГГГГ-ММ-ДД ЧЧ-ММ.md» — к какой заметке он относился,
+    /// по временному файлу не узнать, а потерять несохранённый ввод хуже,
+    /// чем показать лишнюю заметку. Остатки служебных файлов удаляются.
+    fn recover_tmp(&self) {
+        let Ok(entries) = std::fs::read_dir(self.tmp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if !name.starts_with(atomic::NOTE_PREFIX) {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            if entry.metadata().is_ok_and(|m| m.len() == 0) {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or_else(|_| std::time::SystemTime::now());
+            let stamp = local_time::minute_stamp(modified);
+            for attempt in 1..=1000u32 {
+                let file_name = if attempt == 1 {
+                    format!("Восстановлено {stamp}.md")
+                } else {
+                    format!("Восстановлено {stamp} {attempt}.md")
+                };
+                if self
+                    .sibling_taken(self.root(), &file_name, None)
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                match fsops::rename_noreplace(&path, &self.root().join(&file_name)) {
+                    Ok(()) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(_) => break,
                 }
             }
         }
+    }
+
+    /// Доводит до конца смену только регистра, прерванную между двумя
+    /// шагами (журнал `.rhizomind/rename.json`): элемент под промежуточным
+    /// именем получает новое имя, а если оно занято — прежнее.
+    fn finish_interrupted_rename(&self) {
+        let journal = self.service.join(RENAME_JOURNAL);
+        let Ok(Some(bytes)) = self
+            .read_service_file(RENAME_JOURNAL)
+            .map(ServiceRead::bytes)
+        else {
+            return;
+        };
+        if let Ok(entry) = serde_json::from_slice::<fsops::RenameJournal>(&bytes)
+            && let (Ok(step), Ok(to), Ok(from)) = (
+                self.contour.resolve(&entry.step),
+                self.contour.resolve(&entry.to),
+                self.contour.resolve(&entry.from),
+            )
+            && std::fs::symlink_metadata(&step).is_ok()
+            && fsops::rename_noreplace(&step, &to).is_err()
+        {
+            let _ = fsops::rename_noreplace(&step, &from);
+        }
+        let _ = std::fs::remove_file(journal);
+    }
+
+    /// Временный файл в `.rhizomind/tmp/`, проверенный по дескриптору до
+    /// записи байтов.
+    fn temp(&self, kind: atomic::Kind, bytes: &[u8]) -> CoreResult<tempfile::TempPath> {
+        let tmp = self.tmp_dir();
+        let inside =
+            |file: &File, path: &Path| self.contour.check_opened_in(file, path, &tmp).is_ok();
+        atomic::write_temp(&tmp, kind, bytes, &inside).map_err(io_error)
     }
 
     fn tmp_dir(&self) -> PathBuf {
@@ -269,9 +347,18 @@ impl Vault {
     pub fn read_note(&self, path: &VaultPath) -> CoreResult<NoteReadResponse> {
         let abs = self.contour.resolve(path)?;
         require_note_name(path)?;
+        let limit = self.read_settings()?.max_edit_size_bytes;
+        if let Some(version) = self.huge_note_version(&abs)? {
+            // Больше жёсткого потолка: текст не читается целиком (контракт —
+            // пустой текст, только чтение).
+            return Ok(NoteReadResponse {
+                text: String::new(),
+                version,
+                read_only: Some(ReadOnlyReason::TooLarge { limit_bytes: limit }),
+            });
+        }
         let (bytes, version) = self.read_existing_note(&abs)?;
         let decoded = text::decode(&bytes);
-        let limit = self.read_settings()?.max_edit_size_bytes;
         let read_only = if decoded.invalid_utf8 {
             Some(ReadOnlyReason::InvalidUtf8)
         } else if version.size > limit {
@@ -284,6 +371,28 @@ impl Vault {
             version,
             read_only,
         })
+    }
+
+    /// Версия файла больше [`limits::MAX_NOTE_BYTES`] — хэш потоком, без
+    /// чтения в память; файл меньше — `None`.
+    fn huge_note_version(&self, abs: &Path) -> CoreResult<Option<FileVersion>> {
+        let meta = std::fs::metadata(abs).map_err(io_error)?;
+        if meta.is_dir() {
+            return Err(CoreError::new(ErrorCode::NotANote));
+        }
+        if meta.len() <= crate::commands::limits::MAX_NOTE_BYTES {
+            return Ok(None);
+        }
+        let file = File::open(abs).map_err(io_error)?;
+        self.contour.check_opened(&file, abs, false)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(&file).map_err(io_error)?;
+        let meta = file.metadata().map_err(io_error)?;
+        Ok(Some(FileVersion {
+            hash: hasher.finalize().to_hex().to_string(),
+            size: meta.len(),
+            modified_ms: meta.modified().map(millis).unwrap_or(0),
+        }))
     }
 
     /// Байты и версия существующей заметки; итоговый путь проверен по
@@ -330,37 +439,49 @@ impl Vault {
     ) -> CoreResult<NoteWriteResponse> {
         let abs = self.contour.resolve(path)?;
         require_note_name(path)?;
-        let (disk, disk_version) = self.read_existing_note(&abs)?;
-        let decoded = text::decode(&disk);
-        let same_content = disk_version.hash == expected.hash && disk_version.size == expected.size;
-        if decoded.invalid_utf8 && same_content {
-            return Err(CoreError::new(ErrorCode::ReadOnly));
+        let mut copied: Vec<String> = Vec::new();
+        let mut copy_path: Option<VaultPath> = None;
+        for _ in 0..WRITE_ATTEMPTS {
+            let (disk, disk_version) = self.read_existing_note(&abs)?;
+            let decoded = text::decode(&disk);
+            let same_content =
+                disk_version.hash == expected.hash && disk_version.size == expected.size;
+            if decoded.invalid_utf8 && same_content {
+                return Err(CoreError::new(ErrorCode::ReadOnly));
+            }
+            if !decoded.invalid_utf8 && decoded.text == text::normalize(text) {
+                return Ok(respond(disk_version, copy_path));
+            }
+            if !same_content && !copied.contains(&disk_version.hash) {
+                // Сначала копия версии с диска, потом замена: версия с диска
+                // не теряется ни при каком сбое.
+                copy_path = Some(self.save_conflict_copy(path, &abs, &disk, &disk_version)?);
+                copied.push(disk_version.hash.clone());
+            }
+            let bytes = text::Format::of(&disk).encode(text);
+            let temp = self.temp(atomic::Kind::Note, &bytes)?;
+            atomic::temp_written_hook();
+            // Повторная сверка перед заменой: окно, в котором внешняя правка
+            // могла бы потеряться, — только сама замена.
+            if self.disk_hash_and_size(&abs)? != (disk_version.hash.clone(), disk_version.size) {
+                continue;
+            }
+            let hash = blake3::hash(&bytes).to_hex().to_string();
+            self.own_writes.register(path, &hash, bytes.len() as u64);
+            atomic::replace(temp, &abs).map_err(io_error)?;
+            let version = self.version_after_write(&abs, hash, bytes.len() as u64)?;
+            return Ok(respond(version, copy_path));
         }
-        if !decoded.invalid_utf8 && decoded.text == text::normalize(text) {
-            return Ok(NoteWriteResponse::Saved {
-                version: disk_version,
-            });
-        }
-        let bytes = text::Format::of(&disk).encode(text);
-        if same_content {
-            let version = self.replace_note(path, &abs, &bytes)?;
-            return Ok(NoteWriteResponse::Saved { version });
-        }
-        // Сначала копия версии с диска, потом замена: версия с диска не
-        // теряется ни при каком сбое.
-        let copy_path = self.save_conflict_copy(path, &abs, &disk, &disk_version)?;
-        let version = self.replace_note(path, &abs, &bytes)?;
-        Ok(NoteWriteResponse::ConflictSaved { version, copy_path })
+        Err(CoreError::new(ErrorCode::IoFailed))
     }
 
-    /// Атомарно заменяет существующую заметку; своя запись регистрируется до
-    /// замены. Возвращает версию нового файла.
-    fn replace_note(&self, path: &VaultPath, abs: &Path, bytes: &[u8]) -> CoreResult<FileVersion> {
-        let hash = blake3::hash(bytes).to_hex().to_string();
-        let temp = atomic::write_temp(&self.tmp_dir(), bytes).map_err(io_error)?;
-        self.own_writes.register(path, &hash, bytes.len() as u64);
-        atomic::replace(temp, abs).map_err(io_error)?;
-        self.version_after_write(abs, hash, bytes.len() as u64)
+    /// Хэш и размер файла на диске сейчас.
+    fn disk_hash_and_size(&self, abs: &Path) -> CoreResult<(String, u64)> {
+        let mut file = File::open(abs).map_err(io_error)?;
+        self.contour.check_opened(&file, abs, false)?;
+        let mut hasher = blake3::Hasher::new();
+        let size = std::io::copy(&mut file, &mut hasher).map_err(io_error)?;
+        Ok((hasher.finalize().to_hex().to_string(), size))
     }
 
     /// Версия только что записанного файла: хэш и размер известны, дата —
@@ -407,7 +528,7 @@ impl Vault {
             }
             let copy_path =
                 VaultPath::from_components(parent.iter().cloned().chain([copy_name.clone()]));
-            let temp = atomic::write_temp(&self.tmp_dir(), disk).map_err(io_error)?;
+            let temp = self.temp(atomic::Kind::Note, disk)?;
             self.own_writes
                 .register(&copy_path, &hash, disk.len() as u64);
             match atomic::create_new(temp, &dir.join(&copy_name), Some(abs)) {
@@ -556,20 +677,57 @@ impl Vault {
         }
         let target = parent.join(new_name);
         let case_only = crate::names::key(old_name) == crate::names::key(new_name);
-        if case_only && cfg!(windows) {
-            let step = parent.join(format!(
-                ".{}.rhizomind-rename",
-                blake3::hash(new_name.as_bytes()).to_hex()
-            ));
-            fsops::rename_noreplace(&abs, &step).map_err(io_error)?;
-            if let Err(error) = fsops::rename_noreplace(&step, &target) {
-                let _ = fsops::rename_noreplace(&step, &abs);
-                return Err(io_error(error));
+        if case_only {
+            // NTFS умеет сменить регистр одним переименованием; двухшаговый
+            // путь через скрытое имя — запасной (другие ФС, сетевые папки).
+            let crash = fsops::take_crash_after_first_step();
+            if crash || fsops::rename_noreplace(&abs, &target).is_err() {
+                self.rename_in_two_steps(path, &new_path, &abs, &target, crash)?;
             }
         } else {
             fsops::rename_noreplace(&abs, &target).map_err(io_error)?;
         }
         Ok(new_path)
+    }
+
+    /// Смена только регистра в два шага: `имя` → `.rhizomind-rename-…` →
+    /// `Имя`. Перед первым шагом пишется журнал `.rhizomind/rename.json`:
+    /// прерванное переименование доводит до конца следующее открытие.
+    fn rename_in_two_steps(
+        &self,
+        path: &VaultPath,
+        new_path: &VaultPath,
+        abs: &Path,
+        target: &Path,
+        crash_after_first_step: bool,
+    ) -> CoreResult<()> {
+        let hash = blake3::hash(new_path.components().join("/").as_bytes()).to_hex();
+        let step_name = format!(".rhizomind-rename-{}", &hash.as_str()[..16]);
+        let parent: Vec<String> = path.components()[..path.components().len() - 1].to_vec();
+        let step = VaultPath::from_components(parent.into_iter().chain([step_name]));
+        let step_abs = self.contour.resolve(&step)?;
+        let journal = fsops::RenameJournal {
+            from: path.clone(),
+            step: step.clone(),
+            to: new_path.clone(),
+        };
+        let bytes =
+            serde_json::to_vec(&journal).map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
+        self.write_service_file(RENAME_JOURNAL, &bytes)?;
+        let journal_path = self.service.join(RENAME_JOURNAL);
+        if let Err(error) = fsops::rename_noreplace(abs, &step_abs) {
+            let _ = std::fs::remove_file(&journal_path);
+            return Err(io_error(error));
+        }
+        if crash_after_first_step {
+            return Err(CoreError::new(ErrorCode::IoFailed));
+        }
+        let second = fsops::rename_noreplace(&step_abs, target);
+        if second.is_err() {
+            let _ = fsops::rename_noreplace(&step_abs, abs);
+        }
+        let _ = std::fs::remove_file(&journal_path);
+        second.map_err(io_error)
     }
 
     /// Перемещает файл или папку в `new_dir`; возвращает новый путь.
@@ -631,7 +789,10 @@ impl Vault {
         };
         match result {
             Ok(()) => Ok(TrashOutcome::Trashed),
-            Err(TrashFailure::NoTrash | TrashFailure::Failed) => {
+            // Корзина есть, но не приняла (файл занят, нет прав):
+            // безвозвратное удаление не предлагается.
+            Err(TrashFailure::Failed) => Err(CoreError::new(ErrorCode::IoFailed)),
+            Err(TrashFailure::NoTrash) => {
                 if !confirm_permanent(path) {
                     return Ok(TrashOutcome::Cancelled);
                 }
@@ -655,39 +816,105 @@ impl Vault {
     }
 
     fn read_settings_file(&self) -> CoreResult<SettingsFile> {
-        Ok(self
-            .read_service_file(SETTINGS_FILE)?
-            .and_then(|bytes| SettingsFile::parse(&bytes))
-            .unwrap_or_default())
+        Ok(self.read_settings_state()?.0)
     }
 
-    /// Служебный файл `.rhizomind/<name>`; нет файла — `None`. Итоговый путь
-    /// проверен по дескриптору; слишком большой файл не читается (`None`).
-    fn read_service_file(&self, name: &str) -> CoreResult<Option<Vec<u8>>> {
+    /// Настройки с диска и признак «файл есть, но испорчен» (не JSON-объект
+    /// или больше 4 МБ).
+    fn read_settings_state(&self) -> CoreResult<(SettingsFile, bool)> {
+        Ok(match self.read_service_file(SETTINGS_FILE)? {
+            ServiceRead::Missing => (SettingsFile::default(), false),
+            ServiceRead::TooLarge => (SettingsFile::default(), true),
+            ServiceRead::Bytes(bytes) => match SettingsFile::parse(&bytes) {
+                Some(file) => (file, false),
+                None => (SettingsFile::default(), true),
+            },
+        })
+    }
+
+    /// Служебная папка `.rhizomind/` — настоящая папка внутри корня (её
+    /// могли подменить ссылкой после открытия хранилища).
+    fn check_service_dir(&self) -> CoreResult<()> {
+        let meta = std::fs::symlink_metadata(&self.service).map_err(io_error)?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(contour::outside_vault());
+        }
+        let handle = contour::open_dir(&self.service).map_err(io_error)?;
+        self.contour.check_opened(&handle, &self.service, true)
+    }
+
+    /// Служебный файл `.rhizomind/<name>`. Служебная папка и итоговый путь
+    /// файла проверены по дескриптору; файл больше 4 МБ не читается.
+    fn read_service_file(&self, name: &str) -> CoreResult<ServiceRead> {
+        self.check_service_dir()?;
         let path = self.service.join(name);
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() => return Err(contour::outside_vault()),
-            Ok(meta) if !meta.is_file() || meta.len() > MAX_SERVICE_FILE_BYTES => return Ok(None),
+            Ok(meta) if !meta.is_file() || meta.len() > MAX_SERVICE_FILE_BYTES => {
+                return Ok(ServiceRead::TooLarge);
+            }
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ServiceRead::Missing),
             Err(e) => return Err(io_error(e)),
         }
         let file = File::open(&path).map_err(io_error)?;
-        self.contour.check_opened(&file, &path, true)?;
+        self.contour.check_opened_in(&file, &path, &self.service)?;
         let mut bytes = Vec::new();
         file.take(MAX_SERVICE_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
             .map_err(io_error)?;
-        Ok((bytes.len() as u64 <= MAX_SERVICE_FILE_BYTES).then_some(bytes))
+        Ok(if bytes.len() as u64 <= MAX_SERVICE_FILE_BYTES {
+            ServiceRead::Bytes(bytes)
+        } else {
+            ServiceRead::TooLarge
+        })
     }
 
     /// Записывает настройки хранилища атомарно ([`SettingsFile::update`]).
+    /// Испорченный файл (не разобрался, больше 4 МБ) не затирается молча:
+    /// сначала копия `settings.json.bak` (`.bak.2`, … — без затирания
+    /// прежних копий).
     pub fn write_settings(&self, settings: &Settings) -> CoreResult<()> {
-        let mut file = self.read_settings_file()?;
+        let (mut file, broken) = self.read_settings_state()?;
+        if broken {
+            self.backup_service_file(SETTINGS_FILE)?;
+        }
         file.update(settings);
         let bytes =
             serde_json::to_vec_pretty(&file).map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
         self.write_service_file(SETTINGS_FILE, &bytes)
+    }
+
+    /// Копия служебного файла `<name>.bak` (или `.bak.N`) рядом с ним.
+    fn backup_service_file(&self, name: &str) -> CoreResult<()> {
+        let source = self.service.join(name);
+        let mut input = File::open(&source).map_err(io_error)?;
+        self.contour
+            .check_opened_in(&input, &source, &self.service)?;
+        for attempt in 1..=1000u32 {
+            let backup = if attempt == 1 {
+                format!("{name}.bak")
+            } else {
+                format!("{name}.bak.{attempt}")
+            };
+            let target = self.service.join(backup);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(mut output) => {
+                    self.contour
+                        .check_opened_in(&output, &target, &self.service)?;
+                    std::io::copy(&mut input, &mut output).map_err(io_error)?;
+                    output.sync_all().map_err(io_error)?;
+                    return Ok(());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(io_error(e)),
+            }
+        }
+        Err(CoreError::new(ErrorCode::IoFailed))
     }
 
     /// Раскладка окна из `.rhizomind/workspace.json`; файла нет — `None`.
@@ -696,6 +923,7 @@ impl Vault {
     pub fn read_workspace(&self) -> CoreResult<Option<Workspace>> {
         Ok(self
             .read_service_file(WORKSPACE_FILE)?
+            .bytes()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .and_then(|value| match value {
                 serde_json::Value::Object(map) => Some(Workspace(map)),
@@ -710,9 +938,11 @@ impl Vault {
         self.write_service_file(WORKSPACE_FILE, &bytes)
     }
 
-    /// Атомарно пишет служебный файл `.rhizomind/<name>`; файл-ссылка не
-    /// заменяется (`outside_vault`).
+    /// Атомарно пишет служебный файл `.rhizomind/<name>`. Служебная папка
+    /// проверена по дескриптору, временный файл — тоже (до записи байтов);
+    /// файл-ссылка не заменяется (`outside_vault`).
     fn write_service_file(&self, name: &str, bytes: &[u8]) -> CoreResult<()> {
+        self.check_service_dir()?;
         let path = self.service.join(name);
         let exists = match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
@@ -721,16 +951,36 @@ impl Vault {
             Ok(_) => true,
             Err(_) => false,
         };
-        let temp = atomic::write_temp(&self.tmp_dir(), bytes).map_err(io_error)?;
+        let temp = self.temp(atomic::Kind::Service, bytes)?;
         if exists {
             return atomic::replace(temp, &path).map_err(io_error);
         }
         match atomic::create_new(temp, &path, None) {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let temp = atomic::write_temp(&self.tmp_dir(), bytes).map_err(io_error)?;
+                let temp = self.temp(atomic::Kind::Service, bytes)?;
                 atomic::replace(temp, &path).map_err(io_error)
             }
             other => other.map_err(io_error),
+        }
+    }
+}
+
+/// Результат чтения служебного файла.
+enum ServiceRead {
+    /// Файла нет.
+    Missing,
+    /// Файл больше 4 МБ или не обычный файл — не читается.
+    TooLarge,
+    /// Содержимое.
+    Bytes(Vec<u8>),
+}
+
+impl ServiceRead {
+    /// Содержимое, если прочитано.
+    fn bytes(self) -> Option<Vec<u8>> {
+        match self {
+            ServiceRead::Bytes(bytes) => Some(bytes),
+            _ => None,
         }
     }
 }
@@ -783,6 +1033,14 @@ fn same_keys(a: &[String], b: &[String]) -> bool {
             .all(|(x, y)| crate::names::key(x) == crate::names::key(y))
 }
 
+/// Ответ записи: с копией конфликта или без.
+fn respond(version: FileVersion, copy_path: Option<VaultPath>) -> NoteWriteResponse {
+    match copy_path {
+        Some(copy_path) => NoteWriteResponse::ConflictSaved { version, copy_path },
+        None => NoteWriteResponse::Saved { version },
+    }
+}
+
 /// Операция не над корнем хранилища.
 fn require_not_root(path: &VaultPath) -> CoreResult<()> {
     if path.components().is_empty() {
@@ -822,6 +1080,9 @@ fn millis(time: std::time::SystemTime) -> i64 {
 /// путей и текста ОС, инварианты 2, 3).
 fn io_error(error: std::io::Error) -> CoreError {
     use std::io::ErrorKind;
+    if atomic::is_outside(&error) {
+        return contour::outside_vault();
+    }
     CoreError::new(match error.kind() {
         ErrorKind::NotFound | ErrorKind::NotADirectory => ErrorCode::NotFound,
         ErrorKind::AlreadyExists | ErrorKind::DirectoryNotEmpty => ErrorCode::AlreadyExists,

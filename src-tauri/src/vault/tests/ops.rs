@@ -420,10 +420,18 @@ fn trash_of_missing_entry_is_not_found() {
 fn real_os_trash_never_deletes_silently() {
     let t = TestVault::new();
     t.put("В корзину.md", "в");
-    let outcome = t
-        .vault
-        .trash(&vp("В корзину.md"), &|_| false)
-        .expect("удаление");
+    let outcome = match t.vault.trash(&vp("В корзину.md"), &|_| false) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            // Корзина отказала (Linux без корзины на этом томе): ошибка, файл цел.
+            assert_eq!(error.code, ErrorCode::IoFailed);
+            assert!(t.file("В корзину.md").exists());
+            if cfg!(windows) {
+                panic!("на Windows корзина на диске C: есть");
+            }
+            return;
+        }
+    };
     match outcome {
         TrashOutcome::Trashed => assert!(!t.file("В корзину.md").exists()),
         TrashOutcome::Cancelled => assert!(t.file("В корзину.md").exists()),
