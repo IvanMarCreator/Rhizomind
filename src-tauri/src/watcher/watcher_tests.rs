@@ -328,3 +328,93 @@ fn rescan_flag_and_watcher_errors_from_notify_request_full_rescan() {
     assert!(!filtered.rescan);
     assert_eq!(filtered.paths, vec![vp("Папка/a.md")]);
 }
+
+// --- Повторное ревью 1.4 (тесты ревьюера) ---
+
+#[cfg(unix)]
+#[test]
+fn events_arrive_after_vault_folder_is_recreated() {
+    // notify снимает наблюдение, когда корень пропадает (inotify:
+    // IN_DELETE_SELF; Windows: ERROR_ACCESS_DENIED → unwatch).
+    use super::WatcherEvent;
+    let parent = tempfile::tempdir().expect("временная папка");
+    let root = parent.path().join("хранилище");
+    write(&root, "1.md", "1");
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(&root, collector.sink()).expect("слежение");
+
+    fs::remove_dir_all(&root).expect("удаление корня");
+    assert!(
+        collector.wait_for(WAIT, |_| collector
+            .signals()
+            .contains(&WatcherEvent::Unavailable)),
+        "{:?} {:?}",
+        collector.signals(),
+        collector.payloads()
+    );
+    write(&root, "1.md", "1");
+    assert!(
+        collector.wait_for(WAIT, |_| collector
+            .signals()
+            .contains(&WatcherEvent::Available)),
+        "{:?}",
+        collector.signals()
+    );
+    std::thread::sleep(Duration::from_secs(1));
+
+    write(&root, "после.md", "x");
+    assert!(
+        collector.wait_for(WAIT, |_| collector.changes().contains(
+            &TreeChange::Created {
+                path: vp("после.md"),
+                entry_kind: EntryKind::Note
+            }
+        )),
+        "событие после возвращения корня не пришло: {:?}",
+        collector.payloads()
+    );
+}
+
+#[test]
+fn external_revert_to_older_own_version_is_external() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "n.md", "0");
+    let collector = Collector::default();
+    let watcher = VaultWatcher::start(dir.path(), collector.sink()).expect("слежение");
+    watcher.remember_own_write(&vp("n.md"), &version("AAAA"));
+    write_atomically(dir.path(), "n.md", "AAAA");
+    std::thread::sleep(Duration::from_secs(2));
+    watcher.remember_own_write(&vp("n.md"), &version("BBBB"));
+    write_atomically(dir.path(), "n.md", "BBBB");
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Внешняя программа вернула прежнюю версию.
+    write(dir.path(), "n.md", "AAAA");
+    write(dir.path(), "метка.md", "m");
+    assert!(collector.wait_for(WAIT, |_| collector.changes().contains(
+        &TreeChange::Created {
+            path: vp("метка.md"),
+            entry_kind: EntryKind::Note
+        }
+    )));
+    std::thread::sleep(QUIET);
+    assert!(
+        collector
+            .changes()
+            .contains(&TreeChange::Modified { path: vp("n.md") }),
+        "внешний откат к своей прежней версии подавлен: {:?}",
+        collector.payloads()
+    );
+}
+
+#[test]
+fn retry_of_unreadable_paths_backs_off_up_to_a_minute() {
+    // Папки, которые не читаются никогда (`System Volume Information`), не
+    // должны сверяться каждые 2 секунды вечно.
+    use super::retry_delay;
+    assert_eq!(retry_delay(0), Duration::from_secs(2));
+    assert_eq!(retry_delay(1), Duration::from_secs(4));
+    assert_eq!(retry_delay(2), Duration::from_secs(8));
+    assert_eq!(retry_delay(10), Duration::from_secs(60));
+    assert_eq!(retry_delay(u32::MAX), Duration::from_secs(60));
+}

@@ -595,3 +595,23 @@ fn foreign_content_between_own_writes_does_not_drop_own_versions() {
     write(dir.path(), "a.md", mine);
     assert!(changes(&mut model, [vp("a.md")], &own).is_empty());
 }
+
+#[test]
+fn revert_to_older_own_version_after_newer_one_is_external() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "n.md", "0");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let own = OwnWrites::new();
+    own.record(&vp("n.md"), &hash("A"), 1);
+    write(dir.path(), "n.md", "A");
+    assert!(changes(&mut model, [vp("n.md")], &own).is_empty());
+    own.record(&vp("n.md"), &hash("BB"), 2);
+    write(dir.path(), "n.md", "BB");
+    assert!(changes(&mut model, [vp("n.md")], &own).is_empty());
+
+    write(dir.path(), "n.md", "A");
+    assert_eq!(
+        changes(&mut model, [vp("n.md")], &own),
+        vec![TreeChange::Modified { path: vp("n.md") }]
+    );
+}

@@ -246,6 +246,12 @@ impl Drop for VaultWatcher {
 /// Через сколько повторить сверку путей, которые не прочитались.
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 
+/// Через сколько повторить сверку непрочитанных путей после `attempt`
+/// неудачных попыток подряд.
+fn retry_delay(_attempt: u32) -> Duration {
+    RETRY_AFTER
+}
+
 /// Как часто проверять, вернулся ли недоступный корень.
 const UNAVAILABLE_POLL: Duration = Duration::from_secs(1);
 
