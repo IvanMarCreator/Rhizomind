@@ -155,7 +155,15 @@ export type TrashOutcome =
   | { outcome: 'deleted_permanently' }
   | { outcome: 'cancelled' };
 
-export type NameCheck = { status: 'ok' } | { status: 'rejected'; problem: NameProblem; message_key: string };
+/**
+ * Предупреждение о допустимом имени; текст — `names.warning.<предупреждение>`.
+ * `unlinkable` — на заметку нельзя сослаться: `#`, `[`, `]` или пробел в начале (С3.2).
+ */
+export type NameWarning = 'unlinkable';
+
+export type NameCheck =
+  | { status: 'ok'; warning: NameWarning | null }
+  | { status: 'rejected'; problem: NameProblem; message_key: string };
 
 // ---- Заметка --------------------------------------------------------------
 // Правило «байт в байт»: интерфейс работает с текстом с переносами `\n` и без
@@ -212,10 +220,12 @@ export interface LinksSuggestRequest {
 }
 
 export interface LinkSuggestion {
-  /** Что вставить между `[[` и `]]`. */
-  insert: string;
+  /** Что вставить между `[[` и `]]`; `null`, если на заметку нельзя сослаться. */
+  insert: string | null;
   name: string;
   path: VaultPath;
+  /** `false` — во вставке были бы `#`, `[`, `]` или пробел в начале: заметка показывается помеченной (С3.2). */
+  linkable: boolean;
 }
 
 export interface LinksSuggestResponse {

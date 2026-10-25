@@ -40,6 +40,9 @@ source: src/commands/contract_tests.rs
     "duplicate",
     "note_extension"
   ],
+  "NameWarning": [
+    "unlinkable"
+  ],
   "NewNoteLocation.kind": [
     "vault_root",
     "current_folder",

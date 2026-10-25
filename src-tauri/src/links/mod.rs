@@ -262,7 +262,9 @@ impl Links {
     /// [`switcher::MAX_RESULTS`], лучшие первыми (нечёткий поиск как в
     /// быстром переходе; при равной оценке — короче имя, затем по пути).
     /// Пустой запрос — заметки в порядке имён ядра. Вставляемый текст — как
-    /// у [`Links::shortest_unique_path`].
+    /// у [`Links::shortest_unique_path`]; если в нём есть компонент, который
+    /// нельзя написать в ссылке (`names::is_linkable`), заметка всё равно
+    /// показывается, но `linkable: false` и `insert: null` (С3.2).
     pub fn suggest(&self, _from: &VaultPath, query: &str) -> CoreResult<Vec<LinkSuggestion>> {
         let chosen = switcher::best_matches(
             query,
@@ -287,10 +289,17 @@ impl Links {
             .into_iter()
             .map(|i| {
                 let e = &self.entries[i];
+                let text = self.shortest_of(i);
+                let linkable = text
+                    .strip_prefix('/')
+                    .unwrap_or(&text)
+                    .split('/')
+                    .all(names::is_linkable);
                 LinkSuggestion {
-                    insert: self.shortest_of(i),
+                    insert: linkable.then_some(text),
                     name: e.name().to_owned(),
                     path: e.path.clone(),
+                    linkable,
                 }
             })
             .collect())
@@ -555,17 +564,32 @@ mod tests {
         // пути; появление `Альфа/Встреча.md` в корне её не перенаправляет.
         let mut notes = vec![note("Проекты/Альфа/Встреча.md", 100)];
         let before = Links::new(notes.clone());
-        assert_eq!(resolve(&before, "Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        assert_eq!(
+            resolve(&before, "Альфа/Встреча").as_deref(),
+            Some("Проекты/Альфа/Встреча.md")
+        );
         notes.push(note("Альфа/Встреча.md", 200));
         let after = Links::new(notes);
-        assert_eq!(resolve(&after, "Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        assert_eq!(
+            resolve(&after, "Альфа/Встреча").as_deref(),
+            Some("Проекты/Альфа/Встреча.md")
+        );
         // Путь от корня — ровно этот путь.
-        assert_eq!(resolve(&after, "/Альфа/Встреча").as_deref(), Some("Альфа/Встреча.md"));
+        assert_eq!(
+            resolve(&after, "/Альфа/Встреча").as_deref(),
+            Some("Альфа/Встреча.md")
+        );
         // Из нескольких подходящих по концу пути — самая старая.
         let l = links(&[("Команда/Здоровье/Звонок.md", 1), ("Здоровье/Звонок.md", 9)]);
-        assert_eq!(resolve(&l, "Здоровье/Звонок").as_deref(), Some("Команда/Здоровье/Звонок.md"));
+        assert_eq!(
+            resolve(&l, "Здоровье/Звонок").as_deref(),
+            Some("Команда/Здоровье/Звонок.md")
+        );
         let l = links(&[("X/Альфа/Встреча.md", 200), ("Y/Альфа/Встреча.md", 100)]);
-        assert_eq!(resolve(&l, "Альфа/Встреча").as_deref(), Some("Y/Альфа/Встреча.md"));
+        assert_eq!(
+            resolve(&l, "Альфа/Встреча").as_deref(),
+            Some("Y/Альфа/Встреча.md")
+        );
     }
 
     #[test]
@@ -749,7 +773,10 @@ mod tests {
         let nested = item("встреча", "Проекты #1/Встреча.md");
         assert!(!nested.linkable);
         assert_eq!(nested.insert, None);
-        assert_eq!(item("встреча", "Б/Встреча.md").insert.as_deref(), Some("Б/Встреча"));
+        assert_eq!(
+            item("встреча", "Б/Встреча.md").insert.as_deref(),
+            Some("Б/Встреча")
+        );
         // Уникальное имя пишется без папки — папка с `[` не мешает.
         let unique = item("уник", "[архив]/Уникальная.md");
         assert!(unique.linkable);

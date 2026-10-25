@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use icu_casemap::CaseMapper;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::commands::{CoreError, CoreResult, NameProblem, limits};
+use crate::commands::{CoreError, CoreResult, NameProblem, NameWarning, limits};
 
 /// Ключ имени. Два имени совпадают для ядра, если совпадают их ключи
 /// (`Заметка.md` и `заметка.MD`, составная и разложенная «й», `Straße` и
@@ -128,6 +128,21 @@ pub fn check(name: &str) -> Option<NameProblem> {
 /// [`check`] для слоя команд: нарушение — ошибка `invalid_name` с причиной.
 pub fn require_valid(name: &str) -> CoreResult<()> {
     check(name).map_or(Ok(()), |problem| Err(CoreError::invalid_name(problem)))
+}
+
+/// Можно ли написать этот компонент в вики-ссылке: без `#` (начало
+/// заголовка), `[` и `]` (скобки ссылки) и без пробела в начале (разбор
+/// убирает пробелы вокруг цели). `|` и так запрещён правилами имён.
+pub fn is_linkable(component: &str) -> bool {
+    !component.starts_with(' ') && !component.contains(['#', '[', ']'])
+}
+
+/// Предупреждение о допустимом имени: [`NameWarning::Unlinkable`], если на
+/// элемент нельзя будет сослаться (для заметки проверяется имя без `.md`).
+/// Имя при этом допустимо, как в Windows (С3.2).
+pub fn warning(name: &str) -> Option<NameWarning> {
+    let base = note_stem(name).unwrap_or(name);
+    (!is_linkable(base)).then_some(NameWarning::Unlinkable)
 }
 
 /// Переименование не меняет вид элемента: заметка остаётся `.md`, другой
@@ -462,11 +477,26 @@ mod tests {
     #[test]
     fn unlinkable_names_are_allowed_with_warning() {
         // С3.2 (решение владельца 25.10.2026): `#`, `[`, `]`, пробел в начале.
-        for name in ["#Идеи.md", "C#.md", "[Черновик].md", "a]b.md", " Пробел.md", "Папка #1", "[архив]"] {
+        for name in [
+            "#Идеи.md",
+            "C#.md",
+            "[Черновик].md",
+            "a]b.md",
+            " Пробел.md",
+            "Папка #1",
+            "[архив]",
+        ] {
             assert_eq!(check(name), None, "{name:?}");
             assert_eq!(warning(name), Some(NameWarning::Unlinkable), "{name:?}");
         }
-        for name in ["Встреча.md", "C++.md", "Папка 1", "схема.png", "Итоги.md.md", "Пробел внутри.md"] {
+        for name in [
+            "Встреча.md",
+            "C++.md",
+            "Папка 1",
+            "схема.png",
+            "Итоги.md.md",
+            "Пробел внутри.md",
+        ] {
             assert_eq!(warning(name), None, "{name:?}");
         }
         assert!(is_linkable("Встреча"));

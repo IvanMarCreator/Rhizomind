@@ -100,12 +100,34 @@ pub enum TrashOutcome {
     Cancelled,
 }
 
+/// Предупреждение о допустимом имени (под полем ввода, ключ словаря
+/// `names.warning.<предупреждение>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameWarning {
+    /// На заметку с таким именем нельзя сослаться вики-ссылкой: `#`, `[`,
+    /// `]` или пробел в начале (С3.2, решение владельца 25.10.2026).
+    Unlinkable,
+}
+
+impl NameWarning {
+    /// Ключ словаря: `names.warning.<предупреждение>`.
+    pub fn message_key(self) -> String {
+        match self {
+            Self::Unlinkable => "names.warning.unlinkable".to_owned(),
+        }
+    }
+}
+
 /// Ответ `name_check`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NameCheck {
     /// Имя подходит.
-    Ok,
+    Ok {
+        /// Имя допустимо, но с предупреждением; `null` — без предупреждения.
+        warning: Option<NameWarning>,
+    },
     /// Имя не подходит; пояснение под полем ввода — по `message_key`.
     Rejected {
         /// Причина.
@@ -222,7 +244,8 @@ pub async fn entry_trash<R: Runtime>(
 }
 
 /// Проверка имени при вводе: правила имён и совпадение с соседями (при
-/// переименовании — кроме самого элемента).
+/// переименовании — кроме самого элемента); для допустимого имени —
+/// предупреждение, если на него нельзя будет сослаться.
 #[tauri::command]
 pub async fn name_check<R: Runtime>(
     window: Window<R>,
@@ -245,6 +268,13 @@ pub async fn name_check<R: Runtime>(
         return Ok(NameCheck::rejected(problem));
     }
     let open = core.require_vault(window.label())?;
-    open.vault
-        .check_new_name(&request.dir, &request.name, request.renaming.as_ref())
+    let check =
+        open.vault
+            .check_new_name(&request.dir, &request.name, request.renaming.as_ref())?;
+    Ok(match check {
+        NameCheck::Ok { .. } => NameCheck::Ok {
+            warning: crate::names::warning(&request.name),
+        },
+        rejected => rejected,
+    })
 }

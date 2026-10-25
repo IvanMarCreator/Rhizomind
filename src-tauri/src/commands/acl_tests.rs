@@ -435,7 +435,10 @@ fn create_and_rename_check_name_rules_before_modules() {
         let cases = [
             ("note_create", json!({ "dir": [], "name": name })),
             ("folder_create", json!({ "dir": ["Проекты"], "name": name })),
-            ("entry_rename", json!({ "path": ["План.md"], "new_name": name })),
+            (
+                "entry_rename",
+                json!({ "path": ["План.md"], "new_name": name }),
+            ),
         ];
         for (command, request) in cases {
             let error = invoke(&main, command, json!({ "request": request })).expect_err(command);
