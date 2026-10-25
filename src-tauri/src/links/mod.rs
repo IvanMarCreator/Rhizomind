@@ -214,8 +214,9 @@ impl Links {
     ///
     /// Правила (С3.4), сравнение по ключу имени:
     /// - `/путь/имя` — ровно этот путь от корня;
-    /// - `папка/имя` — заметка по этому пути от корня, если она есть, иначе
-    ///   заметки, чей путь кончается на `папка/имя`;
+    /// - `папка/имя` — заметки, чей путь кончается на `папка/имя` (заметка
+    ///   `Альфа/Встреча.md` в корне не перехватывает ссылку, которая вела на
+    ///   `Проекты/Альфа/Встреча.md`, если та старше);
     /// - `имя` — заметки с этим именем;
     ///
     /// из нескольких подходящих — самая старая по дате создания, при равной
@@ -234,20 +235,18 @@ impl Links {
         let Some(group) = want.last().and_then(|name| self.by_name.get(name)) else {
             return Ok(None);
         };
-        let exact: Vec<usize> = group
+        let hits: Vec<usize> = group
             .iter()
             .copied()
-            .filter(|&i| self.entries[i].keys() == want.as_slice())
+            .filter(|&i| {
+                let keys = self.entries[i].keys();
+                if target.from_root {
+                    keys == want.as_slice()
+                } else {
+                    keys.ends_with(&want)
+                }
+            })
             .collect();
-        let hits = if target.from_root || (want.len() > 1 && !exact.is_empty()) {
-            exact
-        } else {
-            group
-                .iter()
-                .copied()
-                .filter(|&i| self.entries[i].keys().ends_with(&want))
-                .collect()
-        };
         Ok(self.oldest(&hits).map(|i| self.entries[i].path.clone()))
     }
 
