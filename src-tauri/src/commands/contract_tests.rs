@@ -789,7 +789,7 @@ fn enums() {
     let enums = json!({
         "ErrorCode": tags(&error_codes, ""),
         "NameProblem": tags(&name_problems, ""),
-        "NameWarning": tags(&all_variants!(NameWarning: Unlinkable), ""),
+        "NameWarning": tags(&all_variants!(NameWarning: Unlinkable, Hidden), ""),
         "EntryKind": tags(&all_variants!(EntryKind: Folder, Note, Attachment), ""),
         "Theme": tags(&all_variants!(Theme: System, Light, Dark), ""),
         "EditorMode": tags(&all_variants!(EditorMode: LivePreview, Source), ""),

@@ -351,7 +351,7 @@ const enums = {
     duplicate: true,
     note_extension: true,
   } satisfies Record<NameProblem, true>,
-  NameWarning: { unlinkable: true } satisfies Record<NameWarning, true>,
+  NameWarning: { unlinkable: true, hidden: true } satisfies Record<NameWarning, true>,
   EntryKind: { folder: true, note: true, attachment: true } satisfies Record<EntryKind, true>,
   Theme: { system: true, light: true, dark: true } satisfies Record<Theme, true>,
   EditorMode: { live_preview: true, source: true } satisfies Record<EditorMode, true>,

@@ -42,7 +42,7 @@ describe('словарь покрывает ответы ядра', () => {
   });
 
   it('предупреждения об имени прочитаны из типов API', () => {
-    expect(warnings).toEqual(['unlinkable']);
+    expect(warnings).toEqual(['unlinkable', 'hidden']);
   });
 
   it.each(warnings)('names.warning.%s', (warning) => {

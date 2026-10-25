@@ -504,6 +504,28 @@ mod tests {
     }
 
     #[test]
+    fn bidi_controls_are_forbidden() {
+        // Подмена видимого расширения: «Отчёт» + U+202E + «gpj.md» выглядит как «Отчётdm.jpg».
+        for c in ['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{61C}'] {
+            let name = format!("Отчёт{c}gpj.md");
+            assert_eq!(check(&name), Some(NameProblem::ForbiddenChars), "U+{:04X}", c as u32);
+        }
+        // Соединитель для эмодзи — не управляющий.
+        assert_eq!(check("👩\u{200D}💻 Код.md"), None);
+    }
+
+    #[test]
+    fn hidden_names_are_allowed_with_warning() {
+        // С3.2: имена с точкой в начале скрыты в дереве — после создания
+        // элемент «исчезнет».
+        for name in [".Н.md", ".obsidian", ".md", ".#скрытая.md"] {
+            assert_eq!(check(name), None, "{name:?}");
+            assert_eq!(warning(name), Some(NameWarning::Hidden), "{name:?}");
+        }
+        assert_eq!(warning("Н.md"), None);
+    }
+
+    #[test]
     fn dotless_i_matches_capital_i_like_ntfs() {
         // NTFS считает `ı.md` и `I.md` одним файлом (таблица верхнего регистра).
         assert_eq!(key("ı.md"), key("I.md"));
