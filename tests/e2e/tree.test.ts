@@ -109,6 +109,23 @@ describe.skip('дерево файлов на настоящем ядре (вк�
     }
   });
 
+  it('Ctrl+Z в дереве отменяет последнее переименование (решение 47)', async () => {
+    const { browser } = session;
+    await row(browser, 'План работ').click();
+    await browser.keys(['Control', 'z']);
+    await browser.waitUntil(() => existsSync(path.join(vault, 'Проекты', 'Без названия.md')), { timeout: 5_000 });
+    expect(existsSync(path.join(vault, 'Проекты', 'План работ.md'))).toBe(false);
+  });
+
+  it('кнопки корня — в заголовке «ФАЙЛЫ» при наведении на панель (решение 48)', async () => {
+    const { browser } = session;
+    await browser.$('aside').moveTo();
+    await browser.$('[role="group"][aria-label="Создать в корне хранилища"] button[aria-label="Новая папка"]').click();
+    await browser.waitUntil(() => existsSync(path.join(vault, 'Без названия')), { timeout: 5_000 });
+    await browser.keys('Escape');
+    await saveScreenshot(browser, 'tree-root-actions');
+  });
+
   it('перетаскивание переносит файл в папку', async () => {
     const { browser } = session;
     await row(browser, 'ТЗ').dragAndDrop(row(browser, 'Входящие'));

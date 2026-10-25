@@ -13,6 +13,7 @@
   import NameField from './NameField.svelte';
   import TreeIcon from './TreeIcon.svelte';
   import TreeMenu, { type MenuItem } from './TreeMenu.svelte';
+  import { isUndo } from './keys.ts';
   import { canMove, displayName, parentOf, pathKey, samePath, splitName, typeLabel, type TreeRow } from './model.ts';
   import type { FileTreeState } from './tree.svelte.ts';
 
@@ -22,7 +23,7 @@
   const DRAG_TYPE = 'application/x-rhizomind-entry';
 
   let treeElement: HTMLDivElement | undefined = $state();
-  /** Строка под указателем: ключ пути; `''` — пустое место дерева (корень). */
+  /** Строка под указателем (ключ пути). */
   let hovered = $state<string | null>(null);
   let menu = $state<{ x: number; y: number; items: MenuItem[] } | null>(null);
   let dragging = $state.raw<VaultPath | null>(null);
@@ -67,6 +68,11 @@
   function onTreeKeydown(event: KeyboardEvent) {
     // Клавиши поля имени и меню сюда не относятся.
     if (event.target !== treeElement) return;
+    if (isUndo(event)) {
+      event.preventDefault();
+      void tree.undoRename();
+      return;
+    }
     // Alt+←/→ — история переходов окна, Ctrl+… — общие сочетания: не дерево.
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     const row = selectedIndex >= 0 ? tree.rows[selectedIndex] : undefined;
@@ -336,35 +342,11 @@
     class:drop-target={dropTarget === ''}
     data-testid="tree-root-zone"
     role="presentation"
-    onmouseenter={() => (hovered = '')}
-    onmouseleave={() => (hovered = hovered === '' ? null : hovered)}
     oncontextmenu={onRootContextMenu}
     ondragenter={(event) => onDragOver(event, null)}
     ondragover={(event) => onDragOver(event, null)}
     ondrop={(event) => onDrop(event, null)}
   >
-    {#if hovered === ''}
-      <span class="actions root-actions">
-        <button
-          type="button"
-          class="action"
-          aria-label={t('tree.newNote')}
-          title={t('tree.newNote')}
-          onclick={(event) => create('note', [], event)}
-        >
-          <TreeIcon name="square-pen" />
-        </button>
-        <button
-          type="button"
-          class="action"
-          aria-label={t('tree.newFolder')}
-          title={t('tree.newFolder')}
-          onclick={(event) => create('folder', [], event)}
-        >
-          <TreeIcon name="folder-plus" />
-        </button>
-      </span>
-    {/if}
     {#if empty}
       <p class="empty">{t('tree.empty')}</p>
     {/if}
@@ -519,12 +501,6 @@
     flex: 1;
     min-height: 34px;
     border-radius: 4px;
-  }
-
-  .root-actions {
-    position: absolute;
-    top: 4px;
-    right: 4px;
   }
 
   .empty {

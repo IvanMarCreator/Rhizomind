@@ -9,6 +9,7 @@
   import type { VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import NameField from './NameField.svelte';
+  import { isUndo } from './keys.ts';
   import { parentOf, samePath, splitName } from './model.ts';
   import type { FileTreeState } from './tree.svelte.ts';
 
@@ -57,6 +58,11 @@
         title={t('note.title.renameHint')}
         aria-label={parts.stem}
         onclick={startEditing}
+        onkeydown={(event) => {
+          if (!isUndo(event)) return;
+          event.preventDefault();
+          void tree.undoRename();
+        }}
       >
         {parts.stem}
       </button>

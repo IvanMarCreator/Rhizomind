@@ -135,4 +135,19 @@ describe('заголовок заметки над текстом', () => {
     await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
     expect(tree.renaming).toEqual(['Проекты', 'План.md']);
   });
+
+  it('Ctrl+Z на заголовке отменяет последнее переименование', async () => {
+    const { calls, view } = await setup();
+    await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
+    await fireEvent.input(field(), { target: { value: 'Итоги' } });
+    await fireEvent.keyDown(field(), { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    await view.rerender({ path: ['Проекты', 'Итоги.md'] });
+
+    await fireEvent.keyDown(screen.getByRole('button', { name: 'Итоги' }), { key: 'z', code: 'KeyZ', ctrlKey: true });
+    await waitFor(() => expect(calls.filter(([c]) => c === 'entry_rename')).toHaveLength(2));
+    expect(calls.filter(([c]) => c === 'entry_rename').at(-1)?.[1]).toEqual({
+      request: { path: ['Проекты', 'Итоги.md'], new_name: 'Встреча по запуску.md' },
+    });
+  });
 });

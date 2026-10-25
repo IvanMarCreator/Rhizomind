@@ -8,6 +8,7 @@
   import type { EntryKind, VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
+  import { isUndo } from './keys.ts';
   import { NameInput } from './nameInput.svelte.ts';
 
   let {
@@ -58,9 +59,24 @@
     close();
   }
 
+  /**
+   * Ctrl+Z в поле (решение 47): сначала обычная отмена набора браузером; если
+   * отменять нечего (значение не изменилось) — исходное имя.
+   */
+  function undo() {
+    const before = input?.value;
+    setTimeout(() => {
+      if (!input || closed || input.value !== before || before === stem) return;
+      input.value = stem;
+      void field.input(stem);
+    }, 0);
+  }
+
   function onkeydown(event: KeyboardEvent) {
     event.stopPropagation();
-    if (event.key === 'Enter') {
+    if (isUndo(event)) {
+      undo();
+    } else if (event.key === 'Enter') {
       event.preventDefault();
       void commit(false);
     } else if (event.key === 'Escape') {

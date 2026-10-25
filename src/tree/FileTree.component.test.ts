@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CoreError, TreeEntry, VaultPath } from '../api/index.ts';
 import { emitCoreEvent, mockCore, type CoreMocks, type RecordedCall } from '../api/testing.ts';
 import FileTree from './FileTree.svelte';
+import TreeActions from './TreeActions.svelte';
 import { FakeVault } from './fakeVault.ts';
 import { FileTreeState, type TreeHost } from './tree.svelte.ts';
 
@@ -42,6 +43,8 @@ async function setup(entries: TreeEntry[] = SAMPLE, options: { host?: Partial<Tr
   const calls = mockCore({ ...vault.mocks(), ...options.mocks });
   const host = fakeHost(options.host);
   const state = new FileTreeState(host);
+  // Кнопки создания в корне живут в заголовке «ФАЙЛЫ» (решение 48); здесь — рядом с деревом.
+  render(TreeActions, { tree: state });
   render(FileTree, { tree: state });
   const tree = screen.getByRole('tree', { name: 'Файлы хранилища' });
   await waitFor(() => expect(state.loaded).toBe(true));
@@ -54,6 +57,8 @@ const rowNames = (tree: HTMLElement) =>
     .map((row) => row.getAttribute('aria-label'));
 
 const row = (name: string) => screen.getByRole('treeitem', { name });
+
+const rootActions = () => screen.getByRole('group', { name: 'Создать в корне хранилища' });
 
 const commands = (calls: RecordedCall[], name: string) =>
   calls.filter(([command]) => command === name).map(([, args]) => (args as { request?: unknown }).request);
@@ -195,20 +200,24 @@ describe('С3.2: кнопки при наведении и создание ка
     expect(within(tree).getAllByRole('treeitem').length).toBeGreaterThan(5);
   });
 
-  it('наведение на пустое место дерева: кнопки создают в корне; занятое имя — следующее свободное', async () => {
+  it('кнопки в заголовке «ФАЙЛЫ» создают в корне; занятое имя — следующее свободное', async () => {
     const { calls } = await setup([note('Без названия.md'), folder('Без названия')]);
-    const empty = screen.getByTestId('tree-root-zone');
-    await fireEvent.mouseEnter(empty);
 
-    await fireEvent.click(within(empty).getByRole('button', { name: 'Новая заметка' }));
+    await fireEvent.click(within(rootActions()).getByRole('button', { name: 'Новая заметка' }));
     await waitFor(() => expect(nameField()).toBeTruthy());
     expect(commands(calls, 'note_create')).toEqual([{ dir: [], name: 'Без названия 1.md' }]);
     await fireEvent.keyDown(nameField(), { key: 'Escape' });
 
-    await fireEvent.mouseEnter(empty);
-    await fireEvent.click(within(empty).getByRole('button', { name: 'Новая папка' }));
+    await fireEvent.click(within(rootActions()).getByRole('button', { name: 'Новая папка' }));
     await waitFor(() => expect(nameField().value).toBe('Без названия 1'));
     expect(commands(calls, 'folder_create')).toEqual([{ dir: [], name: 'Без названия 1' }]);
+  });
+
+  it('на пустом месте под списком кнопок нет (решение 48)', async () => {
+    await setup();
+    const empty = screen.getByTestId('tree-root-zone');
+    await fireEvent.mouseEnter(empty);
+    expect(within(empty).queryAllByRole('button')).toEqual([]);
   });
 
   it('ядро отказало «занято» (дерево отстало от диска) — берётся следующее имя', async () => {
@@ -224,8 +233,7 @@ describe('С3.2: кнопки при наведении и создание ка
         },
       },
     });
-    await fireEvent.mouseEnter(screen.getByTestId('tree-root-zone'));
-    await fireEvent.click(screen.getByRole('button', { name: 'Новая заметка' }));
+    await fireEvent.click(within(rootActions()).getByRole('button', { name: 'Новая заметка' }));
     await waitFor(() => expect(nameField()).toBeTruthy());
     expect(commands(calls, 'note_create').map((r) => (r as { name: string }).name)).toEqual([
       'Без названия.md',
@@ -455,6 +463,93 @@ describe('С3.2: переименование (F2) с проверкой име�
     answers[0]?.({ status: 'rejected', problem: 'forbidden_chars', message_key: 'names.forbidden_chars' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('решение 47: Ctrl+Z', () => {
+  const ctrlZ = { key: 'z', code: 'KeyZ', ctrlKey: true };
+
+  async function renameTo(tree: HTMLElement, from: string, to: string) {
+    await fireEvent.click(row(from));
+    await fireEvent.keyDown(tree, { key: 'F2' });
+    await type(to);
+    await fireEvent.keyDown(nameField(), { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+  }
+
+  it('в поле имени: когда отменять нечего — исходное имя; дерево не отменяет переименования', async () => {
+    const { calls, tree } = await setup();
+    await fireEvent.click(row('Заметка 2'));
+    await fireEvent.keyDown(tree, { key: 'F2' });
+    // Значение подставлено не набором (отменять нечего): Ctrl+Z возвращает исходное имя.
+    await type('Другое:');
+    await screen.findByRole('alert');
+    await fireEvent.keyDown(nameField(), ctrlZ);
+    await waitFor(() => expect(nameField().value).toBe('Заметка 2'));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(commands(calls, 'entry_rename')).toEqual([]);
+  });
+
+  it('в русской раскладке (key «я») — так же', async () => {
+    const { tree } = await setup();
+    await fireEvent.click(row('Заметка 2'));
+    await fireEvent.keyDown(tree, { key: 'F2' });
+    await type('Другое');
+    await fireEvent.keyDown(nameField(), { key: 'я', code: 'KeyZ', ctrlKey: true });
+    await waitFor(() => expect(nameField().value).toBe('Заметка 2'));
+  });
+
+  it('после переименования Ctrl+Z в дереве возвращает прежнее имя (с проверкой name_check)', async () => {
+    const { calls, host, tree } = await setup();
+    await renameTo(tree, 'Заметка 2', 'Итоги');
+    await fireEvent.keyDown(tree, ctrlZ);
+
+    await waitFor(() => expect(commands(calls, 'entry_rename')).toHaveLength(2));
+    expect(commands(calls, 'entry_rename')[1]).toEqual({ path: ['Итоги.md'], new_name: 'Заметка 2.md' });
+    expect(commands(calls, 'name_check').at(-1)).toEqual({ dir: [], name: 'Заметка 2.md', renaming: ['Итоги.md'] });
+    await waitFor(() => expect(rowNames(tree)).toContain('Заметка 2'));
+    expect(host.entryRenamed).toHaveBeenLastCalledWith(['Итоги.md'], ['Заметка 2.md']);
+
+    // Отменяется одна последняя операция: второй Ctrl+Z ничего не делает.
+    await fireEvent.keyDown(tree, ctrlZ);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(commands(calls, 'entry_rename')).toHaveLength(2);
+  });
+
+  it('прежнее имя заняли — уведомление, ничего не трогается', async () => {
+    const { vault, calls, host, tree } = await setup();
+    await renameTo(tree, 'Заметка 2', 'Итоги');
+    vault.entries.set('Заметка 2.md', note('Заметка 2.md'));
+    await fireEvent.keyDown(tree, ctrlZ);
+    await waitFor(() =>
+      expect(host.notify).toHaveBeenCalledWith('Не удалось отменить переименование: имя «Заметка 2» уже занято.'),
+    );
+    expect(commands(calls, 'entry_rename')).toHaveLength(1);
+  });
+
+  it('элемента уже нет — уведомление', async () => {
+    const { calls, host, tree } = await setup();
+    await renameTo(tree, 'Заметка 2', 'Итоги');
+    await emitCoreEvent('vault:changed', { rescan: false, changes: [{ kind: 'removed', path: ['Итоги.md'] }] });
+    await waitFor(() => expect(rowNames(tree)).not.toContain('Итоги'));
+    await fireEvent.keyDown(tree, ctrlZ);
+    await waitFor(() =>
+      expect(host.notify).toHaveBeenCalledWith('Не удалось отменить переименование: элемента уже нет.'),
+    );
+    expect(commands(calls, 'entry_rename')).toHaveLength(1);
+  });
+
+  it('Ctrl+Z вне дерева (редактор, окно) дерево не перехватывает', async () => {
+    const { calls, tree } = await setup();
+    await renameTo(tree, 'Заметка 2', 'Итоги');
+    const editor = document.createElement('div');
+    editor.contentEditable = 'true';
+    document.body.append(editor);
+    await fireEvent.keyDown(editor, ctrlZ);
+    await fireEvent.keyDown(window, ctrlZ);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(commands(calls, 'entry_rename')).toHaveLength(1);
+    editor.remove();
   });
 });
 

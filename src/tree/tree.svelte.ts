@@ -5,15 +5,17 @@
 import { CoreCallError, core, onCoreEvent } from '../api/index.ts';
 import type { EntryKind, TreeChange, TreeEntry, Unsubscribe, VaultChangedPayload, VaultPath } from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
-import { t } from '../i18n/index.ts';
+import { hasMessage, t } from '../i18n/index.ts';
 import {
   applyChanges,
   buildTree,
   canMove,
   childNames,
+  displayName,
   entryMap,
   flattenVisible,
   isInside,
+  parentOf,
   keySet,
   pathKey,
   remapKeys,
@@ -64,6 +66,8 @@ export class FileTreeState {
 
   readonly host: TreeHost;
   #loadSeq = 0;
+  /** Последнее переименование в этом окне — для Ctrl+Z (решение 47); стека нет. */
+  #lastRename: { from: VaultPath; to: VaultPath } | null = null;
   /** Элементы, удаление которых уже идёт: повторный Delete их не трогает. */
   readonly #deleting: string[] = [];
 
@@ -204,12 +208,46 @@ export class FileTreeState {
     try {
       const { path: to } = await core.entryRename({ path, new_name: newName });
       this.#relocated(path, to);
+      this.#lastRename = samePath(path, to) ? null : { from: path, to };
       // Поле в дереве закрывается, только если оно было на этом элементе
       // (переименование из заголовка заметки не трогает поле на другом).
       if (this.renaming && samePath(this.renaming, to)) this.renaming = null;
       return null;
     } catch (error) {
       return userMessage(error);
+    }
+  }
+
+  /**
+   * Ctrl+Z в дереве или в заголовке заметки: последнее переименование
+   * отменяется, если элемент на месте и прежнее имя свободно (`name_check`);
+   * иначе — уведомление, ничего не меняется. Отмена одна: повтор ничего не делает.
+   */
+  async undoRename(): Promise<void> {
+    const last = this.#lastRename;
+    if (!last) return;
+    this.#lastRename = null;
+    const oldName = last.from.at(-1) ?? '';
+    if (!this.entry(last.to)) {
+      this.host.notify(t('tree.undo.missing'));
+      return;
+    }
+    try {
+      const dir = parentOf(last.to);
+      const check = await core.nameCheck({ dir, name: oldName, renaming: last.to });
+      if (check.status === 'rejected') {
+        this.host.notify(
+          check.problem === 'duplicate'
+            ? t('tree.undo.taken', { name: displayName({ kind: this.entry(last.to)?.kind ?? 'note', path: last.from }) })
+            : t('tree.undo.failed', { reason: hasMessage(check.message_key) ? t(check.message_key) : '' }),
+        );
+        return;
+      }
+      const { path: to } = await core.entryRename({ path: last.to, new_name: oldName });
+      this.#relocated(last.to, to);
+    } catch (error) {
+      if (error instanceof CoreCallError && error.error.code === 'not_found') this.host.notify(t('tree.undo.missing'));
+      else this.host.notify(t('tree.undo.failed', { reason: userMessage(error) }));
     }
   }
 
@@ -282,6 +320,10 @@ export class FileTreeState {
       this.expanded = remapKeys(this.expanded, change.from, change.to);
       if (this.selected && isInside(this.selected, change.from)) {
         this.selected = [...change.to, ...this.selected.slice(change.from.length)];
+      }
+      if (this.#lastRename && isInside(this.#lastRename.to, change.from)) {
+        const { from, to } = this.#lastRename;
+        this.#lastRename = { from, to: [...change.to, ...to.slice(change.from.length)] };
       }
       if (this.renaming && isInside(this.renaming, change.from)) {
         this.renaming = [...change.to, ...this.renaming.slice(change.from.length)];

@@ -109,4 +109,25 @@ describe('дерево в оболочке окна', () => {
     await fireEvent.keyDown(screen.getByRole('tree'), { key: 'Delete' });
     expect(screen.getByRole('dialog', { name: 'Удалить «План»?' })).toBeTruthy();
   });
+
+  it('кнопки создания в корне — в заголовке «ФАЙЛЫ», видны при наведении на панель и при фокусе', async () => {
+    const { calls } = setup();
+    const sidebar = await screen.findByRole('complementary', { name: 'Боковая панель' });
+    await screen.findByRole('treeitem', { name: 'План' });
+    const heading = within(sidebar).getByRole('heading', { name: 'Файлы' });
+    const actions = within(sidebar).getByRole('group', { name: 'Создать в корне хранилища' });
+    expect(heading.parentElement?.contains(actions)).toBe(true);
+    expect(sidebar.dataset.revealed).toBe('false');
+
+    await fireEvent.mouseEnter(sidebar);
+    expect(sidebar.dataset.revealed).toBe('true');
+    await fireEvent.mouseLeave(sidebar);
+    expect(sidebar.dataset.revealed).toBe('false');
+    await fireEvent.focusIn(within(actions).getByRole('button', { name: 'Новая папка' }));
+    expect(sidebar.dataset.revealed).toBe('true');
+
+    await fireEvent.click(within(actions).getByRole('button', { name: 'Новая заметка' }));
+    await waitFor(() => expect(calls.some(([c]) => c === 'note_create')).toBe(true));
+    expect(calls.find(([c]) => c === 'note_create')?.[1]).toEqual({ request: { dir: [], name: 'Без названия.md' } });
+  });
 });

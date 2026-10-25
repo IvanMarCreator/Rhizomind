@@ -3,14 +3,34 @@
   import type { CurrentVault } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import FileTree from '../tree/FileTree.svelte';
+  import TreeActions from '../tree/TreeActions.svelte';
   import type { FileTreeState } from '../tree/tree.svelte.ts';
   import VaultSwitcher from './VaultSwitcher.svelte';
 
   let { vault, files }: { vault: CurrentVault | null; files: FileTreeState } = $props();
+
+  // Кнопки создания в корне видны при наведении на панель и при фокусе внутри неё (решение 48).
+  let hovered = $state(false);
+  let focused = $state(false);
 </script>
 
-<aside class="sidebar" aria-label={t('shell.sidebar.label')}>
-  <h2 class="heading">{t('shell.sidebar.files')}</h2>
+<aside
+  class="sidebar"
+  aria-label={t('shell.sidebar.label')}
+  data-revealed={vault !== null && (hovered || focused) ? 'true' : 'false'}
+  onmouseenter={() => (hovered = true)}
+  onmouseleave={() => (hovered = false)}
+  onfocusin={() => (focused = true)}
+  onfocusout={(event) => (focused = event.currentTarget.contains(event.relatedTarget as Node | null))}
+>
+  <div class="header">
+    <h2 class="heading">{t('shell.sidebar.files')}</h2>
+    {#if vault}
+      <div class="header-actions">
+        <TreeActions tree={files} />
+      </div>
+    {/if}
+  </div>
   <div class="tree">
     {#if vault}
       <FileTree tree={files} />
@@ -32,12 +52,27 @@
     box-sizing: border-box;
   }
 
-  .heading {
+  .header {
     display: flex;
     align-items: center;
     height: var(--sidebar-header-height);
+    padding: 0 8px 0 14px;
+  }
+
+  .header-actions {
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 0.1s ease;
+  }
+
+  .sidebar[data-revealed='true'] .header-actions {
+    opacity: 1;
+  }
+
+  .heading {
+    display: flex;
+    align-items: center;
     margin: 0;
-    padding: 0 14px;
     color: var(--text-muted);
     font-size: var(--font-size-heading);
     font-weight: 600;
