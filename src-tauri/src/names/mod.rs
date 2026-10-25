@@ -460,6 +460,20 @@ mod tests {
     }
 
     #[test]
+    fn unlinkable_names_are_allowed_with_warning() {
+        // С3.2 (решение владельца 25.10.2026): `#`, `[`, `]`, пробел в начале.
+        for name in ["#Идеи.md", "C#.md", "[Черновик].md", "a]b.md", " Пробел.md", "Папка #1", "[архив]"] {
+            assert_eq!(check(name), None, "{name:?}");
+            assert_eq!(warning(name), Some(NameWarning::Unlinkable), "{name:?}");
+        }
+        for name in ["Встреча.md", "C++.md", "Папка 1", "схема.png", "Итоги.md.md", "Пробел внутри.md"] {
+            assert_eq!(warning(name), None, "{name:?}");
+        }
+        assert!(is_linkable("Встреча"));
+        assert!(!is_linkable(" Встреча"));
+    }
+
+    #[test]
     fn dotless_i_matches_capital_i_like_ntfs() {
         // NTFS считает `ı.md` и `I.md` одним файлом (таблица верхнего регистра).
         assert_eq!(key("ı.md"), key("I.md"));

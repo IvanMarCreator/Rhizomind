@@ -716,10 +716,44 @@ mod tests {
             ("План.md", 4),
         ]);
         let items = l.suggest(&p("План.md"), "встр").unwrap();
-        let inserts: Vec<&str> = items.iter().map(|i| i.insert.as_str()).collect();
+        let inserts: Vec<&str> = items.iter().filter_map(|i| i.insert.as_deref()).collect();
         assert_eq!(inserts, ["Альфа/Встреча", "Бета/Встреча", "Итоги встречи"]);
         assert_eq!(items[0].name, "Встреча");
         assert_eq!(items[0].path, p("Проекты/Альфа/Встреча.md"));
+    }
+
+    #[test]
+    fn unlinkable_notes_are_shown_without_insert() {
+        let l = links(&[
+            ("#Идеи.md", 1),
+            ("Идеи.md", 2),
+            ("Проекты #1/Встреча.md", 3),
+            ("Б/Встреча.md", 4),
+            ("[архив]/Уникальная.md", 5),
+        ]);
+        let item = |query: &str, path: &str| {
+            l.suggest(&p("Откуда.md"), query)
+                .unwrap()
+                .into_iter()
+                .find(|i| i.path == p(path))
+                .unwrap()
+        };
+        let hash = item("идеи", "#Идеи.md");
+        assert!(!hash.linkable);
+        assert_eq!(hash.insert, None);
+        assert_eq!(hash.name, "#Идеи");
+        let plain = item("идеи", "Идеи.md");
+        assert!(plain.linkable);
+        assert_eq!(plain.insert.as_deref(), Some("Идеи"));
+        // Различающий путь проходит через папку с `#` — сослаться нельзя.
+        let nested = item("встреча", "Проекты #1/Встреча.md");
+        assert!(!nested.linkable);
+        assert_eq!(nested.insert, None);
+        assert_eq!(item("встреча", "Б/Встреча.md").insert.as_deref(), Some("Б/Встреча"));
+        // Уникальное имя пишется без папки — папка с `[` не мешает.
+        let unique = item("уник", "[архив]/Уникальная.md");
+        assert!(unique.linkable);
+        assert_eq!(unique.insert.as_deref(), Some("Уникальная"));
     }
 
     #[test]
@@ -729,9 +763,9 @@ mod tests {
         let l = links(&[("Итоги.md.md", 1), ("Итоги.md", 2)]);
         let items = l.suggest(&p("Откуда.md"), "итоги.md").unwrap();
         let item = items.iter().find(|i| i.path == p("Итоги.md.md")).unwrap();
-        assert_eq!(item.insert, "Итоги.md.md");
+        assert_eq!(item.insert.as_deref(), Some("Итоги.md.md"));
         assert_eq!(item.name, "Итоги.md");
-        assert_eq!(resolve(&l, &item.insert).as_deref(), Some("Итоги.md.md"));
+        assert_eq!(resolve(&l, "Итоги.md.md").as_deref(), Some("Итоги.md.md"));
         let l = links(&[("А/Итоги.MD.md", 1), ("Б/Итоги.md.md", 2)]);
         assert_eq!(shortest(&l, "А/Итоги.MD.md"), "А/Итоги.MD.md");
         assert_eq!(
@@ -748,7 +782,7 @@ mod tests {
         ]);
         let items = l.suggest(&p("Откуда.md"), "бета/вст").unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].insert, "Бета/Встреча");
+        assert_eq!(items[0].insert.as_deref(), Some("Бета/Встреча"));
     }
 
     #[test]
@@ -761,7 +795,7 @@ mod tests {
         let l = Links::new(notes.iter().map(|(path, at)| note(path, *at)).collect());
         let items = l.suggest(&p("Откуда.md"), "Встреча").unwrap();
         assert_eq!(items.len(), crate::switcher::MAX_RESULTS);
-        assert_eq!(items[0].insert, "Встреча");
+        assert_eq!(items[0].insert.as_deref(), Some("Встреча"));
         // Пустой запрос — заметки в естественном порядке имён, тоже не больше 50.
         let all = l.suggest(&p("Откуда.md"), "").unwrap();
         assert_eq!(all.len(), crate::switcher::MAX_RESULTS);

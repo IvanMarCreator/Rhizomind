@@ -20,6 +20,7 @@ import type {
   FileVersion,
   NameCheck,
   NameProblem,
+  NameWarning,
   NewNoteLocation,
   NoteWriteResponse,
   OpenExternalOutcome,
@@ -165,7 +166,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   name_check: {
     command: 'name_check',
     request: { dir: ['Проекты'], name: 'Встреча.md', renaming: ['Проекты', 'встреча.md'] },
-    response: { status: 'ok' },
+    response: { status: 'ok', warning: 'unlinkable' },
     errors: [err('invalid_path'), invalidArgument('dir')],
   },
   note_read: {
@@ -204,8 +205,9 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     request: { from: ['Дневник.md'], query: 'встр' },
     response: {
       items: [
-        { insert: 'Альфа/Встреча', name: 'Встреча', path: ['Проекты', 'Альфа', 'Встреча.md'] },
-        { insert: '/Встреча', name: 'Встреча', path: ['Встреча.md'] },
+        { insert: 'Альфа/Встреча', name: 'Встреча', path: ['Проекты', 'Альфа', 'Встреча.md'], linkable: true },
+        { insert: '/Встреча', name: 'Встреча', path: ['Встреча.md'], linkable: true },
+        { insert: null, name: '#Встреча 2', path: ['#Встреча 2.md'], linkable: false },
       ],
     },
     errors: [err('no_vault_open')],
@@ -349,6 +351,7 @@ const enums = {
     duplicate: true,
     note_extension: true,
   } satisfies Record<NameProblem, true>,
+  NameWarning: { unlinkable: true } satisfies Record<NameWarning, true>,
   EntryKind: { folder: true, note: true, attachment: true } satisfies Record<EntryKind, true>,
   Theme: { system: true, light: true, dark: true } satisfies Record<Theme, true>,
   EditorMode: { live_preview: true, source: true } satisfies Record<EditorMode, true>,

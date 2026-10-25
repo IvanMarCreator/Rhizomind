@@ -419,6 +419,35 @@ fn rename_cannot_change_note_extension() {
     );
 }
 
+/// Правила имён в командах создания и переименования — в слое команд, до
+/// хранилища (повторное ревью 0.4.1, п. 2): с открытой заглушкой хранилища
+/// ответ — `invalid_name` с причиной, а не `not_implemented` модуля `vault`.
+#[test]
+fn create_and_rename_check_name_rules_before_modules() {
+    let app = app();
+    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+
+    for (name, problem) in [
+        ("CON.md", NameProblem::ReservedName),
+        ("a:b.md", NameProblem::ForbiddenChars),
+    ] {
+        let cases = [
+            ("note_create", json!({ "dir": [], "name": name })),
+            ("folder_create", json!({ "dir": ["Проекты"], "name": name })),
+            ("entry_rename", json!({ "path": ["План.md"], "new_name": name })),
+        ];
+        for (command, request) in cases {
+            let error = invoke(&main, command, json!({ "request": request })).expect_err(command);
+            assert_eq!(
+                core_error(command, error),
+                CoreError::invalid_name(problem),
+                "{command} {name}"
+            );
+        }
+    }
+}
+
 /// Проверка имени: правила имён и смена вида — без хранилища; совпадение с
 /// соседями — в модуле `vault`.
 #[test]
