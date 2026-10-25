@@ -696,6 +696,21 @@ mod tests {
     }
 
     #[test]
+    fn insert_for_stem_ending_in_md_keeps_working() {
+        // Основа `Итоги.md` сама кончается на `.md`: без дописанного `.md`
+        // разбор отбросил бы его и ссылка вела бы на «Итоги».
+        let l = links(&[("Итоги.md.md", 1), ("Итоги.md", 2)]);
+        let items = l.suggest(&p("Откуда.md"), "итоги.md").unwrap();
+        let item = items.iter().find(|i| i.path == p("Итоги.md.md")).unwrap();
+        assert_eq!(item.insert, "Итоги.md.md");
+        assert_eq!(item.name, "Итоги.md");
+        assert_eq!(resolve(&l, &item.insert).as_deref(), Some("Итоги.md.md"));
+        let l = links(&[("А/Итоги.MD.md", 1), ("Б/Итоги.md.md", 2)]);
+        assert_eq!(shortest(&l, "А/Итоги.MD.md"), "А/Итоги.MD.md");
+        assert_eq!(resolve(&l, &shortest(&l, "Б/Итоги.md.md")).as_deref(), Some("Б/Итоги.md.md"));
+    }
+
+    #[test]
     fn suggest_by_path_when_query_has_slash() {
         let l = links(&[
             ("Проекты/Альфа/Встреча.md", 1),

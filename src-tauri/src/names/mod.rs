@@ -440,6 +440,61 @@ mod tests {
         assert_ne!(natural_cmp("Заметка", "заметка"), Equal);
     }
 
+    #[test]
+    fn dotless_i_matches_capital_i_like_ntfs() {
+        // NTFS считает `ı.md` и `I.md` одним файлом (таблица верхнего регистра).
+        assert_eq!(key("ı.md"), key("I.md"));
+        assert_eq!(key("ı.md"), key("i.md"));
+        assert_eq!(key("Sıra"), key("SIRA"));
+    }
+
+    #[test]
+    fn order_close_to_intl_collator_ru() {
+        use std::cmp::Ordering::*;
+        // «ё» — вторичное отличие: важно, только если остальное равно.
+        assert_eq!(natural_cmp("Ёлка", "Елки"), Less);
+        assert_eq!(natural_cmp("Елки", "Ёлка"), Greater);
+        assert_eq!(natural_cmp("Елка", "Ёлка"), Less);
+        // Кириллица перед латиницей.
+        assert_eq!(natural_cmp("Яблоко", "Apple"), Less);
+        assert_eq!(natural_cmp("zebra", "аист"), Greater);
+        // Регистр — вторично: строчные перед заглавными при равных буквах,
+        // но буква важнее регистра.
+        assert_eq!(natural_cmp("заметка", "Заметка"), Less);
+        assert_eq!(natural_cmp("Заметка а", "заметка б"), Less);
+        assert_eq!(natural_cmp("Б", "в"), Less);
+        // Знаки и пробелы перед цифрами, цифры перед буквами.
+        assert_eq!(natural_cmp("-план", "1 план"), Less);
+        assert_eq!(natural_cmp("1 план", "план"), Less);
+        // Числа по значению; ведущие нули — вторично.
+        assert_eq!(natural_cmp("Заметка 9", "Заметка 10"), Less);
+        assert_eq!(natural_cmp("a01", "a1"), Greater);
+        assert_eq!(natural_cmp("a01", "a2"), Less);
+    }
+
+    #[test]
+    fn order_is_total_and_transitive_on_small_alphabet() {
+        use std::cmp::Ordering::*;
+        let alphabet = ["е", "ё", "Е", "Ё", "ж", "и", "й", "a", "A", "1", "01", "2", "10", " ", "-", "ß", "ss"];
+        let mut words: Vec<String> = alphabet.iter().map(|s| s.to_string()).collect();
+        for a in alphabet {
+            for b in alphabet {
+                words.push(format!("{a}{b}"));
+            }
+        }
+        words.sort_by(|a, b| natural_cmp(a, b));
+        for i in 0..words.len() {
+            for j in 0..words.len() {
+                let ord = natural_cmp(&words[i], &words[j]);
+                assert_eq!(ord, natural_cmp(&words[j], &words[i]).reverse());
+                assert_eq!(ord == Equal, words[i] == words[j], "{:?} {:?}", words[i], words[j]);
+                if i < j {
+                    assert_ne!(ord, Greater, "{:?} > {:?} после сортировки", words[i], words[j]);
+                }
+            }
+        }
+    }
+
     mod props {
         use super::super::*;
         use proptest::prelude::*;

@@ -282,6 +282,13 @@ mod tests {
     }
 
     #[test]
+    fn only_notes_are_searched() {
+        let s = switcher(&["Схема.png", "Схема.md", "Папка", "схема.txt"]);
+        assert_eq!(found(&s, "схема"), ["Схема.md"]);
+        assert_eq!(found(&s, ""), ["Схема.md"]);
+    }
+
+    #[test]
     fn replace_notes_takes_effect() {
         let mut s = switcher(&["Встреча.md"]);
         s.replace_notes(vec![p("Итоги.md")]);
