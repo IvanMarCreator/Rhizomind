@@ -10,6 +10,8 @@
   import { isQuickSwitcherKey } from '../quick-switcher/keys.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTheme } from '../theme/theme.ts';
+  import NoteTitle from '../tree/NoteTitle.svelte';
+  import { FileTreeState } from '../tree/tree.svelte.ts';
   import EmptyState from './EmptyState.svelte';
   import NoteHeader from './NoteHeader.svelte';
   import Notifications from './Notifications.svelte';
@@ -20,11 +22,24 @@
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
 
+  /** Дерево файлов окна: им же переименовывается заметка из заголовка. */
+  const files = createFiles();
+
+  function createFiles(): FileTreeState {
+    return new FileTreeState(model);
+  }
+
   /** Окно быстрого перехода (Ctrl+O, задача 2.7) открыто. */
   let switcherOpen = $state(false);
 
+  /**
+   * Открыто модальное окно (быстрый переход, подтверждение удаления):
+   * горячие клавиши окна (Ctrl+O, Alt+←/→) под ним не действуют.
+   */
+  const modalOpen = $derived(switcherOpen || files.pendingDelete !== null);
+
   function openSwitcher() {
-    if (model.status.kind === 'ready' && model.vault) switcherOpen = true;
+    if (model.status.kind === 'ready' && model.vault && !modalOpen) switcherOpen = true;
   }
 
   onMount(() => {
@@ -47,8 +62,8 @@
     const action = historyKeyAction(event);
     if (!action) return;
     event.preventDefault();
-    // Под модальным окном быстрого перехода история не листается.
-    if (switcherOpen) return;
+    // Под модальным окном история не листается.
+    if (modalOpen) return;
     model.navigate(action);
   }
 </script>
@@ -57,7 +72,7 @@
   <div class="shell" data-testid="shell">
     <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} onQuickSwitcher={openSwitcher} />
     {#if model.sidebarOpen}
-      <Sidebar vault={model.vault} />
+      <Sidebar vault={model.vault} {files} />
     {/if}
     <main class="note">
       <NoteHeader
@@ -71,6 +86,11 @@
       <div class="body">
         {#if !model.currentPath}
           <EmptyState />
+        {:else}
+          <!-- Заголовок над текстом; редактор (2.4) встаёт под ним в ту же колонку. -->
+          <div class="column">
+            <NoteTitle tree={files} path={model.currentPath} />
+          </div>
         {/if}
       </div>
     </main>
@@ -109,6 +129,12 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+  }
+
+  .column {
+    max-width: var(--note-column-width);
+    margin: 0 auto;
+    padding: 28px 32px 0;
   }
 
   .loading {
