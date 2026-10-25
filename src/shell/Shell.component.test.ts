@@ -155,16 +155,16 @@ describe('оболочка окна', () => {
 
     model.open(['А.md']);
     model.open(['Папка', 'Б.md']);
-    await screen.findByText('Б');
+    await within(await screen.findByRole('navigation', { name: 'Путь к заметке' })).findByText('Б');
     expect(back.disabled).toBe(false);
     expect(forward.disabled).toBe(true);
 
     await fireEvent.keyDown(window, { key: 'ArrowLeft', altKey: true });
-    await screen.findByText('А');
+    await within(await screen.findByRole('navigation', { name: 'Путь к заметке' })).findByText('А');
     expect(forward.disabled).toBe(false);
 
     await fireEvent.click(forward);
-    await screen.findByText('Б');
+    await within(await screen.findByRole('navigation', { name: 'Путь к заметке' })).findByText('Б');
 
     await waitFor(() => {
       const writes = calls.filter(([command]) => command === 'workspace_write');

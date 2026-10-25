@@ -29,6 +29,30 @@ export const ru = {
   'note.mode.livePreview': 'Живой предпросмотр',
   'note.mode.source': 'Исходный текст (Ctrl+E)',
 
+  // Редактор: текст и сохранение
+  'editor.label': 'Текст заметки',
+  'editor.loading': 'Открываем заметку…',
+  'editor.openFailed': 'Не удалось открыть заметку. {message}',
+  'editor.status.label': 'Состояние сохранения',
+  'editor.status.saved': 'Сохранено',
+  'editor.status.pending': 'Сохраняется',
+  'editor.status.failed': 'Не сохранено',
+  'editor.status.readOnly': 'Только чтение',
+  'editor.status.deleted': 'Удалена на диске',
+  'editor.saveFailed':
+    'Не удалось сохранить заметку «{name}». {message} Текст остаётся в редакторе, сохранение повторится.',
+  'editor.conflictSaved':
+    'Заметка «{name}» изменилась на диске одновременно с вашими правками. Сохранены обе версии: ваша — в заметке, версия с диска — рядом, в «{copy}».',
+  'editor.readOnly.tooLarge.title': 'Только чтение: файл {size}, лимит для редактирования — {limit}',
+  'editor.readOnly.tooLarge.hint':
+    'Чтобы редактировать, увеличьте «Максимальный размер файла для редактирования» в настройках хранилища и откройте файл заново.',
+  'editor.readOnly.tooLarge.hidden': 'Файл больше {max}, поэтому его текст не показывается.',
+  'editor.readOnly.invalidUtf8.title': 'Только чтение: файл не в кодировке UTF-8',
+  'editor.readOnly.invalidUtf8.hint':
+    'Неверные байты показаны знаком «�». Правка запрещена, чтобы не испортить файл.',
+  'editor.readOnly.openSettings': 'Открыть настройки',
+  'units.megabytes': '{value} МБ',
+
   // Пустое состояние
   'shell.empty.title': 'Нет открытой заметки',
   'shell.empty.hint': 'Выберите заметку в дереве файлов или откройте быстрый переход: Ctrl+O.',

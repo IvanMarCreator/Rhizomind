@@ -8,6 +8,9 @@
   import { historyKeyAction } from '../core/history/history.ts';
   import { t } from '../i18n/index.ts';
   import { applyTheme } from '../theme/theme.ts';
+  import Editor from '../editor/Editor.svelte';
+  import SaveIndicator from '../editor/SaveIndicator.svelte';
+  import type { SaveStatus } from '../editor/session.ts';
   import EmptyState from './EmptyState.svelte';
   import NoteHeader from './NoteHeader.svelte';
   import Notifications from './Notifications.svelte';
@@ -17,6 +20,7 @@
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
+  let saveStatus = $state.raw<SaveStatus | null>(null);
 
   onMount(() => {
     void model.start();
@@ -51,11 +55,16 @@
         bind:mode={model.editorMode}
         onBack={() => model.back()}
         onForward={() => model.forward()}
-      />
+      >
+        {#snippet status()}
+          <SaveIndicator status={saveStatus} />
+        {/snippet}
+      </NoteHeader>
       <div class="body">
         {#if !model.currentPath}
           <EmptyState />
         {/if}
+        <Editor path={model.currentPath} notify={(text) => model.notify(text)} onStatus={(status) => (saveStatus = status)} />
       </div>
     </main>
   </div>

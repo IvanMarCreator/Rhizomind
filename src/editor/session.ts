@@ -1,0 +1,215 @@
+// Сохранение одной открытой заметки (С3.3, С3.6).
+//
+// Правило «байт в байт» делится с ядром (src-tauri/src/commands/note.rs):
+// ядро отдаёт текст без BOM с переносами `\n` и при записи само возвращает
+// файлу BOM и переносы; если текст не изменился, файл не пишется. Здесь
+// только два правила: текст из редактора уходит ядру ровно таким, каким он
+// стал после правок пользователя, и без правок запись не отправляется вовсе.
+//
+// Ни один ввод не теряется: запись по таймеру, по требованию (переход к
+// другой заметке, закрытие) и повтор после сбоя. Единственное исключение —
+// заметку удалили снаружи (`not_found`): ввод отбрасывается (решение
+// владельца, инвариант 4).
+import { CoreCallError, core } from '../api/index.ts';
+import type {
+  FileVersion,
+  NoteReadResponse,
+  NoteWriteRequest,
+  NoteWriteResponse,
+  ReadOnlyReason,
+  VaultPath,
+} from '../api/index.ts';
+
+/** Пауза ввода перед автосохранением (С3.3). */
+export const AUTOSAVE_DELAY_MS = 1000;
+/** Повтор записи после сбоя. */
+export const RETRY_DELAY_MS = 5000;
+
+/** Чтение и запись заметки; по умолчанию — команды ядра. */
+export interface NoteStore {
+  read(path: VaultPath): Promise<NoteReadResponse>;
+  write(request: NoteWriteRequest): Promise<NoteWriteResponse>;
+}
+
+export const coreNoteStore: NoteStore = {
+  read: (path) => core.noteRead({ path }),
+  write: (request) => core.noteWrite(request),
+};
+
+/** Состояние сохранения для индикатора. */
+export type SaveStatus =
+  /** Текст совпадает с файлом. */
+  | { kind: 'saved' }
+  /** Есть несохранённый ввод или идёт запись. */
+  | { kind: 'pending' }
+  /** Запись не удалась; текст в редакторе, повтор по таймеру. */
+  | { kind: 'failed'; error: unknown }
+  | { kind: 'read_only'; reason: ReadOnlyReason }
+  /** Файл удалён снаружи: запись прекращена. */
+  | { kind: 'deleted' };
+
+export interface SessionHooks {
+  onStatus?(status: SaveStatus): void;
+  /** Ядро сохранило обе версии: версия с диска — копией `copyPath`. */
+  onConflictSaved?(copyPath: VaultPath): void;
+  /** Первый сбой записи в серии (следующие подряд не сообщаются). */
+  onSaveFailed?(error: unknown): void;
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof CoreCallError && error.error.code === 'not_found';
+}
+
+export class NoteSession {
+  readonly path: VaultPath;
+  readonly readOnly: ReadOnlyReason | null;
+
+  readonly #store: NoteStore;
+  readonly #hooks: SessionHooks;
+  /** Текст, который сейчас в файле (по последнему ответу ядра). */
+  #saved: string;
+  /** Текст в редакторе. */
+  #current: string;
+  #version: FileVersion;
+  #status: SaveStatus;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  #inFlight: Promise<boolean> | null = null;
+  #failing = false;
+  #disposed = false;
+
+  constructor(path: VaultPath, opened: NoteReadResponse, store: NoteStore, hooks: SessionHooks = {}) {
+    this.path = path;
+    this.readOnly = opened.read_only;
+    this.#store = store;
+    this.#hooks = hooks;
+    this.#saved = opened.text;
+    this.#current = opened.text;
+    this.#version = opened.version;
+    this.#status = opened.read_only ? { kind: 'read_only', reason: opened.read_only } : { kind: 'saved' };
+  }
+
+  /** Текст в редакторе (при открытии — текст файла). */
+  get text(): string {
+    return this.#current;
+  }
+
+  /** Размер файла в байтах по последней известной версии. */
+  get size(): number {
+    return this.#version.size;
+  }
+
+  get status(): SaveStatus {
+    return this.#status;
+  }
+
+  /** Есть ввод, которого ещё нет в файле, или идёт запись. */
+  get hasUnsavedChanges(): boolean {
+    if (this.#status.kind === 'deleted' || this.readOnly) return false;
+    return this.#inFlight !== null || this.#current !== this.#saved;
+  }
+
+  /** Правка пользователя: новый текст редактора. Запись — через 1 с паузы. */
+  edit(text: string): void {
+    if (this.readOnly || this.#status.kind === 'deleted' || this.#disposed) return;
+    this.#current = text;
+    if (text === this.#saved && !this.#inFlight) {
+      this.#cancelTimer();
+      this.#failing = false;
+      this.#setStatus({ kind: 'saved' });
+      return;
+    }
+    if (this.#status.kind !== 'failed') this.#setStatus({ kind: 'pending' });
+    this.#schedule(AUTOSAVE_DELAY_MS);
+  }
+
+  /**
+   * Записать сейчас (переход к другой заметке, закрытие). Если записи нет в
+   * полёте, запрос уходит синхронно, до первого `await`. Завершается, когда
+   * текст записан, запись не удалась или файл удалён.
+   */
+  async flush(): Promise<void> {
+    this.#cancelTimer();
+    for (;;) {
+      if (this.#inFlight) {
+        await this.#inFlight;
+        continue;
+      }
+      if (!this.hasUnsavedChanges || this.#disposed) return;
+      if (!(await this.#save())) return;
+    }
+  }
+
+  /** Снять таймеры; ввод после этого не пишется. Перед этим — `flush()`. */
+  dispose(): void {
+    this.#disposed = true;
+    this.#cancelTimer();
+  }
+
+  #schedule(ms: number): void {
+    this.#cancelTimer();
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      // Запись в полёте: следующая уйдёт по её завершении.
+      if (!this.#inFlight) void this.#save();
+    }, ms);
+  }
+
+  #cancelTimer(): void {
+    if (this.#timer !== null) clearTimeout(this.#timer);
+    this.#timer = null;
+  }
+
+  /** Одна запись текущего текста; `true` — записано. */
+  #save(): Promise<boolean> {
+    const text = this.#current;
+    if (this.#status.kind !== 'failed') this.#setStatus({ kind: 'pending' });
+    const flight = this.#store
+      .write({ path: this.path, text, expected_version: this.#version })
+      .then(
+        (response) => {
+          this.#version = response.version;
+          this.#saved = text;
+          this.#failing = false;
+          if (response.outcome === 'conflict_saved') this.#hooks.onConflictSaved?.(response.copy_path);
+          return true;
+        },
+        (error: unknown) => {
+          if (isNotFound(error)) {
+            this.#cancelTimer();
+            this.#setStatus({ kind: 'deleted' });
+            return false;
+          }
+          if (!this.#failing) this.#hooks.onSaveFailed?.(error);
+          this.#failing = true;
+          this.#setStatus({ kind: 'failed', error });
+          if (!this.#disposed) this.#schedule(RETRY_DELAY_MS);
+          return false;
+        },
+      )
+      .then((saved) => {
+        this.#inFlight = null;
+        if (saved) this.#afterSave();
+        return saved;
+      });
+    this.#inFlight = flight;
+    return flight;
+  }
+
+  #afterSave(): void {
+    if (this.#current === this.#saved) {
+      this.#setStatus({ kind: 'saved' });
+      return;
+    }
+    // Ввод во время записи: если пауза уже прошла (таймер сработал в полёте),
+    // пишем сразу; иначе ждём таймер.
+    this.#setStatus({ kind: 'pending' });
+    if (this.#timer === null && !this.#disposed) void this.#save();
+  }
+
+  #setStatus(status: SaveStatus): void {
+    const same = status.kind === this.#status.kind && (status.kind === 'saved' || status.kind === 'pending');
+    if (same) return;
+    this.#status = status;
+    this.#hooks.onStatus?.(status);
+  }
+}
