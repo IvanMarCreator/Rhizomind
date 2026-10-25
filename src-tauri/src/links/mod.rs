@@ -8,16 +8,7 @@
 //! заметок в памяти, к диску не обращается.
 
 use crate::commands::{CoreError, CoreResult, LinkSuggestion, VaultPath};
-
-/// Заметка в списке, по которому разрешаются ссылки.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteRef {
-    /// Путь заметки (с `.md`).
-    pub path: VaultPath,
-    /// Дата создания (или «дата появления», ADR 0006), миллисекунды UTC —
-    /// для выбора самой старой заметки при дубликатах.
-    pub created_ms: i64,
-}
+use crate::vault::NoteRef;
 
 /// Ссылки одного хранилища. Список заметок заменяется целиком при изменении
 /// дерева (`replace_notes`); запросы не меняют состояние.
@@ -28,7 +19,7 @@ pub struct Links {
 }
 
 impl Links {
-    /// Ссылки по списку заметок хранилища.
+    /// Ссылки по списку заметок хранилища (`Vault::notes`).
     pub fn new(notes: Vec<NoteRef>) -> Self {
         Self { notes }
     }
@@ -39,7 +30,9 @@ impl Links {
     }
 
     /// Куда ведёт цель ссылки `target` (текст между `[[` и `|`/`#`) из
-    /// заметки `from`. `Ok(None)` — неразрешённая ссылка.
+    /// заметки `from`. `Ok(None)` — неразрешённая ссылка, в том числе для
+    /// цели, которая не может быть путём (`..`, зарезервированное имя и
+    /// т.п.): плохая цель — не ошибка. `Err` — только отказ самого модуля.
     pub fn resolve(&self, _from: &VaultPath, _target: &str) -> CoreResult<Option<VaultPath>> {
         Err(CoreError::not_implemented())
     }

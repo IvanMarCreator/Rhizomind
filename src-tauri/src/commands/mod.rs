@@ -20,6 +20,7 @@
 mod error;
 mod events;
 mod files;
+pub mod limits;
 mod links;
 #[macro_use]
 mod list;
@@ -45,7 +46,9 @@ pub use files::*;
 pub use links::*;
 pub use note::*;
 pub use settings::*;
-pub use types::{API_VERSION, EntryKind, FileVersion, VaultId, VaultPath, VaultSummary};
+pub use types::{
+    API_VERSION, CurrentVault, EntryKind, FileVersion, VaultId, VaultPath, VaultSummary,
+};
 pub use vaults::*;
 
 use crate::links::Links;

@@ -13,21 +13,45 @@
 //! Запись заметки атомарная (временный файл в `.rhizomind/tmp/` → замена),
 //! с проверкой ожидаемой версии файла. Удаление — в корзину ОС; на томе без
 //! корзины — безвозвратно и только после отдельного подтверждения
-//! (инвариант 4). Служебные данные — `.rhizomind/settings.json` и
-//! `.rhizomind/workspace.json` с версией формата.
+//! (инвариант 4). Служебные данные — `.rhizomind/settings.json`
+//! ([`SettingsFile`]) и `.rhizomind/workspace.json` с версией формата.
+//!
+//! **Дата создания заметки** — источник «самой старой» заметки при
+//! дубликатах имён (С3.4, [`NoteRef::created_ms`]). Берётся из файловой
+//! системы, поэтому атомарная запись обязана её сохранять: на Windows
+//! замена через `ReplaceFileW` (сохраняет дату создания и идентификатор
+//! файла), на других ОС — перенос времени создания на новый файл, где ФС
+//! это позволяет (macOS — `setattrlist`; на Linux времени создания обычно не
+//! задать — там дата создания после записи может сдвинуться, это известное
+//! ограничение). Это уточнение к ADR 0006, раздел «Последствия»: ADR нужно
+//! дописать, выбор сделан в пользу `ReplaceFileW`, а не «даты появления».
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
 use crate::commands::{
-    CoreError, CoreResult, FileVersion, NameCheck, NoteFormat, NoteReadResponse, NoteWriteResponse,
-    Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
+    CoreError, CoreResult, FileVersion, NameCheck, NewNoteLocation, NoteReadResponse,
+    NoteWriteResponse, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace, limits,
 };
+
+/// Заметка в списке, по которому разрешаются ссылки и идёт быстрый переход.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteRef {
+    /// Путь заметки (с `.md`).
+    pub path: VaultPath,
+    /// Дата создания файла, миллисекунды UTC — для выбора самой старой
+    /// заметки при дубликатах имён.
+    pub created_ms: i64,
+}
 
 /// Открытое хранилище: корень и операции над файлами внутри контура.
 ///
 /// Все методы принимают пути [`VaultPath`] от интерфейса как есть и сами
-/// проверяют их. Методы блокируют поток (диск, корзина) — команды вызывают их
-/// вне главного потока.
+/// проверяют их компоненты; пределы длины уже проверены слоем команд.
+/// Методы блокируют поток (диск, корзина) — команды вызывают их вне
+/// главного потока.
 #[derive(Debug)]
 pub struct Vault {
     #[allow(dead_code)]
@@ -35,6 +59,13 @@ pub struct Vault {
 }
 
 impl Vault {
+    /// Создаёт папку нового хранилища `parent/name` (не существующую).
+    /// Имя уже проверено правилами имён и [`check_component`]; возвращает
+    /// путь к созданной папке. `.rhizomind/` создаёт [`Vault::open`].
+    pub fn create(_parent: &Path, _name: &str) -> CoreResult<PathBuf> {
+        Err(CoreError::not_implemented())
+    }
+
     /// Открывает папку как хранилище: канонизирует корень, создаёт
     /// `.rhizomind/` и `.rhizomind/tmp/`, убирает остатки временных файлов.
     ///
@@ -51,21 +82,29 @@ impl Vault {
         Err(CoreError::not_implemented())
     }
 
-    /// Читает заметку: текст без BOM (переносы строк как в файле), формат,
-    /// версию файла. Больше лимита из настроек или не UTF-8 — только чтение.
+    /// Все заметки хранилища с датой создания — для модулей `links` и
+    /// `switcher`.
+    pub fn notes(&self) -> CoreResult<Vec<NoteRef>> {
+        Err(CoreError::not_implemented())
+    }
+
+    /// Читает заметку: текст без BOM с переносами `\n`, версию файла.
+    /// Больше лимита из настроек или не UTF-8 — только чтение.
     pub fn read_note(&self, _path: &VaultPath) -> CoreResult<NoteReadResponse> {
         Err(CoreError::not_implemented())
     }
 
-    /// Записывает заметку атомарно, если версия на диске равна `expected`.
-    /// Если не равна — изменения снаружи не затираются: версия с диска
-    /// сохраняется копией рядом, текст из редактора — в заметку
-    /// (`conflict_saved`, спецификация С3.6).
+    /// Записывает заметку атомарно по правилу «байт в байт»
+    /// (`commands::note`): BOM и переносы — из файла на диске; текст не
+    /// изменился — файл не пишется. Версия на диске не равна `expected` —
+    /// изменения снаружи не затираются: версия с диска сохраняется копией
+    /// рядом, текст из редактора — в заметку (`conflict_saved`, С3.6).
+    /// Файла нет — `not_found`. Дата создания сохраняется (см. описание
+    /// модуля).
     pub fn write_note(
         &self,
         _path: &VaultPath,
         _text: &str,
-        _format: &NoteFormat,
         _expected: &FileVersion,
     ) -> CoreResult<NoteWriteResponse> {
         Err(CoreError::not_implemented())
@@ -82,13 +121,21 @@ impl Vault {
         Err(CoreError::not_implemented())
     }
 
-    /// Проверяет имя для нового элемента в папке `dir`: правила имён
-    /// (модуль `names`) и совпадение с соседями по ключу имени.
-    pub fn check_new_name(&self, _dir: &VaultPath, _name: &str) -> CoreResult<NameCheck> {
+    /// Совпадение имени с соседями в папке `dir` по ключу имени
+    /// (`names::key`); правила самого имени уже проверены слоем команд.
+    /// `renaming` — переименовываемый элемент: он не совпадение сам с собой,
+    /// поэтому смена только регистра разрешена.
+    pub fn check_new_name(
+        &self,
+        _dir: &VaultPath,
+        _name: &str,
+        _renaming: Option<&VaultPath>,
+    ) -> CoreResult<NameCheck> {
         Err(CoreError::not_implemented())
     }
 
-    /// Переименовывает файл или папку; возвращает новый путь.
+    /// Переименовывает файл или папку; возвращает новый путь. Смена только
+    /// регистра разрешена (на Windows — через промежуточное имя).
     pub fn rename(&self, _path: &VaultPath, _new_name: &str) -> CoreResult<VaultPath> {
         Err(CoreError::not_implemented())
     }
@@ -109,13 +156,13 @@ impl Vault {
         Err(CoreError::not_implemented())
     }
 
-    /// Настройки хранилища из `.rhizomind/settings.json`; файла нет —
-    /// значения по умолчанию.
+    /// Настройки хранилища из `.rhizomind/settings.json`
+    /// ([`SettingsFile::to_settings`]); файла нет — значения по умолчанию.
     pub fn read_settings(&self) -> CoreResult<Settings> {
         Err(CoreError::not_implemented())
     }
 
-    /// Записывает настройки хранилища атомарно.
+    /// Записывает настройки хранилища атомарно ([`SettingsFile::update`]).
     pub fn write_settings(&self, _settings: &Settings) -> CoreResult<()> {
         Err(CoreError::not_implemented())
     }
@@ -139,4 +186,132 @@ impl Vault {
 /// Заглушка 0.4: правила — задача 1.2.
 pub fn check_component(_component: &str) -> CoreResult<()> {
     Err(CoreError::not_implemented())
+}
+
+/// Версия формата `settings.json`, которую пишет это ядро.
+pub const SETTINGS_FORMAT_VERSION: u32 = 1;
+
+/// `.rhizomind/settings.json` на диске — отдельно от типа контракта
+/// [`Settings`]. Чтение терпимое: неизвестные поля, значения, которых это
+/// ядро не знает, и файл более новой версии не ломают чтение — непонятное
+/// значение заменяется значением по умолчанию, а неизвестные поля
+/// сохраняются при записи. Версию формата ставит ядро.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SettingsFile {
+    /// Версия формата файла.
+    #[serde(default)]
+    pub format_version: u32,
+    /// Все остальные поля как есть.
+    #[serde(flatten)]
+    pub values: Map<String, Value>,
+}
+
+impl SettingsFile {
+    /// Настройки для интерфейса: известные поля, остальное — по умолчанию.
+    pub fn to_settings(&self) -> Settings {
+        fn field<T: serde::de::DeserializeOwned>(
+            values: &Map<String, Value>,
+            key: &str,
+        ) -> Option<T> {
+            values
+                .get(key)
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+        }
+        let defaults = Settings::default();
+        // Значение вне диапазона (файл правили руками) — по умолчанию.
+        let (min_font, max_font) = limits::FONT_SIZE_RANGE;
+        let (min_edit, max_edit) = limits::EDIT_SIZE_RANGE;
+        let new_note_location = field(&self.values, "new_note_location")
+            .filter(|location| match location {
+                NewNoteLocation::Folder { path } => limits::path(path, "path").is_ok(),
+                _ => true,
+            })
+            .unwrap_or_else(|| defaults.new_note_location.clone());
+        Settings {
+            theme: field(&self.values, "theme").unwrap_or(defaults.theme),
+            editor_mode: field(&self.values, "editor_mode").unwrap_or(defaults.editor_mode),
+            text_width: field(&self.values, "text_width").unwrap_or(defaults.text_width),
+            font_size: field(&self.values, "font_size")
+                .filter(|size| (min_font..=max_font).contains(size))
+                .unwrap_or(defaults.font_size),
+            new_note_location,
+            confirm_delete: field(&self.values, "confirm_delete")
+                .unwrap_or(defaults.confirm_delete),
+            max_edit_size_bytes: field(&self.values, "max_edit_size_bytes")
+                .filter(|size| (min_edit..=max_edit).contains(size))
+                .unwrap_or(defaults.max_edit_size_bytes),
+        }
+    }
+
+    /// Записывает настройки поверх файла: известные поля заменяются,
+    /// неизвестные сохраняются, версия формата — [`SETTINGS_FORMAT_VERSION`]
+    /// (не ниже прочитанной: более новый файл не понижается).
+    pub fn update(&mut self, settings: &Settings) {
+        if let Ok(Value::Object(known)) = serde_json::to_value(settings) {
+            self.values.extend(known);
+        }
+        self.format_version = self.format_version.max(SETTINGS_FORMAT_VERSION);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::Theme;
+    use serde_json::json;
+
+    #[test]
+    fn newer_settings_file_with_unknown_fields_and_values_still_reads() {
+        let file: SettingsFile = serde_json::from_value(json!({
+            "format_version": 2,
+            "theme": "sepia",
+            "font_size": 18,
+            "graph": { "physics": true }
+        }))
+        .expect("файл следующей версии читается");
+
+        let settings = file.to_settings();
+
+        assert_eq!(
+            settings.theme,
+            Theme::System,
+            "неизвестная тема — по умолчанию"
+        );
+        assert_eq!(settings.font_size, 18);
+        assert_eq!(settings.new_note_location, NewNoteLocation::VaultRoot);
+    }
+
+    #[test]
+    fn update_keeps_unknown_fields_and_sets_format_version() {
+        let mut file: SettingsFile =
+            serde_json::from_value(json!({ "graph": { "physics": true } })).expect("файл");
+
+        file.update(&Settings {
+            theme: Theme::Dark,
+            ..Settings::default()
+        });
+
+        let written = serde_json::to_value(&file).expect("запись");
+        assert_eq!(written["format_version"], 1);
+        assert_eq!(written["theme"], "dark");
+        assert_eq!(written["graph"], json!({ "physics": true }));
+    }
+
+    #[test]
+    fn out_of_range_values_fall_back_to_defaults() {
+        let file: SettingsFile =
+            serde_json::from_value(json!({ "max_edit_size_bytes": 1, "theme": "dark" }))
+                .expect("файл");
+        let settings = file.to_settings();
+        assert_eq!(
+            settings.max_edit_size_bytes,
+            Settings::default().max_edit_size_bytes
+        );
+        assert_eq!(settings.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn missing_file_content_gives_defaults() {
+        assert_eq!(SettingsFile::default().to_settings(), Settings::default());
+    }
 }

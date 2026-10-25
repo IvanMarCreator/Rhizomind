@@ -1,14 +1,12 @@
 //! Команды групп «Настройки и раскладка» и «Внешние ссылки».
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime, State, Window};
+use tauri::{Runtime, State, Window};
 
 use super::Core;
-use super::error::CoreResult;
+use super::error::{CoreError, CoreResult};
+use super::limits;
 use super::types::VaultPath;
-
-/// Версия формата `settings.json`.
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
 
 /// Тема интерфейса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,14 +55,17 @@ pub enum NewNoteLocation {
     },
 }
 
-/// Настройки хранилища (`.rhizomind/settings.json`, С3.1). Состав для 0.1 —
+/// Настройки хранилища, как их видит интерфейс (С3.1). Состав для 0.1 —
 /// настройки, поведение которых есть в спецификации; окончательный состав
 /// окна настроек утверждает владелец в задаче 2.8.
+///
+/// Это тип контракта, а не файла: на диске — `vault::SettingsFile` с
+/// версией формата (её ставит ядро) и терпимым чтением: файл следующей
+/// версии с новыми полями или неизвестными значениями читается, неизвестное
+/// сохраняется при записи. Диапазоны значений — `commands::limits`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    /// Версия формата, сейчас [`SETTINGS_FORMAT_VERSION`].
-    pub format_version: u32,
     /// Тема.
     pub theme: Theme,
     /// Режим редактора по умолчанию.
@@ -79,6 +80,23 @@ pub struct Settings {
     pub confirm_delete: bool,
     /// Максимальный размер файла для редактирования, байты (по умолчанию 10 МБ).
     pub max_edit_size_bytes: u64,
+}
+
+impl Default for Settings {
+    /// Значения по умолчанию: тема «Как в системе» и 10 МБ — из спецификации
+    /// (С3.8, С3.3); остальные — предварительные, до утверждения окна
+    /// настроек (задача 2.8).
+    fn default() -> Self {
+        Self {
+            theme: Theme::System,
+            editor_mode: EditorMode::LivePreview,
+            text_width: TextWidth::Column,
+            font_size: 16,
+            new_note_location: NewNoteLocation::VaultRoot,
+            confirm_delete: true,
+            max_edit_size_bytes: 10 * 1024 * 1024,
+        }
+    }
 }
 
 /// Ответ `settings_read`.
@@ -157,6 +175,7 @@ pub async fn settings_write<R: Runtime>(
     core: State<'_, Core>,
     request: SettingsWriteRequest,
 ) -> CoreResult<()> {
+    limits::settings(&request.settings)?;
     let open = core.require_vault(window.label())?;
     open.vault.write_settings(&request.settings)
 }
@@ -180,6 +199,9 @@ pub async fn workspace_write<R: Runtime>(
     core: State<'_, Core>,
     request: WorkspaceWriteRequest,
 ) -> CoreResult<()> {
+    let bytes = serde_json::to_vec(&request.workspace)
+        .map_err(|_| CoreError::invalid_argument("workspace"))?;
+    limits::workspace_bytes(bytes.len())?;
     let open = core.require_vault(window.label())?;
     open.vault.write_workspace(&request.workspace)
 }
@@ -187,8 +209,9 @@ pub async fn workspace_write<R: Runtime>(
 /// Открывает внешнюю ссылку после подтверждения в окне ядра.
 #[tauri::command]
 pub async fn open_external<R: Runtime>(
-    app: AppHandle<R>,
+    window: Window<R>,
     request: OpenExternalRequest,
 ) -> CoreResult<OpenExternalOutcome> {
-    crate::external_links::open_with_confirmation(&app, &request.url)
+    limits::url(&request.url)?;
+    crate::external_links::open_with_confirmation(&window, &request.url)
 }

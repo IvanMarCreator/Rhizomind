@@ -1,32 +1,29 @@
 //! Команды группы «Заметка»: чтение и запись с версией файла.
+//!
+//! **Правило «байт в байт» (С3.3).** Интерфейс всегда работает с текстом,
+//! где переносы строк — `\n`, а BOM нет. Всё остальное знает только ядро:
+//! - `note_read` убирает BOM и приводит `\r\n` к `\n`;
+//! - `note_write` берёт BOM и переносы из файла на диске в момент записи.
+//!   Если файл на диске в ожидаемой версии и его текст после того же
+//!   приведения равен присланному, ядро **файл не пишет** и отвечает
+//!   `saved` с прежней версией: открыть и сохранить без правок — файл не
+//!   меняется ни на байт (в том числе файл со смешанными переносами);
+//! - при изменении текста переносы приводятся к преобладающим в файле, BOM
+//!   сохраняется, если был;
+//! - новая заметка — UTF-8 без BOM, переносы LF.
+//!
+//! **Удалённая заметка.** `note_write` по пути, которого уже нет на диске, —
+//! `not_found`; интерфейс держит несохранённый текст в памяти.
+//! Окончательное поведение для «заметку удалили снаружи при несохранённом
+//! вводе» — решение владельца, ещё не принято.
 
 use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
 use super::Core;
 use super::error::CoreResult;
+use super::limits;
 use super::types::{FileVersion, VaultPath};
-
-/// Перенос строк в файле.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LineEnding {
-    /// `\n` (новые заметки).
-    Lf,
-    /// `\r\n`.
-    Crlf,
-}
-
-/// Как заметка лежит на диске — чтобы записать её байт в байт (С3.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NoteFormat {
-    /// Есть ли BOM UTF-8 в начале файла. В `text` BOM никогда нет.
-    pub bom: bool,
-    /// Преобладающий перенос строк. Текст передаётся с переносами как в
-    /// файле; редактор возвращает его с этими же переносами (задача 2.4).
-    pub line_ending: LineEnding,
-}
 
 /// Почему заметка открыта только для чтения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,10 +50,8 @@ pub struct NoteReadRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoteReadResponse {
-    /// Текст без BOM, переносы строк как в файле.
+    /// Текст без BOM, переносы строк — `\n`.
     pub text: String,
-    /// BOM и переносы строк файла.
-    pub format: NoteFormat,
     /// Версия файла — вернуть в `note_write` как ожидаемую.
     pub version: FileVersion,
     /// `null` — можно редактировать; иначе причина «только чтение».
@@ -69,11 +64,11 @@ pub struct NoteReadResponse {
 pub struct NoteWriteRequest {
     /// Заметка.
     pub path: VaultPath,
-    /// Новый текст без BOM.
+    /// Текст с переносами `\n`, без BOM. Не больше лимита из настроек
+    /// хранилища и не больше [`limits::MAX_NOTE_BYTES`].
     pub text: String,
-    /// Формат записи (обычно — из `note_read`).
-    pub format: NoteFormat,
-    /// Версия, от которой редактор начинал правки.
+    /// Версия, от которой редактор начинал правки. После `note:renamed`
+    /// интерфейс пишет по новому пути с прежней ожидаемой версией.
     pub expected_version: FileVersion,
 }
 
@@ -81,9 +76,10 @@ pub struct NoteWriteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NoteWriteResponse {
-    /// Записано; файл на диске был в ожидаемой версии.
+    /// Записано (или текст не изменился и файл не тронут); файл на диске был
+    /// в ожидаемой версии.
     Saved {
-        /// Новая версия файла.
+        /// Версия файла после операции.
         version: FileVersion,
     },
     /// Файл изменился снаружи после `expected_version` (конфликт изменений):
@@ -104,6 +100,7 @@ pub async fn note_read<R: Runtime>(
     core: State<'_, Core>,
     request: NoteReadRequest,
 ) -> CoreResult<NoteReadResponse> {
+    limits::path(&request.path, "path")?;
     let open = core.require_vault(window.label())?;
     open.vault.read_note(&request.path)
 }
@@ -115,11 +112,11 @@ pub async fn note_write<R: Runtime>(
     core: State<'_, Core>,
     request: NoteWriteRequest,
 ) -> CoreResult<NoteWriteResponse> {
+    limits::path(&request.path, "path")?;
+    limits::note_text(&request.text, limits::MAX_NOTE_BYTES)?;
     let open = core.require_vault(window.label())?;
-    open.vault.write_note(
-        &request.path,
-        &request.text,
-        &request.format,
-        &request.expected_version,
-    )
+    let limit = open.vault.read_settings()?.max_edit_size_bytes;
+    limits::note_text(&request.text, limit)?;
+    open.vault
+        .write_note(&request.path, &request.text, &request.expected_version)
 }

@@ -18,10 +18,12 @@ pub fn check_url(_url: &str) -> CoreResult<()> {
     Err(CoreError::not_implemented())
 }
 
-/// Проверяет адрес, показывает окно подтверждения ядра и после согласия
-/// передаёт адрес ОС. Блокирует поток до ответа пользователя.
+/// Проверяет адрес, показывает окно подтверждения ядра — модально к окну
+/// `window`, из которого пришла ссылка, — и после согласия передаёт адрес
+/// ОС. Блокирует поток до ответа пользователя. Длина и управляющие символы
+/// уже проверены слоем команд (`commands::limits::url`).
 pub fn open_with_confirmation<R: tauri::Runtime>(
-    _app: &tauri::AppHandle<R>,
+    _window: &tauri::Window<R>,
     url: &str,
 ) -> CoreResult<OpenExternalOutcome> {
     check_url(url)?;

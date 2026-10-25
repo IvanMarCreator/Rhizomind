@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
 use super::Core;
-use super::error::{CoreResult, NameProblem};
+use super::error::{CoreError, CoreResult, NameProblem};
+use super::limits;
 use super::types::{EntryKind, VaultPath};
 
 /// Элемент дерева файлов.
@@ -13,7 +14,7 @@ use super::types::{EntryKind, VaultPath};
 pub struct TreeEntry {
     /// Путь от корня хранилища.
     pub path: VaultPath,
-    /// Папка, заметка или другой файл.
+    /// Папка, заметка или вложение.
     pub kind: EntryKind,
 }
 
@@ -25,7 +26,7 @@ pub struct TreeListResponse {
     pub entries: Vec<TreeEntry>,
 }
 
-/// Запрос `note_create`, `folder_create` и `name_check`: имя в папке.
+/// Запрос `note_create` и `folder_create`: имя в папке.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NameInDirRequest {
@@ -34,6 +35,21 @@ pub struct NameInDirRequest {
     /// Полное имя элемента, как на диске: для заметки — с `.md`
     /// (`Без названия.md`); интерфейс показывает имя заметки без расширения.
     pub name: String,
+}
+
+/// Запрос `name_check`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NameCheckRequest {
+    /// Папка (`[]` — корень).
+    pub dir: VaultPath,
+    /// Полное имя, как на диске.
+    pub name: String,
+    /// При переименовании — путь самого элемента: он не считается
+    /// совпадением с собой, и смена только регистра (`план.md` → `План.md`)
+    /// разрешена. Поле можно не передавать; `null` — новый элемент.
+    #[serde(default)]
+    pub renaming: Option<VaultPath>,
 }
 
 /// Ответ команд, которые создают, переименовывают или перемещают элемент.
@@ -128,6 +144,8 @@ pub async fn note_create<R: Runtime>(
     core: State<'_, Core>,
     request: NameInDirRequest,
 ) -> CoreResult<EntryPathResponse> {
+    limits::path(&request.dir, "dir")?;
+    limits::name(&request.name, "name")?;
     let open = core.require_vault(window.label())?;
     let path = open.vault.create_note(&request.dir, &request.name)?;
     Ok(EntryPathResponse { path })
@@ -140,18 +158,32 @@ pub async fn folder_create<R: Runtime>(
     core: State<'_, Core>,
     request: NameInDirRequest,
 ) -> CoreResult<EntryPathResponse> {
+    limits::path(&request.dir, "dir")?;
+    limits::name(&request.name, "name")?;
     let open = core.require_vault(window.label())?;
     let path = open.vault.create_folder(&request.dir, &request.name)?;
     Ok(EntryPathResponse { path })
 }
 
 /// Переименование файла или папки. Ссылки в 0.1 не обновляются (С3.2).
+/// Заметка не может сменить расширение `.md`, другой файл — стать заметкой
+/// (`invalid_name` с причиной `note_extension`); смена только регистра
+/// разрешена.
 #[tauri::command]
 pub async fn entry_rename<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
     request: EntryRenameRequest,
 ) -> CoreResult<EntryPathResponse> {
+    limits::path(&request.path, "path")?;
+    limits::name(&request.new_name, "new_name")?;
+    let old_name = request
+        .path
+        .file_name()
+        .ok_or_else(|| CoreError::invalid_argument("path"))?;
+    if let Some(problem) = crate::names::check_rename_keeps_kind(old_name, &request.new_name) {
+        return Err(CoreError::invalid_name(problem));
+    }
     let open = core.require_vault(window.label())?;
     let path = open.vault.rename(&request.path, &request.new_name)?;
     Ok(EntryPathResponse { path })
@@ -164,6 +196,8 @@ pub async fn entry_move<R: Runtime>(
     core: State<'_, Core>,
     request: EntryMoveRequest,
 ) -> CoreResult<EntryPathResponse> {
+    limits::path(&request.path, "path")?;
+    limits::path(&request.new_dir, "new_dir")?;
     let open = core.require_vault(window.label())?;
     let path = open.vault.move_entry(&request.path, &request.new_dir)?;
     Ok(EntryPathResponse { path })
@@ -177,19 +211,37 @@ pub async fn entry_trash<R: Runtime>(
     core: State<'_, Core>,
     request: EntryPathRequest,
 ) -> CoreResult<TrashOutcome> {
+    limits::path(&request.path, "path")?;
     let open = core.require_vault(window.label())?;
     // Окно подтверждения безвозвратного удаления — задачи 1.2 и 1.7; до
     // него безвозвратное удаление всегда отклоняется.
     open.vault.trash(&request.path, &|_| false)
 }
 
-/// Проверка имени при вводе: правила имён и совпадение с соседями.
+/// Проверка имени при вводе: правила имён и совпадение с соседями (при
+/// переименовании — кроме самого элемента).
 #[tauri::command]
 pub async fn name_check<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
-    request: NameInDirRequest,
+    request: NameCheckRequest,
 ) -> CoreResult<NameCheck> {
+    limits::path(&request.dir, "dir")?;
+    if let Some(renaming) = &request.renaming {
+        limits::path(renaming, "renaming")?;
+    }
+    if let Some(problem) = crate::names::check(&request.name) {
+        return Ok(NameCheck::rejected(problem));
+    }
+    if let Some(problem) = request
+        .renaming
+        .as_ref()
+        .and_then(VaultPath::file_name)
+        .and_then(|old| crate::names::check_rename_keeps_kind(old, &request.name))
+    {
+        return Ok(NameCheck::rejected(problem));
+    }
     let open = core.require_vault(window.label())?;
-    open.vault.check_new_name(&request.dir, &request.name)
+    open.vault
+        .check_new_name(&request.dir, &request.name, request.renaming.as_ref())
 }

@@ -124,7 +124,6 @@ fn err(code: ErrorCode) -> CoreError {
 
 fn settings_example() -> Settings {
     Settings {
-        format_version: SETTINGS_FORMAT_VERSION,
         theme: Theme::System,
         editor_mode: EditorMode::LivePreview,
         text_width: TextWidth::Column,
@@ -161,7 +160,10 @@ fn vault_current() {
         "vault_current",
         &VaultCurrentResponse {
             api_version: 1,
-            vault: Some(vault()),
+            vault: Some(CurrentVault {
+                id: vault().id,
+                name: vault().name,
+            }),
         },
         &[],
     );
@@ -231,11 +233,11 @@ fn tree_list() {
                 },
                 TreeEntry {
                     path: path(&["Проекты", "схема.png"]),
-                    kind: EntryKind::File,
+                    kind: EntryKind::Attachment,
                 },
             ],
         },
-        &[err(ErrorCode::NoVaultOpen), err(ErrorCode::NotImplemented)],
+        &[err(ErrorCode::NoVaultOpen), err(ErrorCode::IoFailed)],
     );
 }
 
@@ -287,6 +289,7 @@ fn entry_rename() {
         &[
             err(ErrorCode::NotFound),
             CoreError::invalid_name(NameProblem::ForbiddenChars),
+            CoreError::invalid_name(NameProblem::NoteExtension),
         ],
     );
 }
@@ -322,12 +325,16 @@ fn entry_trash() {
 fn name_check() {
     command_with(
         "name_check",
-        &NameInDirRequest {
-            dir: VaultPath::root(),
-            name: "CON.md".into(),
+        &NameCheckRequest {
+            dir: path(&["Проекты"]),
+            name: "Встреча.md".into(),
+            renaming: Some(path(&["Проекты", "встреча.md"])),
         },
-        &NameCheck::rejected(NameProblem::ReservedName),
-        &[err(ErrorCode::InvalidPath)],
+        &NameCheck::Ok,
+        &[
+            err(ErrorCode::InvalidPath),
+            CoreError::invalid_argument("dir"),
+        ],
     );
 }
 
@@ -339,11 +346,7 @@ fn note_read() {
             path: path(&["Проекты", "Встреча.md"]),
         },
         &NoteReadResponse {
-            text: "# Встреча\r\nСм. [[Альфа/План]]\r\n".into(),
-            format: NoteFormat {
-                bom: true,
-                line_ending: LineEnding::Crlf,
-            },
+            text: "# Встреча\nСм. [[Альфа/План]]\n".into(),
             version: version('a', 43),
             read_only: Some(ReadOnlyReason::TooLarge {
                 limit_bytes: 10 * 1024 * 1024,
@@ -365,17 +368,17 @@ fn note_write() {
         &NoteWriteRequest {
             path: path(&["Проекты", "Встреча.md"]),
             text: "# Встреча\nИтоги\n".into(),
-            format: NoteFormat {
-                bom: false,
-                line_ending: LineEnding::Lf,
-            },
             expected_version: version('a', 43),
         },
         &NoteWriteResponse::ConflictSaved {
             version: version('b', 21),
             copy_path: path(&["Проекты", "Встреча (внешняя версия 2026-10-25 12-00).md"]),
         },
-        &[err(ErrorCode::ReadOnly), err(ErrorCode::NotFound)],
+        &[
+            err(ErrorCode::ReadOnly),
+            err(ErrorCode::NotFound),
+            CoreError::invalid_argument("text"),
+        ],
     );
 }
 
@@ -587,6 +590,7 @@ fn event_note_conflict_saved() {
 /// команда не осталась без снимка, ни один снимок не устарел.
 #[test]
 fn every_command_and_event_has_exactly_one_snapshot() {
+    const EXTRA: [&str; 2] = ["enums.snap", "limits.snap"];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/v1");
     let mut found: Vec<String> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
@@ -608,6 +612,7 @@ fn every_command_and_event_has_exactly_one_snapshot() {
                 .iter()
                 .map(|name| format!("{}.snap", snapshot_name_of_event(name))),
         )
+        .chain(EXTRA.iter().map(|name| (*name).to_owned()))
         .collect();
     expected.sort();
     assert_eq!(found, expected);
@@ -625,4 +630,177 @@ fn vault_path_is_array_of_components() {
         json!([])
     );
     assert!(serde_json::from_value::<VaultPath>(json!("Проекты/Встреча.md")).is_err());
+}
+
+/// `renaming` в `name_check` можно не передавать.
+#[test]
+fn name_check_renaming_is_optional() {
+    let request: NameCheckRequest =
+        serde_json::from_value(json!({ "dir": [], "name": "a.md" })).expect("без renaming");
+    assert_eq!(request.renaming, None);
+    let request: NameCheckRequest =
+        serde_json::from_value(json!({ "dir": [], "name": "a.md", "renaming": null }))
+            .expect("renaming: null");
+    assert_eq!(request.renaming, None);
+}
+
+/// Все варианты перечисления; `match` без `_` не даст забыть новый вариант.
+macro_rules! all_variants {
+    ($ty:ident: $($variant:ident),* $(,)?) => {{
+        let all = vec![$($ty::$variant),*];
+        for value in &all {
+            match value {
+                $($ty::$variant)|* => {}
+            }
+        }
+        all
+    }};
+}
+
+fn tags<T: Serialize>(values: &[T], tag: &str) -> Vec<Value> {
+    values
+        .iter()
+        .map(|value| {
+            let json = serde_json::to_value(value).expect("вариант");
+            match tag {
+                "" => json,
+                tag => json[tag].clone(),
+            }
+        })
+        .collect()
+}
+
+/// Снимок всех вариантов всех перечислений контракта: Vitest проверяет, что
+/// в TypeScript те же варианты, не больше и не меньше.
+#[test]
+fn enums() {
+    let error_codes = ErrorCode::ALL;
+    for code in &error_codes {
+        match code {
+            ErrorCode::NotImplemented
+            | ErrorCode::InvalidArgument
+            | ErrorCode::NoVaultOpen
+            | ErrorCode::VaultNotFound
+            | ErrorCode::VaultUnavailable
+            | ErrorCode::InvalidPath
+            | ErrorCode::OutsideVault
+            | ErrorCode::NotFound
+            | ErrorCode::AlreadyExists
+            | ErrorCode::InvalidName
+            | ErrorCode::NotANote
+            | ErrorCode::ReadOnly
+            | ErrorCode::SchemeNotAllowed
+            | ErrorCode::IoFailed => {}
+        }
+    }
+    let name_problems = NameProblem::ALL;
+    for problem in &name_problems {
+        match problem {
+            NameProblem::Empty
+            | NameProblem::ForbiddenChars
+            | NameProblem::ReservedName
+            | NameProblem::TrailingDotOrSpace
+            | NameProblem::TooLong
+            | NameProblem::Duplicate
+            | NameProblem::NoteExtension => {}
+        }
+    }
+    let p = VaultPath::root;
+    let v = || version('0', 0);
+    let read_only = [
+        ReadOnlyReason::TooLarge { limit_bytes: 0 },
+        ReadOnlyReason::InvalidUtf8,
+    ];
+    for value in &read_only {
+        match value {
+            ReadOnlyReason::TooLarge { .. } | ReadOnlyReason::InvalidUtf8 => {}
+        }
+    }
+    let note_write = [
+        NoteWriteResponse::Saved { version: v() },
+        NoteWriteResponse::ConflictSaved {
+            version: v(),
+            copy_path: p(),
+        },
+    ];
+    for value in &note_write {
+        match value {
+            NoteWriteResponse::Saved { .. } | NoteWriteResponse::ConflictSaved { .. } => {}
+        }
+    }
+    let name_check = [NameCheck::Ok, NameCheck::rejected(NameProblem::Empty)];
+    for value in &name_check {
+        match value {
+            NameCheck::Ok | NameCheck::Rejected { .. } => {}
+        }
+    }
+    let vault_choose = [
+        VaultChooseOutcome::Opened { vault: vault() },
+        VaultChooseOutcome::Cancelled,
+    ];
+    for value in &vault_choose {
+        match value {
+            VaultChooseOutcome::Opened { .. } | VaultChooseOutcome::Cancelled => {}
+        }
+    }
+    let new_note_location = [
+        NewNoteLocation::VaultRoot,
+        NewNoteLocation::CurrentFolder,
+        NewNoteLocation::Folder { path: p() },
+    ];
+    for value in &new_note_location {
+        match value {
+            NewNoteLocation::VaultRoot
+            | NewNoteLocation::CurrentFolder
+            | NewNoteLocation::Folder { .. } => {}
+        }
+    }
+    let tree_change = [
+        TreeChange::Created {
+            path: p(),
+            entry_kind: EntryKind::Note,
+        },
+        TreeChange::Modified { path: p() },
+        TreeChange::Removed { path: p() },
+        TreeChange::Renamed { from: p(), to: p() },
+    ];
+    for value in &tree_change {
+        match value {
+            TreeChange::Created { .. }
+            | TreeChange::Modified { .. }
+            | TreeChange::Removed { .. }
+            | TreeChange::Renamed { .. } => {}
+        }
+    }
+
+    let enums = json!({
+        "ErrorCode": tags(&error_codes, ""),
+        "NameProblem": tags(&name_problems, ""),
+        "EntryKind": tags(&all_variants!(EntryKind: Folder, Note, Attachment), ""),
+        "Theme": tags(&all_variants!(Theme: System, Light, Dark), ""),
+        "EditorMode": tags(&all_variants!(EditorMode: LivePreview, Source), ""),
+        "TextWidth": tags(&all_variants!(TextWidth: Column, Full), ""),
+        "NewNoteLocation.kind": tags(&new_note_location, "kind"),
+        "ReadOnlyReason.reason": tags(&read_only, "reason"),
+        "NoteWriteResponse.outcome": tags(&note_write, "outcome"),
+        "NameCheck.status": tags(&name_check, "status"),
+        "TrashOutcome.outcome": tags(
+            &all_variants!(TrashOutcome: Trashed, DeletedPermanently, Cancelled),
+            "outcome"
+        ),
+        "VaultChooseOutcome.outcome": tags(&vault_choose, "outcome"),
+        "VaultOpenOutcome.outcome": tags(&all_variants!(VaultOpenOutcome: Opened, Focused), "outcome"),
+        "OpenExternalOutcome.outcome": tags(
+            &all_variants!(OpenExternalOutcome: Opened, Cancelled),
+            "outcome"
+        ),
+        "TreeChange.kind": tags(&tree_change, "kind"),
+    });
+    settings().bind(|| insta::assert_json_snapshot!("enums", enums));
+}
+
+/// Пределы параметров — те же числа читает `src/api/limits.test.ts`.
+#[test]
+fn limits() {
+    settings().bind(|| insta::assert_json_snapshot!("limits", super::limits::LIMITS));
 }

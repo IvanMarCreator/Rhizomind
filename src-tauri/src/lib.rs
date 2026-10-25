@@ -63,6 +63,8 @@ pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvi
 /// Запуск приложения.
 pub fn run() {
     tauri::Builder::default()
+        // Диалоги ядра — только из Rust: прав dialog:* у окна нет (ADR 0009).
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::Core::new(registry::Registry::from_profile()))
         .invoke_handler(commands::handler())
         .setup(|app| {

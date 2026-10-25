@@ -95,6 +95,17 @@ pub struct VaultSummary {
     pub path: String,
 }
 
+/// Хранилище окна для `vault_current`: без пути к папке — окну редактора
+/// путь на диске не нужен (минимум сведений).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CurrentVault {
+    /// Идентификатор в списке хранилищ.
+    pub id: VaultId,
+    /// Имя хранилища.
+    pub name: String,
+}
+
 /// Вид элемента дерева файлов.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -103,7 +114,7 @@ pub enum EntryKind {
     Folder,
     /// Заметка (`.md`).
     Note,
-    /// Другой файл (вложение): в 0.1 не открывается, но переименовывается,
-    /// перемещается и удаляется.
-    File,
+    /// Вложение — не-Markdown файл (картинка, PDF и т.п.): в 0.1 не
+    /// открывается, но переименовывается, перемещается и удаляется.
+    Attachment,
 }

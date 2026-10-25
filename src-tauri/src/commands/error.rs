@@ -108,17 +108,21 @@ pub enum NameProblem {
     TooLong,
     /// В папке уже есть элемент с таким же ключом имени (без учёта регистра, NFC).
     Duplicate,
+    /// Переименование меняет вид элемента: заметка перестала бы быть `.md`
+    /// или другой файл стал бы заметкой.
+    NoteExtension,
 }
 
 impl NameProblem {
     /// Все причины — для тестов полноты словаря.
-    pub const ALL: [NameProblem; 6] = [
+    pub const ALL: [NameProblem; 7] = [
         Self::Empty,
         Self::ForbiddenChars,
         Self::ReservedName,
         Self::TrailingDotOrSpace,
         Self::TooLong,
         Self::Duplicate,
+        Self::NoteExtension,
     ];
 
     /// Ключ словаря с пояснением под полем ввода: `names.<причина>`.
@@ -130,6 +134,7 @@ impl NameProblem {
             Self::TrailingDotOrSpace => "trailing_dot_or_space",
             Self::TooLong => "too_long",
             Self::Duplicate => "duplicate",
+            Self::NoteExtension => "note_extension",
         };
         format!("names.{name}")
     }

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State, Window};
 
 use super::Core;
-use super::error::{CoreError, CoreResult};
-use super::types::{API_VERSION, VaultId, VaultSummary};
+use super::error::{CoreError, CoreResult, NameProblem};
+use super::types::{API_VERSION, CurrentVault, VaultId, VaultSummary};
 use crate::registry::{self, FolderPurpose};
 
 /// Хранилище в окне «Управление хранилищами».
@@ -38,8 +38,9 @@ pub struct VaultListResponse {
 pub struct VaultCurrentResponse {
     /// Версия API ядра, сейчас [`API_VERSION`] = 1.
     pub api_version: u32,
-    /// Хранилище этого окна; `null` — окно без хранилища (управление хранилищами).
-    pub vault: Option<VaultSummary>,
+    /// Хранилище этого окна (без пути к папке); `null` — окно без хранилища
+    /// (управление хранилищами).
+    pub vault: Option<CurrentVault>,
 }
 
 /// Запрос `vault_create`.
@@ -109,27 +110,37 @@ pub async fn vault_current<R: Runtime>(
 ) -> CoreResult<VaultCurrentResponse> {
     Ok(VaultCurrentResponse {
         api_version: API_VERSION,
-        vault: core
-            .window_vault(window.label())
-            .map(|open| open.summary.clone()),
+        vault: core.window_vault(window.label()).map(|open| CurrentVault {
+            id: open.summary.id.clone(),
+            name: open.summary.name.clone(),
+        }),
     })
 }
 
 /// Создаёт хранилище: родительскую папку пользователь выбирает в диалоге ядра.
+///
+/// Порядок: правила имён (до диалога — чтобы не спрашивать папку зря) →
+/// диалог → компонент пути и «`parent.join(name)` лежит прямо в `parent`» →
+/// создание папки (`Vault::create`) → запись в список хранилищ → окно.
 #[tauri::command]
 pub async fn vault_create<R: Runtime>(
     app: AppHandle<R>,
     core: State<'_, Core>,
     request: VaultCreateRequest,
 ) -> CoreResult<VaultChooseOutcome> {
-    if crate::names::check(&request.name)?.is_some() {
-        return Err(CoreError::invalid_argument("name"));
+    if let Some(problem) = crate::names::check(&request.name) {
+        return Err(CoreError::invalid_name(problem));
     }
     let Some(parent) = registry::pick_folder(&app, FolderPurpose::NewVaultParent)? else {
         return Ok(VaultChooseOutcome::Cancelled);
     };
-    let _vault = core.registry().add(&parent.join(&request.name))?;
-    // Создание папки и открытие окна — задачи 1.2 и 1.3.
+    crate::vault::check_component(&request.name)?;
+    if parent.join(&request.name).parent() != Some(parent.as_path()) {
+        return Err(CoreError::invalid_name(NameProblem::ForbiddenChars));
+    }
+    let root = crate::vault::Vault::create(&parent, &request.name)?;
+    let _vault = core.registry().add(&root)?;
+    // Открытие окна — задача 1.3.
     Err(CoreError::not_implemented())
 }
 

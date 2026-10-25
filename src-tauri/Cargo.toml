@@ -30,6 +30,10 @@ tauri-build = { version = "=2.7.4", features = [] }
 # Функции по умолчанию: wry, compression, common-controls-v6, dynamic-acl, x11, dbus.
 # Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls.
 tauri = { version = "=2.12.5", features = [] }
+# Системные диалоги ядра (выбор папки хранилища, подтверждение внешней ссылки
+# и безвозвратного удаления) — только из Rust; интерфейсу права dialog:* не
+# выдаются (ADR 0009). Функции по умолчанию: без них не собирается.
+tauri-plugin-dialog = "=2.8.3"
 # Типы команд ядра и их JSON (контракт API v1).
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
@@ -40,6 +44,8 @@ serde_json = "=1.0.154"
 tauri = { version = "=2.12.5", features = ["test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
+# Временная папка для заглушки хранилища в тестах прав.
+tempfile = "=3.27.0"
 
 [profile.release]
 codegen-units = 1
