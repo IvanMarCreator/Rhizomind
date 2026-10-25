@@ -13,6 +13,13 @@ const v2: FileVersion = { hash: 'b'.repeat(64), size: 2, modified_ms: 2 };
 
 const key = (path: VaultPath) => path.join('/');
 
+/** Версия файла по номеру поколения: 1 — v1, 2 — v2, дальше — свои. */
+function versionOf(generation: number): FileVersion {
+  if (generation === 1) return v1;
+  if (generation === 2) return v2;
+  return { hash: String(generation).padStart(64, '0'), size: generation, modified_ms: generation };
+}
+
 class FakeStore implements NoteStore {
   files = new Map<string, string>([
     [key(A), 'текст А'],
@@ -23,13 +30,19 @@ class FakeStore implements NoteStore {
   failWrites: CoreError | null = null;
   pendingReads = new Map<string, () => void>();
   holdReads = false;
+  /** Поколение файла: растёт с каждой записью; нет записи — 1 (v1). */
+  generations = new Map<string, number>();
+
+  #generation(name: string): number {
+    return this.generations.get(name) ?? 1;
+  }
 
   read(path: VaultPath): Promise<NoteReadResponse> {
     this.reads.push(key(path));
     const answer = (): NoteReadResponse => {
       const text = this.files.get(key(path));
       if (text === undefined) throw new CoreCallError('note_read', { code: 'not_found', message_key: 'errors.not_found' });
-      return { text, version: v1, read_only: null };
+      return { text, version: versionOf(this.#generation(key(path))), read_only: null };
     };
     if (!this.holdReads) return Promise.resolve().then(answer);
     return new Promise((resolve, reject) =>
@@ -51,8 +64,18 @@ class FakeStore implements NoteStore {
       if (!this.files.has(key(request.path))) {
         throw new CoreCallError('note_write', { code: 'not_found', message_key: 'errors.not_found' });
       }
-      this.files.set(key(request.path), request.text);
-      return { outcome: 'saved', version: v2 } as const;
+      // Как ядро: ожидаемая версия не совпала — версия с диска копией рядом.
+      const name = key(request.path);
+      const generation = this.#generation(name);
+      const conflict = request.expected_version.hash !== versionOf(generation).hash;
+      const copy = [...request.path.slice(0, -1), `${(request.path.at(-1) ?? '').replace(/\.md$/, '')} (внешняя версия).md`];
+      if (conflict) this.files.set(key(copy), this.files.get(name) ?? '');
+      this.files.set(name, request.text);
+      this.generations.set(name, generation + 1);
+      const version = versionOf(generation + 1);
+      return conflict
+        ? ({ outcome: 'conflict_saved', version, copy_path: copy } as const)
+        : ({ outcome: 'saved', version } as const);
     });
   }
 }
@@ -403,5 +426,53 @@ describe('ревью 2.4: переименование, о котором окн
     await vi.advanceTimersByTimeAsync(0);
 
     expect(notices).toEqual(['Ввод в заметке «А» не сохранён: Не удалось прочитать или записать файл.']);
+  });
+});
+
+describe('повторное ревью 2.4: чтение нового пути отвечает раньше повторной записи', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  it('ответ на чтение уступает сессии с вводом: на экране ввод, следующая правка без конфликта', async () => {
+    const store = new FakeStore();
+    const { sessions, pane, notices } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const original = (pane() as Open).session;
+    original.edit('мой ввод');
+    store.files.set('А2.md', store.files.get(key(A)) ?? '');
+    store.files.delete(key(A));
+
+    store.holdReads = true;
+    sessions.show(['А2.md']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(original.status.kind).toBe('missing');
+    sessions.renamed(A, ['А2.md']);
+    // Ядро прочитало файл до повторной записи — в ответе старый текст.
+    store.pendingReads.get('А2.md')?.();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((pane() as Open).session).toBe(original);
+    expect(openText(pane())).toBe('мой ввод');
+    expect(store.files.get('А2.md')).toBe('мой ввод');
+
+    original.edit('мой ввод 2');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(store.files.get('А2.md')).toBe('мой ввод 2');
+    expect(notices.filter((n) => n.includes('Сохранены обе версии'))).toEqual([]);
+  });
+
+  it('подменное хранилище ловит гонку версий: запись со старой версией — conflict_saved', async () => {
+    const store = new FakeStore();
+    const { sessions, pane, notices } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    store.generations.set(key(A), 5);
+
+    (pane() as Open).session.edit('x');
+    await sessions.flushAll();
+
+    expect(notices).toEqual([
+      'Заметка «А» изменилась на диске одновременно с вашими правками. Сохранены обе версии: ваша — в заметке, версия с диска — рядом, в «А (внешняя версия)».',
+    ]);
   });
 });

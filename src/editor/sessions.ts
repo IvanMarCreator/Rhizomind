@@ -3,7 +3,7 @@
 // завершить, остаётся в памяти — при возврате показывается её текст, а не
 // файл с диска, и повтор записи продолжается. При закрытии окна —
 // `flushAll()`.
-import type { VaultPath } from '../api/index.ts';
+import { CoreCallError, type VaultPath } from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t } from '../i18n/index.ts';
 import { NoteSession, type NoteStore, type SaveStatus } from './session.ts';
@@ -80,6 +80,14 @@ export class EditorSessions {
     this.#store.read(path).then(
       (opened) => {
         if (token !== this.#showToken) return;
+        // Пока шло чтение, сюда переехала сессия с вводом (renamed() раньше
+        // ответа): показать её — ответ с диска мог опередить её запись.
+        const moved = this.#unsaved.get(pathKey(path));
+        if (moved) {
+          this.#unsaved.delete(pathKey(path));
+          this.#setPane({ kind: 'open', session: moved });
+          return;
+        }
         const session: NoteSession = new NoteSession(path, opened, this.#store, this.#hooks(() => session));
         this.#setPane({ kind: 'open', session });
       },
@@ -146,8 +154,11 @@ export class EditorSessions {
       void session.flush().finally(() => {
         if (session.hasUnsavedChanges) {
           const status = session.status;
-          const message =
-            status.kind === 'failed' ? userMessage(status.error) : t('errors.not_found');
+          const message = userMessage(
+            status.kind === 'failed'
+              ? status.error
+              : new CoreCallError('note_write', { code: 'not_found', message_key: 'errors.not_found' }),
+          );
           this.#listener.notify(t('editor.closeUnsaved', { name: noteName(session.path), message }));
         }
         session.dispose();
