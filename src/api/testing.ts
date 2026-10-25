@@ -1,7 +1,7 @@
 // Подмена ядра для тестов интерфейса (Vitest, компонентные тесты): без окна
 // Tauri, на @tauri-apps/api/mocks. В приложение не импортируется.
 import { emit } from '@tauri-apps/api/event';
-import { mockIPC } from '@tauri-apps/api/mocks';
+import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { CommandName, CommandRequest, CommandResponse, CoreError, CoreEvents, EventName } from './types.ts';
 
 /** Подменный обработчик команды: получает запрос, возвращает ответ или бросает CoreError. */
@@ -16,16 +16,19 @@ export type RecordedCall = [command: string, args: unknown];
 
 const notImplemented: CoreError = { code: 'not_implemented', message_key: 'errors.not_implemented' };
 
+type Invoke = (command: string, args?: unknown, options?: unknown) => Promise<unknown>;
+
 /**
  * Подменяет ядро: команды из `mocks` отвечают подменой, остальные — ошибкой
- * `not_implemented`, как заглушки ядра. События подменяются тоже
- * (`emitCoreEvent`). Возвращает журнал вызовов. После теста — `clearMocks()`.
+ * `not_implemented`, как заглушки ядра. Окно — `main`; события подменяются
+ * тоже (`emitCoreEvent`). Возвращает журнал всех вызовов моста, включая
+ * подписку на события. После теста — `clearMocks()`.
  */
 export function mockCore(mocks: CoreMocks): RecordedCall[] {
   const calls: RecordedCall[] = [];
+  mockWindows('main');
   mockIPC(
     (command, args) => {
-      calls.push([command, args ?? {}]);
       const mock = (mocks as Record<string, ((request: unknown) => unknown) | undefined>)[command];
       if (!mock) throw notImplemented;
       const request = (args as { request?: unknown } | undefined)?.request ?? null;
@@ -33,6 +36,12 @@ export function mockCore(mocks: CoreMocks): RecordedCall[] {
     },
     { shouldMockEvents: true },
   );
+  const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: Invoke } }).__TAURI_INTERNALS__;
+  const invoke = internals.invoke;
+  internals.invoke = (command, args, options) => {
+    calls.push([command, args ?? {}]);
+    return invoke(command, args, options);
+  };
   return calls;
 }
 

@@ -29,7 +29,8 @@ export interface VaultSummary {
   path: string;
 }
 
-export type EntryKind = 'folder' | 'note' | 'file';
+/** Папка, заметка или вложение (не-Markdown файл). */
+export type EntryKind = 'folder' | 'note' | 'attachment';
 
 // ---- Ошибки ---------------------------------------------------------------
 
@@ -55,7 +56,8 @@ export type NameProblem =
   | 'reserved_name'
   | 'trailing_dot_or_space'
   | 'too_long'
-  | 'duplicate';
+  | 'duplicate'
+  | 'note_extension';
 
 /** Ошибка команды ядра. Текст — из словаря по `message_key` (`errors.<code>`). */
 export interface CoreError {
@@ -78,10 +80,16 @@ export interface VaultListResponse {
   last_opened: VaultId | null;
 }
 
+/** Хранилище окна без пути к папке. */
+export interface CurrentVault {
+  id: VaultId;
+  name: string;
+}
+
 export interface VaultCurrentResponse {
   api_version: number;
   /** `null` — окно без хранилища (управление хранилищами). */
-  vault: VaultSummary | null;
+  vault: CurrentVault | null;
 }
 
 export interface VaultCreateRequest {
@@ -114,6 +122,16 @@ export interface NameInDirRequest {
   name: string;
 }
 
+export interface NameCheckRequest {
+  dir: VaultPath;
+  name: string;
+  /**
+   * При переименовании — путь самого элемента: не совпадение с собой, смена
+   * только регистра разрешена. Можно не передавать; `null` — новый элемент.
+   */
+  renaming?: VaultPath | null;
+}
+
 export interface EntryPathResponse {
   path: VaultPath;
 }
@@ -140,13 +158,10 @@ export type TrashOutcome =
 export type NameCheck = { status: 'ok' } | { status: 'rejected'; problem: NameProblem; message_key: string };
 
 // ---- Заметка --------------------------------------------------------------
-
-export type LineEnding = 'lf' | 'crlf';
-
-export interface NoteFormat {
-  bom: boolean;
-  line_ending: LineEnding;
-}
+// Правило «байт в байт»: интерфейс работает с текстом с переносами `\n` и без
+// BOM. BOM и переносы файла знает только ядро; если текст не изменился, ядро
+// файл не пишет. `note_write` по удалённому пути — `not_found`, текст остаётся
+// в памяти интерфейса.
 
 export type ReadOnlyReason = { reason: 'too_large'; limit_bytes: number } | { reason: 'invalid_utf8' };
 
@@ -155,17 +170,17 @@ export interface NoteReadRequest {
 }
 
 export interface NoteReadResponse {
-  /** Текст без BOM, переносы строк как в файле. */
+  /** Текст без BOM, переносы строк — `\n`. */
   text: string;
-  format: NoteFormat;
   version: FileVersion;
   read_only: ReadOnlyReason | null;
 }
 
 export interface NoteWriteRequest {
   path: VaultPath;
+  /** Текст с переносами `\n`, без BOM. */
   text: string;
-  format: NoteFormat;
+  /** После `note:renamed` — по новому пути с прежней ожидаемой версией. */
   expected_version: FileVersion;
 }
 
@@ -229,8 +244,8 @@ export type NewNoteLocation =
   | { kind: 'current_folder' }
   | { kind: 'folder'; path: VaultPath };
 
+/** Настройки хранилища (версию формата файла ставит ядро). */
 export interface Settings {
-  format_version: number;
   theme: Theme;
   editor_mode: EditorMode;
   text_width: TextWidth;
@@ -286,7 +301,7 @@ export interface CoreCommands {
   entry_rename: { request: EntryRenameRequest; response: EntryPathResponse };
   entry_move: { request: EntryMoveRequest; response: EntryPathResponse };
   entry_trash: { request: EntryPathRequest; response: TrashOutcome };
-  name_check: { request: NameInDirRequest; response: NameCheck };
+  name_check: { request: NameCheckRequest; response: NameCheck };
   note_read: { request: NoteReadRequest; response: NoteReadResponse };
   note_write: { request: NoteWriteRequest; response: NoteWriteResponse };
   links_resolve: { request: LinksResolveRequest; response: LinksResolveResponse };
@@ -336,7 +351,11 @@ export interface NoteConflictSavedPayload {
   copy_path: VaultPath;
 }
 
-/** Все события ядра → интерфейс и их данные. */
+/**
+ * Все события ядра → интерфейс и их данные. Ядро отправляет их только окну
+ * своего хранилища; `note:*` — для любой заметки хранилища, интерфейс
+ * фильтрует открытые сам.
+ */
 export interface CoreEvents {
   'vault:changed': VaultChangedPayload;
   'note:changed': NoteChangedPayload;
