@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Rhizomind",
   "version": "0.1.0",
-  "identifier": "io.github.rhizomind",
+  "identifier": "io.github.ivanmarcreator.rhizomind",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
