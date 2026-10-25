@@ -17,7 +17,7 @@
 //! дате изменения (единственный подходящий файл). Папка переносится одним
 //! изменением вместе с содержимым.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -101,8 +101,22 @@ impl TreeModel {
         paths: impl IntoIterator<Item = VaultPath>,
         own: &OwnWrites,
     ) -> Vec<TreeChange> {
-        let targets = self.targets(paths);
-        let (disk, model) = self.collect(&targets);
+        let mut targets = self.targets(paths);
+        let (mut disk, mut model) = self.collect(&targets);
+        // Появился элемент с идентификатором, который модель знает под другим
+        // путём: возможно, это перенос, а событие о старом пути потерялось
+        // (переполнение буфера) или придёт позже. Старый путь сверяется в
+        // этой же пачке — тогда перенос распознаётся.
+        let origins = self.known_elsewhere(&disk, &model, &targets);
+        if !origins.is_empty() {
+            targets = self.targets(
+                targets
+                    .into_iter()
+                    .chain(origins)
+                    .map(VaultPath::from_components),
+            );
+            (disk, model) = self.collect(&targets);
+        }
         let diff = diff(&disk, &model);
         let changes = self.resolve(diff, &disk, own);
 
@@ -115,6 +129,32 @@ impl TreeModel {
         }
         self.nodes.extend(disk);
         changes
+    }
+
+    /// Пути модели вне путей сверки с идентификатором элемента, который на
+    /// диске появился по новому пути.
+    fn known_elsewhere(
+        &self,
+        disk: &BTreeMap<Key, Node>,
+        model: &BTreeMap<Key, Node>,
+        targets: &BTreeSet<Key>,
+    ) -> Vec<Key> {
+        let appeared: HashSet<FileId> = disk
+            .iter()
+            .filter(|(key, _)| !model.contains_key(*key))
+            .filter_map(|(_, node)| node.id)
+            .collect();
+        if appeared.is_empty() {
+            return Vec::new();
+        }
+        self.nodes
+            .iter()
+            .filter(|(key, node)| {
+                node.id.is_some_and(|id| appeared.contains(&id))
+                    && !(0..=key.len()).any(|n| targets.contains(&key[..n]))
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     /// Пути для сверки: путь внутри папки, которой нет в модели, заменяется

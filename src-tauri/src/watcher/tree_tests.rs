@@ -418,3 +418,35 @@ fn changes_inside_renamed_folder_apply_in_order() {
         to: vp("Перенесённые/вынесено.md")
     }));
 }
+
+#[test]
+fn rename_is_recognised_when_event_about_old_path_was_lost() {
+    // При переполнении буфера Windows событие о старом имени теряется, а
+    // новое приходит (или папку с перенесёнными файлами обходят целиком).
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/заметка.md", "текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::create_dir(dir.path().join("Б")).expect("папка");
+    fs::rename(
+        dir.path().join("А/заметка.md"),
+        dir.path().join("Б/заметка.md"),
+    )
+    .expect("перенос");
+
+    let changes = model.reconcile([vp("Б")], &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Renamed {
+                from: vp("А/заметка.md"),
+                to: vp("Б/заметка.md")
+            },
+            TreeChange::Created {
+                path: vp("Б"),
+                entry_kind: EntryKind::Folder
+            },
+        ]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
