@@ -27,12 +27,22 @@ const RANDOM_HEX_LEN: usize = 16;
 
 /// Имя папки данных: `rhizomind-webview-<pid>-<16 шестнадцатеричных цифр>`.
 pub fn data_dir_name(pid: u32, random: u64) -> String {
-    todo!("задача 0.3")
+    format!("{DATA_DIR_PREFIX}{pid}-{random:016x}")
 }
 
 /// Номер процесса-владельца, если имя — в точности имя папки данных.
 pub fn owner_pid(name: &str) -> Option<u32> {
-    todo!("задача 0.3")
+    let rest = name.strip_prefix(DATA_DIR_PREFIX)?;
+    let (pid, random) = rest.split_once('-')?;
+    let pid_ok = !pid.is_empty() && pid.len() <= 10 && pid.bytes().all(|b| b.is_ascii_digit());
+    let random_ok = random.len() == RANDOM_HEX_LEN
+        && random
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !(pid_ok && random_ok) {
+        return None;
+    }
+    pid.parse().ok()
 }
 
 /// Случайное число из ключей `RandomState` (их стандартная библиотека берёт у ОС).
@@ -50,7 +60,16 @@ fn random_u64() -> u64 {
 /// Создаёт новую папку данных в `temp`. Существующая папка с тем же именем не
 /// используется повторно (`create_dir`, а не `create_dir_all`).
 pub fn create_data_dir(temp: &Path, pid: u32) -> io::Result<PathBuf> {
-    todo!("задача 0.3")
+    let mut last_error = None;
+    for _ in 0..8 {
+        let path = temp.join(data_dir_name(pid, random_u64()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => last_error = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("не удалось создать папку данных")))
 }
 
 /// Удаляет остатки прошлых запусков в `temp`: только папки (не файлы и не
@@ -61,13 +80,47 @@ pub fn sweep_leftovers(
     current_pid: u32,
     is_alive: impl Fn(u32) -> bool,
 ) -> Vec<PathBuf> {
-    todo!("задача 0.3")
+    let Ok(entries) = std::fs::read_dir(temp) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        // file_type() не следует по ссылкам: ссылка на папку — не папка.
+        let Ok(kind) = entry.file_type() else { continue };
+        if !kind.is_dir() || kind.is_symlink() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(owner_pid) else {
+            continue;
+        };
+        if pid == current_pid || is_alive(pid) {
+            continue;
+        }
+        let path = entry.path();
+        if std::fs::remove_dir_all(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    removed
 }
 
 /// Удаляет папку, повторяя попытки, пока файлы заняты (процессы движка
 /// завершаются не мгновенно). Отсутствующая папка — успех.
 pub fn remove_with_retries(path: &Path, timeout: Duration) -> io::Result<()> {
-    todo!("задача 0.3")
+    let deadline = Instant::now() + timeout;
+    let mut delay = Duration::from_millis(50);
+    loop {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if Instant::now() >= deadline => return Err(e),
+            Err(_) => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(500));
+            }
+        }
+    }
 }
 
 /// Папка данных текущего запуска и процесс браузера, который её занимает.
