@@ -55,6 +55,20 @@
     sessions.show(path);
   });
 
+  /**
+   * Заметку или папку переименовали (дерево, `note:renamed`). Вызывать до
+   * того, как окно откроет новый путь: это не уход с заметки, ввод пишется по
+   * новому пути с прежней ожидаемой версией.
+   */
+  export function renamed(from: VaultPath, to: VaultPath): void {
+    sessions.renamed(from, to);
+  }
+
+  /** Заметку или папку удалили: несохранённый ввод не пишется (решение владельца). */
+  export function removed(removedPath: VaultPath): void {
+    sessions.removed(removedPath);
+  }
+
   onMount(() => {
     // Закрытие окна: запросы записи уходят синхронно, до выгрузки страницы.
     const flush = () => void sessions.flushAll();
@@ -68,7 +82,7 @@
       window.removeEventListener('pagehide', flush);
       window.removeEventListener('beforeunload', flush);
       document.removeEventListener('visibilitychange', onVisibility);
-      sessions.show(null);
+      sessions.close();
     };
   });
 </script>

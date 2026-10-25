@@ -60,12 +60,15 @@ function isNotFound(error: unknown): boolean {
   return error instanceof CoreCallError && error.error.code === 'not_found';
 }
 
+/** Итог одной записи: записано, не удалось, повторить (путь сменился в полёте). */
+type SaveOutcome = 'saved' | 'failed' | 'retry';
+
 export class NoteSession {
-  readonly path: VaultPath;
   readonly readOnly: ReadOnlyReason | null;
 
   readonly #store: NoteStore;
   readonly #hooks: SessionHooks;
+  #path: VaultPath;
   /** Текст, который сейчас в файле (по последнему ответу ядра). */
   #saved: string;
   /** Текст в редакторе. */
@@ -73,12 +76,12 @@ export class NoteSession {
   #version: FileVersion;
   #status: SaveStatus;
   #timer: ReturnType<typeof setTimeout> | null = null;
-  #inFlight: Promise<boolean> | null = null;
+  #inFlight: Promise<SaveOutcome> | null = null;
   #failing = false;
   #disposed = false;
 
   constructor(path: VaultPath, opened: NoteReadResponse, store: NoteStore, hooks: SessionHooks = {}) {
-    this.path = path;
+    this.#path = path;
     this.readOnly = opened.read_only;
     this.#store = store;
     this.#hooks = hooks;
@@ -86,6 +89,30 @@ export class NoteSession {
     this.#current = opened.text;
     this.#version = opened.version;
     this.#status = opened.read_only ? { kind: 'read_only', reason: opened.read_only } : { kind: 'saved' };
+  }
+
+  /** Путь заметки; после переименования — новый. */
+  get path(): VaultPath {
+    return this.#path;
+  }
+
+  /**
+   * Заметку переименовали или переместили (в приложении или снаружи): дальше
+   * пишем по новому пути с прежней ожидаемой версией (контракт `note_write`).
+   * Это не уход с заметки — ничего не записывается сразу.
+   */
+  moveTo(path: VaultPath): void {
+    this.#path = path;
+  }
+
+  /**
+   * Заметку удалили: несохранённый ввод отбрасывается (решение владельца,
+   * инвариант 4), записей больше не будет.
+   */
+  discard(): void {
+    this.#cancelTimer();
+    this.#disposed = true;
+    this.#setStatus({ kind: 'deleted' });
   }
 
   /** Текст в редакторе (при открытии — текст файла). */
@@ -135,7 +162,7 @@ export class NoteSession {
         continue;
       }
       if (!this.hasUnsavedChanges || this.#disposed) return;
-      if (!(await this.#save())) return;
+      if ((await this.#save()) === 'failed') return;
     }
   }
 
@@ -159,37 +186,41 @@ export class NoteSession {
     this.#timer = null;
   }
 
-  /** Одна запись текущего текста; `true` — записано. */
-  #save(): Promise<boolean> {
+  /** Одна запись текущего текста. */
+  #save(): Promise<SaveOutcome> {
     const text = this.#current;
+    const path = this.#path;
     if (this.#status.kind !== 'failed') this.#setStatus({ kind: 'pending' });
     const flight = this.#store
-      .write({ path: this.path, text, expected_version: this.#version })
+      .write({ path, text, expected_version: this.#version })
       .then(
         (response) => {
           this.#version = response.version;
           this.#saved = text;
           this.#failing = false;
           if (response.outcome === 'conflict_saved') this.#hooks.onConflictSaved?.(response.copy_path);
-          return true;
+          return 'saved' as const;
         },
-        (error: unknown) => {
+        (error: unknown): SaveOutcome => {
+          // Запрос ушёл по старому пути, а заметку переименовали: повторить.
+          if (isNotFound(error) && path !== this.#path) return 'retry';
           if (isNotFound(error)) {
             this.#cancelTimer();
             this.#setStatus({ kind: 'deleted' });
-            return false;
+            return 'failed';
           }
           if (!this.#failing) this.#hooks.onSaveFailed?.(error);
           this.#failing = true;
           this.#setStatus({ kind: 'failed', error });
           if (!this.#disposed) this.#schedule(RETRY_DELAY_MS);
-          return false;
+          return 'failed';
         },
       )
-      .then((saved) => {
+      .then((outcome) => {
         this.#inFlight = null;
-        if (saved) this.#afterSave();
-        return saved;
+        if (outcome === 'saved') this.#afterSave();
+        else if (outcome === 'retry' && !this.#disposed && this.#timer === null) void this.#save();
+        return outcome;
       });
     this.#inFlight = flight;
     return flight;

@@ -48,6 +48,9 @@ class FakeStore implements NoteStore {
     const failure = this.failWrites;
     return Promise.resolve().then(() => {
       if (failure) throw new CoreCallError('note_write', failure);
+      if (!this.files.has(key(request.path))) {
+        throw new CoreCallError('note_write', { code: 'not_found', message_key: 'errors.not_found' });
+      }
       this.files.set(key(request.path), request.text);
       return { outcome: 'saved', version: v2 } as const;
     });
@@ -220,5 +223,114 @@ describe('конфликт изменений', () => {
     expect(notices).toEqual([
       'Заметка «А» изменилась на диске одновременно с вашими правками. Сохранены обе версии: ваша — в заметке, версия с диска — рядом, в «А (внешняя версия 2026-10-25 12-00)».',
     ]);
+  });
+});
+
+describe('переименование и удаление (сигналы от дерева и событий ядра)', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  it('переименование открытой заметки — не уход: буфер переходит на новый путь, запись по новому пути с прежней версией', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('правка');
+    const renamed = ['Папка', 'А2.md'];
+    store.files.set(key(renamed), 'текст А');
+    store.files.delete(key(A));
+
+    sessions.renamed(A, renamed);
+    sessions.show(renamed);
+    expect(store.writes).toEqual([]);
+    expect(store.reads).toEqual(['А.md']);
+    expect((pane() as Open).session.text).toBe('правка');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(store.writes).toEqual([{ path: renamed, text: 'правка', expected_version: v1 }]);
+  });
+
+  it('переименование папки переносит заметки внутри неё, в том числе несохранённые', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(B);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('Б2');
+
+    sessions.renamed(['Папка'], ['Новая']);
+    sessions.show(['Новая', 'Б.md']);
+    store.files.set('Новая/Б.md', 'текст Б');
+    await sessions.flushAll();
+
+    expect(store.writes.map((w) => w.path)).toEqual([['Новая', 'Б.md']]);
+  });
+
+  it('запись в полёте ушла по старому пути и получила not_found — повтор по новому пути, а не «удалена»', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const session = (pane() as Open).session;
+    session.edit('текст');
+    const flight = session.flush();
+    // Файл переименовали, пока запрос был в пути.
+    store.files.delete(key(A));
+    store.files.set('А2.md', 'текст А');
+    sessions.renamed(A, ['А2.md']);
+    await flight;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.writes.map((w) => w.path)).toEqual([A, ['А2.md']]);
+    expect(store.files.get('А2.md')).toBe('текст');
+    expect(session.status.kind).toBe('saved');
+  });
+
+  it('удалённая заметка не сохраняется при закрытии — ввод отбрасывается (решение владельца)', async () => {
+    const { sessions, pane, store, statuses } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('несохранённое');
+
+    sessions.removed(A);
+    sessions.show(null);
+    await sessions.flushAll();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(store.writes).toEqual([]);
+    expect(statuses.at(-1)).toBeNull();
+  });
+
+  it('удаление папки отбрасывает и отложенные записи заметок внутри неё', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(B);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('Б2');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = store.writes.length;
+
+    sessions.removed(['Папка']);
+    store.failWrites = null;
+    await vi.advanceTimersByTimeAsync(10_000);
+    await sessions.flushAll();
+
+    expect(store.writes.length).toBe(before);
+    sessions.show(B);
+    expect(store.reads.at(-1)).toBe('Папка/Б.md');
+  });
+});
+
+describe('редактор убран со страницы', () => {
+  it('close: последняя попытка записи, потом повторов после сбоя больше нет', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Extract<EditorPane, { kind: 'open' }>).session.edit('ввод');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+
+    sessions.close();
+    expect(store.writes).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(store.writes).toHaveLength(1);
+    expect(pane()).toEqual({ kind: 'empty' });
   });
 });

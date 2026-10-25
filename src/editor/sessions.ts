@@ -31,6 +31,11 @@ function pathKey(path: VaultPath): string {
   return JSON.stringify(path);
 }
 
+/** `path` лежит в `prefix` или равен ему (заметка или папка). */
+function within(path: VaultPath, prefix: VaultPath): boolean {
+  return prefix.length <= path.length && prefix.every((part, i) => part === path[i]);
+}
+
 /** Имя заметки для текстов: последний компонент без `.md`. */
 export function noteName(path: VaultPath): string {
   return (path.at(-1) ?? '').replace(/\.md$/i, '');
@@ -75,7 +80,7 @@ export class EditorSessions {
     this.#store.read(path).then(
       (opened) => {
         if (token !== this.#showToken) return;
-        const session: NoteSession = new NoteSession(path, opened, this.#store, this.#hooks(path, () => session));
+        const session: NoteSession = new NoteSession(path, opened, this.#store, this.#hooks(() => session));
         this.#setPane({ kind: 'open', session });
       },
       (error: unknown) => {
@@ -85,12 +90,65 @@ export class EditorSessions {
     );
   }
 
+  /**
+   * Заметку или папку переименовали либо переместили (дерево, событие
+   * `note:renamed`). Вызывается до того, как окно откроет новый путь: тогда
+   * следующий `show(to)` — та же заметка, а не уход с неё, и ввод пишется по
+   * новому пути с прежней ожидаемой версией.
+   */
+  renamed(from: VaultPath, to: VaultPath): void {
+    for (const session of this.#sessions()) {
+      if (!within(session.path, from)) continue;
+      const key = pathKey(session.path);
+      session.moveTo([...to, ...session.path.slice(from.length)]);
+      if (this.#unsaved.get(key) === session) {
+        this.#unsaved.delete(key);
+        this.#unsaved.set(pathKey(session.path), session);
+      }
+    }
+    if (this.#pane.kind === 'loading' && within(this.#pane.path, from)) {
+      // Чтение по старому пути ещё идёт: перечитать по новому.
+      const path = [...to, ...this.#pane.path.slice(from.length)];
+      this.#pane = { kind: 'empty' };
+      this.show(path);
+    }
+  }
+
+  /**
+   * Заметку или папку удалили (дерево, событие `note:deleted`): несохранённый
+   * ввод отбрасывается, при закрытии ничего не пишется (решение владельца).
+   */
+  removed(path: VaultPath): void {
+    for (const session of this.#sessions()) {
+      if (!within(session.path, path)) continue;
+      session.discard();
+      this.#unsaved.delete(pathKey(session.path));
+    }
+  }
+
+  /**
+   * Редактор убран со страницы: последняя попытка записать ввод (запросы
+   * уходят синхронно), потом таймеры всех заметок снимаются.
+   */
+  close(): void {
+    const sessions = this.#sessions();
+    this.#unsaved.clear();
+    this.#setPane({ kind: 'empty' });
+    for (const session of sessions) {
+      void session.flush().finally(() => session.dispose());
+    }
+  }
+
+  #sessions(): NoteSession[] {
+    const all = new Set(this.#unsaved.values());
+    const current = this.#currentSession();
+    if (current) all.add(current);
+    return [...all];
+  }
+
   /** Записать ввод всех заметок окна (закрытие окна). Запросы уходят синхронно. */
   async flushAll(): Promise<void> {
-    const sessions = new Set(this.#unsaved.values());
-    const current = this.#currentSession();
-    if (current) sessions.add(current);
-    await Promise.all([...sessions].map((session) => session.flush()));
+    await Promise.all(this.#sessions().map((session) => session.flush()));
   }
 
   #currentSession(): NoteSession | null {
@@ -115,8 +173,9 @@ export class EditorSessions {
     session.dispose();
   }
 
-  #hooks(path: VaultPath, session: () => NoteSession) {
-    const name = noteName(path);
+  #hooks(session: () => NoteSession) {
+    // Имя — по текущему пути: заметку могли переименовать.
+    const name = () => noteName(session().path);
     return {
       onStatus: (status: SaveStatus) => {
         const own = session();
@@ -125,10 +184,10 @@ export class EditorSessions {
         if (status.kind === 'saved' || status.kind === 'deleted') this.#forgetIfDone(own);
       },
       onConflictSaved: (copy: VaultPath) => {
-        this.#listener.notify(t('editor.conflictSaved', { name, copy: noteName(copy) }));
+        this.#listener.notify(t('editor.conflictSaved', { name: name(), copy: noteName(copy) }));
       },
       onSaveFailed: (error: unknown) => {
-        this.#listener.notify(t('editor.saveFailed', { name, message: userMessage(error) }));
+        this.#listener.notify(t('editor.saveFailed', { name: name(), message: userMessage(error) }));
       },
     };
   }

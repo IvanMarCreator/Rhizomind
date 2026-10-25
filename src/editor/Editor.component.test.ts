@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteResponse, Settings, VaultPath } from '../api/index.ts';
 import { mockCore, type CoreMocks, type RecordedCall } from '../api/testing.ts';
 import Shell from '../shell/Shell.svelte';
+import Editor from './Editor.svelte';
 import { WindowModel } from '../shell/window.svelte.ts';
 
 // ---- Подменный диск ---------------------------------------------------------
@@ -379,5 +380,45 @@ describe('заголовок и открытие', () => {
     model.open(['Нет.md']);
 
     expect(await screen.findByText('Не удалось открыть заметку. Файл или папка не найдены.')).toBeTruthy();
+  });
+});
+
+describe('сигналы «переименовано» и «удалено» (API компонента для дерева и событий ядра)', () => {
+  async function renderEditor(disk: Disk, path: VaultPath) {
+    const calls = mockCore(mocksFor(disk));
+    const result = render(Editor, { path, notify: () => {}, onStatus: () => {} });
+    const view = await editorView();
+    return { calls, view, ...result };
+  }
+
+  it('renamed + переход на новый путь: запись не по старому пути, а по новому с прежней версией', async () => {
+    const disk = new Disk(SAMPLES);
+    const version = disk.version('LF без BOM.md');
+    const { calls, view, component, rerender } = await renderEditor(disk, ['LF без BOM.md']);
+    type(view, 'x');
+    disk.files.set('Новое имя.md', disk.files.get('LF без BOM.md') ?? new Uint8Array());
+    disk.files.delete('LF без BOM.md');
+
+    component.renamed(['LF без BOM.md'], ['Новое имя.md']);
+    await rerender({ path: ['Новое имя.md'] });
+    expect(writes(calls)).toEqual([]);
+
+    window.dispatchEvent(new Event('pagehide'));
+    expect(writes(calls)).toEqual([
+      ['note_write', { request: { path: ['Новое имя.md'], text: view.state.doc.toString(), expected_version: version } }],
+    ]);
+  });
+
+  it('removed + закрытие: ввод удалённой заметки не пишется', async () => {
+    const disk = new Disk(SAMPLES);
+    const { calls, view, component, rerender } = await renderEditor(disk, ['LF без BOM.md']);
+    type(view, 'x');
+
+    component.removed(['LF без BOM.md']);
+    await rerender({ path: null });
+    window.dispatchEvent(new Event('pagehide'));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    expect(JSON.stringify(writes(calls))).toBe('[]');
   });
 });
