@@ -30,6 +30,8 @@
 
 pub(crate) mod atomic;
 mod contour;
+mod local_time;
+mod own_writes;
 mod settings;
 mod text;
 
@@ -91,6 +93,8 @@ pub struct Vault {
     contour: Contour,
     /// `.rhizomind/` — канонический путь, проверен при открытии.
     service: PathBuf,
+    /// Свои записи для наблюдателя за папкой.
+    own_writes: own_writes::OwnWrites,
 }
 
 impl Vault {
@@ -126,7 +130,11 @@ impl Vault {
             let handle = contour::open_dir(&dir).map_err(io_error)?;
             contour.check_opened(&handle, &dir, true)?;
         }
-        let vault = Self { contour, service };
+        let vault = Self {
+            contour,
+            service,
+            own_writes: own_writes::OwnWrites::default(),
+        };
         vault.clean_tmp();
         Ok(vault)
     }
@@ -203,29 +211,140 @@ impl Vault {
         Ok((bytes, version))
     }
 
-    /// Записывает заметку атомарно по правилу «байт в байт»
-    /// (`commands::note`): BOM и переносы — из файла на диске; текст не
-    /// изменился — файл не пишется. Версия на диске не равна `expected` —
-    /// изменения снаружи не затираются: версия с диска сохраняется копией
-    /// рядом, текст из редактора — в заметку (`conflict_saved`, С3.6).
-    /// Файла нет — `not_found`. Дата создания сохраняется (см. описание
-    /// модуля).
-    /// Регистрирует получателя своих записей (наблюдатель, задача 1.4).
-    pub fn set_own_write_hook(&self, _hook: OwnWriteHook) {}
-
-    /// Своя ли это недавняя запись (путь, хэш и размер новой версии).
-    pub fn is_own_write(&self, _path: &VaultPath, _hash: &str, _size: u64) -> bool {
-        false
+    /// Регистрирует получателя своих записей — наблюдатель за папкой
+    /// (задача 1.4). Получатель вызывается до замены файла на диске.
+    pub fn set_own_write_hook(&self, hook: OwnWriteHook) {
+        self.own_writes.set_hook(hook);
     }
 
+    /// Своя ли это недавняя запись ядра (путь, хэш и размер новой версии):
+    /// событие о таком файле — не внешнее изменение.
+    pub fn is_own_write(&self, path: &VaultPath, hash: &str, size: u64) -> bool {
+        self.own_writes.contains(path, hash, size)
+    }
+
+    /// Записывает заметку атомарно по правилу «байт в байт»
+    /// (`commands::note`): BOM и переносы — из файла на диске; текст после
+    /// приведения совпадает с диском — файл не пишется. Содержимое на диске
+    /// (хэш и размер) не равно `expected` — изменения снаружи не затираются:
+    /// версия с диска сохраняется копией рядом, текст из редактора — в
+    /// заметку (`conflict_saved`, С3.6). Только дата изменения на диске
+    /// другая — не конфликт. Файла нет — `not_found`. Дата создания
+    /// сохраняется (см. описание модуля).
     pub fn write_note(
         &self,
         path: &VaultPath,
-        _text: &str,
-        _expected: &FileVersion,
+        text: &str,
+        expected: &FileVersion,
     ) -> CoreResult<NoteWriteResponse> {
-        self.contour.resolve(path)?;
-        Err(CoreError::not_implemented())
+        let abs = self.contour.resolve(path)?;
+        require_note_name(path)?;
+        let (disk, disk_version) = self.read_existing_note(&abs)?;
+        let decoded = text::decode(&disk);
+        let same_content = disk_version.hash == expected.hash && disk_version.size == expected.size;
+        if decoded.invalid_utf8 && same_content {
+            return Err(CoreError::new(ErrorCode::ReadOnly));
+        }
+        if !decoded.invalid_utf8 && decoded.text == text::normalize(text) {
+            return Ok(NoteWriteResponse::Saved {
+                version: disk_version,
+            });
+        }
+        let bytes = text::Format::of(&disk).encode(text);
+        if same_content {
+            let version = self.replace_note(path, &abs, &bytes)?;
+            return Ok(NoteWriteResponse::Saved { version });
+        }
+        // Сначала копия версии с диска, потом замена: версия с диска не
+        // теряется ни при каком сбое.
+        let copy_path = self.save_conflict_copy(path, &abs, &disk, &disk_version)?;
+        let version = self.replace_note(path, &abs, &bytes)?;
+        Ok(NoteWriteResponse::ConflictSaved { version, copy_path })
+    }
+
+    /// Атомарно заменяет существующую заметку; своя запись регистрируется до
+    /// замены. Возвращает версию нового файла.
+    fn replace_note(&self, path: &VaultPath, abs: &Path, bytes: &[u8]) -> CoreResult<FileVersion> {
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        let temp = atomic::write_temp(&self.tmp_dir(), bytes).map_err(io_error)?;
+        self.own_writes.register(path, &hash, bytes.len() as u64);
+        atomic::replace(temp, abs).map_err(io_error)?;
+        self.version_after_write(abs, hash, bytes.len() as u64)
+    }
+
+    /// Версия только что записанного файла: хэш и размер известны, дата —
+    /// с диска (дескриптор проверен по контуру).
+    fn version_after_write(&self, abs: &Path, hash: String, size: u64) -> CoreResult<FileVersion> {
+        let file = File::open(abs).map_err(io_error)?;
+        self.contour.check_opened(&file, abs, false)?;
+        let meta = file.metadata().map_err(io_error)?;
+        Ok(FileVersion {
+            hash,
+            size,
+            modified_ms: meta.modified().map(millis).unwrap_or(0),
+        })
+    }
+
+    /// Копия версии с диска рядом с заметкой: «Имя (внешняя версия
+    /// ГГГГ-ММ-ДД ЧЧ-ММ).md» по местному времени изменения файла; имя занято
+    /// (повтор в ту же минуту) — с номером: «… ЧЧ-ММ) 2.md». Файл появляется
+    /// без затирания существующих (`persist_noclobber`).
+    fn save_conflict_copy(
+        &self,
+        path: &VaultPath,
+        abs: &Path,
+        disk: &[u8],
+        disk_version: &FileVersion,
+    ) -> CoreResult<VaultPath> {
+        let name = path.file_name().ok_or_else(contour::invalid_path)?;
+        let (stem, extension) = name.rsplit_once('.').unwrap_or((name, ""));
+        let modified = std::time::UNIX_EPOCH
+            + std::time::Duration::from_millis(disk_version.modified_ms.max(0) as u64);
+        let stamp = local_time::minute_stamp(modified);
+        let dir = abs.parent().ok_or_else(contour::invalid_path)?;
+        let parent: Vec<String> = path.components()[..path.components().len() - 1].to_vec();
+        let hash = blake3::hash(disk).to_hex().to_string();
+        for attempt in 1..=1000u32 {
+            let suffix = if attempt == 1 {
+                format!(" (внешняя версия {stamp})")
+            } else {
+                format!(" (внешняя версия {stamp}) {attempt}")
+            };
+            let copy_name = fit_name(stem, &suffix, extension);
+            if self.sibling_taken(dir, &copy_name, None)? {
+                continue;
+            }
+            let copy_path =
+                VaultPath::from_components(parent.iter().cloned().chain([copy_name.clone()]));
+            let temp = atomic::write_temp(&self.tmp_dir(), disk).map_err(io_error)?;
+            self.own_writes
+                .register(&copy_path, &hash, disk.len() as u64);
+            match atomic::create_new(temp, &dir.join(&copy_name), Some(abs)) {
+                Ok(()) => return Ok(copy_path),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(io_error(e)),
+            }
+        }
+        Err(CoreError::new(ErrorCode::IoFailed))
+    }
+
+    /// Есть ли в папке `dir` элемент с тем же ключом имени, что `name`
+    /// (кроме элемента с именем `except` — переименовываемого).
+    fn sibling_taken(&self, dir: &Path, name: &str, except: Option<&str>) -> CoreResult<bool> {
+        let key = crate::names::key(name);
+        for entry in std::fs::read_dir(dir).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let Some(existing) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if except == Some(existing.as_str()) {
+                continue;
+            }
+            if crate::names::key(&existing) == key {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Создаёт пустую заметку `name` (полное имя с `.md`; UTF-8 без BOM,
@@ -337,6 +456,28 @@ impl Vault {
 /// Путь `dir/name`.
 fn child(dir: &VaultPath, name: &str) -> VaultPath {
     VaultPath::from_components(dir.components().iter().cloned().chain([name.to_owned()]))
+}
+
+/// Имя `stem + suffix + .extension`, укороченное по основе до предела NTFS
+/// (255 единиц UTF-16); точка и пробел в конце основы убираются.
+fn fit_name(stem: &str, suffix: &str, extension: &str) -> String {
+    let tail = if extension.is_empty() {
+        suffix.to_owned()
+    } else {
+        format!("{suffix}.{extension}")
+    };
+    let budget =
+        crate::commands::limits::MAX_COMPONENT_UTF16.saturating_sub(tail.encode_utf16().count());
+    let mut base = String::new();
+    let mut used = 0;
+    for c in stem.chars() {
+        if used + c.len_utf16() > budget {
+            break;
+        }
+        used += c.len_utf16();
+        base.push(c);
+    }
+    format!("{}{tail}", base.trim_end_matches(['.', ' ']))
 }
 
 /// Операция не над корнем хранилища.

@@ -51,7 +51,14 @@ trash = { version = "=5.2.9", default-features = false, features = ["coinit_apar
 [target.'cfg(windows)'.dependencies]
 # ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
 # (итоговый путь открытого файла) — хранилище, задача 1.2.
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+# Местное время для имени копии при конфликте — FileTimeToSystemTime и
+# SystemTimeToTzSpecificLocalTime (Win32_System_Time).
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Time"] }
+
+[target.'cfg(unix)'.dependencies]
+# Местное время для имени копии при конфликте (localtime_r); уже было в
+# дереве через tauri и tempfile.
+libc = "=0.2.191"
 
 [dev-dependencies]
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;

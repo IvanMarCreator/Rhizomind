@@ -2598,6 +2598,7 @@ dependencies = [
  "gen-vault",
  "insta",
  "junction",
+ "libc",
  "serde",
  "serde_json",
  "tauri",

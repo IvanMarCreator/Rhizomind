@@ -44,12 +44,6 @@ pub struct Format {
 }
 
 impl Format {
-    /// Новая заметка: UTF-8 без BOM, переносы LF.
-    pub const NEW_NOTE: Format = Format {
-        bom: false,
-        crlf: false,
-    };
-
     /// Вид существующего файла.
     pub fn of(bytes: &[u8]) -> Self {
         let crlf = bytes.windows(2).filter(|w| *w == b"\r\n").count();

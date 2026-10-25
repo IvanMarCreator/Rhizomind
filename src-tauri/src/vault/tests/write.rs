@@ -317,12 +317,15 @@ fn leftovers_of_an_interrupted_write_are_removed_on_open() {
     assert!(!leftover.exists());
 }
 
+/// Свои записи и содержимое диска в момент регистрации.
+type Seen = Vec<(OwnWrite, Vec<u8>)>;
+
 #[test]
 fn own_write_is_registered_before_the_file_is_replaced() {
     let t = TestVault::new();
     t.put("Заметка.md", "старое\n");
     let note = t.vault.read_note(&vp("Заметка.md")).expect("чтение");
-    let seen: Arc<Mutex<Vec<(OwnWrite, Vec<u8>)>>> = Arc::default();
+    let seen: Arc<Mutex<Seen>> = Arc::default();
     let disk = t.file("Заметка.md");
     let log = Arc::clone(&seen);
     t.vault
