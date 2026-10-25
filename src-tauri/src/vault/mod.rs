@@ -30,7 +30,7 @@
 
 pub(crate) mod atomic;
 mod contour;
-mod fsops;
+pub(crate) mod fsops;
 mod local_time;
 mod own_writes;
 mod settings;
@@ -92,6 +92,8 @@ pub type OwnWriteHook = Box<dyn Fn(&OwnWrite) + Send + Sync + 'static>;
 pub enum TrashFailure {
     /// На томе нет корзины (флешка, сетевая папка) или корзина отказала.
     NoTrash,
+    /// Корзина есть, но не приняла элемент.
+    Failed,
 }
 
 /// Удаление в корзину ОС по абсолютному пути (подменяется в тестах).
@@ -629,7 +631,7 @@ impl Vault {
         };
         match result {
             Ok(()) => Ok(TrashOutcome::Trashed),
-            Err(TrashFailure::NoTrash) => {
+            Err(TrashFailure::NoTrash | TrashFailure::Failed) => {
                 if !confirm_permanent(path) {
                     return Ok(TrashOutcome::Cancelled);
                 }

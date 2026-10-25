@@ -108,3 +108,8 @@ fn volume_has_recycle_bin(path: &Path) -> bool {
     // SAFETY: `volume` — строка с нулём в конце от GetVolumePathNameW.
     unsafe { GetDriveTypeW(volume.as_ptr()) == DRIVE_FIXED }
 }
+
+/// Следующая смена только регистра в этом потоке пойдёт в два шага и
+/// «упадёт» после первого (тесты).
+#[cfg(test)]
+pub fn crash_after_first_rename_step() {}

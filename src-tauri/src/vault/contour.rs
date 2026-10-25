@@ -272,6 +272,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resolve_keeps_components_after_a_missing_folder() {
+        let dir = tempfile::tempdir().expect("папка");
+        let root = dunce::canonicalize(dir.path()).expect("корень");
+        let contour = Contour::new(root.clone());
+        let path = VaultPath::from_components(["Нет", "Глубже", "x.md"]);
+        assert_eq!(
+            contour.resolve(&path),
+            Ok(root.join("Нет").join("Глубже").join("x.md"))
+        );
+    }
+
+    #[test]
     fn opened_file_outside_root_or_in_service_dir_is_rejected() {
         let outer = tempfile::tempdir().expect("папка");
         let root = outer.path().join("vault");

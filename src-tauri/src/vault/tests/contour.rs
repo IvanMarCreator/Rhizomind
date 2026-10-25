@@ -40,6 +40,8 @@ fn component_rejects_windows_reserved_names_with_and_without_extension() {
         "conout$.md",
         "COM¹",
         "aux .md",
+        "COM0",
+        "lpt0.md",
     ] {
         assert!(rejected(bad), "{bad:?}");
     }
@@ -66,23 +68,17 @@ fn component_rejects_trailing_dot_space_and_control_characters() {
     }
 }
 
+/// Имена вида короткого имени 8.3 проверяются по диску (`Contour::resolve`),
+/// а не по форме: `Итог~1.md` — обычное имя, если так файл и называется.
 #[test]
-fn component_rejects_short_name_aliases_but_not_long_names_with_tilde() {
-    for bad in [
-        "RHIZOM~1",
-        "rhizom~1",
-        "RHIZO~12",
-        "ПРОЕКТ~2.MD",
-        "AB~1.TXT",
-    ] {
-        assert!(rejected(bad), "{bad:?}");
-    }
+fn component_allows_names_shaped_like_short_names() {
     for good in [
+        "RHIZOM~1",
+        "ПРОЕКТ~2.MD",
+        "Итог~1.md",
         "Версия~2 итог.md",
         "Заметка~1.md",
-        "a~b.md",
         "~1",
-        "черновик~.md",
     ] {
         assert!(!rejected(good), "{good:?}");
     }
@@ -234,7 +230,6 @@ fn service_folder_is_unreachable_by_any_spelling() {
         ".Rhizomind/settings.json",
         ".RHIZOMIND/settings.json",
         ".rhizomind/tmp",
-        "RHIZOM~1/settings.json",
     ] {
         assert_never_escapes(&t, bad);
         assert!(
@@ -248,6 +243,41 @@ fn service_folder_is_unreachable_by_any_spelling() {
     assert_eq!(
         std::fs::read(t.root().join(".rhizomind").join("settings.json")).expect("на месте"),
         b"{}"
+    );
+}
+
+/// `RHIZOM~1` — короткое имя служебной папки там, где NTFS их создаёт:
+/// такой путь никогда не доходит до `.rhizomind/`. Где коротких имён нет
+/// (Linux, том без 8.3), это просто отсутствующая папка.
+#[test]
+fn short_name_of_service_folder_never_reaches_it() {
+    let t = TestVault::new();
+    std::fs::write(t.root().join(".rhizomind").join("settings.json"), "{}").expect("настройки");
+    let alias_exists = t.root().join("RHIZOM~1").exists();
+    for bad in ["RHIZOM~1", "RHIZOM~1/settings.json", "rhizom~1/tmp"] {
+        for (operation, code) in every_operation(&t, &vp(bad)) {
+            if alias_exists {
+                assert!(
+                    matches!(code, ErrorCode::InvalidPath | ErrorCode::OutsideVault),
+                    "{operation} {bad}: {code:?}"
+                );
+            } else {
+                assert_ne!(code, ErrorCode::IoFailed, "{operation} {bad}");
+            }
+        }
+    }
+    assert_eq!(
+        std::fs::read(t.root().join(".rhizomind").join("settings.json")).expect("на месте"),
+        b"{}"
+    );
+    let names: Vec<_> = std::fs::read_dir(t.root().join(".rhizomind"))
+        .expect("служебная")
+        .map(|e| e.expect("элемент").file_name())
+        .collect();
+    assert_eq!(
+        names.len(),
+        2,
+        "в служебной папке ничего не появилось: {names:?}"
     );
 }
 

@@ -146,3 +146,21 @@ pub fn wide_path(path: &Path) -> Vec<u16> {
     wide.push(0);
     wide
 }
+
+/// Подменённый результат `ReplaceFileW` (тесты).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub enum ReplaceFailure {
+    /// `ERROR_UNABLE_TO_MOVE_REPLACEMENT`.
+    Code1176 { target_removed: bool },
+    /// `ERROR_UNABLE_TO_MOVE_REPLACEMENT_2`.
+    Code1177,
+}
+
+/// Следующая замена в этом потоке завершится подменённой ошибкой.
+#[cfg(test)]
+pub fn simulate_replace_failure(_failure: ReplaceFailure) {}
+
+/// Вызвать `action` после записи временного файла, до замены (тесты).
+#[cfg(test)]
+pub fn after_temp_written(_action: Box<dyn FnOnce()>) {}

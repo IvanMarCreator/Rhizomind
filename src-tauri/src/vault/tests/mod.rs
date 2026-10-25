@@ -3,6 +3,7 @@
 //! проверок контура.
 
 mod contour;
+mod hardening;
 mod ops;
 mod read;
 mod service;
