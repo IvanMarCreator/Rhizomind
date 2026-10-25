@@ -5,7 +5,7 @@
 // файл, если текст не изменился.
 import { EditorView } from '@codemirror/view';
 import { clearMocks } from '@tauri-apps/api/mocks';
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteResponse, Settings, VaultPath } from '../api/index.ts';
@@ -146,6 +146,8 @@ function type(view: EditorView, insert: string, at = view.state.doc.length) {
 const writes = (calls: RecordedCall[]) => calls.filter(([command]) => command === 'note_write');
 
 afterEach(() => {
+  // Сначала размонтировать (дерево снимает подписки), потом убрать подмену.
+  cleanup();
   clearMocks();
   delete document.documentElement.dataset.theme;
 });
