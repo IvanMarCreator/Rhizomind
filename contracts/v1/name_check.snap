@@ -25,6 +25,7 @@ source: src/commands/contract_tests.rs
     ]
   },
   "response": {
-    "status": "ok"
+    "status": "ok",
+    "warning": "unlinkable"
   }
 }

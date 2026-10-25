@@ -70,4 +70,8 @@ export const ru = {
   'names.too_long': 'Имя слишком длинное.',
   'names.duplicate': 'В этой папке уже есть элемент с таким именем.',
   'names.note_extension': 'Расширение .md нельзя убрать у заметки или добавить другому файлу.',
+
+  // Предупреждения о допустимом имени: names.warning.<warning>
+  'names.warning.unlinkable': 'На эту заметку нельзя будет сослаться.',
+  'names.warning.hidden': 'Имя с точкой в начале: элемент будет скрыт в дереве файлов.',
 } as const satisfies Record<string, string>;

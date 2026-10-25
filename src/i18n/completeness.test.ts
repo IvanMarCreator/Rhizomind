@@ -24,6 +24,7 @@ const typesSource = readFileSync(path.join(SRC, 'api', 'types.ts'), 'utf8');
 describe('словарь покрывает ответы ядра', () => {
   const codes = unionMembers(typesSource, 'ErrorCode');
   const problems = unionMembers(typesSource, 'NameProblem');
+  const warnings = unionMembers(typesSource, 'NameWarning');
 
   it('списки кодов прочитаны из типов API', () => {
     expect(codes).toContain('not_implemented');
@@ -38,6 +39,14 @@ describe('словарь покрывает ответы ядра', () => {
 
   it.each(problems)('names.%s', (problem) => {
     expect(hasMessage(`names.${problem}`)).toBe(true);
+  });
+
+  it('предупреждения об имени прочитаны из типов API', () => {
+    expect(warnings).toEqual(['unlinkable', 'hidden']);
+  });
+
+  it.each(warnings)('names.warning.%s', (warning) => {
+    expect(hasMessage(`names.warning.${warning}`)).toBe(true);
   });
 
   it('errors.ipc_failed (отказ моста Tauri)', () => {
