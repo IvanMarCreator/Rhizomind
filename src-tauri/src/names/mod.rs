@@ -1,19 +1,19 @@
-//! Правила имён и ключ имени — интерфейс модуля; полная реализация и тесты
-//! по С3.2 и Unicode — задача 1.1.
+//! Правила имён и ключ имени (спецификация 0.1, С3.2 и С3.4).
 //!
 //! Одно правило для всего ядра: проверка имён при вводе (С3.2), совпадение
 //! имён в папке, разрешение вики-ссылок и поиск сравнивают имена по
 //! [`NameKey`]. Модуль чистый: без диска и состояния, функции не падают.
-//!
-//! Сейчас здесь **предварительная рабочая реализация**, а не заглушка с
-//! ошибкой: её вызывают команды и их тесты (`vault_create`, `entry_rename`),
-//! а `todo!()` уронил бы их. Задача 1.1 заменяет [`key`] на NFC → полное
-//! приведение регистра (`icu_casemap`) → NFC и доводит [`check`] до С3.2.
 
-use crate::commands::{NameProblem, limits};
+use std::cmp::Ordering;
+
+use icu_casemap::CaseMapper;
+use unicode_normalization::UnicodeNormalization;
+
+use crate::commands::{CoreError, CoreResult, NameProblem, limits};
 
 /// Ключ имени. Два имени совпадают для ядра, если совпадают их ключи
-/// (`Заметка.md` и `заметка.MD`, составная и разложенная «й»).
+/// (`Заметка.md` и `заметка.MD`, составная и разложенная «й», `Straße` и
+/// `STRASSE`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NameKey(String);
 
@@ -24,12 +24,23 @@ impl NameKey {
     }
 }
 
-/// Ключ имени: NFC → полное приведение регистра → NFC.
+/// Ключ имени: NFC → полное приведение регистра (Unicode full case folding,
+/// `icu_casemap`) → NFC.
 ///
-/// Предварительно (до задачи 1.1): только `to_lowercase`, без нормализации
-/// Unicode и без полного приведения регистра (ß ≠ SS).
+/// Приведение регистра и нормализация в редких случаях не перестановочны
+/// (комбинируемые знаки вроде U+0345), поэтому шаг повторяется, пока ключ не
+/// перестанет меняться: ключ ключа — тот же ключ. На обычных именах это один
+/// проход; число повторов ограничено.
 pub fn key(name: &str) -> NameKey {
-    NameKey(name.to_lowercase())
+    let mut current: String = name.nfc().collect();
+    for _ in 0..4 {
+        let next: String = CaseMapper::new().fold_string(&current).nfc().collect();
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    NameKey(current)
 }
 
 /// Расширение заметки.
@@ -37,16 +48,30 @@ pub const NOTE_EXTENSION: &str = "md";
 
 /// Заметка ли это по имени: расширение `.md` без учёта регистра.
 pub fn is_note(name: &str) -> bool {
+    note_stem(name).is_some()
+}
+
+/// Основа имени заметки — имя без `.md` (`Встреча.md` → `Встреча`); `None`,
+/// если это не заметка.
+pub fn note_stem(name: &str) -> Option<&str> {
     name.rsplit_once('.')
-        .is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case(NOTE_EXTENSION))
+        .filter(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case(NOTE_EXTENSION))
+        .map(|(stem, _)| stem)
 }
 
 /// Символы, запрещённые в именах Windows (кроме управляющих).
-const FORBIDDEN: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+pub const FORBIDDEN: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
 
-/// Зарезервированные имена устройств Windows (без учёта регистра, с любым
-/// расширением: `nul.md`, `COM1.txt`). `COM¹`–`COM³` и `LPT¹`–`LPT³` Windows
-/// тоже считает устройствами.
+/// Запрещённый в имени символ: из [`FORBIDDEN`] или управляющий.
+pub fn is_forbidden_char(c: char) -> bool {
+    c.is_control() || FORBIDDEN.contains(&c)
+}
+
+/// Зарезервированные имена устройств Windows: без учёта регистра, с любым
+/// расширением и пробелами перед ним (`nul.md`, `COM1.txt`, `NUL .md`).
+/// `COM0`–`COM9`, `LPT0`–`LPT9` и с надстрочными цифрами `¹ ² ³` Windows тоже
+/// считает устройствами (документация Microsoft «Naming Files, Paths, and
+/// Namespaces»).
 fn is_reserved(name: &str) -> bool {
     let base = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
     let upper = base.to_uppercase();
@@ -55,9 +80,10 @@ fn is_reserved(name: &str) -> bool {
         "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
     ) || ["COM", "LPT"].iter().any(|prefix| {
         upper.strip_prefix(prefix).is_some_and(|rest| {
+            let mut chars = rest.chars();
             matches!(
-                rest,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '¹' | '²' | '³'), None)
             )
         })
     })
@@ -67,32 +93,24 @@ fn ends_with_dot_or_space(text: &str) -> bool {
     text.ends_with('.') || text.ends_with(' ')
 }
 
-/// Правила имён Windows для одного имени файла или папки (без соседей):
-/// пустое, запрещённые и управляющие символы, зарезервированные имена,
-/// точка или пробел в конце — у заметки (`*.md`) и в конце основы имени
-/// (`Итоги..md`, `План .md`), длина. `None` — имя подходит. Совпадение с
-/// соседями (`duplicate`) проверяет `vault` по [`key`].
+/// Правила имён Windows для одного имени файла или папки (без соседей), по
+/// порядку: пустое, запрещённые и управляющие символы, зарезервированные
+/// имена, точка или пробел в конце — всего имени и основы имени заметки
+/// (`Итоги..md`, `План .md`), длина больше 255 единиц UTF-16. `None` — имя
+/// подходит. Причина — для пояснения под полем ввода (`NameProblem::message_key`).
+/// Совпадение с соседями (`duplicate`) проверяет `vault` по [`key`].
 pub fn check(name: &str) -> Option<NameProblem> {
     if name.is_empty() {
         return Some(NameProblem::Empty);
     }
-    if name
-        .chars()
-        .any(|c| c.is_control() || FORBIDDEN.contains(&c))
-    {
+    if name.chars().any(is_forbidden_char) {
         return Some(NameProblem::ForbiddenChars);
     }
     if is_reserved(name) {
         return Some(NameProblem::ReservedName);
     }
-    if ends_with_dot_or_space(name) {
+    if ends_with_dot_or_space(name) || note_stem(name).is_some_and(ends_with_dot_or_space) {
         return Some(NameProblem::TrailingDotOrSpace);
-    }
-    if is_note(name) {
-        let stem = &name[..name.len() - NOTE_EXTENSION.len() - 1];
-        if ends_with_dot_or_space(stem) {
-            return Some(NameProblem::TrailingDotOrSpace);
-        }
     }
     if !limits::component_fits(name) {
         return Some(NameProblem::TooLong);
@@ -100,10 +118,80 @@ pub fn check(name: &str) -> Option<NameProblem> {
     None
 }
 
+/// [`check`] для слоя команд: нарушение — ошибка `invalid_name` с причиной.
+pub fn require_valid(name: &str) -> CoreResult<()> {
+    check(name).map_or(Ok(()), |problem| Err(CoreError::invalid_name(problem)))
+}
+
 /// Переименование не меняет вид элемента: заметка остаётся `.md`, другой
 /// файл не становится заметкой. Нарушение — [`NameProblem::NoteExtension`].
 pub fn check_rename_keeps_kind(old_name: &str, new_name: &str) -> Option<NameProblem> {
     (is_note(old_name) != is_note(new_name)).then_some(NameProblem::NoteExtension)
+}
+
+/// Естественный порядок имён: числа сравниваются по значению («Заметка 2»
+/// перед «Заметка 10»), текст — по ключу имени, «ё» сразу после «е». При
+/// равенстве ключей — по исходной строке, чтобы порядок был полным и
+/// одинаковым на всех машинах. Это приближение `Intl.Collator('ru',
+/// {numeric: true})` интерфейса для решений ядра (выбор самой старой заметки
+/// при равной дате, С3.4), а не сортировка дерева.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (ka, kb) = (key(a), key(b));
+    natural_cmp_keys(ka.as_str(), kb.as_str()).then_with(|| a.cmp(b))
+}
+
+/// Естественный порядок двух уже приведённых ключей.
+fn natural_cmp_keys(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let da = take_digits(&mut a);
+                let db = take_digits(&mut b);
+                let ord = compare_numbers(&da, &db);
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let ord = letter_weight(x).cmp(&letter_weight(y));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+fn take_digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut digits = String::new();
+    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+        digits.push(c);
+    }
+    digits
+}
+
+/// Числа по значению (без ведущих нулей, затем по длине), при равном
+/// значении — меньше ведущих нулей раньше.
+fn compare_numbers(a: &str, b: &str) -> Ordering {
+    let (ta, tb) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
+    ta.len()
+        .cmp(&tb.len())
+        .then_with(|| ta.cmp(tb))
+        .then_with(|| a.len().cmp(&b.len()))
+}
+
+/// Вес буквы: кодовая точка, «ё» — между «е» и «ж».
+fn letter_weight(c: char) -> (u32, u8) {
+    match c {
+        'ё' => ('е' as u32, 1),
+        other => (other as u32, 0),
+    }
 }
 
 #[cfg(test)]

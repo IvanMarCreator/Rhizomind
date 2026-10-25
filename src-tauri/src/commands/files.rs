@@ -146,6 +146,7 @@ pub async fn note_create<R: Runtime>(
 ) -> CoreResult<EntryPathResponse> {
     limits::path(&request.dir, "dir")?;
     limits::name(&request.name, "name")?;
+    crate::names::require_valid(&request.name)?;
     let open = core.require_vault(window.label())?;
     let path = open.vault.create_note(&request.dir, &request.name)?;
     Ok(EntryPathResponse { path })
@@ -160,6 +161,7 @@ pub async fn folder_create<R: Runtime>(
 ) -> CoreResult<EntryPathResponse> {
     limits::path(&request.dir, "dir")?;
     limits::name(&request.name, "name")?;
+    crate::names::require_valid(&request.name)?;
     let open = core.require_vault(window.label())?;
     let path = open.vault.create_folder(&request.dir, &request.name)?;
     Ok(EntryPathResponse { path })
@@ -177,6 +179,7 @@ pub async fn entry_rename<R: Runtime>(
 ) -> CoreResult<EntryPathResponse> {
     limits::path(&request.path, "path")?;
     limits::name(&request.new_name, "new_name")?;
+    crate::names::require_valid(&request.new_name)?;
     let old_name = request
         .path
         .file_name()
