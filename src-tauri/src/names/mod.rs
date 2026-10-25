@@ -27,6 +27,12 @@ impl NameKey {
 /// Ключ имени: NFC → полное приведение регистра (Unicode full case folding,
 /// `icu_casemap`) → NFC.
 ///
+/// Единственное дополнение к приведению регистра — `ı` (U+0131) → `i`: NTFS
+/// по своей таблице верхнего регистра считает `ı.md` и `I.md` одним файлом,
+/// а приведение Unicode — разными. Других имён, которые NTFS считает одним,
+/// а этот ключ разными, нет (проверено перебором символов при ревью 1.1);
+/// обратное возможно (`ß` = `ss`) — правило ядра строже.
+///
 /// Приведение регистра и нормализация в редких случаях не перестановочны
 /// (комбинируемые знаки вроде U+0345), поэтому шаг повторяется, пока ключ не
 /// перестанет меняться: ключ ключа — тот же ключ. На обычных именах это один
@@ -34,7 +40,8 @@ impl NameKey {
 pub fn key(name: &str) -> NameKey {
     let mut current: String = name.nfc().collect();
     for _ in 0..4 {
-        let next: String = CaseMapper::new().fold_string(&current).nfc().collect();
+        let folded = CaseMapper::new().fold_string(&current).replace('ı', "i");
+        let next: String = folded.nfc().collect();
         if next == current {
             break;
         }
@@ -129,116 +136,128 @@ pub fn check_rename_keeps_kind(old_name: &str, new_name: &str) -> Option<NamePro
     (is_note(old_name) != is_note(new_name)).then_some(NameProblem::NoteExtension)
 }
 
-/// Естественный порядок имён: числа сравниваются по значению («Заметка 2»
-/// перед «Заметка 10»), текст — по ключу имени, «ё» сразу после «е». При
-/// равенстве ключей — по исходной строке, чтобы порядок был полным и
-/// одинаковым на всех машинах. Это приближение `Intl.Collator('ru',
-/// {numeric: true})` интерфейса для решений ядра (выбор самой старой заметки
-/// при равной дате, С3.4), а не сортировка дерева.
+/// Порядок имён ядра — «по пути в естественном порядке» (С3.2, С3.4): им
+/// ядро выбирает заметку при равной дате создания. Это дешёвое приближение
+/// `Intl.Collator('ru', {numeric: true})`, а не сортировка дерева: дерево
+/// сортирует интерфейс (папки первыми, `Intl.Collator`), и его порядок может
+/// отличаться.
+///
+/// Уровни, как у Collator:
+/// 1. буквы по ключу имени, «ё» = «е»; числа по значению («Заметка 2» перед
+///    «Заметка 10»); пробелы и знаки перед цифрами, цифры перед буквами,
+///    кириллица перед латиницей, латиница перед другими письменностями;
+/// 2. «ё» после «е», больше ведущих нулей — позже;
+/// 3. строчные перед заглавными;
+/// 4. исходная строка — чтобы порядок был полным.
+///
+/// Порядок — сравнение ключей [`SortKey`], поэтому он транзитивен.
 pub fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let (ka, kb) = (key(a), key(b));
-    natural_cmp_keys(ka.as_str(), kb.as_str()).then_with(|| a.cmp(b))
+    sort_key(a).cmp(&sort_key(b))
+}
+
+/// Ключ сортировки имени для [`natural_cmp`]; считается один раз и
+/// сравнивается сколько угодно раз.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SortKey {
+    primary: Vec<Primary>,
+    secondary: Vec<u8>,
+    tertiary: Vec<u8>,
+    raw: String,
+}
+
+/// Первичный вес: порядок вариантов — порядок групп.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Primary {
+    /// Пробелы, знаки препинания, символы.
+    Symbol(char),
+    /// Число: длина без ведущих нулей, затем цифры.
+    Number(usize, String),
+    Cyrillic(char),
+    Latin(char),
+    Other(char),
+}
+
+/// Ключ сортировки имени.
+pub fn sort_key(name: &str) -> SortKey {
+    sort_key_with(name, &key(name))
+}
+
+/// Ключ сортировки по готовому ключу имени (без повторного приведения).
+fn sort_key_with(raw: &str, key: &NameKey) -> SortKey {
+    let mut primary = Vec::new();
+    let mut secondary = Vec::new();
+    let mut chars = key.as_str().chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() {
+            let mut digits = String::from(c);
+            while let Some(d) = chars.next_if(char::is_ascii_digit) {
+                digits.push(d);
+            }
+            let value = digits.trim_start_matches('0');
+            let zeros = digits.len() - value.len();
+            primary.push(Primary::Number(value.len(), value.to_owned()));
+            secondary.push(u8::try_from(zeros).unwrap_or(u8::MAX));
+            continue;
+        }
+        let (base, accent) = if c == 'ё' { ('е', 1) } else { (c, 0) };
+        primary.push(match base {
+            '\u{400}'..='\u{52f}' => Primary::Cyrillic(base),
+            c if c.is_alphabetic() && c < '\u{250}' => Primary::Latin(base),
+            c if c.is_alphanumeric() => Primary::Other(base),
+            c => Primary::Symbol(c),
+        });
+        secondary.push(accent);
+    }
+    SortKey {
+        primary,
+        secondary,
+        tertiary: raw.chars().map(|c| u8::from(c.is_uppercase())).collect(),
+        raw: raw.to_owned(),
+    }
 }
 
 /// Путь с заранее посчитанными ключами компонентов — для частых сравнений
 /// без повторного приведения (разрешение ссылок, поиск).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyedPath {
-    raw: Vec<String>,
     keys: Vec<NameKey>,
+    sort: Vec<SortKey>,
 }
 
 impl KeyedPath {
-    /// Ключи компонентов пути.
+    /// Ключи компонентов пути; каждый ключ считается один раз.
     pub fn new(components: &[String]) -> Self {
-        Self {
-            raw: components.to_vec(),
-            keys: components.iter().map(|c| key(c)).collect(),
-        }
+        let keys: Vec<NameKey> = components.iter().map(|c| key(c)).collect();
+        let sort = components
+            .iter()
+            .zip(&keys)
+            .map(|(raw, key)| sort_key_with(raw, key))
+            .collect();
+        Self { keys, sort }
     }
 
     /// Ключи компонентов.
     pub fn keys(&self) -> &[NameKey] {
         &self.keys
     }
+
+    /// Ключ сортировки последнего компонента (имени).
+    pub fn name_sort_key(&self) -> Option<&SortKey> {
+        self.sort.last()
+    }
 }
 
-/// Естественный порядок путей: по компонентам, каждый — как [`natural_cmp`];
+/// Порядок путей ядра: по компонентам, каждый — как [`natural_cmp`];
 /// путь-начало другого пути — раньше.
 impl Ord for KeyedPath {
     fn cmp(&self, other: &Self) -> Ordering {
-        for ((ka, ra), (kb, rb)) in self
-            .keys
-            .iter()
-            .zip(&self.raw)
-            .zip(other.keys.iter().zip(&other.raw))
-        {
-            let ord = natural_cmp_keys(ka.as_str(), kb.as_str()).then_with(|| ra.cmp(rb));
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        }
-        self.keys.len().cmp(&other.keys.len())
+        self.sort.cmp(&other.sort)
     }
 }
 
 impl PartialOrd for KeyedPath {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-/// Естественный порядок двух уже приведённых ключей.
-fn natural_cmp_keys(a: &str, b: &str) -> Ordering {
-    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
-    loop {
-        match (a.peek().copied(), b.peek().copied()) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
-                let da = take_digits(&mut a);
-                let db = take_digits(&mut b);
-                let ord = compare_numbers(&da, &db);
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-            (Some(x), Some(y)) => {
-                let ord = letter_weight(x).cmp(&letter_weight(y));
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-                a.next();
-                b.next();
-            }
-        }
-    }
-}
-
-fn take_digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
-    let mut digits = String::new();
-    while let Some(c) = chars.next_if(char::is_ascii_digit) {
-        digits.push(c);
-    }
-    digits
-}
-
-/// Числа по значению (без ведущих нулей, затем по длине), при равном
-/// значении — меньше ведущих нулей раньше.
-fn compare_numbers(a: &str, b: &str) -> Ordering {
-    let (ta, tb) = (a.trim_start_matches('0'), b.trim_start_matches('0'));
-    ta.len()
-        .cmp(&tb.len())
-        .then_with(|| ta.cmp(tb))
-        .then_with(|| a.len().cmp(&b.len()))
-}
-
-/// Вес буквы: кодовая точка, «ё» — между «е» и «ж».
-fn letter_weight(c: char) -> (u32, u8) {
-    match c {
-        'ё' => ('е' as u32, 1),
-        other => (other as u32, 0),
     }
 }
 
@@ -475,7 +494,9 @@ mod tests {
     #[test]
     fn order_is_total_and_transitive_on_small_alphabet() {
         use std::cmp::Ordering::*;
-        let alphabet = ["е", "ё", "Е", "Ё", "ж", "и", "й", "a", "A", "1", "01", "2", "10", " ", "-", "ß", "ss"];
+        let alphabet = [
+            "е", "ё", "Е", "Ё", "ж", "и", "й", "a", "A", "1", "01", "2", "10", " ", "-", "ß", "ss",
+        ];
         let mut words: Vec<String> = alphabet.iter().map(|s| s.to_string()).collect();
         for a in alphabet {
             for b in alphabet {
@@ -487,9 +508,19 @@ mod tests {
             for j in 0..words.len() {
                 let ord = natural_cmp(&words[i], &words[j]);
                 assert_eq!(ord, natural_cmp(&words[j], &words[i]).reverse());
-                assert_eq!(ord == Equal, words[i] == words[j], "{:?} {:?}", words[i], words[j]);
+                assert_eq!(
+                    ord == Equal,
+                    words[i] == words[j],
+                    "{:?} {:?}",
+                    words[i],
+                    words[j]
+                );
                 if i < j {
-                    assert_ne!(ord, Greater, "{:?} > {:?} после сортировки", words[i], words[j]);
+                    assert_ne!(
+                        ord, Greater,
+                        "{:?} > {:?} после сортировки",
+                        words[i], words[j]
+                    );
                 }
             }
         }

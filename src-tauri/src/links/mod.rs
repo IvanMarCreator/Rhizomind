@@ -107,7 +107,10 @@ pub fn parse_target(inner: &str) -> Result<LinkTarget, InvalidTarget> {
         return Err(InvalidTarget::ForbiddenChars);
     }
     let file = components.pop().unwrap_or_default();
-    let name = names::note_stem(&file).map_or(file.clone(), str::to_owned);
+    let name = match names::note_stem(&file) {
+        Some(stem) => stem.to_owned(),
+        None => file,
+    };
     Ok(LinkTarget {
         folders: components,
         name,
@@ -125,8 +128,8 @@ struct Entry {
     /// Папки и имя без `.md` — как пишется путь в ссылке.
     link_path: Vec<String>,
     /// Ключи `link_path`.
-    keys: Vec<NameKey>,
-    /// Место в естественном порядке путей (при равной дате создания).
+    keyed: KeyedPath,
+    /// Место в порядке путей ядра (при равной дате создания).
     rank: u32,
     haystack: Haystack,
 }
@@ -134,6 +137,10 @@ struct Entry {
 impl Entry {
     fn name(&self) -> &str {
         self.link_path.last().map_or("", String::as_str)
+    }
+
+    fn keys(&self) -> &[NameKey] {
+        self.keyed.keys()
     }
 }
 
@@ -144,6 +151,8 @@ pub struct Links {
     entries: Vec<Entry>,
     /// Заметки по ключу имени без `.md`.
     by_name: HashMap<NameKey, Vec<usize>>,
+    /// Все заметки в порядке имён, затем путей — подсказки на пустой запрос.
+    by_name_order: Vec<usize>,
 }
 
 impl Links {
@@ -155,42 +164,47 @@ impl Links {
     }
 
     /// Заменяет список заметок (после изменения дерева). Файлы не `.md` в
-    /// списке пропускаются. Ключи считаются здесь, один раз.
+    /// списке пропускаются. Ключи и порядки считаются здесь, один раз.
     pub fn replace_notes(&mut self, notes: Vec<NoteRef>) {
-        let notes: Vec<NoteRef> = notes
+        let notes: Vec<(NoteRef, Vec<String>)> = notes
             .into_iter()
-            .filter(|n| n.path.file_name().is_some_and(names::is_note))
+            .filter_map(|note| {
+                let link_path = switcher::link_path(&note.path)?;
+                Some((note, link_path))
+            })
             .collect();
         let keyed: Vec<KeyedPath> = notes
             .iter()
-            .map(|n| KeyedPath::new(n.path.components()))
+            .map(|(_, link_path)| KeyedPath::new(link_path))
             .collect();
         let ranks = switcher::natural_ranks(&keyed);
         self.entries = notes
             .into_iter()
-            .zip(keyed.iter().zip(ranks))
-            .map(|(note, (keyed, rank))| {
-                let mut link_path = note.path.components().to_vec();
-                if let Some(file) = link_path.last_mut() {
-                    *file = names::note_stem(file).unwrap_or(file).to_owned();
-                }
-                let keys = link_path.iter().map(|c| names::key(c)).collect();
-                Entry {
-                    path: note.path,
-                    created_ms: note.created_ms,
-                    link_path,
-                    keys,
-                    rank,
-                    haystack: Haystack::new(keyed),
-                }
+            .zip(keyed.into_iter().zip(ranks))
+            .map(|((note, link_path), (keyed, rank))| Entry {
+                path: note.path,
+                created_ms: note.created_ms,
+                link_path,
+                haystack: Haystack::new(&keyed),
+                keyed,
+                rank,
             })
             .collect();
         self.by_name.clear();
         for (i, entry) in self.entries.iter().enumerate() {
-            if let Some(name) = entry.keys.last() {
+            if let Some(name) = entry.keys().last() {
                 self.by_name.entry(name.clone()).or_default().push(i);
             }
         }
+        let mut order: Vec<usize> = (0..self.entries.len()).collect();
+        order.sort_by(|&a, &b| {
+            let (a, b) = (&self.entries[a], &self.entries[b]);
+            a.keyed
+                .name_sort_key()
+                .cmp(&b.keyed.name_sort_key())
+                .then(a.rank.cmp(&b.rank))
+        });
+        self.by_name_order = order;
     }
 
     /// Куда ведёт цель ссылки `target` (текст между `[[` и `|`/`#`; если
@@ -205,8 +219,8 @@ impl Links {
     /// - `имя` — заметки с этим именем;
     ///
     /// из нескольких подходящих — самая старая по дате создания, при равной
-    /// дате — первая по пути в естественном порядке. `from` в 0.1 на выбор
-    /// не влияет.
+    /// дате — первая в порядке путей ядра (`names::natural_cmp`). `from` в
+    /// 0.1 на выбор не влияет.
     pub fn resolve(&self, _from: &VaultPath, target: &str) -> CoreResult<Option<VaultPath>> {
         let Ok(target) = parse_target(target) else {
             return Ok(None);
@@ -223,7 +237,7 @@ impl Links {
         let exact: Vec<usize> = group
             .iter()
             .copied()
-            .filter(|&i| self.entries[i].keys == want)
+            .filter(|&i| self.entries[i].keys() == want.as_slice())
             .collect();
         let hits = if target.from_root || (want.len() > 1 && !exact.is_empty()) {
             exact
@@ -231,7 +245,7 @@ impl Links {
             group
                 .iter()
                 .copied()
-                .filter(|&i| self.entries[i].keys.ends_with(&want))
+                .filter(|&i| self.entries[i].keys().ends_with(&want))
                 .collect()
         };
         Ok(self.oldest(&hits).map(|i| self.entries[i].path.clone()))
@@ -248,10 +262,8 @@ impl Links {
     /// Подсказки автодополнения по части имени или пути, не больше
     /// [`switcher::MAX_RESULTS`], лучшие первыми (нечёткий поиск как в
     /// быстром переходе; при равной оценке — короче имя, затем по пути).
-    /// Пустой запрос — заметки в естественном порядке имён. Вставляемый
-    /// текст — имя для уникальных заметок, кратчайший различающий путь для
-    /// повторяющихся (с правилом вложенных путей из
-    /// [`Links::shortest_unique_path`]).
+    /// Пустой запрос — заметки в порядке имён ядра. Вставляемый текст — как
+    /// у [`Links::shortest_unique_path`].
     pub fn suggest(&self, _from: &VaultPath, query: &str) -> CoreResult<Vec<LinkSuggestion>> {
         let chosen = switcher::best_matches(
             query,
@@ -266,13 +278,11 @@ impl Links {
             },
         )
         .unwrap_or_else(|| {
-            let mut all: Vec<usize> = (0..self.entries.len()).collect();
-            all.sort_by(|&a, &b| {
-                let (a, b) = (&self.entries[a], &self.entries[b]);
-                names::natural_cmp(a.name(), b.name()).then(a.rank.cmp(&b.rank))
-            });
-            all.truncate(switcher::MAX_RESULTS);
-            all
+            self.by_name_order
+                .iter()
+                .copied()
+                .take(switcher::MAX_RESULTS)
+                .collect()
         });
         Ok(chosen
             .into_iter()
@@ -294,7 +304,9 @@ impl Links {
     /// другой, включая корень (`Здоровье/Звонок.md` и
     /// `Команда/Здоровье/Звонок.md`): обе получают полный путь от корня,
     /// верхняя — с `/` в начале: `/Здоровье/Звонок` и
-    /// `Команда/Здоровье/Звонок` (С3.4). Заметки нет в списке — `not_found`.
+    /// `Команда/Здоровье/Звонок` (С3.4). Если имя без `.md` само кончается на
+    /// `.md` (`Итоги.md.md`), `.md` дописывается — иначе разбор ссылки его
+    /// отбросит. Заметки нет в списке — `not_found`.
     pub fn shortest_unique_path(&self, note: &VaultPath) -> CoreResult<String> {
         self.entries
             .iter()
@@ -305,32 +317,44 @@ impl Links {
 
     fn shortest_of(&self, i: usize) -> String {
         let me = &self.entries[i];
-        let others: Vec<&[NameKey]> = me
-            .keys
+        let keys = me.keys();
+        let others: Vec<&[NameKey]> = keys
             .last()
             .and_then(|name| self.by_name.get(name))
             .into_iter()
             .flatten()
             .filter(|&&j| j != i)
-            .map(|&j| self.entries[j].keys.as_slice())
+            .map(|&j| self.entries[j].keys())
             .collect();
+        let n = keys.len();
         if others.is_empty() {
-            return me.name().to_owned();
+            link_text(&me.link_path[n - 1..])
+        } else if others.iter().any(|o| o.ends_with(keys)) {
+            // Мой путь — конец пути другой заметки: только путь от корня.
+            format!("/{}", link_text(&me.link_path))
+        } else if others.iter().any(|o| keys.ends_with(o)) {
+            // Путь другой заметки — конец моего: полный путь (С3.4).
+            link_text(&me.link_path)
+        } else {
+            let k = (2..=n)
+                .find(|&k| !others.iter().any(|o| o.ends_with(&keys[n - k..])))
+                .unwrap_or(n);
+            link_text(&me.link_path[n - k..])
         }
-        let full = me.link_path.join("/");
-        // Мой путь — конец пути другой заметки: только путь от корня.
-        if others.iter().any(|o| o.ends_with(&me.keys)) {
-            return format!("/{full}");
-        }
-        // Путь другой заметки — конец моего: полный путь (С3.4).
-        if others.iter().any(|o| me.keys.ends_with(o)) {
-            return full;
-        }
-        let n = me.keys.len();
-        (2..=n)
-            .find(|&k| !others.iter().any(|o| o.ends_with(&me.keys[n - k..])))
-            .map_or(full, |k| me.link_path[n - k..].join("/"))
     }
+}
+
+/// Текст пути в ссылке: компоненты через `/`; имя, которое само кончается на
+/// `.md`, получает ещё одно `.md` (разбор отбрасывает последнее).
+fn link_text(parts: &[String]) -> String {
+    let mut text = parts.join("/");
+    if parts
+        .last()
+        .is_some_and(|name| names::note_stem(name).is_some())
+    {
+        text.push_str(".md");
+    }
+    text
 }
 
 #[cfg(test)]
@@ -707,7 +731,10 @@ mod tests {
         assert_eq!(resolve(&l, &item.insert).as_deref(), Some("Итоги.md.md"));
         let l = links(&[("А/Итоги.MD.md", 1), ("Б/Итоги.md.md", 2)]);
         assert_eq!(shortest(&l, "А/Итоги.MD.md"), "А/Итоги.MD.md");
-        assert_eq!(resolve(&l, &shortest(&l, "Б/Итоги.md.md")).as_deref(), Some("Б/Итоги.md.md"));
+        assert_eq!(
+            resolve(&l, &shortest(&l, "Б/Итоги.md.md")).as_deref(),
+            Some("Б/Итоги.md.md")
+        );
     }
 
     #[test]

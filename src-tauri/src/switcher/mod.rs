@@ -25,19 +25,14 @@ pub(crate) struct Haystack {
 }
 
 impl Haystack {
-    /// Строки поиска по ключам пути заметки (последний компонент — имя файла).
+    /// Строки поиска по ключам пути в ссылке (последний компонент — имя
+    /// заметки без `.md`, см. [`link_path`]).
     pub(crate) fn new(path: &KeyedPath) -> Self {
         let keys: Vec<&str> = path.keys().iter().map(names::NameKey::as_str).collect();
-        let (file, folders) = keys.split_last().map_or(("", &[][..]), |(f, d)| (*f, d));
-        let name = names::note_stem(file).unwrap_or(file);
-        let mut full = folders.join("/");
-        if !full.is_empty() {
-            full.push('/');
-        }
-        full.push_str(name);
+        let name = keys.last().copied().unwrap_or_default();
         Self {
             name: Utf32String::from(name),
-            path: Utf32String::from(full),
+            path: Utf32String::from(keys.join("/")),
         }
     }
 
@@ -99,7 +94,17 @@ pub(crate) fn best_matches<T>(
     )
 }
 
-/// Порядковые номера путей в естественном порядке (для равных оценок).
+/// Путь заметки, как он пишется в ссылке: папки и имя без `.md`. `None` —
+/// не заметка (`.md`): такие файлы в поиск и ссылки не попадают.
+pub(crate) fn link_path(path: &VaultPath) -> Option<Vec<String>> {
+    let (file, folders) = path.components().split_last()?;
+    let stem = names::note_stem(file)?;
+    let mut parts = folders.to_vec();
+    parts.push(stem.to_owned());
+    Some(parts)
+}
+
+/// Порядковые номера путей в порядке путей ядра (для равных оценок).
 pub(crate) fn natural_ranks(paths: &[KeyedPath]) -> Vec<u32> {
     let mut order: Vec<usize> = (0..paths.len()).collect();
     order.sort_by(|&a, &b| paths[a].cmp(&paths[b]));
@@ -133,26 +138,27 @@ impl Switcher {
         switcher
     }
 
-    /// Заменяет список заметок (после изменения дерева). Ключи и строки
-    /// поиска считаются здесь, один раз, а не на каждый запрос.
+    /// Заменяет список заметок (после изменения дерева). Файлы не `.md`
+    /// пропускаются. Ключи и строки поиска считаются здесь, один раз, а не
+    /// на каждый запрос.
     pub fn replace_notes(&mut self, notes: Vec<VaultPath>) {
-        let keyed: Vec<KeyedPath> = notes
-            .iter()
-            .map(|p| KeyedPath::new(p.components()))
+        let notes: Vec<(VaultPath, Vec<String>)> = notes
+            .into_iter()
+            .filter_map(|path| {
+                let link_path = link_path(&path)?;
+                Some((path, link_path))
+            })
             .collect();
+        let keyed: Vec<KeyedPath> = notes.iter().map(|(_, lp)| KeyedPath::new(lp)).collect();
         let ranks = natural_ranks(&keyed);
         self.items = notes
             .into_iter()
             .zip(keyed.iter().zip(ranks))
-            .map(|(path, (keyed, rank))| {
-                let file = path.file_name().unwrap_or_default();
-                let name = names::note_stem(file).unwrap_or(file).to_owned();
-                Item {
-                    haystack: Haystack::new(keyed),
-                    path,
-                    name,
-                    rank,
-                }
+            .map(|((path, mut link_path), (keyed, rank))| Item {
+                haystack: Haystack::new(keyed),
+                path,
+                name: link_path.pop().unwrap_or_default(),
+                rank,
             })
             .collect();
     }
