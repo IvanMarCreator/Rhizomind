@@ -615,3 +615,34 @@ fn revert_to_older_own_version_after_newer_one_is_external() {
         vec![TreeChange::Modified { path: vp("n.md") }]
     );
 }
+
+#[test]
+fn file_moved_while_the_walk_is_in_progress_is_a_rename() {
+    // Обход не мгновенный: файл прочитан в старой папке, а пока обход дошёл
+    // до новой, его туда перенесли — в снимке он оказался в двух местах.
+    // Так на Windows при переполнении (Rescan посреди переноса) переносы
+    // уходили как «появился», а старый путь — отдельным «исчез».
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/заметка.md", "текст");
+    fs::create_dir(dir.path().join("Я")).expect("папка");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let root = dir.path().to_path_buf();
+    model.after_listing(
+        vp("А"),
+        Box::new(move || {
+            fs::rename(root.join("А/заметка.md"), root.join("Я/заметка.md")).expect("перенос");
+        }),
+    );
+
+    let changes = rescan_changes(&mut model, &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![TreeChange::Renamed {
+            from: vp("А/заметка.md"),
+            to: vp("Я/заметка.md")
+        }]
+    );
+    model.clear_failures();
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}

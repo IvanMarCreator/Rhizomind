@@ -87,6 +87,21 @@ pub(crate) struct TreeModel {
     nodes: BTreeMap<Key, Node>,
     #[cfg(test)]
     failing: HashSet<Key>,
+    /// Тестовый шов: действие сразу после чтения списка папки.
+    #[cfg(test)]
+    hooks: Hooks,
+}
+
+/// Действия тестового шва по папкам.
+#[cfg(test)]
+#[derive(Default)]
+struct Hooks(std::sync::Mutex<HashMap<Key, Box<dyn FnOnce() + Send>>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for Hooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hooks")
+    }
 }
 
 impl PartialEq for TreeModel {
@@ -103,6 +118,8 @@ impl TreeModel {
             nodes: BTreeMap::new(),
             #[cfg(test)]
             failing: HashSet::new(),
+            #[cfg(test)]
+            hooks: Hooks::default(),
         };
         if !fs::metadata(root)?.is_dir() {
             return Err(io::Error::new(io::ErrorKind::NotADirectory, "не папка"));
@@ -133,6 +150,17 @@ impl TreeModel {
     #[cfg(test)]
     pub(crate) fn fail_listing(&mut self, path: &VaultPath) {
         self.failing.insert(path.components().to_vec());
+    }
+
+    /// Тестовый шов: `action` выполняется один раз сразу после чтения
+    /// списка папки `dir` (например, перенос файла посреди обхода).
+    #[cfg(test)]
+    pub(crate) fn after_listing(&mut self, dir: VaultPath, action: Box<dyn FnOnce() + Send>) {
+        self.hooks
+            .0
+            .lock()
+            .expect("шов")
+            .insert(dir.components().to_vec(), action);
     }
 
     /// Тестовый шов: ошибки чтения папок прошли.
@@ -467,6 +495,10 @@ impl TreeModel {
                 out.insert(name, node);
             }
         }
+        #[cfg(test)]
+        if let Some(action) = self.hooks.0.lock().expect("шов").remove(dir) {
+            action();
+        }
         Ok(out)
     }
 
@@ -480,6 +512,9 @@ impl TreeModel {
             });
             return;
         };
+        // По порядку имён: обход воспроизводим.
+        let mut listing: Vec<_> = listing.into_iter().collect();
+        listing.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, node) in listing {
             let mut key = dir.clone();
             key.push(name);
@@ -742,6 +777,8 @@ mod tests {
             nodes: BTreeMap::new(),
             #[cfg(test)]
             failing: HashSet::new(),
+            #[cfg(test)]
+            hooks: Hooks::default(),
         }
     }
 
