@@ -1,5 +1,9 @@
+<script lang="ts">
+  import { t } from './i18n/index.ts';
+</script>
+
 <main>
-  <h1>Rhizomind</h1>
+  <h1>{t('app.name')}</h1>
 </main>
 
 <style>
