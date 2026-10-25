@@ -11,6 +11,13 @@
 
 use std::path::Path;
 
+mod own_writes;
+mod tree;
+#[cfg(test)]
+mod tree_tests;
+
+pub use own_writes::OwnWrites;
+
 use crate::commands::{CoreError, CoreResult, FileVersion, VaultChangedPayload, VaultPath};
 
 /// Получатель пачек изменений. Вызывается из потока наблюдателя.
