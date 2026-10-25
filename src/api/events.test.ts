@@ -26,6 +26,18 @@ describe('события ядра', () => {
     expect(received).toEqual([{ from: ['a.md'], to: ['b', 'a.md'] }]);
   });
 
+  it('подписка — на события своего окна, а не на все окна', async () => {
+    const calls = mockCore({});
+
+    await onCoreEvent('vault:changed', () => {});
+
+    const listen = calls.find(([command]) => command === 'plugin:event|listen');
+    expect(listen?.[1]).toMatchObject({
+      event: 'vault:changed',
+      target: { kind: 'WebviewWindow', label: 'main' },
+    });
+  });
+
   it('подписка на одно событие не получает другие', async () => {
     mockCore({});
     const received: unknown[] = [];

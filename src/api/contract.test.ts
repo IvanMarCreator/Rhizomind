@@ -6,6 +6,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { LIMITS } from './limits.ts';
 import type {
   CommandName,
   CommandRequest,
@@ -13,10 +14,23 @@ import type {
   CoreError,
   CoreEvents,
   ErrorCode,
+  EditorMode,
+  EntryKind,
   EventName,
   FileVersion,
+  NameCheck,
   NameProblem,
+  NewNoteLocation,
+  NoteWriteResponse,
+  OpenExternalOutcome,
+  ReadOnlyReason,
   Settings,
+  TextWidth,
+  Theme,
+  TrashOutcome,
+  TreeChange,
+  VaultChooseOutcome,
+  VaultOpenOutcome,
   VaultSummary,
 } from './types.ts';
 
@@ -52,7 +66,6 @@ const vault: VaultSummary = {
   path: 'C:\\Users\\ivan\\Documents\\Работа',
 };
 const settings: Settings = {
-  format_version: 1,
   theme: 'system',
   editor_mode: 'live_preview',
   text_width: 'column',
@@ -80,7 +93,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   vault_current: {
     command: 'vault_current',
     request: null,
-    response: { api_version: 1, vault },
+    response: { api_version: 1, vault: { id: vault.id, name: vault.name } },
     errors: [],
   },
   vault_create: {
@@ -114,10 +127,10 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
       entries: [
         { path: ['Проекты'], kind: 'folder' },
         { path: ['Проекты', 'Встреча.md'], kind: 'note' },
-        { path: ['Проекты', 'схема.png'], kind: 'file' },
+        { path: ['Проекты', 'схема.png'], kind: 'attachment' },
       ],
     },
-    errors: [err('no_vault_open'), err('not_implemented')],
+    errors: [err('no_vault_open'), err('io_failed')],
   },
   note_create: {
     command: 'note_create',
@@ -135,7 +148,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     command: 'entry_rename',
     request: { path: ['Проекты', 'Без названия.md'], new_name: 'Встреча 2.md' },
     response: { path: ['Проекты', 'Встреча 2.md'] },
-    errors: [err('not_found'), invalidName('forbidden_chars')],
+    errors: [err('not_found'), invalidName('forbidden_chars'), invalidName('note_extension')],
   },
   entry_move: {
     command: 'entry_move',
@@ -151,16 +164,15 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   },
   name_check: {
     command: 'name_check',
-    request: { dir: [], name: 'CON.md' },
-    response: { status: 'rejected', problem: 'reserved_name', message_key: 'names.reserved_name' },
-    errors: [err('invalid_path')],
+    request: { dir: ['Проекты'], name: 'Встреча.md', renaming: ['Проекты', 'встреча.md'] },
+    response: { status: 'ok' },
+    errors: [err('invalid_path'), invalidArgument('dir')],
   },
   note_read: {
     command: 'note_read',
     request: { path: ['Проекты', 'Встреча.md'] },
     response: {
-      text: '# Встреча\r\nСм. [[Альфа/План]]\r\n',
-      format: { bom: true, line_ending: 'crlf' },
+      text: '# Встреча\nСм. [[Альфа/План]]\n',
       version: version('a', 43),
       read_only: { reason: 'too_large', limit_bytes: 10 * 1024 * 1024 },
     },
@@ -171,11 +183,10 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     request: {
       path: ['Проекты', 'Встреча.md'],
       text: '# Встреча\nИтоги\n',
-      format: { bom: false, line_ending: 'lf' },
       expected_version: version('a', 43),
     },
     response: { outcome: 'conflict_saved', version: version('b', 21), copy_path: conflictCopy },
-    errors: [err('read_only'), err('not_found')],
+    errors: [err('read_only'), err('not_found'), invalidArgument('text')],
   },
   links_resolve: {
     command: 'links_resolve',
@@ -293,6 +304,8 @@ describe('контракт API v1 совпадает со снимками яд�
       .filter((file) => file.endsWith('.snap'))
       .sort();
     const expected = [
+      'enums.snap',
+      'limits.snap',
       ...Object.keys(commands).map((name) => `${name}.snap`),
       ...Object.keys(events).map(eventSnapshotFile),
     ].sort();
@@ -305,5 +318,83 @@ describe('контракт API v1 совпадает со снимками яд�
         expect(error.message_key).toBe(`errors.${error.code}`);
       }
     }
+  });
+});
+
+// Все варианты каждого перечисления. `satisfies Record<…, true>` требует
+// ровно все варианты типа: пропуск или лишний вариант — ошибка проверки типов.
+const enums = {
+  ErrorCode: {
+    not_implemented: true,
+    invalid_argument: true,
+    no_vault_open: true,
+    vault_not_found: true,
+    vault_unavailable: true,
+    invalid_path: true,
+    outside_vault: true,
+    not_found: true,
+    already_exists: true,
+    invalid_name: true,
+    not_a_note: true,
+    read_only: true,
+    scheme_not_allowed: true,
+    io_failed: true,
+  } satisfies Record<ErrorCode, true>,
+  NameProblem: {
+    empty: true,
+    forbidden_chars: true,
+    reserved_name: true,
+    trailing_dot_or_space: true,
+    too_long: true,
+    duplicate: true,
+    note_extension: true,
+  } satisfies Record<NameProblem, true>,
+  EntryKind: { folder: true, note: true, attachment: true } satisfies Record<EntryKind, true>,
+  Theme: { system: true, light: true, dark: true } satisfies Record<Theme, true>,
+  EditorMode: { live_preview: true, source: true } satisfies Record<EditorMode, true>,
+  TextWidth: { column: true, full: true } satisfies Record<TextWidth, true>,
+  'NewNoteLocation.kind': { vault_root: true, current_folder: true, folder: true } satisfies Record<
+    NewNoteLocation['kind'],
+    true
+  >,
+  'ReadOnlyReason.reason': { too_large: true, invalid_utf8: true } satisfies Record<ReadOnlyReason['reason'], true>,
+  'NoteWriteResponse.outcome': { saved: true, conflict_saved: true } satisfies Record<
+    NoteWriteResponse['outcome'],
+    true
+  >,
+  'NameCheck.status': { ok: true, rejected: true } satisfies Record<NameCheck['status'], true>,
+  'TrashOutcome.outcome': { trashed: true, deleted_permanently: true, cancelled: true } satisfies Record<
+    TrashOutcome['outcome'],
+    true
+  >,
+  'VaultChooseOutcome.outcome': { opened: true, cancelled: true } satisfies Record<
+    VaultChooseOutcome['outcome'],
+    true
+  >,
+  'VaultOpenOutcome.outcome': { opened: true, focused: true } satisfies Record<VaultOpenOutcome['outcome'], true>,
+  'OpenExternalOutcome.outcome': { opened: true, cancelled: true } satisfies Record<
+    OpenExternalOutcome['outcome'],
+    true
+  >,
+  'TreeChange.kind': { created: true, modified: true, removed: true, renamed: true } satisfies Record<
+    TreeChange['kind'],
+    true
+  >,
+};
+
+describe('перечисления и пределы совпадают с ядром', () => {
+  it('варианты каждого перечисления — как в Rust', () => {
+    const fromRust = readSnapshot('enums.snap') as Record<string, string[]>;
+    const fromTs = Object.fromEntries(
+      Object.entries(enums).map(([name, variants]) => [name, Object.keys(variants).sort()]),
+    );
+    const sortedRust = Object.fromEntries(
+      Object.entries(fromRust).map(([name, variants]) => [name, [...variants].sort()]),
+    );
+    expect(fromTs).toStrictEqual(sortedRust);
+  });
+
+  it('пределы параметров — как в Rust', () => {
+    expect(readSnapshot('limits.snap')).toStrictEqual(LIMITS);
   });
 });
