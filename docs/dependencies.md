@@ -52,6 +52,18 @@
 | `svelte` | 5.57.2 | MIT | Фреймворк интерфейса (ADR 0002) | Нет; собранный интерфейс проверяется `check-no-network` |
 | `@tauri-apps/api` | 2.12.4 | Apache-2.0 OR MIT | `invoke` для команд ядра (только через `src/api/`) и подмена ядра в тестах | Нет: вызовы идут по IPC Tauri внутри процесса |
 
+## Встроенные ресурсы интерфейса — попадают в программу
+
+Файлы лежат в репозитории и встраиваются в сборку; из сети ничего не загружается (CSP `default-src 'self'`). Тексты лицензий — рядом с файлами.
+
+| Ресурс | Версия | Лицензия | Где | Источник и проверка |
+|---|---|---|---|---|
+| Шрифт Inter (переменный, прямой и курсив) | 4.1 | OFL-1.1 | `src/theme/fonts/InterVariable.woff2`, `InterVariable-Italic.woff2`; лицензия `src/theme/fonts/Inter-LICENSE.txt` | Выпуск `rsms/inter` v4.1 (`Inter-4.1.zip`, папка `web/`). SHA-256: `693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3` (прямой), `e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a` (курсив) |
+| Шрифт JetBrains Mono Regular | 2.304 | OFL-1.1 | `src/theme/fonts/JetBrainsMono-Regular.woff2`; лицензия `src/theme/fonts/JetBrainsMono-OFL.txt` | Выпуск `JetBrains/JetBrainsMono` v2.304 (`fonts/webfonts/`). SHA-256: `a9cb1cd82332b23a47e3a1239d25d13c86d16c4220695e34b243effa999f45f2` |
+| Иконки Lucide (`files`, `square-arrow-right`, `settings`, `arrow-left`, `arrow-right`, `book-open`, `pencil`, `chevrons-up-down`, `x`, `file-text`, `triangle-alert`) | 1.61.0 | ISC; `arrow-left`, `arrow-right`, `x` происходят из Feather — MIT | Контуры SVG вручную перенесены в `src/shell/Icon.svelte`; лицензия `src/shell/icons/Lucide-LICENSE.txt` (ISC и MIT Feather) | Пакет npm `lucide-static` 1.61.0, папка `icons/`. Не зависимость: пакет в `package.json` не добавлен |
+
+OFL 1.1 разрешает встраивать шрифты в программу под GPL-3.0 при условии, что шрифт не продаётся отдельно и текст лицензии прилагается; ISC и MIT совместимы с GPL-3.0.
+
 ## Инструменты разработки (npm, `devDependencies`) — в программу не попадают
 
 | Пакет | Версия | Лицензия | Зачем | Сетевой код |
@@ -70,6 +82,9 @@
 | `globals` | 17.13.0 | MIT | Списки глобальных имён для ESLint | Нет |
 | `@types/node` | 22.20.5 | MIT | Типы Node для `tools/` и тестов | Нет |
 | `webdriverio` | 10.1.0 | MIT | Клиент WebDriver для сценарных тестов | Да: HTTP-клиент к tauri-driver на `127.0.0.1:4444` во время теста |
+| `@testing-library/svelte` | 5.4.2 | MIT | Компонентные тесты Svelte (ADR 0002): монтирование, очистка после теста (`svelteTesting()` в `vitest.config.ts`). Приносит `@testing-library/svelte-core` 1.1.3 | Нет |
+| `@testing-library/dom` | 10.4.2 | MIT | Поиск элементов по роли и тексту, события в компонентных тестах | Нет |
+| `jsdom` | 30.1.3 | MIT | DOM для компонентных тестов в Node (проект `components` в Vitest) | Есть в библиотеке (загрузка внешних ресурсов страницы через `undici`), но в тестах выключена — jsdom по умолчанию не загружает ресурсы; в программу не попадает |
 
 ## Инструменты, которые ставятся отдельно
 

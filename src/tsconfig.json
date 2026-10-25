@@ -1,0 +1,11 @@
+{
+  // Код интерфейса работает в WebView: без типов Node (обзор задачи 0.2).
+  // `process`, `Buffer`, `node:*` здесь — ошибка типов. Тесты (*.test.ts)
+  // проверяются корневым tsconfig.json с типами Node.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["**/*.ts", "**/*.svelte"],
+  "exclude": ["**/*.test.ts"]
+}
