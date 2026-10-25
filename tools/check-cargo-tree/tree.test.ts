@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { DESKTOP_TARGETS, cargoTreeArgs, findNetworkCrates } from './tree.ts';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import {
+  DESKTOP_TARGETS,
+  cargoTreeArgs,
+  compareWithBaseline,
+  crateNames,
+  deniedCrates,
+  findNetworkCrates,
+} from './tree.ts';
 
 // Вывод `cargo tree -e normal --prefix none --format "{p}|{f}"`.
 const tree = (...lines: string[]) => lines.join('\n') + '\n';
@@ -83,5 +92,71 @@ describe('cargoTreeArgs', () => {
       'aarch64-apple-darwin',
       'x86_64-unknown-linux-gnu',
     ]);
+  });
+});
+
+describe('запреты из deny.toml (ревью 0.2, п. 11)', () => {
+  const deny = readFileSync(path.join(import.meta.dirname, '..', '..', 'src-tauri', 'deny.toml'), 'utf8');
+
+  it('берёт имена крейтов из [bans] deny', () => {
+    expect(deniedCrates('[bans]\ndeny = [\n  { crate = "reqwest" }, { crate = "tiny_http" },\n]\n')).toEqual(
+      new Set(['reqwest', 'tiny_http']),
+    );
+  });
+
+  it.each([
+    'tauri-plugin-http',
+    'tauri-plugin-updater',
+    'tauri-plugin-shell',
+    'tauri-plugin-localhost',
+    'tauri-plugin-websocket',
+    'tauri-plugin-upload',
+    'isahc',
+    'attohttpc',
+    'surf',
+    'tiny_http',
+    'hyperlocal',
+    'axum',
+    'async-net',
+    'hickory-resolver',
+    'ws',
+    'websocket',
+    'lettre',
+    'russh',
+    'libssh2-sys',
+  ])('deny.toml запрещает %s, и проверка дерева его находит', (name) => {
+    const denied = deniedCrates(deny);
+    expect(denied.has(name)).toBe(true);
+    expect(findNetworkCrates(tree('rhizomind v0.1.0 (/w)|', `${name} v1.0.0|`), denied)).toEqual([`${name} v1.0.0`]);
+  });
+
+  it('soup3 (Linux: привязки WebKitGTK к libsoup) — явное исключение, другие *soup* — находка', () => {
+    const denied = deniedCrates(deny);
+    expect(findNetworkCrates(tree('soup3 v0.5.0|', 'soup3-sys v0.5.0|'), denied)).toEqual([]);
+    expect(findNetworkCrates(tree('soup2 v0.2.1|'), denied)).toEqual(['soup2 v0.2.1']);
+  });
+});
+
+describe('список крейтов по целям (ревью 0.2, п. 11)', () => {
+  it('имена без версий и повторов, по алфавиту', () => {
+    expect(crateNames(tree('tauri v2.12.5|x', 'serde v1.0.1 (*)|', 'serde v1.0.1|', 'base64 v0.22.1|', 'base64 v0.23.1|'))).toEqual([
+      'base64',
+      'serde',
+      'tauri',
+    ]);
+  });
+
+  it('новый крейт и пропавший крейт — расхождение', () => {
+    expect(compareWithBaseline(['a', 'b', 'new'], ['a', 'b', 'gone'])).toEqual({ added: ['new'], removed: ['gone'] });
+    expect(compareWithBaseline(['a'], ['a'])).toEqual({ added: [], removed: [] });
+  });
+
+  it('в репозитории есть список для каждой десктопной цели', () => {
+    const baseline = JSON.parse(readFileSync(path.join(import.meta.dirname, 'crates.json'), 'utf8')) as Record<
+      string,
+      string[]
+    >;
+    expect(Object.keys(baseline).sort()).toEqual([...DESKTOP_TARGETS].sort());
+    for (const target of DESKTOP_TARGETS) expect(baseline[target]?.length).toBeGreaterThan(50);
   });
 });
