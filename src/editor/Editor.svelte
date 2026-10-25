@@ -92,7 +92,7 @@
 </script>
 
 {#if pane.kind !== 'empty'}
-  <article class="column">
+  <article class="column" class:untitled={!showTitle}>
     {#if pane.kind === 'open'}
       {@const session = pane.session}
       {#if showTitle}<h1 class="title">{noteName(session.path)}</h1>{/if}
@@ -117,6 +117,11 @@
     max-width: var(--note-column-width);
     margin: 0 auto;
     padding: 28px 32px 0;
+  }
+
+  /* Заголовок рисует оболочка (NoteTitle) в своей колонке над редактором. */
+  .column.untitled {
+    padding-top: 0;
   }
 
   .title {
