@@ -165,14 +165,21 @@ fn unicode_domain_is_shown_together_with_punycode() {
         confirmation
             .message
             .lines()
-            .any(|line| line == "Сайт: пример.рф (xn--e1afmkfd.xn--p1ai)"),
+            .any(|line| line == "Сайт: xn--e1afmkfd.xn--p1ai (пример.рф)"),
         "{}",
         confirmation.message
     );
     // Смешение алфавитов: «аpple» с кириллической «а» видно по punycode.
     let (confirmation, launched) = shown_equals_launched("https://аpple.com/");
     assert_eq!(launched, "https://xn--pple-43d.com/");
-    assert!(confirmation.message.contains("(xn--pple-43d.com)"));
+    assert!(
+        confirmation
+            .message
+            .lines()
+            .any(|line| line == "Сайт: xn--pple-43d.com (аpple.com)"),
+        "{}",
+        confirmation.message
+    );
     // ASCII-домен — без скобок.
     let (confirmation, _) = shown_equals_launched("https://Example.ORG/");
     assert!(
@@ -398,4 +405,75 @@ fn tests_never_show_system_dialog_or_open_browser() {
         .recv_timeout(std::time::Duration::from_secs(30))
         .expect("open_with_confirmation завис");
     assert_eq!(outcome, Ok(OpenExternalOutcome::Cancelled));
+}
+
+// ---- Ревью 1.5 (docs/reviews/2026-10-25-task-1.5.md) ----------------------
+
+/// Б1: в строке для ОС — только символы RFC 3986. Иначе `"`, пробел, `\`
+/// в непрозрачном пути `mailto` попали бы в командную строку обработчика
+/// (`OUTLOOK.EXE ... /m "%1"`) как его ключи.
+#[test]
+fn only_rfc3986_characters_reach_os() {
+    for url in [
+        "mailto:x\" /a \"C:\\Users\\me\\secret.docx",
+        "mailto:a b@example.org",
+        "mailto:a\\b@example.org",
+        "mailto:a@example.org?subject=a\"b",
+        "mailto:a@example.org?subject=x^y",
+        "https://example.org/?q=`calc`",
+        "https://example.org/?q=a|b",
+        "https://example.org/#a\"b",
+        "https://example.org/?q={x}",
+        "https://example.org/?q=<x>",
+    ] {
+        let seam = Seam::default();
+        assert_eq!(
+            seam.run("w-rfc3986", url, true),
+            Err(CoreError::invalid_argument("url")),
+            "{url}"
+        );
+        assert!(seam.asked.borrow().is_empty(), "{url}: окна не было");
+        assert!(seam.launched.borrow().is_empty(), "{url}: в ОС не ушло");
+    }
+    // Допустимые символы RFC 3986 проходят.
+    for url in [
+        "https://example.org/a-b.c_d~e/f?g=h&i=j;k,l+m*n!o$p'q(r)s#t:u@v[w]",
+        "mailto:a.b+c@example.org?subject=%D0%9F&body=x%20y",
+    ] {
+        assert_eq!(check_url(url), Ok(()), "{url}");
+    }
+}
+
+/// П3: управляющие символы после раскодирования в `mailto` — в ключах всегда,
+/// в значениях всех параметров, кроме `body`.
+#[test]
+fn mailto_decoded_control_characters_are_rejected() {
+    for url in [
+        "mailto:a@example.org?att%00ach=x",
+        "mailto:a@example.org?subject=%0D%0ABcc:evil@example.org",
+        "mailto:a@example.org?cc=b@example.org%0A",
+        "mailto:a@example.org?x%0Ay=1",
+    ] {
+        assert_eq!(
+            check_url(url),
+            Err(CoreError::invalid_argument("url")),
+            "{url}"
+        );
+    }
+    // Переводы строк в тексте письма — обычное дело.
+    assert_eq!(
+        check_url("mailto:a@example.org?subject=Hi&body=line1%0D%0Aline2"),
+        Ok(())
+    );
+}
+
+/// Подпись первой кнопки: «Открыть в почте» для `mailto`, «Открыть в
+/// браузере» для `http(s)`.
+#[test]
+fn open_button_label_depends_on_scheme() {
+    let (mail, _) = shown_equals_launched("mailto:a@example.org");
+    assert_eq!(mail.open_label, "Открыть в почте");
+    assert_eq!(mail.cancel_label, "Отмена");
+    let (web, _) = shown_equals_launched("http://example.org/");
+    assert_eq!(web.open_label, "Открыть в браузере");
 }
