@@ -406,17 +406,15 @@ fn rename_cannot_change_note_extension() {
             "{from} → {to}"
         );
     }
-    // Смена регистра расширения — не смена вида: доходит до модуля.
+    // Смена регистра расширения — не смена вида: доходит до модуля
+    // (заметки в пустом хранилище нет — `not_found` от `vault`).
     let error = invoke(
         &main,
         "entry_rename",
         json!({ "request": { "path": ["План.md"], "new_name": "План.MD" } }),
     )
-    .expect_err("заглушка");
-    assert_eq!(
-        core_error("entry_rename", error).code,
-        ErrorCode::NotImplemented
-    );
+    .expect_err("заметки нет");
+    assert_eq!(core_error("entry_rename", error).code, ErrorCode::NotFound);
 }
 
 /// Правила имён в командах создания и переименования — в слое команд, до
@@ -468,11 +466,10 @@ fn name_check_applies_name_rules_and_renaming() {
         check(json!({ "dir": [], "name": "План.txt", "renaming": ["План.md"] })).expect("ответ"),
         json!({ "status": "rejected", "problem": "note_extension", "message_key": "names.note_extension" })
     );
-    let error = check(json!({ "dir": [], "name": "план.md", "renaming": ["План.md"] }))
-        .expect_err("совпадение — в модуле");
+    // Совпадение с соседями — в модуле `vault`: в пустом хранилище имя свободно.
     assert_eq!(
-        core_error("name_check", error).code,
-        ErrorCode::NotImplemented
+        check(json!({ "dir": [], "name": "план.md", "renaming": ["План.md"] })).expect("ответ"),
+        json!({ "status": "ok", "warning": null })
     );
 }
 
