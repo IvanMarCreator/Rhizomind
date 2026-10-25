@@ -57,3 +57,64 @@ impl Links {
         Err(CoreError::not_implemented())
     }
 }
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    /// Общие образцы разбора — те же проверяет Vitest (`src/core/wikilinks`).
+    const PARSE_FIXTURE: &str = include_str!("../../../tests/fixtures/wikilinks/parse.json");
+
+    fn as_json(result: Result<LinkTarget, InvalidTarget>) -> Value {
+        match result {
+            Ok(t) => json!({
+                "folders": t.folders,
+                "name": t.name,
+                "heading": t.heading,
+                "alias": t.alias,
+                "from_root": t.from_root,
+            }),
+            Err(reason) => json!({ "invalid": reason.as_str() }),
+        }
+    }
+
+    #[test]
+    fn parse_matches_shared_fixture() {
+        let doc: Value = serde_json::from_str(PARSE_FIXTURE).unwrap();
+        let cases = doc["cases"].as_array().unwrap();
+        assert!(cases.len() >= 40);
+        for case in cases {
+            let input = case["input"].as_str().unwrap();
+            assert_eq!(
+                as_json(parse_target(input)),
+                case["expected"],
+                "{input:?}: {}",
+                case["note"]
+            );
+        }
+    }
+
+    mod props {
+        use super::super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn parse_never_panics(input in "\\PC{0,80}|[\\[\\]|#/\\\\. a-zА-я]{0,40}") {
+                let _ = parse_target(&input);
+            }
+
+            #[test]
+            fn parsed_components_are_never_empty_or_dots(input in "[|#/\\\\. aбв]{0,24}") {
+                if let Ok(t) = parse_target(&input) {
+                    prop_assert!(!t.name.is_empty());
+                    for c in t.folders.iter().chain(std::iter::once(&t.name)) {
+                        prop_assert!(!c.is_empty() && c != "." && c != "..");
+                        prop_assert!(!c.contains('/') && !c.contains('\\'));
+                    }
+                }
+            }
+        }
+    }
+}
