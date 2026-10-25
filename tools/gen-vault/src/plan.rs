@@ -38,7 +38,7 @@ fn add_attachments(l: &mut Layout, rng: &mut Rng, open_from: usize, count: usize
     while l.attachments.len() < count {
         let folder = random_open_folder(l, rng, open_from, false);
         let n = rng.range(1, 999);
-        let (name, kind) = if l.attachments.len() % 2 == 0 {
+        let (name, kind) = if l.attachments.len().is_multiple_of(2) {
             (
                 format!("{} {n}.png", rng.pick(&["Схема", "Скриншот", "photo"])),
                 AttachmentKind::Png,

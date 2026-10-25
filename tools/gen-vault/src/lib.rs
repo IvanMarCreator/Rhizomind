@@ -20,8 +20,6 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-pub use names::{is_valid_windows_name, name_key};
-
 /// Параметры генерации.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -50,6 +48,16 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("папка {} не пуста", out.display()),
+        ));
+    }
+    let min = plan::sample_count(cfg);
+    if cfg.notes < min {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "--notes {}: нужно не меньше {min} (столько образцов)",
+                cfg.notes
+            ),
         ));
     }
     let mut rng = rng::Rng::new(cfg.seed);
@@ -215,7 +223,7 @@ fn expected_links(l: &layout::Layout, links: &links::Links) -> Vec<ExpectedLink>
     links
         .records
         .iter()
-        .filter(|r| r.source < samples || (r.source - samples) % step == 0)
+        .filter(|r| r.source < samples || (r.source - samples).is_multiple_of(step))
         .map(|r| {
             let (resolution, target, candidates) = match &r.target {
                 links::Target::Unique(t) => (Resolution::Unique, Some(*t), Vec::new()),

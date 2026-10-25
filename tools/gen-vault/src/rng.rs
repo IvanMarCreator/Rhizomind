@@ -5,7 +5,7 @@ pub struct Rng(u64);
 
 impl Rng {
     pub fn new(seed: u64) -> Self {
-        Rng(seed ^ 0x5EED_0F_8A_57_C0DE)
+        Rng(seed ^ 0x5EED_0F8A_57C0_DE00)
     }
 
     pub fn next_u64(&mut self) -> u64 {

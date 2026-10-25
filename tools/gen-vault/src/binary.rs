@@ -11,13 +11,10 @@ pub fn png(rng: &mut Rng) -> Vec<u8> {
         rng.below(256) as u8,
         rng.below(256) as u8,
     ];
-    let mut raw = Vec::new();
-    for _ in 0..h {
-        raw.push(0); // фильтр строки: нет
-        for _ in 0..w {
-            raw.extend_from_slice(&color);
-        }
-    }
+    // Строка: байт фильтра (0 — без фильтра) и w точек цвета.
+    let mut row = vec![0u8];
+    row.extend(color.repeat(w as usize));
+    let raw = row.repeat(h as usize);
     let mut zlib = vec![0x78, 0x01, 0x01]; // заголовок zlib; последний блок, stored
     let len = raw.len() as u16;
     zlib.extend_from_slice(&len.to_le_bytes());
