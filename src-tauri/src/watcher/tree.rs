@@ -192,25 +192,15 @@ impl TreeModel {
             };
         }
         let mut targets = self.targets(paths);
-        let (mut disk, mut model, mut unreadable) = self.collect(&targets);
-        // Появился элемент с идентификатором, который модель знает под другим
-        // путём: возможно, это перенос, а событие о старом пути потерялось
-        // (переполнение буфера) или придёт позже. Старый путь сверяется в
-        // этой же пачке — тогда перенос распознаётся.
-        // Повторный обход может найти ещё перенесённые за это время —
-        // повторяется, пока новые старые пути находятся (с пределом).
-        for _ in 0..MAX_ORIGIN_ROUNDS {
-            let origins = self.known_elsewhere(&disk, &model, &targets);
-            if origins.is_empty() {
-                break;
-            }
-            targets = self.targets(
-                targets
-                    .into_iter()
-                    .chain(origins)
-                    .map(VaultPath::from_components),
-            );
-            (disk, model, unreadable) = self.collect(&targets);
+        let (mut disk, mut model, mut unreadable) = self.collect_settled(&mut targets);
+        // Исчезло что-то с идентификатором: возможно, его перенесли в папку,
+        // которую обход уже прошёл (файла не оказалось ни там, ни там).
+        // Второй взгляд: перенос к этому моменту закончен.
+        let gone_with_id = model
+            .iter()
+            .any(|(key, node)| node.id.is_some() && !disk.contains_key(key));
+        if gone_with_id {
+            (disk, model, unreadable) = self.collect_settled(&mut targets);
         }
         if unreadable.iter().any(|u| u.key.is_empty()) {
             return Reconciled {
@@ -253,6 +243,34 @@ impl TreeModel {
             retry,
             unavailable: false,
         }
+    }
+
+    /// Снимок диска на путях сверки, дополненный старыми путями переносов.
+    fn collect_settled(
+        &self,
+        targets: &mut BTreeSet<Key>,
+    ) -> (BTreeMap<Key, Node>, BTreeMap<Key, Node>, Vec<Unreadable>) {
+        let (mut disk, mut model, mut unreadable) = self.collect(targets);
+        // Появился элемент с идентификатором, который модель знает под другим
+        // путём: возможно, это перенос, а событие о старом пути потерялось
+        // (переполнение буфера) или придёт позже. Старый путь сверяется в
+        // этой же пачке — тогда перенос распознаётся. Повторный обход может
+        // найти ещё перенесённые за это время — повторяется, пока новые
+        // старые пути находятся (с пределом).
+        for _ in 0..MAX_ORIGIN_ROUNDS {
+            let origins = self.known_elsewhere(&disk, &model, targets);
+            if origins.is_empty() {
+                break;
+            }
+            *targets = self.targets(
+                std::mem::take(targets)
+                    .into_iter()
+                    .chain(origins)
+                    .map(VaultPath::from_components),
+            );
+            (disk, model, unreadable) = self.collect(targets);
+        }
+        (disk, model, unreadable)
     }
 
     /// Пути модели вне путей сверки с идентификатором элемента, который на
@@ -340,7 +358,55 @@ impl TreeModel {
                 }
             }
         }
+        self.drop_stale_duplicates(&mut disk);
         (disk, model, unreadable)
+    }
+
+    /// Обход не мгновенный: если элемент перенесли, пока шёл обход, он
+    /// может оказаться в снимке дважды — в старой папке (прочитана раньше)
+    /// и в новой. Пути с одинаковым идентификатором перепроверяются после
+    /// обхода; исчезнувшие (со всем, что под ними) из снимка убираются, и
+    /// перенос распознаётся как перенос. Жёсткие ссылки (оба пути есть)
+    /// остаются.
+    fn drop_stale_duplicates(&self, disk: &mut BTreeMap<Key, Node>) {
+        let mut by_id: HashMap<FileId, Vec<&Key>> = HashMap::new();
+        for (key, node) in disk.iter() {
+            if let Some(id) = node.id {
+                by_id.entry(id).or_default().push(key);
+            }
+        }
+        let suspects: Vec<Key> = by_id
+            .into_values()
+            .filter(|keys| keys.len() > 1)
+            .flatten()
+            .cloned()
+            .collect();
+        // Список каждой папки — один раз на проверку.
+        let mut listings: HashMap<Key, Option<HashMap<String, Node>>> = HashMap::new();
+        for key in suspects {
+            let Some((name, parent)) = key.split_last() else {
+                continue;
+            };
+            let listing = listings
+                .entry(parent.to_vec())
+                .or_insert_with(|| self.list(parent).ok());
+            // Папка не прочиталась — путь не трогаем.
+            let still_there = listing.as_ref().is_none_or(|listing| {
+                listing
+                    .get(name)
+                    .is_some_and(|node| node.id == disk.get(&key).and_then(|n| n.id))
+            });
+            if !still_there {
+                let stale: Vec<Key> = disk
+                    .range(key.clone()..)
+                    .take_while(|(k, _)| k.starts_with(&key))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in stale {
+                    disk.remove(&k);
+                }
+            }
+        }
     }
 
     /// Изменения из разницы диска и модели: свои записи, переименования.

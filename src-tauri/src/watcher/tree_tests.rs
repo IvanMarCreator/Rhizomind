@@ -646,3 +646,32 @@ fn file_moved_while_the_walk_is_in_progress_is_a_rename() {
     model.clear_failures();
     assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
 }
+
+#[test]
+fn file_moved_into_already_walked_folder_during_the_walk_is_a_rename() {
+    // Обратный порядок: новая папка уже прочитана (файла там ещё нет), а
+    // старая читается после переноса (файла там уже нет) — в снимке файла
+    // нет нигде.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Я/заметка.md", "текст");
+    fs::create_dir(dir.path().join("А")).expect("папка");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let root = dir.path().to_path_buf();
+    model.after_listing(
+        vp("А"),
+        Box::new(move || {
+            fs::rename(root.join("Я/заметка.md"), root.join("А/заметка.md")).expect("перенос");
+        }),
+    );
+
+    let changes = rescan_changes(&mut model, &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![TreeChange::Renamed {
+            from: vp("Я/заметка.md"),
+            to: vp("А/заметка.md")
+        }]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
