@@ -62,36 +62,51 @@ pub fn main_window_title() -> String {
 pub struct Shell {
     data_dir: WebviewDataDir,
     browser_args: String,
+    /// Тестовая сборка: папка данных msedgedriver вместо временной.
+    driver_data_dir: Option<std::path::PathBuf>,
 }
 
 impl Shell {
     /// Готовит процесс до создания окна. Вызывается первым делом в `main`,
     /// пока в процессе один поток:
-    /// 1. тестовая сборка читает порт отладки msedgedriver;
+    /// 1. тестовая сборка читает порт отладки и папку данных msedgedriver;
     /// 2. из окружения удаляются `WEBVIEW2_*` (и `TAURI_WEBVIEW_AUTOMATION`
     ///    вне тестовой сборки);
     /// 3. Windows: ограничиваются отчёты WER;
     /// 4. убираются остатки прошлых запусков и создаётся временная папка данных.
     pub fn prepare() -> std::io::Result<Self> {
         let debug_port = webdriver_debug_port_from_env();
+        let driver_data_dir = webdriver_user_data_folder_from_env();
         security::remove_webview_overrides(cfg!(feature = "webdriver"));
         #[cfg(windows)]
         security::windows::limit_error_reporting();
-        Ok(Self::new(
+        let mut shell = Self::new(
             WebviewDataDir::prepare()?,
             security::browser_args_with_debug_port(debug_port),
-        ))
+        );
+        shell.driver_data_dir = driver_data_dir;
+        Ok(shell)
     }
 
     pub fn new(data_dir: WebviewDataDir, browser_args: String) -> Self {
         Self {
             data_dir,
             browser_args,
+            driver_data_dir: None,
         }
     }
 
+    /// Временная папка данных этого запуска.
     pub fn data_dir(&self) -> &Path {
         self.data_dir.path()
+    }
+
+    /// Папка, которую получает движок: временная, а в тестовой сборке под
+    /// msedgedriver — папка драйвера (в ней он ищет `DevToolsActivePort`).
+    pub fn engine_data_dir(&self) -> &Path {
+        self.driver_data_dir
+            .as_deref()
+            .unwrap_or(self.data_dir.path())
     }
 
     pub fn browser_args(&self) -> &str {
@@ -117,6 +132,29 @@ fn webdriver_debug_port_from_env() -> Option<u16> {
     None
 }
 
+/// Папка данных msedgedriver — только в тестовой сборке (функция `webdriver`).
+#[cfg(feature = "webdriver")]
+fn webdriver_user_data_folder_from_env() -> Option<std::path::PathBuf> {
+    let folder = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER");
+    // [DEBUG-t03] какие переменные WEBVIEW2_* передал драйвер (только имена).
+    if let Some(dir) = std::env::var_os("RHIZOMIND_E2E_LOG_DIR") {
+        let names: Vec<String> = std::env::vars_os()
+            .filter_map(|(k, _)| k.into_string().ok())
+            .filter(|k| k.to_ascii_uppercase().starts_with("WEBVIEW2_"))
+            .collect();
+        let _ = std::fs::write(
+            std::path::Path::new(&dir).join(format!("webdriver-env-{}.txt", std::process::id())),
+            format!("[DEBUG-t03] {names:?}\n"),
+        );
+    }
+    security::webdriver_user_data_folder(folder.as_deref())
+}
+
+#[cfg(not(feature = "webdriver"))]
+fn webdriver_user_data_folder_from_env() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Создаёт главное окно со страницей интерфейса из сборки (`dist/index.html`)
 /// и защищёнными настройками движка. `Shell` должен быть в состоянии приложения.
 pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
@@ -136,7 +174,7 @@ pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvi
             // исключение — тестовая сборка Linux (security::incognito).
             .incognito(security::incognito())
             // Служебная папка движка — во временной папке ОС, не в %LOCALAPPDATA%.
-            .data_directory(shell.data_dir().to_path_buf())
+            .data_directory(shell.engine_data_dir().to_path_buf())
             .additional_browser_args(shell.browser_args())
             // Автозаполнение форм (в Tauri по умолчанию включено).
             .general_autofill_enabled(false)

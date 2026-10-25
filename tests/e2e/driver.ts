@@ -63,7 +63,11 @@ export async function startApp(): Promise<Session> {
   // Журнал tauri-driver и драйвера движка — рядом со снимками (артефакт CI).
   const driverLog = path.join(SCREENSHOT_DIR, `tauri-driver-${process.platform}.log`);
   const logFd = openSync(driverLog, 'a');
-  const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', logFd, logFd] });
+  const driver: ChildProcess = spawn(tauriDriverPath(), args, {
+    stdio: ['ignore', logFd, logFd],
+    // Тестовая сборка пишет сюда, какие переменные WEBVIEW2_* передал драйвер.
+    env: { ...process.env, RHIZOMIND_E2E_LOG_DIR: SCREENSHOT_DIR },
+  });
   try {
     await waitForPort(PORT, 30_000);
   } catch (error) {

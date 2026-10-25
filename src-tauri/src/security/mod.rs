@@ -89,6 +89,15 @@ pub fn webdriver_debug_port(driver_args: Option<&str>) -> Option<u16> {
         .and_then(|digits| digits.parse::<u16>().ok())
 }
 
+/// Папка данных от msedgedriver (`WEBVIEW2_USER_DATA_FOLDER`) — только для
+/// тестовой сборки: драйвер ищет в ней `DevToolsActivePort` (номер порта
+/// отладки). Принимается только абсолютный путь. Выпускная сборка переменную
+/// не читает и удаляет (`remove_webview_overrides`).
+pub fn webdriver_user_data_folder(value: Option<&OsStr>) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(value?);
+    (!path.as_os_str().is_empty() && path.is_absolute()).then(|| path.to_path_buf())
+}
+
 /// Удалять ли переменную окружения до создания окна.
 ///
 /// - `WEBVIEW2_*` — по документации Microsoft загрузчик WebView2 сам читает
@@ -223,6 +232,22 @@ mod tests {
             --enable-automation --remote-debugging-port=0 --test-type=webdriver";
         assert_eq!(webdriver_debug_port(Some(driver)), Some(0));
         assert!(browser_args_with_debug_port(Some(0)).ends_with(" --remote-debugging-port=0"));
+    }
+
+    #[test]
+    fn webdriver_takes_absolute_user_data_folder_from_msedgedriver() {
+        let dir = std::env::temp_dir().join("scoped_dir123_456");
+        assert_eq!(
+            webdriver_user_data_folder(Some(dir.as_os_str())),
+            Some(dir.clone())
+        );
+        for value in [
+            None,
+            Some(OsStr::new("")),
+            Some(OsStr::new("relative\\dir")),
+        ] {
+            assert_eq!(webdriver_user_data_folder(value), None, "{value:?}");
+        }
     }
 
     #[test]
