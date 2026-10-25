@@ -218,3 +218,294 @@ mod parse_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(path: &str) -> VaultPath {
+        VaultPath::from_components(path.split('/'))
+    }
+
+    fn note(path: &str, created_ms: i64) -> NoteRef {
+        NoteRef {
+            path: p(path),
+            created_ms,
+        }
+    }
+
+    fn links(notes: &[(&str, i64)]) -> Links {
+        Links::new(notes.iter().map(|&(path, at)| note(path, at)).collect())
+    }
+
+    fn resolve(links: &Links, target: &str) -> Option<String> {
+        links
+            .resolve(&p("Откуда.md"), target)
+            .unwrap()
+            .map(|path| path.components().join("/"))
+    }
+
+    fn shortest(links: &Links, path: &str) -> String {
+        links.shortest_unique_path(&p(path)).unwrap()
+    }
+
+    #[test]
+    fn resolves_unique_name_by_name_key() {
+        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("План.md", 2)]);
+        for target in ["Встреча", "встреча", "ВСТРЕЧА", "Встреча.md", "Встреча#Итоги", "Встреча|встречи"] {
+            assert_eq!(resolve(&l, target).as_deref(), Some("Проекты/Альфа/Встреча.md"), "{target}");
+        }
+        // Разложенная «й» в ссылке и составная в имени файла.
+        let l = links(&[("Мой план.md", 1)]);
+        assert_eq!(resolve(&l, "Мои\u{306} план").as_deref(), Some("Мой план.md"));
+        // Полное приведение регистра.
+        let l = links(&[("Straße.md", 1)]);
+        assert_eq!(resolve(&l, "STRASSE").as_deref(), Some("Straße.md"));
+    }
+
+    #[test]
+    fn yo_and_e_are_different_names() {
+        let l = links(&[("Учёба/Ёлка.md", 1)]);
+        assert_eq!(resolve(&l, "Елка"), None);
+        assert_eq!(resolve(&l, "ёлка").as_deref(), Some("Учёба/Ёлка.md"));
+    }
+
+    #[test]
+    fn resolves_link_with_path_to_exactly_that_note() {
+        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("Проекты/Бета/Встреча.md", 2)]);
+        assert_eq!(resolve(&l, "Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        assert_eq!(resolve(&l, "Бета/Встреча").as_deref(), Some("Проекты/Бета/Встреча.md"));
+        assert_eq!(resolve(&l, "проекты/бета/встреча").as_deref(), Some("Проекты/Бета/Встреча.md"));
+        assert_eq!(resolve(&l, "Гамма/Встреча"), None);
+        assert_eq!(resolve(&l, "Альфа/Проекты/Встреча"), None);
+    }
+
+    #[test]
+    fn resolves_link_from_root() {
+        let l = links(&[("Встреча.md", 5), ("Проекты/Альфа/Встреча.md", 1)]);
+        assert_eq!(resolve(&l, "/Встреча").as_deref(), Some("Встреча.md"));
+        assert_eq!(resolve(&l, "/Проекты/Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        assert_eq!(resolve(&l, "/Альфа/Встреча"), None);
+        let l = links(&[("Проекты/Альфа/Встреча.md", 1)]);
+        assert_eq!(resolve(&l, "/Встреча"), None);
+    }
+
+    #[test]
+    fn bare_link_to_duplicates_goes_to_the_oldest() {
+        let l = links(&[("Проекты/Бета/Встреча.md", 100), ("Проекты/Альфа/Встреча.md", 200)]);
+        assert_eq!(resolve(&l, "Встреча").as_deref(), Some("Проекты/Бета/Встреча.md"));
+        let l = links(&[("Работа/План.md", 50), ("План.md", 70)]);
+        assert_eq!(resolve(&l, "План").as_deref(), Some("Работа/План.md"));
+    }
+
+    #[test]
+    fn equal_dates_go_to_first_path_in_natural_order() {
+        let l = links(&[("Б/Встреча.md", 100), ("А/Встреча.md", 100), ("В/Встреча.md", 100)]);
+        assert_eq!(resolve(&l, "Встреча").as_deref(), Some("А/Встреча.md"));
+        let l = links(&[("Папка 10/Итоги.md", 7), ("Папка 2/Итоги.md", 7)]);
+        assert_eq!(resolve(&l, "Итоги").as_deref(), Some("Папка 2/Итоги.md"));
+        // Короче путь — раньше: корень перед папкой при равной дате.
+        let l = links(&[("Работа/План.md", 3), ("План.md", 3)]);
+        assert_eq!(resolve(&l, "План").as_deref(), Some("План.md"));
+    }
+
+    #[test]
+    fn path_link_prefers_exact_path_from_root_over_longer_suffix() {
+        let l = links(&[("Команда/Здоровье/Звонок.md", 1), ("Здоровье/Звонок.md", 9)]);
+        assert_eq!(resolve(&l, "Здоровье/Звонок").as_deref(), Some("Здоровье/Звонок.md"));
+        // Без точного совпадения от корня — самая старая из подходящих по концу пути.
+        let l = links(&[("X/Альфа/Встреча.md", 200), ("Y/Альфа/Встреча.md", 100)]);
+        assert_eq!(resolve(&l, "Альфа/Встреча").as_deref(), Some("Y/Альфа/Встреча.md"));
+    }
+
+    #[test]
+    fn bad_or_missing_targets_are_unresolved() {
+        let l = links(&[("Встреча.md", 1), ("CON/Встреча.md", 2)]);
+        for target in ["Нет такой", "", "../Встреча", "Альфа//Встреча", "Встреча: итоги", "CON", "Встреча.", "#Итоги"] {
+            assert_eq!(resolve(&l, target), None, "{target:?}");
+        }
+        assert_eq!(resolve(&Links::default(), "Встреча"), None);
+    }
+
+    #[test]
+    fn note_with_uppercase_extension_resolves() {
+        let l = links(&[("Архив/Старое.MD", 1)]);
+        assert_eq!(resolve(&l, "старое").as_deref(), Some("Архив/Старое.MD"));
+    }
+
+    #[test]
+    fn replace_notes_takes_effect() {
+        let mut l = links(&[("Встреча.md", 1)]);
+        l.replace_notes(vec![note("Итоги.md", 1)]);
+        assert_eq!(resolve(&l, "Встреча"), None);
+        assert_eq!(resolve(&l, "Итоги").as_deref(), Some("Итоги.md"));
+    }
+
+    #[test]
+    fn shortest_path_is_name_for_unique_note() {
+        let l = links(&[("Проекты/Альфа/Уникальная.md", 1), ("Проекты/Альфа/Встреча.MD", 1)]);
+        assert_eq!(shortest(&l, "Проекты/Альфа/Уникальная.md"), "Уникальная");
+        assert_eq!(shortest(&l, "Проекты/Альфа/Встреча.MD"), "Встреча");
+    }
+
+    #[test]
+    fn shortest_path_adds_folders_from_the_end() {
+        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("Проекты/Бета/Встреча.md", 2)]);
+        assert_eq!(shortest(&l, "Проекты/Альфа/Встреча.md"), "Альфа/Встреча");
+        assert_eq!(shortest(&l, "Проекты/Бета/Встреча.md"), "Бета/Встреча");
+        let l = links(&[("Архив/2024/Отчёт.md", 1), ("Черновики/2024/Отчёт.md", 2)]);
+        assert_eq!(shortest(&l, "Архив/2024/Отчёт.md"), "Архив/2024/Отчёт");
+        assert_eq!(shortest(&l, "Черновики/2024/Отчёт.md"), "Черновики/2024/Отчёт");
+        // Регистр имени различается, ключ — один; путь — в написании с диска.
+        let l = links(&[("Учёба/Идеи.md", 1), ("Личное/идеи.md", 2)]);
+        assert_eq!(shortest(&l, "Учёба/Идеи.md"), "Учёба/Идеи");
+        assert_eq!(shortest(&l, "Личное/идеи.md"), "Личное/идеи");
+    }
+
+    #[test]
+    fn shortest_path_for_root_and_nested_notes_is_full_path() {
+        // С3.4: по концу пути различить нельзя — обе получают полный путь,
+        // верхняя — с косой чертой в начале.
+        let l = links(&[("Встреча.md", 1), ("Проекты/Альфа/Встреча.md", 2)]);
+        assert_eq!(shortest(&l, "Встреча.md"), "/Встреча");
+        assert_eq!(shortest(&l, "Проекты/Альфа/Встреча.md"), "Проекты/Альфа/Встреча");
+        let l = links(&[("Здоровье/Звонок.md", 1), ("Команда/Здоровье/Звонок.md", 2)]);
+        assert_eq!(shortest(&l, "Здоровье/Звонок.md"), "/Здоровье/Звонок");
+        assert_eq!(shortest(&l, "Команда/Здоровье/Звонок.md"), "Команда/Здоровье/Звонок");
+        let l = links(&[("План.md", 1), ("Работа/План.md", 2)]);
+        assert_eq!(shortest(&l, "План.md"), "/План");
+        assert_eq!(shortest(&l, "Работа/План.md"), "Работа/План");
+    }
+
+    #[test]
+    fn shortest_path_mixes_rules_in_one_group() {
+        let l = links(&[
+            ("Встреча.md", 1),
+            ("Альфа/Встреча.md", 2),
+            ("Проекты/Бета/Встреча.md", 3),
+            ("Архив/Бета/Встреча.md", 4),
+        ]);
+        assert_eq!(shortest(&l, "Встреча.md"), "/Встреча");
+        assert_eq!(shortest(&l, "Альфа/Встреча.md"), "Альфа/Встреча");
+        assert_eq!(shortest(&l, "Проекты/Бета/Встреча.md"), "Проекты/Бета/Встреча");
+        assert_eq!(shortest(&l, "Архив/Бета/Встреча.md"), "Архив/Бета/Встреча");
+        // Цепочка вложенных: средняя — и конец пути верхней, и сама — конец нижней.
+        let l = links(&[("Звонок.md", 1), ("Здоровье/Звонок.md", 2), ("Команда/Здоровье/Звонок.md", 3)]);
+        assert_eq!(shortest(&l, "Звонок.md"), "/Звонок");
+        assert_eq!(shortest(&l, "Здоровье/Звонок.md"), "/Здоровье/Звонок");
+        assert_eq!(shortest(&l, "Команда/Здоровье/Звонок.md"), "Команда/Здоровье/Звонок");
+    }
+
+    #[test]
+    fn shortest_path_resolves_back_to_the_same_note() {
+        let notes = [
+            ("Встреча.md", 9),
+            ("Альфа/Встреча.md", 2),
+            ("Проекты/Бета/Встреча.md", 3),
+            ("Архив/Бета/Встреча.md", 1),
+            ("Здоровье/Звонок.md", 5),
+            ("Команда/Здоровье/Звонок.md", 1),
+        ];
+        let l = links(&notes);
+        for (path, _) in notes {
+            assert_eq!(resolve(&l, &shortest(&l, path)).as_deref(), Some(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn shortest_path_of_unknown_note_is_not_found() {
+        let l = links(&[("Встреча.md", 1)]);
+        let err = l.shortest_unique_path(&p("Нет.md")).unwrap_err();
+        assert_eq!(err.code, crate::commands::ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn suggest_inserts_name_or_shortest_path() {
+        let l = links(&[
+            ("Проекты/Альфа/Встреча.md", 1),
+            ("Проекты/Бета/Встреча.md", 2),
+            ("Итоги встречи.md", 3),
+            ("План.md", 4),
+        ]);
+        let items = l.suggest(&p("План.md"), "встр").unwrap();
+        let inserts: Vec<&str> = items.iter().map(|i| i.insert.as_str()).collect();
+        assert_eq!(inserts, ["Альфа/Встреча", "Бета/Встреча", "Итоги встречи"]);
+        assert_eq!(items[0].name, "Встреча");
+        assert_eq!(items[0].path, p("Проекты/Альфа/Встреча.md"));
+    }
+
+    #[test]
+    fn suggest_by_path_when_query_has_slash() {
+        let l = links(&[("Проекты/Альфа/Встреча.md", 1), ("Проекты/Бета/Встреча.md", 2)]);
+        let items = l.suggest(&p("Откуда.md"), "бета/вст").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].insert, "Бета/Встреча");
+    }
+
+    #[test]
+    fn suggest_ranks_exact_name_first_and_caps_results() {
+        let mut notes: Vec<(String, i64)> = (0..80).map(|i| (format!("Встречи/Встреча с отделом {i}.md"), i)).collect();
+        notes.push(("План встречи.md".into(), 1));
+        notes.push(("Встреча.md".into(), 1));
+        let l = Links::new(notes.iter().map(|(path, at)| note(path, *at)).collect());
+        let items = l.suggest(&p("Откуда.md"), "Встреча").unwrap();
+        assert_eq!(items.len(), crate::switcher::MAX_RESULTS);
+        assert_eq!(items[0].insert, "Встреча");
+        // Пустой запрос — заметки в естественном порядке имён, тоже не больше 50.
+        let all = l.suggest(&p("Откуда.md"), "").unwrap();
+        assert_eq!(all.len(), crate::switcher::MAX_RESULTS);
+        assert_eq!(all[0].name, "Встреча");
+        assert_eq!(all[1].name, "Встреча с отделом 0");
+        assert_eq!(all[3].name, "Встреча с отделом 2");
+        assert_eq!(all[11].name, "Встреча с отделом 10");
+    }
+
+    mod props {
+        use super::*;
+        use proptest::collection::btree_set;
+        use proptest::prelude::*;
+
+        /// Пути заметок из малого алфавита — чтобы чаще совпадали имена и
+        /// концы путей. Ключи путей различны (как на диске Windows).
+        fn vault() -> impl Strategy<Value = Vec<String>> {
+            let component = prop::sample::select(vec!["А", "а", "Б", "В", "Встреча", "ß", "ss"]);
+            let path = prop::collection::vec(component, 1..5).prop_map(|parts| parts.join("/"));
+            btree_set(path, 1..14).prop_map(|paths| {
+                let mut seen = std::collections::HashSet::new();
+                paths
+                    .into_iter()
+                    .filter(|path| {
+                        let key: Vec<_> = path.split('/').map(names::key).collect();
+                        seen.insert(key)
+                    })
+                    .map(|path| format!("{path}.md"))
+                    .collect()
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn shortest_path_resolves_back(paths in vault(), dates in prop::collection::vec(0i64..3, 14)) {
+                // Папка и заметка с одним ключом пути на одном уровне — не мешают:
+                // папки в списке заметок не участвуют.
+                let notes: Vec<NoteRef> = paths
+                    .iter()
+                    .zip(dates.iter().cycle())
+                    .map(|(path, &at)| note(path, at))
+                    .collect();
+                let l = Links::new(notes.clone());
+                for n in &notes {
+                    let link = l.shortest_unique_path(&n.path).unwrap();
+                    prop_assert_eq!(l.resolve(&p("Откуда.md"), &link).unwrap(), Some(n.path.clone()), "{}", link);
+                }
+            }
+
+            #[test]
+            fn resolve_never_panics(target in "\\PC{0,60}") {
+                let l = links(&[("Встреча.md", 1), ("А/Встреча.md", 1)]);
+                let _ = l.resolve(&p("Откуда.md"), &target);
+                let _ = l.suggest(&p("Откуда.md"), &target);
+            }
+        }
+    }
+}
