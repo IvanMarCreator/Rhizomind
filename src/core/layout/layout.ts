@@ -90,6 +90,12 @@ export function openNote(layout: Layout, path: VaultPath): Layout {
   return { ...layout, root: replacePane(layout.root, pane) };
 }
 
+/** Закрывает заметку активной панели (заметка удалена). В 0.1 у панели одна вкладка. */
+export function closeNote(layout: Layout): Layout {
+  const pane: Pane = { ...activePane(layout), tabs: [], active: -1 };
+  return { ...layout, root: replacePane(layout.root, pane) };
+}
+
 /** Объект для `workspace_write`; больше 1 МБ в JSON — `LayoutTooLarge`. */
 export function serializeLayout(layout: Layout): Workspace {
   const workspace: Workspace = {

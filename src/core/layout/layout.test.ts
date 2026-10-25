@@ -4,6 +4,7 @@ import {
   LAYOUT_VERSION,
   LayoutTooLarge,
   activePane,
+  closeNote,
   defaultLayout,
   openNote,
   parseLayout,
@@ -30,6 +31,12 @@ describe('модель раскладки v1', () => {
       tabs: [{ type: 'note', path: ['План.md'] }],
       active: 0,
     });
+  });
+
+  it('закрытие заметки оставляет активную панель пустой (удаление заметки, С3.2)', () => {
+    const layout = closeNote(openNote(defaultLayout(), ['А.md']));
+
+    expect(activePane(layout)).toEqual({ type: 'pane', id: 'pane-1', tabs: [], active: -1 });
   });
 
   it('открытие не меняет исходную раскладку', () => {

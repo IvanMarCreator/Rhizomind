@@ -8,6 +8,8 @@
   import { historyKeyAction } from '../core/history/history.ts';
   import { t } from '../i18n/index.ts';
   import { applyTheme } from '../theme/theme.ts';
+  import NoteTitle from '../tree/NoteTitle.svelte';
+  import { FileTreeState } from '../tree/tree.svelte.ts';
   import EmptyState from './EmptyState.svelte';
   import NoteHeader from './NoteHeader.svelte';
   import Notifications from './Notifications.svelte';
@@ -17,6 +19,13 @@
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
+
+  /** Дерево файлов окна: им же переименовывается заметка из заголовка. */
+  const files = createFiles();
+
+  function createFiles(): FileTreeState {
+    return new FileTreeState(model);
+  }
 
   onMount(() => {
     void model.start();
@@ -41,7 +50,7 @@
   <div class="shell" data-testid="shell">
     <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} />
     {#if model.sidebarOpen}
-      <Sidebar vault={model.vault} />
+      <Sidebar vault={model.vault} {files} />
     {/if}
     <main class="note">
       <NoteHeader
@@ -55,6 +64,11 @@
       <div class="body">
         {#if !model.currentPath}
           <EmptyState />
+        {:else}
+          <!-- Заголовок над текстом; редактор (2.4) встаёт под ним в ту же колонку. -->
+          <div class="column">
+            <NoteTitle tree={files} path={model.currentPath} />
+          </div>
         {/if}
       </div>
     </main>
@@ -85,6 +99,12 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+  }
+
+  .column {
+    max-width: var(--note-column-width);
+    margin: 0 auto;
+    padding: 28px 32px 0;
   }
 
   .loading {

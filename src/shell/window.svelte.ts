@@ -1,14 +1,24 @@
 // Состояние окна: запуск (версия API, настройки, раскладка), открытая заметка,
 // история переходов, уведомления. Компоненты оболочки только рисуют его;
 // другие части интерфейса (дерево 2.3, быстрый переход 2.7) открывают
-// заметки через `open()`.
+// заметки через `open()`. Для дерева файлов окно — TreeHost: оно узнаёт о
+// переименовании и удалении, сделанных в приложении.
 import { ApiVersionMismatch, checkApiVersion, core } from '../api/index.ts';
 import type { CurrentVault, EditorMode, Theme, VaultPath } from '../api/index.ts';
-import { activePane, defaultLayout, openNote, parseLayout, serializeLayout, type Layout } from '../core/layout/layout.ts';
+import {
+  activePane,
+  closeNote,
+  defaultLayout,
+  openNote,
+  parseLayout,
+  serializeLayout,
+  type Layout,
+} from '../core/layout/layout.ts';
 import { NavigationHistory, type HistoryAction } from '../core/history/history.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
 import { DEFAULT_THEME } from '../theme/theme.ts';
+import type { TreeHost } from '../tree/tree.svelte.ts';
 
 export type WindowStatus =
   | { kind: 'loading' }
@@ -21,11 +31,18 @@ export interface Notice {
   text: string;
 }
 
-export class WindowModel {
+/** `path` — это `prefix` или лежит внутри него. */
+function isInside(path: VaultPath, prefix: VaultPath): boolean {
+  return prefix.length <= path.length && prefix.every((part, i) => part === path[i]);
+}
+
+export class WindowModel implements TreeHost {
   status = $state<WindowStatus>({ kind: 'loading' });
   vault = $state<CurrentVault | null>(null);
   theme = $state<Theme>(DEFAULT_THEME);
   editorMode = $state<EditorMode>('live_preview');
+  /** Настройка хранилища «подтверждение удаления» (С3.1). */
+  confirmDelete = $state(true);
   layout = $state.raw<Layout>(defaultLayout());
   notices = $state<Notice[]>([]);
   sidebarOpen = $state(true);
@@ -77,6 +94,28 @@ export class WindowModel {
     this.navigate('forward');
   }
 
+  /** Переименование или перемещение в приложении: история и открытая заметка следуют за путём. */
+  entryRenamed(from: VaultPath, to: VaultPath): void {
+    this.#history.rename(from, to);
+    const path = this.currentPath;
+    if (path && isInside(path, from)) {
+      this.layout = openNote(this.layout, [...to, ...path.slice(from.length)]);
+      void this.#saveLayout();
+    }
+    this.#syncHistory();
+  }
+
+  /** Удаление в приложении: шаги истории уходят, открытая заметка внутри закрывается. */
+  entryRemoved(path: VaultPath): void {
+    this.#history.remove(path);
+    const current = this.currentPath;
+    if (current && isInside(current, path)) {
+      this.layout = closeNote(this.layout);
+      void this.#saveLayout();
+    }
+    this.#syncHistory();
+  }
+
   toggleSidebar(): void {
     this.sidebarOpen = !this.sidebarOpen;
   }
@@ -94,6 +133,7 @@ export class WindowModel {
       const { settings } = await core.settingsRead();
       this.theme = settings.theme;
       this.editorMode = settings.editor_mode;
+      this.confirmDelete = settings.confirm_delete;
     } catch (error) {
       this.notify(userMessage(error));
     }
