@@ -12,3 +12,10 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# Своя копия wry той же версии, что в Cargo.lock, с одной правкой:
+# IsCustomCrashReportingEnabled = true — дампы падений WebView2 не уходят в
+# Microsoft (ADR 0007). Что изменено и как перенести на новую версию —
+# vendor/wry/RHIZOMIND-PATCH.md. Тест: src-tauri/tests/security_config.rs.
+[patch.crates-io]
+wry = { path = "vendor/wry" }

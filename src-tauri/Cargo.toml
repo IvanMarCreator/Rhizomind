@@ -51,4 +51,5 @@ windows = { version = "=0.62.2", features = [
 tauri = { version = "=2.12.5", features = ["test"] }
 serde_json = "=1.0.154"
 
-# Профиль выпуска — в корневом Cargo.toml (рабочее пространство).
+# Профиль выпуска и [patch.crates-io] (своя копия wry) — в корневом Cargo.toml
+# (рабочее пространство): в члене Cargo их молча игнорирует.

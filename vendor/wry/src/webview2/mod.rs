@@ -354,6 +354,11 @@ impl InnerWebView {
 
       options.set_scroll_bar_style(scroll_bar_style);
 
+      // Rhizomind: dumps of WebView2 crashes are not sent to Microsoft
+      // (ICoreWebView2EnvironmentOptions3::IsCustomCrashReportingEnabled).
+      // See vendor/wry/RHIZOMIND-PATCH.md.
+      options.set_is_custom_crash_reporting_enabled(true);
+
       CreateCoreWebView2EnvironmentWithOptions(
         PCWSTR::null(),
         &data_directory.unwrap_or_default(),
