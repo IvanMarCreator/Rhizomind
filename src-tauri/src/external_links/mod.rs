@@ -84,7 +84,9 @@ struct DialogSlot(String);
 impl DialogSlot {
     /// `None`, если в окне уже открыт диалог ядра.
     fn take(window: &str) -> Option<Self> {
-        let mut busy = DIALOG_WINDOWS.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut busy = DIALOG_WINDOWS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         busy.insert(window.to_owned())
             .then(|| Self(window.to_owned()))
     }

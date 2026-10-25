@@ -76,7 +76,10 @@ fn other_schemes_are_rejected_without_dialog() {
         );
         assert!(seam.asked.borrow().is_empty(), "{url}: окна не было");
         assert!(seam.launched.borrow().is_empty(), "{url}: в ОС не ушло");
-        assert_eq!(check_url(url).unwrap_err().code, ErrorCode::SchemeNotAllowed);
+        assert_eq!(
+            check_url(url).unwrap_err().code,
+            ErrorCode::SchemeNotAllowed
+        );
     }
 }
 
@@ -102,4 +105,264 @@ fn os_failure_is_reported_as_io_failed() {
         |_| Err(io::Error::other("нет браузера")),
     );
     assert_eq!(code_of(result), ErrorCode::IoFailed);
+}
+
+// ---- Пункты обзора 0.4 (docs/reviews/2026-10-25-task-0.4.md) -------------
+
+/// Окно показало ровно ту строку (отдельной строкой текста), что ушла в ОС.
+fn shown_equals_launched(url: &str) -> (Confirmation, String) {
+    let seam = Seam::default();
+    assert_eq!(
+        seam.run("w-exact", url, true),
+        Ok(OpenExternalOutcome::Opened),
+        "{url}"
+    );
+    let confirmation = seam.asked.borrow()[0].clone();
+    let launched = seam.launched.borrow()[0].clone();
+    assert!(
+        confirmation.message.lines().any(|line| line == launched),
+        "{url}: в окне нет строки {launched:?}:\n{}",
+        confirmation.message
+    );
+    (confirmation, launched)
+}
+
+#[test]
+fn dialog_shows_exactly_the_string_sent_to_os() {
+    let (_, launched) = shown_equals_launched("https://example.org/статья?id=1");
+    assert_eq!(
+        launched,
+        "https://example.org/%D1%81%D1%82%D0%B0%D1%82%D1%8C%D1%8F?id=1"
+    );
+    // Пробелы и обратные косые черты нормализуются до показа, а не после.
+    let (_, launched) = shown_equals_launched("https://example.org\\a b");
+    assert_eq!(launched, "https://example.org/a%20b");
+    let (_, launched) = shown_equals_launched("  https://example.org/x  ");
+    assert_eq!(launched, "https://example.org/x");
+    // Строка для ОС — только ASCII: подменить вид адреса нечем.
+    for url in [
+        "https://пример.рф/путь?q=знач#фрагмент",
+        "mailto:иван@пример.рф?subject=Привет",
+    ] {
+        let (_, launched) = shown_equals_launched(url);
+        assert!(launched.is_ascii(), "{launched}");
+    }
+}
+
+#[test]
+fn unicode_domain_is_shown_together_with_punycode() {
+    let (confirmation, launched) = shown_equals_launched("https://пример.рф/");
+    assert_eq!(launched, "https://xn--e1afmkfd.xn--p1ai/");
+    assert!(
+        confirmation
+            .message
+            .lines()
+            .any(|line| line == "Сайт: пример.рф (xn--e1afmkfd.xn--p1ai)"),
+        "{}",
+        confirmation.message
+    );
+    // Смешение алфавитов: «аpple» с кириллической «а» видно по punycode.
+    let (confirmation, launched) = shown_equals_launched("https://аpple.com/");
+    assert_eq!(launched, "https://xn--pple-43d.com/");
+    assert!(confirmation.message.contains("(xn--pple-43d.com)"));
+    // ASCII-домен — без скобок.
+    let (confirmation, _) = shown_equals_launched("https://Example.ORG/");
+    assert!(
+        confirmation
+            .message
+            .lines()
+            .any(|l| l == "Сайт: example.org")
+    );
+}
+
+#[test]
+fn formatting_and_control_characters_are_rejected() {
+    for url in [
+        "https://example.org/\u{202e}fdp.exe",
+        "https://example.org/\u{200b}",
+        "https://exa\u{200d}mple.org/",
+        "https://example.org/\u{2066}a\u{2069}",
+        "https://example.org/\u{feff}",
+        "https://example.org/\u{ad}",
+        "https://example.org/\u{e0041}",
+        "https://example.org/\nhttps://evil.example",
+        "https://example.org/\r",
+        "https://example.org/\t",
+        "https://example.org/\u{7f}",
+        "https://example.org/\u{85}",
+        "https://example.org/\u{2028}",
+    ] {
+        let seam = Seam::default();
+        let error = seam.run("w-hidden", url, true).expect_err(url);
+        assert_eq!(error, CoreError::invalid_argument("url"), "{url:?}");
+        assert!(seam.asked.borrow().is_empty(), "{url:?}: окна не было");
+        assert!(seam.launched.borrow().is_empty());
+    }
+}
+
+#[test]
+fn length_is_limited_to_8_kib_including_encoding() {
+    let base = "https://example.org/";
+    let fits = format!("{base}{}", "a".repeat(8 * 1024 - base.len()));
+    assert_eq!(check_url(&fits), Ok(()));
+    let over = format!("{base}{}", "a".repeat(8 * 1024 - base.len() + 1));
+    assert_eq!(check_url(&over), Err(CoreError::invalid_argument("url")));
+    // 1 500 кириллических букв — 3 000 байт на входе, но 9 000 после
+    // процентного кодирования: в ОС ушло бы больше 8 КБ.
+    let encoded = format!("{base}{}", "я".repeat(1500));
+    assert!(encoded.len() < 8 * 1024);
+    assert_eq!(check_url(&encoded), Err(CoreError::invalid_argument("url")));
+}
+
+#[test]
+fn mailto_attachments_are_rejected() {
+    for url in [
+        "mailto:a@example.org?attach=C:\\Users\\me\\secret.txt",
+        "mailto:a@example.org?subject=x&attachment=/etc/passwd",
+        "mailto:a@example.org?ATTACH=x",
+        "mailto:a@example.org?att%61ch=x",
+        "mailto:?Attachment=file:///C:/x",
+        "mailto:a@example.org?%20attach=x",
+    ] {
+        let seam = Seam::default();
+        assert_eq!(
+            seam.run("w-attach", url, true),
+            Err(CoreError::invalid_argument("url")),
+            "{url}"
+        );
+        assert!(seam.launched.borrow().is_empty());
+    }
+    let (_, launched) =
+        shown_equals_launched("mailto:a@example.org?subject=Отчёт&cc=b@example.org&body=x");
+    assert!(launched.starts_with("mailto:a@example.org?subject="));
+}
+
+#[test]
+fn credentials_in_web_address_are_rejected() {
+    for url in [
+        "https://bank.example@evil.example/",
+        "https://user:pass@example.org/",
+        "http://:pass@example.org/",
+    ] {
+        assert_eq!(
+            check_url(url),
+            Err(CoreError::invalid_argument("url")),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn dialog_texts_follow_mockup_e6b() {
+    let (confirmation, _) = shown_equals_launched("https://example.org/");
+    assert_eq!(confirmation.title, "Rhizomind — внешняя ссылка");
+    assert_eq!(confirmation.open_label, "Открыть в браузере");
+    assert_eq!(confirmation.cancel_label, "Отмена");
+    assert!(
+        confirmation
+            .message
+            .starts_with("Открыть ссылку в браузере?\n")
+    );
+    assert!(
+        confirmation
+            .message
+            .contains("Сам Rhizomind в сеть не выходит.")
+    );
+    assert!(confirmation.message.contains("Полный адрес:\n"));
+}
+
+#[test]
+fn only_one_core_dialog_per_window() {
+    let outer = Seam::default();
+    let inner = Seam::default();
+    let mut nested = None;
+    let outcome = open_checked(
+        "w-busy",
+        "https://example.org/first",
+        |_| {
+            // Пока первое окно открыто, тот же интерфейс зовёт снова.
+            nested = Some(inner.run("w-busy", "https://example.org/second", true));
+            // Другое окно приложения — не занято.
+            assert_eq!(
+                Seam::default().run("w-other", "https://example.org/", false),
+                Ok(OpenExternalOutcome::Cancelled)
+            );
+            false
+        },
+        |target| {
+            outer.launched.borrow_mut().push(target.to_owned());
+            Ok(())
+        },
+    );
+    assert_eq!(outcome, Ok(OpenExternalOutcome::Cancelled));
+    assert_eq!(nested, Some(Ok(OpenExternalOutcome::Cancelled)));
+    assert!(inner.asked.borrow().is_empty(), "второе окно не показано");
+    assert!(
+        inner.launched.borrow().is_empty(),
+        "второй адрес не ушёл в ОС"
+    );
+    // После закрытия окна подтверждения окно приложения снова свободно.
+    assert_eq!(
+        Seam::default().run("w-busy", "https://example.org/", true),
+        Ok(OpenExternalOutcome::Opened)
+    );
+}
+
+#[test]
+fn dialog_slot_is_released_after_panic_in_dialog() {
+    let result = std::panic::catch_unwind(|| {
+        let _ = open_checked(
+            "w-panic",
+            "https://example.org/",
+            |_| panic!("окно упало"),
+            |_| Ok(()),
+        );
+    });
+    assert!(result.is_err());
+    assert_eq!(
+        Seam::default().run("w-panic", "https://example.org/", false),
+        Ok(OpenExternalOutcome::Cancelled)
+    );
+    // `Cancelled` бывает и при занятом окне — проверяем, что окно показано.
+    let seam = Seam::default();
+    let _ = seam.run("w-panic", "https://example.org/", false);
+    assert_eq!(seam.asked.borrow().len(), 1);
+}
+
+// ---- Права интерфейса (ADR 0009) -----------------------------------------
+
+#[test]
+fn capabilities_grant_no_opener_shell_fs_or_dialog() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+    let mut files = 0;
+    for entry in std::fs::read_dir(&dir).expect("папка capabilities") {
+        let path = entry.expect("элемент папки").path();
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        files += 1;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let permissions = json["permissions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: нет permissions", path.display()));
+        for permission in permissions {
+            // Разрешение — строка или объект { "identifier": ... }.
+            let id = permission
+                .as_str()
+                .or_else(|| permission["identifier"].as_str())
+                .unwrap_or_else(|| panic!("{}: {permission}", path.display()));
+            for banned in ["opener:", "shell:", "fs:", "dialog:"] {
+                assert!(
+                    !id.starts_with(banned),
+                    "{}: интерфейсу выдано {id}",
+                    path.display()
+                );
+            }
+        }
+        // И ни одного упоминания в любом месте файла (на случай новых форм записи).
+        for banned in ["\"opener:", "\"shell:", "\"fs:", "\"dialog:"] {
+            assert!(!text.contains(banned), "{}: {banned}", path.display());
+        }
+    }
+    assert!(files > 0, "в {} нет файлов разрешений", dir.display());
 }
