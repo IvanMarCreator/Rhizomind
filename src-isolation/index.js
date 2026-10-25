@@ -11,10 +11,35 @@
 'use strict';
 
 (function () {
-  // Свои команды ядра. Новая команда добавляется в четыре места: код ядра,
-  // AppManifest::commands (src-tauri/build.rs), файл разрешений
-  // (src-tauri/capabilities/main.json) и этот список.
-  var OWN_COMMANDS = Object.freeze([]);
+  // Свои команды ядра API v1 — ровно список src-tauri/src/commands/list.rs
+  // (из него же AppManifest::commands и generate_handler!). Новая команда
+  // добавляется туда, в capabilities/main.json и сюда; расхождение ловит
+  // тест filter.test.ts.
+  var OWN_COMMANDS = Object.freeze([
+    'vault_list',
+    'vault_current',
+    'vault_create',
+    'vault_open_folder',
+    'vault_open',
+    'vault_remove_from_list',
+    'tree_list',
+    'note_create',
+    'folder_create',
+    'entry_rename',
+    'entry_move',
+    'entry_trash',
+    'name_check',
+    'note_read',
+    'note_write',
+    'links_resolve',
+    'links_suggest',
+    'switcher_search',
+    'settings_read',
+    'settings_write',
+    'workspace_read',
+    'workspace_write',
+    'open_external',
+  ]);
 
   // Служебные команды Tauri, без которых не работают события ядра (`listen`).
   var INTERNAL_COMMANDS = Object.freeze(['plugin:event|listen', 'plugin:event|unlisten']);

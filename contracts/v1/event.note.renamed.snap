@@ -1,0 +1,16 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "note:renamed",
+  "payload": {
+    "from": [
+      "Проекты",
+      "Встреча.md"
+    ],
+    "to": [
+      "Архив",
+      "Встреча.md"
+    ]
+  }
+}

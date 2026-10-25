@@ -33,3 +33,7 @@ playwright-report/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/target-e2e/
+
+# Непринятые снимки insta
+*.snap.new
+*.pending-snap

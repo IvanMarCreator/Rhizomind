@@ -37,6 +37,13 @@ tauri-build = { version = "=2.7.4", features = ["isolation"] }
 # `app.security.pattern` в tauri.conf.json, код фильтра — src-isolation/).
 # Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls, protocol-asset.
 tauri = { version = "=2.12.5", features = ["isolation"] }
+# Системные диалоги ядра (выбор папки хранилища, подтверждение внешней ссылки
+# и безвозвратного удаления) — только из Rust; интерфейсу права dialog:* не
+# выдаются (ADR 0009).
+tauri-plugin-dialog = "=2.8.3"
+# Типы команд ядра и их JSON (контракт API v1).
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 
 [target.'cfg(windows)'.dependencies]
 # Те же версии, что уже приходят через wry: новых крейтов нет.
@@ -56,7 +63,10 @@ windows = { version = "=0.62.2", features = [
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
 tauri = { version = "=2.12.5", features = ["isolation", "test"] }
-serde_json = "=1.0.154"
+# Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
+insta = { version = "=1.49.0", features = ["json"] }
+# Временная папка для заглушки хранилища в тестах прав.
+tempfile = "=3.27.0"
 
 # Профиль выпуска и [patch.crates-io] (своя копия wry) — в корневом Cargo.toml
 # (рабочее пространство): в члене Cargo их молча игнорирует.

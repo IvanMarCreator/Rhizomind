@@ -1,6 +1,6 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { callCore } from './core.ts';
+import { CoreCallError, callCore } from './core.ts';
 
 describe('callCore', () => {
   beforeEach(() => {
@@ -13,22 +13,29 @@ describe('callCore', () => {
     vi.unstubAllGlobals();
   });
 
-  it('передаёт имя команды и параметры ядру и возвращает его ответ', async () => {
+  it('передаёт имя команды и запрос ядру и возвращает его ответ', async () => {
     const calls: [string, unknown][] = [];
     mockIPC((command, args) => {
       calls.push([command, args]);
-      return { ok: true };
+      return { outcome: 'focused' };
     });
 
-    await expect(callCore<{ ok: boolean }>('vault_current', { id: 'a' })).resolves.toEqual({ ok: true });
-    expect(calls).toEqual([['vault_current', { id: 'a' }]]);
+    await expect(callCore('vault_open', { id: 'a' })).resolves.toEqual({ outcome: 'focused' });
+    expect(calls).toEqual([['vault_open', { request: { id: 'a' } }]]);
   });
 
-  it('отказ ядра приходит в интерфейс как отклонённое обещание', async () => {
+  it('отказ моста Tauri (не ошибка ядра) — CoreCallError с кодом ipc_failed', async () => {
     mockIPC(() => {
-      throw new Error('нет такой команды');
+      throw new Error('vault_list not allowed');
     });
 
-    await expect(callCore('unknown')).rejects.toThrow('нет такой команды');
+    const failure = await callCore('vault_list').catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(CoreCallError);
+    expect((failure as CoreCallError).error).toEqual({
+      code: 'ipc_failed',
+      message_key: 'errors.ipc_failed',
+      detail: 'vault_list not allowed',
+    });
   });
 });

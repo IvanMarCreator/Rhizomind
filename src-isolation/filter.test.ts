@@ -23,6 +23,28 @@ function loadHook(): Hook {
   return window.__TAURI_ISOLATION_HOOK__;
 }
 
+/** Команды ядра API v1 из единственного списка `src-tauri/src/commands/list.rs`. */
+function coreCommands(): string[] {
+  const list = readFileSync(path.join(import.meta.dirname, '..', 'src-tauri', 'src', 'commands', 'list.rs'), 'utf8');
+  const body = /\$callback!\(([\s\S]*?)\)/.exec(list)?.[1];
+  if (body === undefined) throw new Error('в list.rs не найден список команд');
+  return body
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/, '').trim())
+    .join(' ')
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name !== '');
+}
+
+/** Литерал OWN_COMMANDS из кода фильтра — чтобы сверить список целиком. */
+function ownCommandsInFilter(): string[] {
+  const code = readFileSync(path.join(import.meta.dirname, 'index.js'), 'utf8');
+  const literal = /var OWN_COMMANDS = Object\.freeze\(\[([\s\S]*?)\]\)/.exec(code)?.[1];
+  if (literal === undefined) throw new Error('в index.js не найден OWN_COMMANDS');
+  return [...literal.matchAll(/'([^']*)'/g)].map((m) => m[1] as string);
+}
+
 const message = (cmd: string): IpcMessage => ({ cmd, callback: 1, error: 2, payload: { path: 'x.md' } });
 
 describe('фильтр изолированного iframe', () => {
@@ -30,6 +52,23 @@ describe('фильтр изолированного iframe', () => {
     const hook = loadHook();
     for (const cmd of ['plugin:event|listen', 'plugin:event|unlisten']) {
       expect(hook(message(cmd))).toEqual(message(cmd));
+    }
+  });
+
+  it('пропускает ровно команды ядра из src-tauri/src/commands/list.rs', () => {
+    const commands = coreCommands();
+    expect(commands.length).toBeGreaterThan(0);
+    expect([...ownCommandsInFilter()].sort()).toEqual([...commands].sort());
+    const hook = loadHook();
+    for (const cmd of commands) {
+      expect(hook(message(cmd)), cmd).toEqual(message(cmd));
+    }
+  });
+
+  it('не пропускает команды ядра с изменённым написанием', () => {
+    const hook = loadHook();
+    for (const cmd of coreCommands().flatMap((c) => [c.toUpperCase(), ` ${c}`, `${c} `, `plugin:${c}`])) {
+      expect(hook(message(cmd)).cmd, cmd).toBe('__rhizomind_isolation_rejected__');
     }
   });
 

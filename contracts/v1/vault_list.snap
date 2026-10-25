@@ -1,0 +1,24 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_list",
+  "errors": [
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
+    }
+  ],
+  "request": null,
+  "response": {
+    "last_opened": "7f3c9a1e5b2d4c60",
+    "vaults": [
+      {
+        "id": "7f3c9a1e5b2d4c60",
+        "is_open": true,
+        "name": "Работа",
+        "path": "C:\\Users\\ivan\\Documents\\Работа"
+      }
+    ]
+  }
+}

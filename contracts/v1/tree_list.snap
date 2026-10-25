@@ -1,0 +1,41 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "tree_list",
+  "errors": [
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    },
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
+    }
+  ],
+  "request": null,
+  "response": {
+    "entries": [
+      {
+        "kind": "folder",
+        "path": [
+          "Проекты"
+        ]
+      },
+      {
+        "kind": "note",
+        "path": [
+          "Проекты",
+          "Встреча.md"
+        ]
+      },
+      {
+        "kind": "attachment",
+        "path": [
+          "Проекты",
+          "схема.png"
+        ]
+      }
+    ]
+  }
+}

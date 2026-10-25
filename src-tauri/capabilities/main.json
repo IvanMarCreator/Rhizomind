@@ -1,7 +1,35 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Главное окно. Прав нет: интерфейс пока не вызывает ядро. Свои команды добавляются задачей 0.4 (AppManifest::commands в build.rs и этот файл). Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009).",
-  "windows": ["main"],
-  "permissions": []
+  "description": "Главное окно: только свои команды ядра API v1 (список — src/commands/list.rs, он же AppManifest::commands в build.rs) и подписка на события ядра (listen/unlisten). Отправка событий из интерфейса (emit) не выдаётся. Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009). Состав проверяет тест src/commands/acl_tests.rs.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "allow-vault-list",
+    "allow-vault-current",
+    "allow-vault-create",
+    "allow-vault-open-folder",
+    "allow-vault-open",
+    "allow-vault-remove-from-list",
+    "allow-tree-list",
+    "allow-note-create",
+    "allow-folder-create",
+    "allow-entry-rename",
+    "allow-entry-move",
+    "allow-entry-trash",
+    "allow-name-check",
+    "allow-note-read",
+    "allow-note-write",
+    "allow-links-resolve",
+    "allow-links-suggest",
+    "allow-switcher-search",
+    "allow-settings-read",
+    "allow-settings-write",
+    "allow-workspace-read",
+    "allow-workspace-write",
+    "allow-open-external",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

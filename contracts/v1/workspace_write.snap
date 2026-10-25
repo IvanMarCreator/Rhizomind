@@ -1,0 +1,27 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "workspace_write",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "workspace",
+      "message_key": "errors.invalid_argument"
+    }
+  ],
+  "request": {
+    "workspace": {
+      "format_version": 1,
+      "panes": [
+        {
+          "note": [
+            "Проекты",
+            "Встреча.md"
+          ]
+        }
+      ]
+    }
+  },
+  "response": null
+}

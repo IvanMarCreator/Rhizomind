@@ -1,0 +1,31 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "entry_move",
+  "errors": [
+    {
+      "code": "already_exists",
+      "message_key": "errors.already_exists"
+    },
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    }
+  ],
+  "request": {
+    "new_dir": [
+      "Архив"
+    ],
+    "path": [
+      "Проекты",
+      "Встреча 2.md"
+    ]
+  },
+  "response": {
+    "path": [
+      "Архив",
+      "Встреча 2.md"
+    ]
+  }
+}

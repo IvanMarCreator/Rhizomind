@@ -1,0 +1,41 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "vault:changed",
+  "payload": {
+    "changes": [
+      {
+        "entry_kind": "note",
+        "kind": "created",
+        "path": [
+          "Новая.md"
+        ]
+      },
+      {
+        "kind": "modified",
+        "path": [
+          "Проекты",
+          "Встреча.md"
+        ]
+      },
+      {
+        "kind": "removed",
+        "path": [
+          "Старое"
+        ]
+      },
+      {
+        "from": [
+          "План.md"
+        ],
+        "kind": "renamed",
+        "to": [
+          "Проекты",
+          "План.md"
+        ]
+      }
+    ],
+    "rescan": false
+  }
+}

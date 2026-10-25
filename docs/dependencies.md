@@ -16,6 +16,9 @@
 | `webview2-com` (только Windows) | 0.39.1 | MIT | Настройки WebView2, которых нет в Tauri: SmartScreen (`IsReputationCheckingRequired`), `BrowserProcessId` (задача 0.3). Та же версия уже приходит через wry — новых крейтов нет | Нет: привязки к COM-интерфейсам WebView2 |
 | `windows` (только Windows) | 0.62.2 | MIT OR Apache-2.0 | `SetErrorMode`/`WerSetFlags` (отчёты WER), ожидание процессов движка (`OpenProcess`, снимок процессов). Та же версия уже приходит через wry и tao; функции перечислены в `Cargo.toml` | Нет: привязки к Win32 API, сетевых функций (`Win32_Networking_*`) не включено |
 | `wry` — своя копия `vendor/wry/` | 0.57.1 | MIT OR Apache-2.0 | WebView (приходит через Tauri) с одной правкой `IsCustomCrashReportingEnabled = true`, подключена через `[patch.crates-io]` в корневом `Cargo.toml` (ADR 0007, `vendor/wry/RHIZOMIND-PATCH.md`) | Нет (как у wry 0.57.1 из crates.io; отличие — одна строка) |
+| `tauri-plugin-dialog` | 2.8.3 | Apache-2.0 OR MIT | Системные диалоги, которые вызывает ядро из Rust: выбор папки хранилища, подтверждение внешней ссылки и безвозвратного удаления (ADR 0009). Права `dialog:*` интерфейсу не выдаются. Приносит `rfd` 0.16.1 (системные диалоги ОС) и `tauri-plugin-fs` 2.7.1 (только типы области; плагин fs не регистрируется) | Нет: `cargo tree` по десктопным целям — пусто. Версия задана спецификацией (С5.7); выпущена 14.10.2026 — моложе двух недель на момент добавления |
+| `serde` | 1.0.229 | MIT OR Apache-2.0 | Типы команд ядра в JSON и обратно (`derive`); уже был в дереве через `tauri` | Нет |
+| `serde_json` | 1.0.154 | MIT OR Apache-2.0 | Раскладка окна — JSON-объект как есть; тест конфигурации безопасности. Уже был в дереве через `tauri`; раньше — только dev-зависимость | Нет |
 
 Функция `isolation` приносит крейты шифрования RustCrypto: `aes-gcm` 0.10.3, `aes` 0.8.4, `aead` 0.5.2, `cipher` 0.4.4, `ctr` 0.9.2, `ghash` 0.5.1, `polyval` 0.6.2, `universal-hash` 0.5.1, `inout` 0.1.4, `opaque-debug` 0.3.1 (MIT OR Apache-2.0), `subtle` 2.6.1 (BSD-3-Clause), `getrandom` 0.2.17, `rand_core` 0.6.4 (MIT OR Apache-2.0) — без сетевого кода, проверены `cargo deny`.
 
@@ -27,7 +30,8 @@
 |---|---|---|---|---|
 | `tauri-build` | 2.7.4 | MIT OR Apache-2.0 | `build.rs`: встраивание конфигурации, `AppManifest::commands` | Нет |
 | `tauri` с функцией `test` | 2.12.5 | MIT OR Apache-2.0 | Подменный runtime для тестов ядра без окна | Нет |
-| `serde_json` | 1.0.154 | MIT OR Apache-2.0 | Тест конфигурации безопасности читает `tauri.conf.json` и файл разрешений | Нет |
+| `insta` | 1.49.0 | Apache-2.0 | Снимки контракта команд ядра `contracts/v1/*.snap` (функция `json`); те же файлы читает Vitest | Нет |
+| `tempfile` | 3.27.0 | MIT OR Apache-2.0 | Временная папка для заглушки хранилища в тестах прав команд | Нет |
 
 ## Генератор тестового хранилища (`tools/gen-vault/Cargo.toml`) — в программу не попадает
 

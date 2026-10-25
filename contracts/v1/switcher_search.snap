@@ -1,0 +1,27 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "switcher_search",
+  "errors": [
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "query": "встр альф"
+  },
+  "response": {
+    "items": [
+      {
+        "name": "Встреча",
+        "path": [
+          "Проекты",
+          "Альфа",
+          "Встреча.md"
+        ]
+      }
+    ]
+  }
+}

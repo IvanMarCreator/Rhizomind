@@ -1,0 +1,38 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "links_resolve",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "message_key": "errors.invalid_argument"
+    }
+  ],
+  "request": {
+    "from": [
+      "Проекты",
+      "Встреча.md"
+    ],
+    "targets": [
+      "Альфа/План",
+      "Нет такой"
+    ]
+  },
+  "response": {
+    "results": [
+      {
+        "path": [
+          "Проекты",
+          "Альфа",
+          "План.md"
+        ],
+        "target": "Альфа/План"
+      },
+      {
+        "path": null,
+        "target": "Нет такой"
+      }
+    ]
+  }
+}

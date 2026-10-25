@@ -1,0 +1,16 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_remove_from_list",
+  "errors": [
+    {
+      "code": "vault_not_found",
+      "message_key": "errors.vault_not_found"
+    }
+  ],
+  "request": {
+    "id": "7f3c9a1e5b2d4c60"
+  },
+  "response": null
+}

@@ -1,0 +1,42 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "note_read",
+  "errors": [
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    },
+    {
+      "code": "not_a_note",
+      "message_key": "errors.not_a_note"
+    },
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "outside_vault",
+      "message_key": "errors.outside_vault"
+    }
+  ],
+  "request": {
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ]
+  },
+  "response": {
+    "read_only": {
+      "limit_bytes": 10485760,
+      "reason": "too_large"
+    },
+    "text": "# Встреча\nСм. [[Альфа/План]]\n",
+    "version": {
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "modified_ms": 1761382800000,
+      "size": 43
+    }
+  }
+}

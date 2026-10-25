@@ -1,0 +1,25 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "entry_trash",
+  "errors": [
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    },
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
+    }
+  ],
+  "request": {
+    "path": [
+      "Архив",
+      "Встреча 2.md"
+    ]
+  },
+  "response": {
+    "outcome": "trashed"
+  }
+}

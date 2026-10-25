@@ -27,6 +27,16 @@ use tauri::{
 
 use webview_traces::WebviewDataDir;
 
+// Модули ядра (спецификация 0.1, С5.2) и команды API v1 (С5.5) — задача 0.4.
+pub mod commands;
+pub mod external_links;
+pub mod links;
+pub mod names;
+pub mod registry;
+pub mod switcher;
+pub mod vault;
+pub mod watcher;
+
 /// Метка главного окна; на неё выдаются права в `capabilities/main.json`.
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
@@ -189,6 +199,10 @@ pub fn run() {
     let shell = Shell::prepare().expect("Rhizomind: не удалось подготовить временную папку движка");
     tauri::Builder::default()
         .manage(shell)
+        // Диалоги ядра — только из Rust: прав dialog:* у окна нет (ADR 0009).
+        .plugin(tauri_plugin_dialog::init())
+        .manage(commands::Core::new(registry::Registry::from_profile()))
+        .invoke_handler(commands::handler())
         .setup(|app| {
             create_main_window(app.handle())?;
             Ok(())

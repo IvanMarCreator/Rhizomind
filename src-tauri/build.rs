@@ -1,7 +1,12 @@
+// Список команд ядра — тот же файл, из которого ядро строит `generate_handler!`.
+include!("src/commands/list.rs");
+
 fn main() {
     // Свои команды ядра перечисляются явно: команда вне этого списка интерфейсу
-    // недоступна (ADR 0009). Пока команд нет; список заполняет задача 0.4.
-    let manifest = tauri_build::AppManifest::new().commands(&[]);
+    // недоступна (ADR 0009). Права окну — в capabilities/main.json.
+    println!("cargo:rerun-if-changed=src/commands/list.rs");
+    let manifest =
+        tauri_build::AppManifest::new().commands(with_core_commands!(core_command_names));
 
     // Манифест Windows встраивается компоновщиком во все исполняемые файлы
     // крейта, а не только в приложение: иначе `cargo test` на Windows падает
