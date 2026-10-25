@@ -7,6 +7,8 @@
   import { onMount } from 'svelte';
   import { historyKeyAction } from '../core/history/history.ts';
   import { t } from '../i18n/index.ts';
+  import { isQuickSwitcherKey } from '../quick-switcher/keys.ts';
+  import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import EmptyState from './EmptyState.svelte';
   import NoteHeader from './NoteHeader.svelte';
@@ -17,6 +19,13 @@
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
+
+  /** Окно быстрого перехода (Ctrl+O, задача 2.7) открыто. */
+  let switcherOpen = $state(false);
+
+  function openSwitcher() {
+    if (model.status.kind === 'ready' && model.vault) switcherOpen = true;
+  }
 
   onMount(() => {
     void model.start();
@@ -30,6 +39,13 @@
 
   function onKeydown(event: KeyboardEvent) {
     if (model.status.kind !== 'ready') return;
+    if (isQuickSwitcherKey(event)) {
+      event.preventDefault();
+      openSwitcher();
+      return;
+    }
+    // Под модальным окном быстрого перехода история не листается.
+    if (switcherOpen) return;
     const action = historyKeyAction(event);
     if (!action) return;
     event.preventDefault();
@@ -39,7 +55,7 @@
 
 {#if model.status.kind === 'ready'}
   <div class="shell" data-testid="shell">
-    <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} />
+    <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} onQuickSwitcher={openSwitcher} />
     {#if model.sidebarOpen}
       <Sidebar vault={model.vault} />
     {/if}
@@ -59,6 +75,14 @@
       </div>
     </main>
   </div>
+  {#if switcherOpen}
+    <QuickSwitcher
+      currentPath={model.currentPath}
+      onOpen={(path) => model.open(path)}
+      onClose={() => (switcherOpen = false)}
+      onNotice={(text) => model.notify(text)}
+    />
+  {/if}
 {:else if model.status.kind === 'failed'}
   <StartupError title={model.status.title} message={model.status.message} />
 {:else}

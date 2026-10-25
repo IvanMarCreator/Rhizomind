@@ -146,6 +146,58 @@ describe('оболочка окна', () => {
     expect(screen.getByText('Нет открытой заметки')).toBeTruthy();
   });
 
+  it('Ctrl+O (и в русской раскладке) открывает быстрый переход; выбор открывает заметку, «назад» возвращает', async () => {
+    const { model } = await renderShell({
+      ...WITH_VAULT,
+      switcher_search: () => ({ items: [{ name: 'Итоги', path: ['Итоги.md'] }] }),
+    });
+    await screen.findByText('Нет открытой заметки');
+    model.open(['А.md']);
+
+    await fireEvent.keyDown(window, { key: 'щ', code: 'KeyO', ctrlKey: true });
+    const input = screen.getByRole('combobox', { name: 'Быстрый переход' });
+    await screen.findByRole('option', { name: /Итоги/ });
+
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.queryByRole('dialog', { name: 'Быстрый переход' })).toBeNull();
+    await screen.findByText('Итоги');
+    await fireEvent.click(screen.getByRole('button', { name: 'Назад (Alt+←)' }));
+    await screen.findByText('А');
+  });
+
+  it('кнопка «Быстрый переход» на ленте открывает окно, Esc закрывает', async () => {
+    await renderShell({ ...WITH_VAULT, switcher_search: () => ({ items: [] }) });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Быстрый переход (Ctrl+O)' }));
+
+    const input = screen.getByRole('combobox', { name: 'Быстрый переход' });
+    await fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('пока открыт быстрый переход, Alt+← не листает историю за ним', async () => {
+    const { model } = await renderShell({ ...WITH_VAULT, switcher_search: () => ({ items: [] }) });
+    await screen.findByText('Нет открытой заметки');
+    model.open(['А.md']);
+    model.open(['Б.md']);
+    await screen.findByText('Б');
+
+    await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
+    await fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowLeft', altKey: true });
+
+    expect(model.currentPath).toEqual(['Б.md']);
+  });
+
+  it('без хранилища быстрый переход не открывается', async () => {
+    await renderShell({ vault_current: () => ({ api_version: 1, vault: null }) });
+    await screen.findByRole('button', { name: 'Хранилище не открыто' });
+
+    await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('назад и вперёд: кнопки и Alt+←/Alt+→; переход сохраняет раскладку', async () => {
     const { calls, model } = await renderShell(WITH_VAULT);
     await screen.findByText('Нет открытой заметки');
