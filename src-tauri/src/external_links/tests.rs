@@ -110,10 +110,18 @@ fn os_failure_is_reported_as_io_failed() {
 // ---- Пункты обзора 0.4 (docs/reviews/2026-10-25-task-0.4.md) -------------
 
 /// Окно показало ровно ту строку (отдельной строкой текста), что ушла в ОС.
+///
+/// Метка окна у каждого вызова своя: тесты идут параллельно, а занятое окно
+/// подтверждения в общей метке дало бы `cancelled` соседнему тесту.
 fn shown_equals_launched(url: &str) -> (Confirmation, String) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let window = format!(
+        "w-exact-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let seam = Seam::default();
     assert_eq!(
-        seam.run("w-exact", url, true),
+        seam.run(&window, url, true),
         Ok(OpenExternalOutcome::Opened),
         "{url}"
     );
