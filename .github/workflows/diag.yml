@@ -1,0 +1,39 @@
+# ВРЕМЕННО (задача 0.3): диагностика WebView2 — удаляется до сдачи задачи.
+name: diag
+
+on:
+  push:
+    branches: ["task/0.3-webview-shell"]
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: src-tauri
+          key: diag
+      - name: Сборка примера
+        shell: bash
+        run: |
+          mkdir -p dist && echo '<!doctype html><title>x</title>' > dist/index.html
+          cargo build --locked --manifest-path src-tauri/Cargo.toml --example diag_webview2
+      - name: Флаг false
+        shell: pwsh
+        run: src-tauri/target/debug/examples/diag_webview2.exe false "$env:RUNNER_TEMP\udf-false"
+      - name: Флаг true
+        shell: pwsh
+        run: src-tauri/target/debug/examples/diag_webview2.exe true "$env:RUNNER_TEMP\udf-true"
+      - name: Флаг true + WEBVIEW2_*
+        shell: pwsh
+        env:
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: --remote-debugging-port=9333
+          WEBVIEW2_USER_DATA_FOLDER: C:\evil-udf
+        run: |
+          src-tauri/target/debug/examples/diag_webview2.exe true "$env:RUNNER_TEMP\udf-env"
+          Test-Path C:\evil-udf

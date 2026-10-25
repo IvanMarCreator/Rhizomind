@@ -31,6 +31,20 @@ tauri-build = { version = "=2.7.4", features = [] }
 # Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls.
 tauri = { version = "=2.12.5", features = [] }
 
+[target.'cfg(windows)'.dependencies]
+# Те же версии, что уже приходят через wry: новых крейтов нет.
+webview2-com = "=0.39.1"
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ErrorReporting",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
