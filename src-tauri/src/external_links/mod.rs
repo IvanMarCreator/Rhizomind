@@ -136,15 +136,32 @@ pub fn open_with_confirmation<R: tauri::Runtime>(
     open_checked(
         window.label(),
         url,
-        |confirmation| ask_in_dialog(window, confirmation),
+        |confirmation| ask(window, confirmation),
         |target| open::that_detached(target),
     )
+}
+
+/// В программе — системное окно подтверждения.
+#[cfg(not(test))]
+fn ask<R: tauri::Runtime>(window: &tauri::Window<R>, confirmation: &Confirmation) -> bool {
+    ask_in_dialog(window, confirmation)
+}
+
+/// В тестах крейта (подменный runtime) системное окно не показывается и
+/// браузер не открывается: ответ всегда «отмена». Тесты прав команд вызывают
+/// `open_external` с правильным адресом; без этого они ждали бы окна вечно,
+/// а на Windows показали бы настоящее окно. Логика проверяется на шве
+/// [`open_checked`].
+#[cfg(test)]
+fn ask<R: tauri::Runtime>(_window: &tauri::Window<R>, _confirmation: &Confirmation) -> bool {
+    false
 }
 
 /// Системное окно подтверждения `tauri-plugin-dialog`. Кнопка согласия —
 /// первая: в Windows (TaskDialog, `nDefaultButton = 0`) и macOS (NSAlert)
 /// первая кнопка выбрана по умолчанию, Enter открывает, Esc — отмена.
 /// Если окно показать не удалось — ответ «отмена».
+#[cfg_attr(test, allow(dead_code))]
 fn ask_in_dialog<R: tauri::Runtime>(
     window: &tauri::Window<R>,
     confirmation: &Confirmation,
