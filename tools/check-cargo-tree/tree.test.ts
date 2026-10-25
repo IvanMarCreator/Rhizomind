@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DESKTOP_TARGETS, cargoTreeArgs, findNetworkCrates } from './tree.ts';
+import { DESKTOP_TARGETS, cargoTreeArgs, findNetworkCrates, findTestOnlyCrates } from './tree.ts';
 
 // Вывод `cargo tree -e normal --prefix none --format "{p}|{f}"`.
 const tree = (...lines: string[]) => lines.join('\n') + '\n';
@@ -57,7 +57,32 @@ describe('findNetworkCrates', () => {
   });
 });
 
+describe('findTestOnlyCrates', () => {
+  it('без крейтов для тестов — пусто', () => {
+    const out = tree('rhizomind v0.1.0 (/w/src-tauri)|', 'tauri-build v2.7.4|', 'gen-vault-like v1.0.0|', 'proptest-derive v0.5.0|');
+    expect(findTestOnlyCrates(out)).toEqual([]);
+  });
+
+  it('gen-vault и proptest в нормальных или сборочных зависимостях — находка', () => {
+    const out = tree(
+      'rhizomind v0.1.0 (/w/src-tauri)|',
+      'gen-vault v0.1.0 (/w/tools/gen-vault)|',
+      'proptest v1.12.0|std',
+      'proptest v1.12.0 (*)|std',
+    );
+    expect(findTestOnlyCrates(out)).toEqual(['gen-vault v0.1.0', 'proptest v1.12.0']);
+  });
+
+  it('пустой вывод — ошибка', () => {
+    expect(() => findTestOnlyCrates('')).toThrow();
+  });
+});
+
 describe('cargoTreeArgs', () => {
+  it('нормальные и сборочные зависимости — для проверки крейтов тестов', () => {
+    expect(cargoTreeArgs('x86_64-apple-darwin', 'src-tauri/Cargo.toml', 'normal,build')).toContain('normal,build');
+  });
+
   it('нормальные зависимости для одной цели, без отступов, с функциями', () => {
     expect(cargoTreeArgs('x86_64-pc-windows-msvc', 'src-tauri/Cargo.toml')).toEqual([
       'tree',
