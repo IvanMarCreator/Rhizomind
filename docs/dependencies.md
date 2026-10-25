@@ -4,7 +4,7 @@
 
 Автоматические проверки при каждом `npm run verify`:
 - лицензии крейтов, запрещённые крейты и функции — `cargo deny check` ([src-tauri/deny.toml](../src-tauri/deny.toml));
-- сетевые крейты по каждой десктопной цели — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
+- сетевые крейты по каждой десктопной цели и крейты только для тестов (`gen-vault`, `proptest`) в программе и сборке — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
 - лицензии production-зависимостей npm с разбором SPDX — [tools/check-licenses/](../tools/check-licenses/);
 - сетевой код в исходниках и собранном интерфейсе — [tools/check-no-network/](../tools/check-no-network/).
 

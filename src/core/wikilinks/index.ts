@@ -2,6 +2,8 @@
 //
 // Разбор цели — те же правила, что в ядре (src-tauri/src/links, `parse_target`):
 // обе стороны проверяются общими образцами tests/fixtures/wikilinks/parse.json.
+// `[[#Заголовок]]` недопустима — в редакторе это обычный текст: ссылки только на
+// другие заметки, якоря внутри заметки будут другим синтаксисом позже (С3.4).
 // Куда ведёт ссылка, решает ядро (команда `links_resolve`); здесь только
 // синтаксис: где в тексте ссылки и из чего они состоят.
 
@@ -141,7 +143,7 @@ const LIST_ITEM = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
  */
 function paragraphs(text: string): Array<[number, number]> {
   const result: Array<[number, number]> = [];
-  let fence: { char: string; length: number } | null = null;
+  let fence: { closing: RegExp } | null = null;
   let previous: 'start' | 'blank' | 'code' | 'text' = 'start';
   let inList = false;
   let open: [number, number] | null = null;
@@ -152,8 +154,7 @@ function paragraphs(text: string): Array<[number, number]> {
   for (const line of splitLines(text)) {
     let kind: 'blank' | 'code' | 'text';
     if (fence) {
-      const closing = new RegExp(`^ {0,3}${fence.char === '`' ? '`' : '~'}{${fence.length},}[ \\t]*$`);
-      if (closing.test(line.text)) fence = null;
+      if (fence.closing.test(line.text)) fence = null;
       kind = 'code';
     } else if (BLANK.test(line.text)) {
       kind = 'blank';
@@ -165,7 +166,8 @@ function paragraphs(text: string): Array<[number, number]> {
         kind = 'code';
       } else if (opening && (opening[1]?.startsWith('~') || !opening[2]?.includes('`'))) {
         const marks = opening[1] ?? '```';
-        fence = { char: marks.charAt(0), length: marks.length };
+        // Закрывающая строка — те же символы не короче открывающей; RegExp — один на блок.
+        fence = { closing: new RegExp(`^ {0,3}\\${marks.charAt(0)}{${marks.length},}[ \\t]*$`) };
         kind = 'code';
       } else {
         kind = 'text';
