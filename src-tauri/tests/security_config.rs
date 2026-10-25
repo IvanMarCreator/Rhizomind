@@ -103,3 +103,49 @@ fn main_window_has_no_file_network_shell_or_dialog_permissions() {
     // свои команды и меняет этот тест вместе с файлом разрешений.
     assert!(permissions.is_empty(), "неожиданные права: {permissions:?}");
 }
+
+/// Блок `[[package]]` из Cargo.lock по имени крейта.
+fn lock_package(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
+    let lock = std::fs::read_to_string(&path).expect("Cargo.lock");
+    let blocks: Vec<&str> = lock
+        .split("[[package]]")
+        .filter(|block| block.contains(&format!("\nname = \"{name}\"\n")))
+        .collect();
+    assert_eq!(blocks.len(), 1, "в Cargo.lock ожидалась одна версия {name}");
+    blocks[0].to_owned()
+}
+
+#[test]
+fn wry_comes_from_own_patched_copy_of_the_same_version() {
+    // Своя копия wry с IsCustomCrashReportingEnabled = true (ADR 0007). Если
+    // версия wry в зависимостях Tauri сменится, cargo молча перестанет
+    // применять [patch] — этот тест это ловит.
+    let wry = lock_package("wry");
+    assert!(wry.contains("\nversion = \"0.57.1\"\n"), "{wry}");
+    assert!(
+        !wry.contains("source ="),
+        "wry берётся из crates.io, а не из vendor/wry: {wry}"
+    );
+
+    let manifest = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+    )
+    .expect("Cargo.toml");
+    assert!(
+        manifest.contains("[patch.crates-io]\nwry = { path = \"../vendor/wry\" }"),
+        "нет [patch.crates-io] для wry"
+    );
+
+    let vendor = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../vendor/wry/src/webview2/mod.rs"),
+    )
+    .expect("vendor/wry");
+    assert_eq!(
+        vendor
+            .matches("options.set_is_custom_crash_reporting_enabled(true);")
+            .count(),
+        1,
+        "в vendor/wry нет правки IsCustomCrashReportingEnabled"
+    );
+}
