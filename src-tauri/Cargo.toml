@@ -44,7 +44,11 @@ tauri-plugin-dialog = "=2.8.3"
 # Типы команд ядра и их JSON (контракт API v1).
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
-# Хранилище (vault, задача 1.2): версия файла — хэш содержимого.
+# Разбор и нормализация адреса внешней ссылки (punycode, процентное
+# кодирование); уже был в дереве через tauri. Без функций serde/std-сети.
+url = "=2.5.8"
+# Хранилище (vault, задача 1.2): версия файла — хэш содержимого; он же — в
+# журнале своих записей наблюдателя (watcher, задача 1.4).
 # Без функций по умолчанию лишнего нет: std, без rayon и mmap.
 blake3 = "=1.8.7"
 # Атомарная запись: временный файл в .rhizomind/tmp/ (раньше — только в тестах).
@@ -62,6 +66,12 @@ icu_casemap = "=2.4.0"
 # `unicode-normalization` — встроенные таблицы без зависимостей, без них крейт
 # не собирается.
 nucleo-matcher = { version = "=0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
+# Слежение за папкой хранилища (ADR 0006, задача 1.4). Кандидаты в выпуск —
+# версии точные, обновление только с прогоном нагрузочных тестов.
+notify = "=9.0.0-rc.6"
+notify-debouncer-full = "=0.8.0-rc.2"
+# Идентификатор файла (FileId NTFS, inode) — распознавание переименований.
+file-id = "=0.2.3"
 
 [target.'cfg(windows)'.dependencies]
 # Те же версии, что уже приходят через wry: новых крейтов нет.
@@ -80,12 +90,27 @@ windows = { version = "=0.62.2", features = [
 # (итоговый путь открытого файла) — хранилище, задача 1.2.
 # Местное время для имени копии при конфликте — FileTimeToSystemTime и
 # SystemTimeToTzSpecificLocalTime (Win32_System_Time).
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Time"] }
+# Передача подтверждённого адреса ОС: свой вызов ShellExecuteExW с классом
+# протокола (external_links/os.rs, задача 1.5) — Win32_System_Com,
+# Win32_System_Registry, Win32_UI_Shell.
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Registry",
+  "Win32_System_Time",
+  "Win32_UI_Shell",
+] }
 
 [target.'cfg(unix)'.dependencies]
 # Местное время для имени копии при конфликте (localtime_r); уже было в
 # дереве через tauri и tempfile.
 libc = "=0.2.191"
+
+# Передача подтверждённого адреса ОС на macOS и Linux (ADR 0009). Без функций
+# `insecure` (запуск через оболочку) и `shellexecute-on-windows`.
+[target.'cfg(not(windows))'.dependencies]
+open = "=5.4.5"
 
 [dev-dependencies]
 # Свойства ключа имени, кратчайшего пути и разбора ссылок (модули names, links).
@@ -96,7 +121,8 @@ tauri = { version = "=2.12.5", features = ["isolation", "test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
 # Генератор тестового хранилища: образцы кодировок в тестах vault, ожидаемые
-# разрешения ссылок и кратчайшие пути в тестах links.
+# разрешения ссылок и кратчайшие пути в тестах links, нагрузочные тесты
+# наблюдателя.
 gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
 
 [target.'cfg(windows)'.dev-dependencies]

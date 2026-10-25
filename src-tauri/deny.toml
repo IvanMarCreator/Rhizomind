@@ -41,7 +41,9 @@ allow = [
   "Zlib",                           # objc2-*, miniz_oxide, foldhash
   "0BSD",                           # adler2 (0BSD OR MIT OR Apache-2.0)
   "MIT-0",                          # dunce (CC0-1.0 OR MIT-0 OR Apache-2.0)
-  "CC0-1.0",                        # dunce
+  "CC0-1.0",                        # dunce, notify, blake3
+  "ISC",                            # inotify, inotify-sys (notify на Linux; совместима с GPL-3.0)
+  "BSL-1.0",                        # xxhash-rust (notify; Boost, совместима с GPL-3.0)
   "GPL-3.0-only",                   # сам Rhizomind
 ]
 confidence-threshold = 0.93

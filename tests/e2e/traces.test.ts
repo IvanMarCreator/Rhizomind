@@ -156,7 +156,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   const temp = isWindows ? env('TEMP') : '';
   const real = (p: string) => realpathSync.native(p);
   const roots = isWindows ? [env('LOCALAPPDATA'), env('APPDATA'), temp].map(real) : [];
-  // Известный локальный след (docs/SECURITY.md, «Известные локальные следы»):
+  // Известный локальный след (docs/SECURITY.md, «Известные ограничения»):
   // при закрытии окна появляется новый файл диспетчера учётных данных Windows
   // прямо в %LOCALAPPDATA%\Microsoft\Credentials\. Создатель не установлен
   // (движок WebView2 или код ядра) — расследование в бэклоге (docs/reviews/

@@ -1,0 +1,16 @@
+# Запрет сетевых вызовов в нашем коде (инвариант 1, ADR 0009). Действует на
+# все пакеты рабочего пространства: clippy ищет clippy.toml вверх от пакета.
+# `cargo clippy -- -D warnings` в `npm run verify` и CI превращает нарушение
+# в ошибку сборки. Зависимости проверяют cargo deny и check-cargo-tree.
+disallowed-methods = [
+  { path = "url::Url::socket_addrs", reason = "разрешение имени (DNS) — сеть запрещена" },
+  { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "разрешение имени (DNS) — сеть запрещена" },
+  { path = "std::net::TcpStream::connect", reason = "сеть запрещена" },
+  { path = "std::net::UdpSocket::bind", reason = "сеть запрещена" },
+  { path = "std::net::TcpListener::bind", reason = "сеть запрещена" },
+]
+disallowed-types = [
+  { path = "std::net::TcpStream", reason = "сеть запрещена" },
+  { path = "std::net::UdpSocket", reason = "сеть запрещена" },
+  { path = "std::net::TcpListener", reason = "сеть запрещена" },
+]
