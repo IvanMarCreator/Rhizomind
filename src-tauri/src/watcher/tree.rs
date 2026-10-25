@@ -33,6 +33,9 @@ use crate::names;
 /// идёт в таблице сразу за ней.
 type Key = Vec<String>;
 
+/// Сколько раз за одну сверку искать старые пути перенесённых элементов.
+const MAX_ORIGIN_ROUNDS: usize = 8;
+
 /// Что модель знает об элементе.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Node {
@@ -107,8 +110,13 @@ impl TreeModel {
         // путём: возможно, это перенос, а событие о старом пути потерялось
         // (переполнение буфера) или придёт позже. Старый путь сверяется в
         // этой же пачке — тогда перенос распознаётся.
-        let origins = self.known_elsewhere(&disk, &model, &targets);
-        if !origins.is_empty() {
+        // Повторный обход может найти ещё перенесённые за это время —
+        // повторяется, пока новые старые пути находятся (с пределом).
+        for _ in 0..MAX_ORIGIN_ROUNDS {
+            let origins = self.known_elsewhere(&disk, &model, &targets);
+            if origins.is_empty() {
+                break;
+            }
             targets = self.targets(
                 targets
                     .into_iter()
