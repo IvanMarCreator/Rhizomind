@@ -1,0 +1,12 @@
+# Рабочее пространство Cargo: приложение и инструменты разработки.
+# Общие Cargo.lock и target/ (папка задана в .cargo/config.toml).
+# Профили и [patch] действуют только здесь, в корне: в членах они игнорируются.
+[workspace]
+resolver = "3"
+members = ["src-tauri", "tools/gen-vault"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

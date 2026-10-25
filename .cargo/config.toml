@@ -1,0 +1,4 @@
+# Папка сборки остаётся src-tauri/target, как до рабочего пространства:
+# на неё опираются tauri, tests/e2e/driver.ts, tools/package-portable и кэш CI.
+[build]
+target-dir = "src-tauri/target"

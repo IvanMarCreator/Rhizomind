@@ -1,0 +1,23 @@
+[package]
+name = "gen-vault"
+version = "0.1.0"
+description = "Генератор тестового хранилища Rhizomind для тестов ядра и нагрузочных тестов. В приложение не входит."
+authors = ["Rhizomind contributors"]
+license = "GPL-3.0-only"
+repository = "https://github.com/IvanMarCreator/Rhizomind"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[lib]
+name = "gen_vault"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gen-vault"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+unicode-normalization = "=0.1.26"
