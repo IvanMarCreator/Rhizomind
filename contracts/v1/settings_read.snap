@@ -1,0 +1,30 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "settings_read",
+  "errors": [
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
+    }
+  ],
+  "request": null,
+  "response": {
+    "settings": {
+      "confirm_delete": true,
+      "editor_mode": "live_preview",
+      "font_size": 16,
+      "format_version": 1,
+      "max_edit_size_bytes": 10485760,
+      "new_note_location": {
+        "kind": "folder",
+        "path": [
+          "Входящие"
+        ]
+      },
+      "text_width": "column",
+      "theme": "system"
+    }
+  }
+}

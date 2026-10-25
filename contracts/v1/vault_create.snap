@@ -1,0 +1,33 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_create",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "name",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "invalid_name",
+      "message_key": "errors.invalid_name",
+      "name_problem": "reserved_name"
+    },
+    {
+      "code": "already_exists",
+      "message_key": "errors.already_exists"
+    }
+  ],
+  "request": {
+    "name": "Работа"
+  },
+  "response": {
+    "outcome": "opened",
+    "vault": {
+      "id": "7f3c9a1e5b2d4c60",
+      "name": "Работа",
+      "path": "C:\\Users\\ivan\\Documents\\Работа"
+    }
+  }
+}

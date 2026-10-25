@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State, Window};
 
+use super::Core;
 use super::error::{CoreError, CoreResult};
 use super::types::{API_VERSION, VaultId, VaultSummary};
-use super::Core;
 use crate::registry::{self, FolderPurpose};
 
 /// Хранилище в окне «Управление хранилищами».
@@ -160,6 +160,9 @@ pub async fn vault_open(
 
 /// Убирает хранилище из списка; файлы не удаляются.
 #[tauri::command]
-pub async fn vault_remove_from_list(core: State<'_, Core>, request: VaultIdRequest) -> CoreResult<()> {
+pub async fn vault_remove_from_list(
+    core: State<'_, Core>,
+    request: VaultIdRequest,
+) -> CoreResult<()> {
     core.registry().remove(&request.id)
 }

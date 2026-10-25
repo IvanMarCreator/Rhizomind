@@ -1,0 +1,12 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "note:deleted",
+  "payload": {
+    "path": [
+      "Архив",
+      "Встреча.md"
+    ]
+  }
+}

@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
+use super::Core;
 use super::error::{CoreError, CoreResult};
 use super::types::VaultPath;
-use super::Core;
 
 /// Запрос `links_resolve`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,7 +93,8 @@ pub struct SwitcherSearchResponse {
 }
 
 fn read<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Разрешение вики-ссылок заметки.

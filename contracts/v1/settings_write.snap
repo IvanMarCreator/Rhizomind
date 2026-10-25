@@ -1,0 +1,28 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "settings_write",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "settings.font_size",
+      "message_key": "errors.invalid_argument"
+    }
+  ],
+  "request": {
+    "settings": {
+      "confirm_delete": true,
+      "editor_mode": "source",
+      "font_size": 16,
+      "format_version": 1,
+      "max_edit_size_bytes": 10485760,
+      "new_note_location": {
+        "kind": "current_folder"
+      },
+      "text_width": "full",
+      "theme": "dark"
+    }
+  },
+  "response": null
+}

@@ -1,0 +1,38 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "links_suggest",
+  "errors": [
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "from": [
+      "Дневник.md"
+    ],
+    "query": "встр"
+  },
+  "response": {
+    "items": [
+      {
+        "insert": "Альфа/Встреча",
+        "name": "Встреча",
+        "path": [
+          "Проекты",
+          "Альфа",
+          "Встреча.md"
+        ]
+      },
+      {
+        "insert": "/Встреча",
+        "name": "Встреча",
+        "path": [
+          "Встреча.md"
+        ]
+      }
+    ]
+  }
+}

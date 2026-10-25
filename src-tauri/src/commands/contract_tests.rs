@@ -196,9 +196,7 @@ fn vault_open_folder() {
 fn vault_open() {
     command_with(
         "vault_open",
-        &VaultIdRequest {
-            id: vault().id,
-        },
+        &VaultIdRequest { id: vault().id },
         &VaultOpenOutcome::Focused,
         &[
             err(ErrorCode::VaultNotFound),
@@ -211,9 +209,7 @@ fn vault_open() {
 fn vault_remove_from_list() {
     command_with(
         "vault_remove_from_list",
-        &VaultIdRequest {
-            id: vault().id,
-        },
+        &VaultIdRequest { id: vault().id },
         &(),
         &[err(ErrorCode::VaultNotFound)],
     );
@@ -594,7 +590,13 @@ fn every_command_and_event_has_exactly_one_snapshot() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contracts/v1");
     let mut found: Vec<String> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
-        .map(|entry| entry.expect("элемент папки").file_name().into_string().expect("имя"))
+        .map(|entry| {
+            entry
+                .expect("элемент папки")
+                .file_name()
+                .into_string()
+                .expect("имя")
+        })
         .filter(|name| name.ends_with(".snap"))
         .collect();
     found.sort();
@@ -618,6 +620,9 @@ fn vault_path_is_array_of_components() {
         serde_json::to_value(path(&["Проекты", "Встреча.md"])).expect("путь"),
         json!(["Проекты", "Встреча.md"])
     );
-    assert_eq!(serde_json::to_value(VaultPath::root()).expect("корень"), json!([]));
+    assert_eq!(
+        serde_json::to_value(VaultPath::root()).expect("корень"),
+        json!([])
+    );
     assert!(serde_json::from_value::<VaultPath>(json!("Проекты/Встреча.md")).is_err());
 }

@@ -117,7 +117,10 @@ fn command_outside_app_manifest_is_denied_even_with_handler() {
 
     let error = invoke(&main, "contract_probe", json!({})).expect_err("вызов должен быть отклонён");
 
-    assert!(is_acl_denial(&error), "ожидался отказ прав, получено {error}");
+    assert!(
+        is_acl_denial(&error),
+        "ожидался отказ прав, получено {error}"
+    );
 }
 
 #[test]
@@ -137,7 +140,10 @@ fn commands_are_denied_for_window_without_capability() {
 
     let error = invoke(&other, "vault_current", json!({})).expect_err("у окна нет прав");
 
-    assert!(is_acl_denial(&error), "ожидался отказ прав, получено {error}");
+    assert!(
+        is_acl_denial(&error),
+        "ожидался отказ прав, получено {error}"
+    );
 }
 
 /// Каждая команда из списка разрешена окну и доходит до модулей ядра:
@@ -179,7 +185,9 @@ fn request_with_unknown_field_is_rejected() {
     .expect_err("лишнее поле");
 
     assert!(
-        error.as_str().is_some_and(|text| text.contains("unknown field")),
+        error
+            .as_str()
+            .is_some_and(|text| text.contains("unknown field")),
         "ожидался отказ разбора, получено {error}"
     );
 }
@@ -212,7 +220,9 @@ fn app_manifest_commands_match_handler() {
     for name in COMMAND_NAMES {
         if let Err(error) = invoke(&main, name, example_args(name)) {
             assert!(
-                !error.as_str().is_some_and(|text| text.contains("not found")),
+                !error
+                    .as_str()
+                    .is_some_and(|text| text.contains("not found")),
                 "{name} нет в обработчике: {error}"
             );
         }
@@ -236,7 +246,10 @@ fn main_capability_allows_exactly_listed_commands_and_event_listening() {
     let mut expected: Vec<String> = COMMAND_NAMES
         .iter()
         .map(|c| format!("allow-{}", c.replace('_', "-")))
-        .chain(["core:event:allow-listen".into(), "core:event:allow-unlisten".into()])
+        .chain([
+            "core:event:allow-listen".into(),
+            "core:event:allow-unlisten".into(),
+        ])
         .collect();
     expected.sort();
     assert_eq!(granted, expected);

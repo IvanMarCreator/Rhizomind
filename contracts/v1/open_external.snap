@@ -1,0 +1,18 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "open_external",
+  "errors": [
+    {
+      "code": "scheme_not_allowed",
+      "message_key": "errors.scheme_not_allowed"
+    }
+  ],
+  "request": {
+    "url": "https://example.org/статья?id=1"
+  },
+  "response": {
+    "outcome": "opened"
+  }
+}

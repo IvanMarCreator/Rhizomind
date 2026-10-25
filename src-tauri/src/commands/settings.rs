@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State, Window};
 
+use super::Core;
 use super::error::CoreResult;
 use super::types::VaultPath;
-use super::Core;
 
 /// Версия формата `settings.json`.
 pub const SETTINGS_FORMAT_VERSION: u32 = 1;

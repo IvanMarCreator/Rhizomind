@@ -1,0 +1,21 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "name_check",
+  "errors": [
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    }
+  ],
+  "request": {
+    "dir": [],
+    "name": "CON.md"
+  },
+  "response": {
+    "message_key": "names.reserved_name",
+    "problem": "reserved_name",
+    "status": "rejected"
+  }
+}

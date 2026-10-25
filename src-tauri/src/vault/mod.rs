@@ -19,8 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::commands::{
-    CoreError, CoreResult, FileVersion, NameCheck, NoteFormat, NoteReadResponse,
-    NoteWriteResponse, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
+    CoreError, CoreResult, FileVersion, NameCheck, NoteFormat, NoteReadResponse, NoteWriteResponse,
+    Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
 };
 
 /// Открытое хранилище: корень и операции над файлами внутри контура.

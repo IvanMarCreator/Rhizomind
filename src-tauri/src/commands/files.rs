@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
+use super::Core;
 use super::error::{CoreResult, NameProblem};
 use super::types::{EntryKind, VaultPath};
-use super::Core;
 
 /// Элемент дерева файлов.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,0 +1,16 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_open_folder",
+  "errors": [
+    {
+      "code": "vault_unavailable",
+      "message_key": "errors.vault_unavailable"
+    }
+  ],
+  "request": null,
+  "response": {
+    "outcome": "cancelled"
+  }
+}

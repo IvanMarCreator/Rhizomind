@@ -1,0 +1,16 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "note:conflict-saved",
+  "payload": {
+    "copy_path": [
+      "Проекты",
+      "Встреча (внешняя версия 2026-10-25 12-00).md"
+    ],
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ]
+  }
+}

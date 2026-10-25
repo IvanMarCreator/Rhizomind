@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
+use super::Core;
 use super::error::CoreResult;
 use super::types::{FileVersion, VaultPath};
-use super::Core;
 
 /// Перенос строк в файле.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

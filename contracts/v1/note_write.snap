@@ -1,0 +1,44 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "note_write",
+  "errors": [
+    {
+      "code": "read_only",
+      "message_key": "errors.read_only"
+    },
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    }
+  ],
+  "request": {
+    "expected_version": {
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "modified_ms": 1761382800000,
+      "size": 43
+    },
+    "format": {
+      "bom": false,
+      "line_ending": "lf"
+    },
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ],
+    "text": "# Встреча\nИтоги\n"
+  },
+  "response": {
+    "copy_path": [
+      "Проекты",
+      "Встреча (внешняя версия 2026-10-25 12-00).md"
+    ],
+    "outcome": "conflict_saved",
+    "version": {
+      "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "modified_ms": 1761382800000,
+      "size": 21
+    }
+  }
+}
