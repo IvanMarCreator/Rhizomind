@@ -25,8 +25,11 @@ impl ExternalAddress {
     ///
     /// - не `http`/`https`/`mailto` или неразборчивый адрес — `scheme_not_allowed`;
     /// - управляющие и форматирующие символы (`U+202E`, `U+200B` и т.п.),
-    ///   длина больше 8 КБ, параметр `attach`/`attachment` у `mailto`,
-    ///   имя пользователя или пароль в `http(s)` — `invalid_argument` (`url`).
+    ///   длина больше 8 КБ (на входе и после кодирования), символы вне
+    ///   RFC 3986 в итоговой строке, параметр `attach`/`attachment` у
+    ///   `mailto`, управляющие символы после раскодирования в ключах и
+    ///   значениях `mailto` (кроме `body`), имя пользователя или пароль в
+    ///   `http(s)` — `invalid_argument` (`url`).
     pub fn parse(input: &str) -> CoreResult<Self> {
         if input.len() > MAX_TARGET_BYTES || input.chars().any(is_hidden) {
             return Err(CoreError::invalid_argument("url"));
@@ -36,14 +39,22 @@ impl ExternalAddress {
             return Err(scheme_not_allowed());
         }
         if url.scheme() == "mailto" {
-            if url.query_pairs().any(|(key, _)| is_attachment(&key)) {
+            let bad_parameter = url.query_pairs().any(|(key, value)| {
+                is_attachment(&key)
+                    || key.chars().any(char::is_control)
+                    || (!key.eq_ignore_ascii_case("body") && value.chars().any(char::is_control))
+            });
+            if bad_parameter {
                 return Err(CoreError::invalid_argument("url"));
             }
         } else if !url.username().is_empty() || url.password().is_some() {
             // `https://bank.example@evil.example/` — домен за «@» легко не заметить.
             return Err(CoreError::invalid_argument("url"));
         }
-        if url.as_str().len() > MAX_TARGET_BYTES {
+        // У `mailto` путь непрозрачный: `url` не кодирует в нём `"`, пробел и
+        // `\`, а обработчик почты получает адрес в своей командной строке
+        // (`OUTLOOK.EXE ... /m "%1"`). Поэтому в ОС — только символы RFC 3986.
+        if url.as_str().len() > MAX_TARGET_BYTES || !url.as_str().chars().all(is_rfc3986) {
             return Err(CoreError::invalid_argument("url"));
         }
         Ok(Self { url })
@@ -60,7 +71,7 @@ impl ExternalAddress {
     }
 
     /// Домен для отдельной строки окна: у `http(s)` — домен как в адресе
-    /// (punycode); если у него есть запись в Unicode — «unicode (punycode)».
+    /// (punycode); если у него есть запись в Unicode — «punycode (unicode)».
     pub fn host_line(&self) -> Option<String> {
         let ascii = self.url.host_str()?;
         if self.is_mail() {
@@ -70,9 +81,15 @@ impl ExternalAddress {
         if unicode.is_empty() || unicode == ascii || unicode.chars().any(is_hidden) {
             Some(ascii.to_owned())
         } else {
-            Some(format!("{unicode} ({ascii})"))
+            // Первым — punycode, ровно как в адресе; Unicode — подсказкой.
+            Some(format!("{ascii} ({unicode})"))
         }
     }
+}
+
+/// Символ из RFC 3986: незарезервированные, зарезервированные и `%`.
+fn is_rfc3986(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)
 }
 
 fn scheme_not_allowed() -> CoreError {

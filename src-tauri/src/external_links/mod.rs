@@ -63,7 +63,11 @@ impl Confirmation {
         Self {
             title: "Rhizomind — внешняя ссылка".into(),
             message,
-            open_label: "Открыть в браузере".into(),
+            open_label: if address.is_mail() {
+                "Открыть в почте".into()
+            } else {
+                "Открыть в браузере".into()
+            },
             cancel_label: "Отмена".into(),
         }
     }

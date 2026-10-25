@@ -132,6 +132,12 @@ fn shown_equals_launched(url: &str) -> (Confirmation, String) {
         "{url}: в окне нет строки {launched:?}:\n{}",
         confirmation.message
     );
+    assert!(
+        launched
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)),
+        "{url}: в ОС ушёл символ вне RFC 3986: {launched}"
+    );
     (confirmation, launched)
 }
 
@@ -418,13 +424,10 @@ fn only_rfc3986_characters_reach_os() {
         "mailto:x\" /a \"C:\\Users\\me\\secret.docx",
         "mailto:a b@example.org",
         "mailto:a\\b@example.org",
-        "mailto:a@example.org?subject=a\"b",
         "mailto:a@example.org?subject=x^y",
         "https://example.org/?q=`calc`",
         "https://example.org/?q=a|b",
-        "https://example.org/#a\"b",
         "https://example.org/?q={x}",
-        "https://example.org/?q=<x>",
     ] {
         let seam = Seam::default();
         assert_eq!(
@@ -434,6 +437,15 @@ fn only_rfc3986_characters_reach_os() {
         );
         assert!(seam.asked.borrow().is_empty(), "{url}: окна не было");
         assert!(seam.launched.borrow().is_empty(), "{url}: в ОС не ушло");
+    }
+    // Эти символы `url` сам кодирует процентами — в ОС они уходят безопасными.
+    for (url, encoded) in [
+        ("mailto:a@example.org?subject=a\"b", "%22"),
+        ("https://example.org/#a\"b", "%22"),
+        ("https://example.org/?q=<x>", "%3C"),
+    ] {
+        let (_, launched) = shown_equals_launched(url);
+        assert!(launched.contains(encoded), "{launched}");
     }
     // Допустимые символы RFC 3986 проходят.
     for url in [
