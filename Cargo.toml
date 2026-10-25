@@ -4,6 +4,8 @@
 [workspace]
 resolver = "3"
 members = ["src-tauri", "tools/gen-vault"]
+# Сторонний код (например, своя копия wry в vendor/) — не член рабочего пространства.
+exclude = ["vendor"]
 
 [profile.release]
 codegen-units = 1
