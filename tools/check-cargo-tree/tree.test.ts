@@ -67,14 +67,16 @@ describe('findNetworkCrates', () => {
 });
 
 describe('cargoTreeArgs', () => {
-  it('нормальные зависимости для одной цели, без отступов, с функциями', () => {
+  it('нормальные зависимости для одной цели без процедурных макросов, без отступов, с функциями', () => {
+    // no-proc-macro: макросы собираются для машины сборки, их зависимости
+    // зависят от ОС раннера (на Windows — winapi-util и др. у любой цели).
     expect(cargoTreeArgs('x86_64-pc-windows-msvc', 'src-tauri/Cargo.toml')).toEqual([
       'tree',
       '--manifest-path',
       'src-tauri/Cargo.toml',
       '--locked',
       '-e',
-      'normal',
+      'normal,no-proc-macro',
       '--target',
       'x86_64-pc-windows-msvc',
       '--prefix',

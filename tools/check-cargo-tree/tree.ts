@@ -50,6 +50,10 @@ export function deniedCrates(denyToml: string): Set<string> {
   return new Set([...list.matchAll(/crate\s*=\s*"([^"]+)"/g)].map((m) => m[1] ?? ''));
 }
 
+// `no-proc-macro`: процедурные макросы и их зависимости собираются для машины
+// сборки, а не для цели, — их набор зависел бы от ОС раннера CI (на Windows у
+// любой цели появлялись winapi-util, windows-sys). В программу они не попадают;
+// сетевые крейты во всём графе, включая макросы, запрещает `cargo deny` (bans).
 export function cargoTreeArgs(target: string, manifestPath: string): string[] {
   return [
     'tree',
@@ -57,7 +61,7 @@ export function cargoTreeArgs(target: string, manifestPath: string): string[] {
     manifestPath,
     '--locked',
     '-e',
-    'normal',
+    'normal,no-proc-macro',
     '--target',
     target,
     '--prefix',
