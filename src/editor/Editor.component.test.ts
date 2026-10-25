@@ -203,7 +203,7 @@ describe('автосохранение и индикатор', () => {
   it('«Сохранено» → ввод → «Сохраняется» → через 1 с записано и «Сохранено»', async () => {
     const disk = new Disk(SAMPLES);
     const { view, calls } = await openWindow(disk, ['LF без BOM.md']);
-    const status = screen.getByRole('status', { name: 'Состояние сохранения' });
+    const status = screen.getByTestId('save-status');
     expect(status.textContent?.trim()).toBe('Сохранено');
 
     type(view, 'новое\n');
@@ -270,7 +270,7 @@ describe('конфликт изменений и удаление снаружи
         'Заметка «LF без BOM» изменилась на диске одновременно с вашими правками. Сохранены обе версии: ваша — в заметке, версия с диска — рядом, в «LF без BOM (внешняя версия 2026-10-25 12-00)».',
       ),
     ).toBeTruthy();
-    expect(screen.getByRole('status', { name: 'Состояние сохранения' }).textContent?.trim()).toBe('Сохранено');
+    expect(screen.getByTestId('save-status').textContent?.trim()).toBe('Сохранено');
   });
 
   it('сбой записи — уведомление, «Не сохранено», текст остаётся в редакторе', async () => {
@@ -289,11 +289,11 @@ describe('конфликт изменений и удаление снаружи
         'Не удалось сохранить заметку «LF без BOM». Не удалось прочитать или записать файл. Текст остаётся в редакторе, сохранение повторится.',
       ),
     ).toBeTruthy();
-    expect(screen.getByRole('status', { name: 'Состояние сохранения' }).textContent?.trim()).toBe('Не сохранено');
+    expect(screen.getByTestId('save-status').textContent?.trim()).toBe('Не сохранено');
     expect(view.state.doc.toString()).toMatch(/важное$/);
   });
 
-  it('заметку удалили снаружи: запись прекращается, индикатор «Удалена на диске»', async () => {
+  it('файла нет на диске (not_found): текст остаётся, «Не сохранено: файла нет на диске», ошибка объявляется', async () => {
     const disk = new Disk(SAMPLES);
     const { view, calls } = await openWindow(disk, ['LF без BOM.md']);
     disk.files.delete('LF без BOM.md');
@@ -302,9 +302,37 @@ describe('конфликт изменений и удаление снаружи
     window.dispatchEvent(new Event('pagehide'));
 
     await waitFor(() =>
-      expect(screen.getByRole('status', { name: 'Состояние сохранения' }).textContent?.trim()).toBe('Удалена на диске'),
+      expect(screen.getByTestId('save-status').textContent?.trim()).toBe('Не сохранено: файла нет на диске'),
     );
+    expect(view.state.doc.toString()).toMatch(/x$/);
+    expect(view.state.readOnly).toBe(false);
     expect(writes(calls)).toHaveLength(1);
+    expect(screen.getByRole('status', { name: 'Состояние сохранения' }).textContent).toBe(
+      'Не сохранено: файла нет на диске',
+    );
+  });
+
+  it('пауза ввода не объявляется живой областью; подробность ошибки доступна с клавиатуры', async () => {
+    const disk = new Disk(SAMPLES);
+    const { view } = await openWindow(disk, ['LF без BOM.md'], {
+      note_write: () => {
+        throw { code: 'io_failed', message_key: 'errors.io_failed' } satisfies CoreError;
+      },
+    });
+    const live = screen.getByRole('status', { name: 'Состояние сохранения' });
+
+    type(view, 'a');
+    await tick();
+    expect(live.textContent).toBe('');
+
+    window.dispatchEvent(new Event('pagehide'));
+    await waitFor(() => expect(live.textContent).toBe('Не сохранено'));
+    const detail = screen.getByRole('button', {
+      name: 'Не сохранено',
+      description: 'Не удалось прочитать или записать файл.',
+    });
+    detail.focus();
+    expect(document.activeElement).toBe(detail);
   });
 });
 
@@ -314,7 +342,7 @@ describe('только чтение', () => {
     const { view, calls } = await openWindow(disk, ['Невалидный UTF-8.md']);
 
     expect(screen.getByText('Только чтение: файл не в кодировке UTF-8')).toBeTruthy();
-    expect(screen.getByRole('status', { name: 'Состояние сохранения' }).textContent?.trim()).toBe('Только чтение');
+    expect(screen.getByTestId('save-status').textContent?.trim()).toBe('Только чтение');
     expect(view.state.readOnly).toBe(true);
     expect(view.contentDOM.getAttribute('contenteditable')).toBe('false');
 
@@ -324,10 +352,13 @@ describe('только чтение', () => {
   });
 
   it('файл больше лимита: размер и лимит в подсказке, где поднять лимит', async () => {
-    const disk = new Disk({ 'Выгрузка.md': utf8('строка\n'.repeat(1_100_000)) });
-    const size = disk.files.get('Выгрузка.md')?.length ?? 0;
-    expect(size).toBeGreaterThan(LIMIT);
-    const { view } = await openWindow(disk, ['Выгрузка.md']);
+    const size = 14.2 * 1024 * 1024;
+    const big: NoteReadResponse = {
+      text: '# Выгрузка\nстрока\n',
+      version: { hash: 'e'.repeat(64), size, modified_ms: 1 },
+      read_only: { reason: 'too_large', limit_bytes: LIMIT },
+    };
+    const { view } = await openWindow(new Disk({}), ['Выгрузка.md'], { note_read: () => big });
 
     const mb = new Intl.NumberFormat('ru', { maximumFractionDigits: 1 }).format(size / 1024 / 1024);
     expect(screen.getByText(`Только чтение: файл ${mb} МБ, лимит для редактирования — 10 МБ`)).toBeTruthy();
@@ -420,5 +451,23 @@ describe('сигналы «переименовано» и «удалено» (A
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
     expect(JSON.stringify(writes(calls))).toBe('[]');
+  });
+});
+
+describe('удалённая заметка', () => {
+  it('после removed() редактор только для чтения, индикатор «Удалена на диске»', async () => {
+    mockCore(mocksFor(new Disk(SAMPLES)));
+    const result = render(Editor, {
+      path: ['LF без BOM.md'],
+      notify: () => {},
+      onStatus: () => {},
+    });
+    const view = await editorView();
+    type(view, 'x');
+
+    result.component.removed(['LF без BOM.md']);
+
+    await waitFor(() => expect(view.state.readOnly).toBe(true));
+    expect(view.contentDOM.getAttribute('contenteditable')).toBe('false');
   });
 });

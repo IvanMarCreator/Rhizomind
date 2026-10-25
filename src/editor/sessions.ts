@@ -97,17 +97,25 @@ export class EditorSessions {
    * новому пути с прежней ожидаемой версией.
    */
   renamed(from: VaultPath, to: VaultPath): void {
+    const current = this.#currentSession();
     for (const session of this.#sessions()) {
       if (!within(session.path, from)) continue;
       const key = pathKey(session.path);
-      session.moveTo([...to, ...session.path.slice(from.length)]);
-      if (this.#unsaved.get(key) === session) {
-        this.#unsaved.delete(key);
-        this.#unsaved.set(pathKey(session.path), session);
+      const moved = [...to, ...session.path.slice(from.length)];
+      if (this.#unsaved.get(key) === session) this.#unsaved.delete(key);
+      if (session !== current && current && pathKey(current.path) === pathKey(moved) && !current.hasUnsavedChanges) {
+        // Окно уже открыло новый путь, прочитав файл с диска, а ввод остался в
+        // сессии старого пути: показать её вместо свежей.
+        current.dispose();
+        session.moveTo(moved);
+        this.#setPane({ kind: 'open', session });
+        continue;
       }
+      session.moveTo(moved);
+      if (session !== this.#currentSession()) this.#unsaved.set(pathKey(session.path), session);
     }
-    if (this.#pane.kind === 'loading' && within(this.#pane.path, from)) {
-      // Чтение по старому пути ещё идёт: перечитать по новому.
+    if ((this.#pane.kind === 'loading' || this.#pane.kind === 'failed') && within(this.#pane.path, from)) {
+      // Чтение по старому пути идёт или не удалось: перечитать по новому.
       const path = [...to, ...this.#pane.path.slice(from.length)];
       this.#pane = { kind: 'empty' };
       this.show(path);
@@ -135,7 +143,15 @@ export class EditorSessions {
     this.#unsaved.clear();
     this.#setPane({ kind: 'empty' });
     for (const session of sessions) {
-      void session.flush().finally(() => session.dispose());
+      void session.flush().finally(() => {
+        if (session.hasUnsavedChanges) {
+          const status = session.status;
+          const message =
+            status.kind === 'failed' ? userMessage(status.error) : t('errors.not_found');
+          this.#listener.notify(t('editor.closeUnsaved', { name: noteName(session.path), message }));
+        }
+        session.dispose();
+      });
     }
   }
 

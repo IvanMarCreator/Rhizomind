@@ -7,8 +7,10 @@
 // стал после правок пользователя, и без правок запись не отправляется вовсе.
 //
 // Ни один ввод не теряется: запись по таймеру, по требованию (переход к
-// другой заметке, закрытие) и повтор после сбоя. Единственное исключение —
-// заметку удалили снаружи (`not_found`): ввод отбрасывается (решение
+// другой заметке, закрытие) и повтор после сбоя. `not_found` при записи —
+// не удаление: файл могли переименовать раньше, чем окно об этом узнало;
+// текст держится до `moveTo()` (запись по новому пути) или `discard()`.
+// Ввод отбрасывается только по `discard()` — заметку удалили (решение
 // владельца, инвариант 4).
 import { CoreCallError, core } from '../api/index.ts';
 import type {
@@ -45,7 +47,12 @@ export type SaveStatus =
   /** Запись не удалась; текст в редакторе, повтор по таймеру. */
   | { kind: 'failed'; error: unknown }
   | { kind: 'read_only'; reason: ReadOnlyReason }
-  /** Файл удалён снаружи: запись прекращена. */
+  /**
+   * Файла по этому пути нет (`not_found`): возможно, его переименовали, а окно
+   * ещё не узнало. Текст держится; запись повторится после `moveTo()`.
+   */
+  | { kind: 'missing' }
+  /** Заметку удалили (`discard()`): ввод отброшен, запись прекращена. */
   | { kind: 'deleted' };
 
 export interface SessionHooks {
@@ -103,6 +110,8 @@ export class NoteSession {
    */
   moveTo(path: VaultPath): void {
     this.#path = path;
+    // Запись не нашла файл по старому пути — повторить по новому.
+    if (this.#status.kind === 'missing' && !this.#disposed && !this.#inFlight) void this.#save();
   }
 
   /**
@@ -139,6 +148,8 @@ export class NoteSession {
   edit(text: string): void {
     if (this.readOnly || this.#status.kind === 'deleted' || this.#disposed) return;
     this.#current = text;
+    // Файла нет: пишем только после moveTo() или по требованию.
+    if (this.#status.kind === 'missing') return;
     if (text === this.#saved && !this.#inFlight) {
       this.#cancelTimer();
       this.#failing = false;
@@ -190,11 +201,12 @@ export class NoteSession {
   #save(): Promise<SaveOutcome> {
     const text = this.#current;
     const path = this.#path;
-    if (this.#status.kind !== 'failed') this.#setStatus({ kind: 'pending' });
+    if (this.#status.kind !== 'failed' && this.#status.kind !== 'missing') this.#setStatus({ kind: 'pending' });
     const flight = this.#store
       .write({ path, text, expected_version: this.#version })
       .then(
         (response) => {
+          if (this.#disposed) return 'failed' as const;
           this.#version = response.version;
           this.#saved = text;
           this.#failing = false;
@@ -202,15 +214,16 @@ export class NoteSession {
           return 'saved' as const;
         },
         (error: unknown): SaveOutcome => {
+          if (this.#disposed) return 'failed';
           // Запрос ушёл по старому пути, а заметку переименовали: повторить.
           if (isNotFound(error) && path !== this.#path) return 'retry';
-          if (isNotFound(error)) {
-            this.#cancelTimer();
-            this.#setStatus({ kind: 'deleted' });
-            return 'failed';
-          }
           if (!this.#failing) this.#hooks.onSaveFailed?.(error);
           this.#failing = true;
+          if (isNotFound(error)) {
+            this.#cancelTimer();
+            this.#setStatus({ kind: 'missing' });
+            return 'failed';
+          }
           this.#setStatus({ kind: 'failed', error });
           if (!this.#disposed) this.#schedule(RETRY_DELAY_MS);
           return 'failed';
@@ -218,6 +231,7 @@ export class NoteSession {
       )
       .then((outcome) => {
         this.#inFlight = null;
+        if (this.#disposed) return outcome;
         if (outcome === 'saved') this.#afterSave();
         else if (outcome === 'retry' && !this.#disposed && this.#timer === null) void this.#save();
         return outcome;

@@ -257,7 +257,7 @@ describe('ошибки записи', () => {
     expect(s.status.kind).toBe('failed');
   });
 
-  it('заметку удалили снаружи (not_found): запись прекращается, ввод отбрасывается — согласованный случай', async () => {
+  it('not_found при записи — не удаление: текст остаётся, статус «нет файла», без повторов по таймеру', async () => {
     const store = new FakeStore();
     store.respond = () => ({ code: 'not_found', message_key: 'errors.not_found' });
     const { s, failures } = session(store);
@@ -266,12 +266,50 @@ describe('ошибки записи', () => {
     await s.flush();
     s.edit('xy');
     await vi.advanceTimersByTimeAsync(10 * RETRY_DELAY_MS);
-    await s.flush();
 
+    expect(s.status.kind).toBe('missing');
+    expect(s.hasUnsavedChanges).toBe(true);
+    expect(s.text).toBe('xy');
+    expect(failures).toHaveLength(1);
+    // Правка во время «нет файла» тоже не пишется вслепую по таймеру.
     expect(store.writes).toHaveLength(1);
+  });
+
+  it('после «нет файла» переименование (moveTo) повторяет запись по новому пути с прежней версией', async () => {
+    const store = new FakeStore();
+    store.respond = (request) =>
+      request.path[0] === 'Новое.md'
+        ? { outcome: 'saved', version: version(5) }
+        : { code: 'not_found', message_key: 'errors.not_found' };
+    const { s } = session(store);
+
+    s.edit('ввод');
+    await s.flush();
+    expect(s.status.kind).toBe('missing');
+
+    s.moveTo(['Новое.md']);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.writes.map((w) => [w.path, w.text, w.expected_version])).toEqual([
+      [PATH, 'ввод', version(1)],
+      [['Новое.md'], 'ввод', version(1)],
+    ]);
+    expect(s.status.kind).toBe('saved');
+  });
+
+  it('discard (удаление) — ввод отбрасывается, статус «удалена» не перезаписывается ответом записи в полёте', async () => {
+    const store = new FakeStore();
+    store.hold = true;
+    const { s } = session(store);
+
+    s.edit('x');
+    void s.flush();
+    s.discard();
+    store.release();
+    await vi.advanceTimersByTimeAsync(0);
+
     expect(s.status.kind).toBe('deleted');
     expect(s.hasUnsavedChanges).toBe(false);
-    expect(failures).toEqual([]);
   });
 });
 

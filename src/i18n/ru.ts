@@ -39,6 +39,8 @@ export const ru = {
   'editor.status.failed': 'Не сохранено',
   'editor.status.readOnly': 'Только чтение',
   'editor.status.deleted': 'Удалена на диске',
+  'editor.status.missing': 'Не сохранено: файла нет на диске',
+  'editor.closeUnsaved': 'Ввод в заметке «{name}» не сохранён: {message}',
   'editor.saveFailed':
     'Не удалось сохранить заметку «{name}». {message} Текст остаётся в редакторе, сохранение повторится.',
   'editor.conflictSaved':

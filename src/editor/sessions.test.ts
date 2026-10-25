@@ -334,3 +334,74 @@ describe('редактор убран со страницы', () => {
     expect(pane()).toEqual({ kind: 'empty' });
   });
 });
+
+describe('ревью 2.4: переименование, о котором окно ещё не знает', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  it('(а) внешнее переименование: автосохранение раньше события — ввод держится и пишется по новому пути', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const session = (pane() as Open).session;
+    session.edit('мой ввод');
+    store.files.set('А2.md', store.files.get(key(A)) ?? '');
+    store.files.delete(key(A));
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(session.status.kind).toBe('missing');
+    expect(session.text).toBe('мой ввод');
+
+    sessions.renamed(A, ['А2.md']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.files.get('А2.md')).toBe('мой ввод');
+    expect(store.writes.at(-1)).toEqual({ path: ['А2.md'], text: 'мой ввод', expected_version: v1 });
+  });
+
+  it('(б) окно открыло новый путь раньше renamed(): ввод не теряется, после сигнала показан и записан', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.files.set('А2.md', store.files.get(key(A)) ?? '');
+    store.files.delete(key(A));
+
+    sessions.show(['А2.md']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect((pane() as Open).session.text).toBe('текст А');
+
+    sessions.renamed(A, ['А2.md']);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((pane() as Open).session.text).toBe('мой ввод');
+    expect(store.files.get('А2.md')).toBe('мой ввод');
+  });
+
+  it('renamed() при области «не удалось открыть» перечитывает по новому пути', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(['Старое.md']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pane().kind).toBe('failed');
+    store.files.set('Новое.md', 'найдено');
+
+    sessions.renamed(['Старое.md'], ['Новое.md']);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(openText(pane())).toBe('найдено');
+  });
+
+  it('close: неудачная последняя запись — уведомление, а не тишина', async () => {
+    const { sessions, pane, store, notices } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('ввод');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+    (pane() as Open).session.flush();
+    await vi.advanceTimersByTimeAsync(0);
+    notices.length = 0;
+
+    sessions.close();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(notices).toEqual(['Ввод в заметке «А» не сохранён: Не удалось прочитать или записать файл.']);
+  });
+});

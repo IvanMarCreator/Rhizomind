@@ -41,12 +41,16 @@
   } = $props();
 
   let pane = $state.raw<EditorPane>({ kind: 'empty' });
+  let saveStatus = $state.raw<SaveStatus | null>(null);
 
   const sessions = new EditorSessions(
     untrack(() => store),
     {
       onPane: (next) => (pane = next),
-      onStatus: (next) => onStatus(next),
+      onStatus: (next) => {
+        saveStatus = next;
+        onStatus(next);
+      },
       notify: (text) => notify(text),
     },
   );
@@ -96,7 +100,7 @@
         <ReadOnlyNotice reason={session.readOnly} size={session.size} {onOpenSettings} />
       {/if}
       {#key session}
-        <NoteText {session} focus={focusOnOpen} />
+        <NoteText {session} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
       {/key}
     {:else if pane.kind === 'loading'}
       {#if showTitle}<h1 class="title">{noteName(pane.path)}</h1>{/if}

@@ -5,22 +5,37 @@
 <script lang="ts">
   import { EditorView } from '@codemirror/view';
   import { onMount } from 'svelte';
-  import { createEditorState } from './codemirror.ts';
+  import { createEditorState, setReadOnly } from './codemirror.ts';
   import type { NoteSession } from './session.ts';
 
-  let { session, focus = false }: { session: NoteSession; focus?: boolean } = $props();
+  let {
+    session,
+    focus = false,
+    locked = false,
+  }: {
+    session: NoteSession;
+    focus?: boolean;
+    /** Заметку удалили: правка запрещена (ввод уже отброшен). */
+    locked?: boolean;
+  } = $props();
   let host: HTMLDivElement;
+  let view: EditorView | undefined = $state.raw();
+
+  $effect(() => {
+    if (view) setReadOnly(view, locked || session.readOnly !== null);
+  });
 
   onMount(() => {
-    const view = new EditorView({
+    const created = new EditorView({
       parent: host,
       state: createEditorState(session.text, {
         readOnly: session.readOnly !== null,
         onChange: (text) => session.edit(text),
       }),
     });
-    if (focus && !session.readOnly) view.focus();
-    return () => view.destroy();
+    if (focus && !session.readOnly) created.focus();
+    view = created;
+    return () => created.destroy();
   });
 </script>
 
