@@ -77,12 +77,8 @@ impl TreeModel {
         Ok(model)
     }
 
-    /// Корень хранилища.
-    pub(crate) fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Все элементы модели по порядку путей.
+    #[cfg(test)]
     pub(crate) fn entries(&self) -> Vec<(VaultPath, EntryKind)> {
         self.nodes
             .iter()
@@ -134,9 +130,10 @@ impl TreeModel {
             let missing = (1..key.len()).find(|&n| !self.nodes.contains_key(&key[..n]));
             lifted.insert(key[..missing.unwrap_or(key.len())].to_vec());
         }
+        // По порядку путей вложенные идут сразу за папкой.
         let mut targets: BTreeSet<Key> = BTreeSet::new();
         for key in lifted {
-            if !targets.iter().any(|kept| key.starts_with(kept)) {
+            if !targets.last().is_some_and(|kept| key.starts_with(kept)) {
                 targets.insert(key);
             }
         }
@@ -173,12 +170,7 @@ impl TreeModel {
     }
 
     /// Изменения из разницы диска и модели: свои записи, переименования.
-    fn resolve(
-        &self,
-        diff: Diff,
-        disk: &BTreeMap<Key, Node>,
-        own: &OwnWrites,
-    ) -> Vec<TreeChange> {
+    fn resolve(&self, diff: Diff, disk: &BTreeMap<Key, Node>, own: &OwnWrites) -> Vec<TreeChange> {
         let Diff {
             mut removed,
             mut created,
@@ -192,7 +184,11 @@ impl TreeModel {
 
         for (key, old) in changed {
             let new = &disk[&key];
-            if own.is_own(&VaultPath::from_components(key.clone()), &self.abs(&key), new.size) {
+            if own.is_own(
+                &VaultPath::from_components(key.clone()),
+                &self.abs(&key),
+                new.size,
+            ) {
                 continue;
             }
             match (old.id, new.id) {
@@ -203,12 +199,14 @@ impl TreeModel {
             }
         }
 
+        let removed_index = Origins::index(&removed);
+        let displaced_index = Origins::index(&displaced);
         let created_keys: Vec<Key> = created.keys().cloned().collect();
         for to in created_keys {
             let Some(new) = created.get(&to).cloned() else {
                 continue; // уже ушёл вместе с папкой
             };
-            if let Some(from) = find_origin(&new, &removed) {
+            if let Some(from) = removed_index.find(&new, &removed) {
                 let old = removed.remove(&from).expect("найден");
                 created.remove(&to);
                 if old.is_folder() {
@@ -218,7 +216,7 @@ impl TreeModel {
                 }
                 own.forget(&VaultPath::from_components(from.clone()));
                 renamed.push((from, to));
-            } else if let Some(from) = find_origin(&new, &displaced) {
+            } else if let Some(from) = displaced_index.find(&new, &displaced) {
                 // Прежний файл уехал на `to`, а на его месте новый файл.
                 let old = displaced.remove(&from).expect("найден");
                 created.remove(&to);
@@ -236,18 +234,27 @@ impl TreeModel {
             own.forget(&VaultPath::from_components(key.clone()));
         }
 
+        // Изменения применяются по порядку, поэтому путь «откуда» и пути
+        // исчезнувших пишутся с учётом уже применённых переименований:
+        // файл, вынесенный из переименованной папки, или удалённый в ней,
+        // к этому моменту лежит уже под новым именем папки. Папки — раньше
+        // файлов и от верхних к вложенным: новые места уже есть.
+        let is_folder = |key: &Key| disk.get(key).is_some_and(Node::is_folder);
+        renamed.sort_by_key(|(from, to)| (!is_folder(to), to.len(), from.clone()));
+        let mut applied: Vec<(Key, Key)> = Vec::new();
         let path = |key: Key| VaultPath::from_components(key);
         let mut changes = Vec::new();
-        changes.extend(renamed.into_iter().map(|(from, to)| TreeChange::Renamed {
-            from: path(from),
-            to: path(to),
+        for (from, to) in renamed {
+            let from = through(&applied, from);
+            changes.push(TreeChange::Renamed {
+                from: path(from.clone()),
+                to: path(to.clone()),
+            });
+            applied.push((from, to));
+        }
+        changes.extend(removed.into_keys().rev().map(|key| TreeChange::Removed {
+            path: path(through(&applied, key)),
         }));
-        changes.extend(
-            removed
-                .into_keys()
-                .rev()
-                .map(|key| TreeChange::Removed { path: path(key) }),
-        );
         changes.extend(created.into_iter().map(|(key, node)| TreeChange::Created {
             path: path(key),
             entry_kind: node.kind,
@@ -307,6 +314,18 @@ impl TreeModel {
             out.insert(key, node);
         }
     }
+}
+
+/// Где окажется путь после переименований `applied` (по порядку).
+fn through(applied: &[(Key, Key)], mut key: Key) -> Key {
+    for (from, to) in applied {
+        if key.starts_with(from) {
+            let mut moved = to.clone();
+            moved.extend_from_slice(&key[from.len()..]);
+            key = moved;
+        }
+    }
+    key
 }
 
 /// Имя с точки в начале: дерево его не показывает, слежение не учитывает.
@@ -391,32 +410,63 @@ fn diff(disk: &BTreeMap<Key, Node>, model: &BTreeMap<Key, Node>) -> Diff {
 /// размером и датой изменения (переименование их не меняет).
 const FILE_ID_IS_UNIQUE: bool = cfg!(windows);
 
-/// Откуда приехал появившийся элемент: исчезнувший с тем же
-/// идентификатором; если идентификатора нет — единственный исчезнувший файл
-/// с теми же размером и датой изменения.
-fn find_origin(new: &Node, gone: &BTreeMap<Key, Node>) -> Option<Key> {
-    let same_kind = |old: &&Node| old.kind == new.kind;
-    if let Some(id) = new.id {
-        if let Some((key, _)) = gone.iter().find(|(_, old)| {
-            same_kind(old)
-                && old.id == Some(id)
-                && (FILE_ID_IS_UNIQUE || old.is_folder() || old.same_content(new))
-        }) {
-            return Some(key.clone());
+/// Указатель исчезнувших элементов для поиска переименований.
+struct Origins {
+    by_id: HashMap<FileId, Vec<Key>>,
+    by_content: HashMap<(u64, SystemTime), Vec<Key>>,
+}
+
+impl Origins {
+    fn index(gone: &BTreeMap<Key, Node>) -> Self {
+        let mut index = Self {
+            by_id: HashMap::new(),
+            by_content: HashMap::new(),
+        };
+        for (key, node) in gone {
+            if let Some(id) = node.id {
+                index.by_id.entry(id).or_default().push(key.clone());
+            }
+            if let (false, Some(modified)) = (node.is_folder(), node.modified) {
+                index
+                    .by_content
+                    .entry((node.size, modified))
+                    .or_default()
+                    .push(key.clone());
+            }
         }
+        index
     }
-    if new.is_folder() {
-        return None;
-    }
-    let mut candidates = gone.iter().filter(|(_, old)| {
-        same_kind(old)
-            && (old.id.is_none() || new.id.is_none())
-            && old.modified.is_some()
-            && old.same_content(new)
-    });
-    match (candidates.next(), candidates.next()) {
-        (Some((key, _)), None) => Some(key.clone()),
-        _ => None,
+
+    /// Откуда приехал появившийся элемент: ещё не сопоставленный
+    /// исчезнувший с тем же идентификатором; если идентификатора нет —
+    /// единственный исчезнувший файл с теми же размером и датой изменения.
+    fn find(&self, new: &Node, gone: &BTreeMap<Key, Node>) -> Option<Key> {
+        let same_kind = |old: &Node| old.kind == new.kind;
+        if let Some(id) = new.id {
+            let found = self.by_id.get(&id).into_iter().flatten().find(|key| {
+                gone.get(*key).is_some_and(|old| {
+                    same_kind(old)
+                        && (FILE_ID_IS_UNIQUE || old.is_folder() || old.same_content(new))
+                })
+            });
+            if let Some(key) = found {
+                return Some(key.clone());
+            }
+        }
+        let modified = new.modified.filter(|_| !new.is_folder())?;
+        let mut candidates = self
+            .by_content
+            .get(&(new.size, modified))
+            .into_iter()
+            .flatten()
+            .filter(|key| {
+                gone.get(*key)
+                    .is_some_and(|old| same_kind(old) && (old.id.is_none() || new.id.is_none()))
+            });
+        match (candidates.next(), candidates.next()) {
+            (Some(key), None) => Some(key.clone()),
+            _ => None,
+        }
     }
 }
 

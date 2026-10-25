@@ -125,7 +125,9 @@ impl Collector {
                 mirror.apply(payload);
             }
             applied = payloads.len();
-            if self.quiet_for() >= quiet && mirror.tree == disk_tree(root) {
+            // Тишина считается и от начала ожидания: изменения содержимого
+            // дерево не меняют, и до первой пачки зеркало уже «совпадает».
+            if self.quiet_for().min(start.elapsed()) >= quiet && mirror.tree == disk_tree(root) {
                 return Ok(start.elapsed());
             }
             if start.elapsed() > timeout {

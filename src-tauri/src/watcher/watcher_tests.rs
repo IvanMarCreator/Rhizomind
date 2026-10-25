@@ -54,29 +54,35 @@ fn external_changes_arrive_as_tree_changes() {
 
     write(dir.path(), "Новая.md", "текст");
     assert!(
-        collector.wait_for(WAIT, |_| collector.changes().contains(&TreeChange::Created {
-            path: vp("Новая.md"),
-            entry_kind: EntryKind::Note
-        })),
+        collector.wait_for(WAIT, |_| collector.changes().contains(
+            &TreeChange::Created {
+                path: vp("Новая.md"),
+                entry_kind: EntryKind::Note
+            }
+        )),
         "нет события о новой заметке: {:?}",
         collector.payloads()
     );
 
     write(dir.path(), "есть.md", "другой текст");
     assert!(
-        collector.wait_for(WAIT, |_| collector
-            .changes()
-            .contains(&TreeChange::Modified { path: vp("есть.md") })),
+        collector.wait_for(WAIT, |_| collector.changes().contains(
+            &TreeChange::Modified {
+                path: vp("есть.md")
+            }
+        )),
         "нет события об изменении: {:?}",
         collector.payloads()
     );
 
     fs::rename(dir.path().join("Новая.md"), dir.path().join("Другая.md")).expect("перенос");
     assert!(
-        collector.wait_for(WAIT, |_| collector.changes().contains(&TreeChange::Renamed {
-            from: vp("Новая.md"),
-            to: vp("Другая.md")
-        })),
+        collector.wait_for(WAIT, |_| collector.changes().contains(
+            &TreeChange::Renamed {
+                from: vp("Новая.md"),
+                to: vp("Другая.md")
+            }
+        )),
         "нет события о переименовании: {:?}",
         collector.payloads()
     );
@@ -136,9 +142,11 @@ fn own_atomic_write_is_not_external_change() {
 
     // А вот внешняя запись того же файла — изменение.
     write(dir.path(), "моя.md", "чужая правка");
-    assert!(collector.wait_for(WAIT, |_| collector
-        .changes()
-        .contains(&TreeChange::Modified { path: vp("моя.md") })));
+    assert!(collector.wait_for(WAIT, |_| collector.changes().contains(
+        &TreeChange::Modified {
+            path: vp("моя.md")
+        }
+    )));
 }
 
 #[test]
@@ -156,7 +164,10 @@ fn rescan_after_lost_events_brings_tree_in_line_with_disk() {
     fs::remove_file(dir.path().join("удалить.md")).expect("удаление");
     write(dir.path(), "новая/2.md", "2");
     std::thread::sleep(QUIET);
-    assert!(collector.payloads().is_empty(), "события должны были потеряться");
+    assert!(
+        collector.payloads().is_empty(),
+        "события должны были потеряться"
+    );
     watcher.lose_os_events(false);
 
     watcher.rescan();

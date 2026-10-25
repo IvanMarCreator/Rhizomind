@@ -65,8 +65,8 @@ impl OwnWrites {
         let Some(expected) = self.lock().get(path).cloned() else {
             return false;
         };
-        let own = expected.size == size
-            && hash_file(file).is_ok_and(|actual| actual == expected.hash);
+        let own =
+            expected.size == size && hash_file(file).is_ok_and(|actual| actual == expected.hash);
         if !own {
             let mut entries = self.lock();
             // Пока считали хэш, ядро могло записать новую версию — её не трогаем.

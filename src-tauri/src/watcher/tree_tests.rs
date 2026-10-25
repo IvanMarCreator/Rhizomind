@@ -107,7 +107,9 @@ fn removed_folder_reports_children_first() {
     assert_eq!(
         changes,
         vec![
-            TreeChange::Removed { path: vp("А/1.md") },
+            TreeChange::Removed {
+                path: vp("А/1.md")
+            },
             TreeChange::Removed { path: vp("А") },
         ]
     );
@@ -249,11 +251,7 @@ fn case_only_rename_is_a_rename() {
     let dir = tempfile::tempdir().expect("временная папка");
     write(dir.path(), "заметка.md", "1");
     let mut model = TreeModel::scan(dir.path()).expect("обход");
-    fs::rename(
-        dir.path().join("заметка.md"),
-        dir.path().join("Заметка.md"),
-    )
-    .expect("перенос");
+    fs::rename(dir.path().join("заметка.md"), dir.path().join("Заметка.md")).expect("перенос");
 
     let changes = model.reconcile([vp("заметка.md"), vp("Заметка.md")], &OwnWrites::new());
 
@@ -366,4 +364,57 @@ fn deleted_file_and_new_file_with_reused_id_are_not_a_rename() {
             },
         ]
     );
+}
+
+#[test]
+fn journal_forgets_removed_and_renamed_paths() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "а.md", "1");
+    write(dir.path(), "б.md", "2");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let own = OwnWrites::new();
+    own.record(&vp("а.md"), &hash("1"), 1);
+    own.record(&vp("б.md"), &hash("2"), 1);
+
+    fs::remove_file(dir.path().join("а.md")).expect("удаление");
+    fs::rename(dir.path().join("б.md"), dir.path().join("в.md")).expect("перенос");
+    model.reconcile([vp("а.md"), vp("б.md"), vp("в.md")], &own);
+
+    assert_eq!(own.len(), 0);
+}
+
+#[test]
+fn changes_inside_renamed_folder_apply_in_order() {
+    // Файл вынесли из папки, другой удалили в ней, а папку переименовали —
+    // всё одной пачкой. Изменения, применённые по порядку, дают диск.
+    use super::test_support::{Mirror, disk_tree};
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Ф/вынести.md", "1");
+    write(dir.path(), "Ф/удалить.md", "22");
+    write(dir.path(), "Ф/остаётся.md", "333");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let mut mirror = Mirror::from_disk(dir.path());
+    fs::create_dir(dir.path().join("Перенесённые")).expect("папка");
+    fs::rename(
+        dir.path().join("Ф/вынести.md"),
+        dir.path().join("Перенесённые/вынесено.md"),
+    )
+    .expect("перенос");
+    fs::remove_file(dir.path().join("Ф/удалить.md")).expect("удаление");
+    fs::rename(dir.path().join("Ф"), dir.path().join("Переименованная")).expect("перенос");
+
+    let changes = model.reconcile(
+        [vp("Ф"), vp("Переименованная"), vp("Перенесённые")],
+        &OwnWrites::new(),
+    );
+    mirror.apply(&crate::commands::VaultChangedPayload {
+        rescan: false,
+        changes: changes.clone(),
+    });
+
+    assert_eq!(mirror.tree, disk_tree(dir.path()), "изменения: {changes:?}");
+    assert!(changes.contains(&TreeChange::Renamed {
+        from: vp("Переименованная/вынести.md"),
+        to: vp("Перенесённые/вынесено.md")
+    }));
 }
