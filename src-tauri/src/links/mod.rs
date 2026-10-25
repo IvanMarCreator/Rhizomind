@@ -551,18 +551,22 @@ mod tests {
     }
 
     #[test]
-    fn path_link_prefers_exact_path_from_root_over_longer_suffix() {
+    fn path_link_without_slash_does_not_jump_to_newer_note() {
+        // С3.4 (решение владельца 25.10.2026): `[[Альфа/Встреча]]` — по концу
+        // пути; появление `Альфа/Встреча.md` в корне её не перенаправляет.
+        let mut notes = vec![note("Проекты/Альфа/Встреча.md", 100)];
+        let before = Links::new(notes.clone());
+        assert_eq!(resolve(&before, "Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        notes.push(note("Альфа/Встреча.md", 200));
+        let after = Links::new(notes);
+        assert_eq!(resolve(&after, "Альфа/Встреча").as_deref(), Some("Проекты/Альфа/Встреча.md"));
+        // Путь от корня — ровно этот путь.
+        assert_eq!(resolve(&after, "/Альфа/Встреча").as_deref(), Some("Альфа/Встреча.md"));
+        // Из нескольких подходящих по концу пути — самая старая.
         let l = links(&[("Команда/Здоровье/Звонок.md", 1), ("Здоровье/Звонок.md", 9)]);
-        assert_eq!(
-            resolve(&l, "Здоровье/Звонок").as_deref(),
-            Some("Здоровье/Звонок.md")
-        );
-        // Без точного совпадения от корня — самая старая из подходящих по концу пути.
+        assert_eq!(resolve(&l, "Здоровье/Звонок").as_deref(), Some("Команда/Здоровье/Звонок.md"));
         let l = links(&[("X/Альфа/Встреча.md", 200), ("Y/Альфа/Встреча.md", 100)]);
-        assert_eq!(
-            resolve(&l, "Альфа/Встреча").as_deref(),
-            Some("Y/Альфа/Встреча.md")
-        );
+        assert_eq!(resolve(&l, "Альфа/Встреча").as_deref(), Some("Y/Альфа/Встреча.md"));
     }
 
     #[test]
