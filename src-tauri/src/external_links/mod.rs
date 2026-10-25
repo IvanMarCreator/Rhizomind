@@ -11,6 +11,7 @@
 //! «передать адрес ОС» передаются замыканиями.
 
 mod address;
+mod os;
 
 use std::collections::BTreeSet;
 use std::io;

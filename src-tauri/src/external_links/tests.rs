@@ -489,3 +489,44 @@ fn open_button_label_depends_on_scheme() {
     let (web, _) = shown_equals_launched("http://example.org/");
     assert_eq!(web.open_label, "Открыть в браузере");
 }
+
+// ---- Передача ОС на Windows (Б2) -----------------------------------------
+
+/// На Windows адрес передаётся `ShellExecuteExW` с классом протокола: он
+/// разрешается только через обработчик протокола, никогда как путь к файлу,
+/// без окон оболочки (`SEE_MASK_FLAG_NO_UI`); отказ — ошибка, а не «открыто».
+#[cfg(windows)]
+#[test]
+fn windows_launch_goes_through_protocol_class_only() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().expect("временная папка");
+    let file = dir.path().join("note.txt");
+    std::fs::write(&file, "x").expect("файл");
+    let file = file.to_string_lossy().into_owned();
+
+    let (done, result) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Существующий файл с незарегистрированным классом: без класса
+        // ShellExecute открыл бы его в Блокноте.
+        let as_file = os::shell_execute(&file, "rhizomind-test-no-such-protocol");
+        // Незарегистрированный протокол через общий путь «передать ОС».
+        let unknown = os::launch("rhizomind-test-no-such-protocol:x");
+        let _ = done.send((as_file.is_err(), unknown.is_err()));
+    });
+    let (as_file_failed, unknown_failed) = result
+        .recv_timeout(Duration::from_secs(60))
+        .expect("ShellExecuteExW завис (окно оболочки?)");
+    assert!(as_file_failed, "адрес разрешился как путь к файлу");
+    assert!(unknown_failed, "незарегистрированный протокол «открылся»");
+}
+
+/// Вне Windows адрес передаёт крейт `open`; разбор схемы для класса
+/// протокола — общий.
+#[test]
+fn scheme_for_protocol_class_is_taken_from_target() {
+    assert_eq!(os::scheme_of("https://example.org/").ok(), Some("https"));
+    assert_eq!(os::scheme_of("mailto:a@example.org").ok(), Some("mailto"));
+    assert!(os::scheme_of("no-colon").is_err());
+}
