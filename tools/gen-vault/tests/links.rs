@@ -3,14 +3,9 @@
 
 mod common;
 
-use common::{TempDir, read_tree};
+use common::{TempDir, key, read_tree};
 use gen_vault::{Config, Manifest, Resolution, generate};
 use std::collections::{BTreeMap, BTreeSet};
-use unicode_normalization::UnicodeNormalization;
-
-fn key(s: &str) -> String {
-    s.nfc().collect::<String>().to_lowercase().nfc().collect()
-}
 
 /// Найденные в тексте ссылки (содержимое между `[[` и `]]`) и число `[[`
 /// внутри кода: блоки ``` и ~~~, блоки с отступом, код в строке.

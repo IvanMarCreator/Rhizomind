@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{TempDir, read_tree};
+use common::{TempDir, is_hidden, read_tree, read_tree_all};
 use gen_vault::{Config, generate};
 
 const BOM: &[u8] = b"\xEF\xBB\xBF";
@@ -170,6 +170,62 @@ fn attachments_are_minimal_valid_png_and_pdf() {
         assert!(
             text[start..].starts_with("xref\n"),
             "{path}: startxref указывает не на xref"
+        );
+    }
+}
+
+#[test]
+fn hidden_entries_other_attachments_and_hash_in_name() {
+    let dir = TempDir::new("extra");
+    let m = generate(dir.path(), &Config::new(300, 6)).unwrap();
+    let all = read_tree_all(dir.path());
+
+    // Скрытые файл и папка (С3.2): в число заметок не входят.
+    let hidden: Vec<String> = all.keys().filter(|p| is_hidden(p)).cloned().collect();
+    assert_eq!(hidden, m.hidden);
+    assert!(
+        hidden.iter().any(|p| !p.contains('/')),
+        "скрытый файл в корне"
+    );
+    assert!(
+        hidden
+            .iter()
+            .any(|p| p.split('/').next().unwrap().starts_with('.') && p.contains('/')),
+        "скрытая папка"
+    );
+
+    // Вложения других форматов.
+    for ext in [".txt", ".csv", ".zip"] {
+        assert!(
+            m.attachments.other.iter().any(|p| p.ends_with(ext)),
+            "нет вложения {ext}"
+        );
+    }
+    for p in &m.attachments.other {
+        let bytes = &all[p];
+        if p.ends_with(".zip") {
+            assert!(
+                bytes.len() >= 22 && bytes[bytes.len() - 22..].starts_with(b"PK\x05\x06"),
+                "{p}: не zip"
+            );
+        }
+    }
+
+    // Имя с `#` есть, но ссылок на него нет: `#` в ссылке — начало заголовка.
+    let name = &m.samples.hash_in_name;
+    assert!(all.contains_key(name), "нет {name}");
+    let stem = name
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .strip_suffix(".md")
+        .unwrap();
+    let base = stem.split('#').next().unwrap();
+    for (p, bytes) in read_tree(dir.path()) {
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains(&format!("[[{base}#")),
+            "ссылка на имя с # в {p}"
         );
     }
 }

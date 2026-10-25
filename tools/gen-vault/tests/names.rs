@@ -3,14 +3,9 @@
 
 mod common;
 
-use common::{TempDir, read_dirs, read_tree};
+use common::{TempDir, key, read_dirs, read_tree};
 use gen_vault::{Config, Manifest, generate};
 use std::collections::{BTreeMap, BTreeSet};
-use unicode_normalization::UnicodeNormalization;
-
-fn key(s: &str) -> String {
-    s.nfc().collect::<String>().to_lowercase().nfc().collect()
-}
 
 /// Правила имени Windows из С3.2: запрещённые символы, зарезервированные
 /// имена (и с расширением), точка или пробел в конце, управляющие символы.
@@ -217,4 +212,63 @@ fn duplicates_match_manifest_and_get_shortest_unique_paths() {
     assert_eq!(link_of("Работа/План.md"), "Работа/План");
     assert_eq!(link_of("Архив/2024/Отчёт.md"), "Архив/2024/Отчёт");
     assert_eq!(link_of("Учёба/Идеи.md"), "Учёба/Идеи");
+}
+
+#[test]
+fn manifest_states_the_simplified_name_key() {
+    let (_dir, manifest) = vault(100, 1);
+    assert!(manifest.key_rule.contains("NFC"), "{}", manifest.key_rule);
+    assert!(manifest.key_rule.contains("упрощ"), "{}", manifest.key_rule);
+}
+
+#[test]
+fn generated_duplicates_never_nest_one_path_in_another() {
+    let (_dir, manifest) = vault(3000, 13);
+    for group in &manifest.duplicates {
+        // «План» в корне и в «Работа» — явный образец пары «корень и папка».
+        if group.key == "план" {
+            continue;
+        }
+        let folders: Vec<Vec<String>> = group
+            .notes
+            .iter()
+            .map(|n| {
+                let mut parts: Vec<String> = n.path.split('/').map(key).collect();
+                parts.pop();
+                parts
+            })
+            .collect();
+        for (i, a) in folders.iter().enumerate() {
+            for (j, b) in folders.iter().enumerate() {
+                assert!(
+                    i == j || !a.ends_with(b),
+                    "путь {} совпадает с концом пути {}",
+                    group.notes[j].path,
+                    group.notes[i].path
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn created_first_is_strictly_older_on_disk() {
+    let (dir, manifest) = vault(600, 17);
+    let created = |p: &str| std::fs::metadata(dir.path().join(p)).and_then(|m| m.created());
+    if let Err(e) = created(&manifest.duplicates[0].created_first) {
+        eprintln!("пропуск: файловая система не хранит дату создания ({e})");
+        return;
+    }
+    for group in &manifest.duplicates {
+        let first = created(&group.created_first).unwrap();
+        for n in group.notes.iter().filter(|n| n.path != group.created_first) {
+            let other = created(&n.path).unwrap();
+            assert!(
+                first < other,
+                "{} не старше {}",
+                group.created_first,
+                n.path
+            );
+        }
+    }
 }

@@ -104,6 +104,10 @@ fn rejects_bad_arguments() {
         "чужой файл не тронут"
     );
 
+    let o = run(&["--notes", "100", "--out", out, "--big-mb", "2000"]);
+    assert_eq!(o.status.code(), Some(1), "--big-mb больше предела");
+    assert!(stderr(&o).contains("1024"), "{}", stderr(&o));
+
     let inside = format!("{out}/manifest.json");
     let o = run(&["--notes", "100", "--out", out, "--manifest", &inside]);
     assert_eq!(o.status.code(), Some(2), "манифест внутри хранилища");

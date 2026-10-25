@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use unicode_normalization::UnicodeNormalization;
 
 /// Временная папка, удаляется при выходе из области видимости.
 pub struct TempDir(pub PathBuf);
@@ -30,8 +31,26 @@ impl Drop for TempDir {
     }
 }
 
-/// Все файлы хранилища: относительный путь через `/` → содержимое.
+/// Упрощённый ключ имени для тестов: NFC → нижний регистр → NFC. Годится
+/// для имён генератора; в ядре — полное приведение регистра (задача 1.1).
+pub fn key(s: &str) -> String {
+    s.nfc().collect::<String>().to_lowercase().nfc().collect()
+}
+
+/// Скрытый путь: какой-то компонент начинается с точки (дерево их не показывает, С3.2).
+pub fn is_hidden(path: &str) -> bool {
+    path.split('/').any(|c| c.starts_with('.'))
+}
+
+/// Видимые файлы хранилища: относительный путь через `/` → содержимое.
 pub fn read_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    let mut out = read_tree_all(root);
+    out.retain(|p, _| !is_hidden(p));
+    out
+}
+
+/// Все файлы хранилища, включая скрытые.
+pub fn read_tree_all(root: &Path) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
     walk(root, root, &mut out);
     out
@@ -53,6 +72,7 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
 pub fn read_dirs(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     walk_dirs(root, root, &mut out);
+    out.retain(|d| !is_hidden(d));
     out.sort();
     out
 }
