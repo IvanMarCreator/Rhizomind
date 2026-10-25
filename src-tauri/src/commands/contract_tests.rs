@@ -596,6 +596,14 @@ fn event_note_conflict_saved() {
     );
 }
 
+#[test]
+fn event_vault_availability() {
+    event(
+        event::VAULT_AVAILABILITY,
+        &VaultAvailabilityPayload { available: false },
+    );
+}
+
 /// В папке снимков ровно по файлу на каждую команду и событие: ни одна
 /// команда не осталась без снимка, ни один снимок не устарел.
 #[test]

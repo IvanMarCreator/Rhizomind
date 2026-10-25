@@ -14,13 +14,12 @@
 mod address;
 mod os;
 
-use std::collections::BTreeSet;
 use std::io;
-use std::sync::{Mutex, PoisonError};
 
 pub use address::ExternalAddress;
 
 use crate::commands::{CoreError, CoreResult, ErrorCode, OpenExternalOutcome};
+use crate::dialogs::DialogSlot;
 
 /// Схемы, которые можно открыть.
 pub const ALLOWED_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
@@ -81,38 +80,12 @@ pub fn check_url(url: &str) -> CoreResult<()> {
     ExternalAddress::parse(url).map(|_| ())
 }
 
-/// Окна, в которых сейчас открыто окно подтверждения ядра.
-static DIALOG_WINDOWS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-
-/// Занятость окна диалогом ядра; снимается при выходе из области видимости.
-struct DialogSlot(String);
-
-impl DialogSlot {
-    /// `None`, если в окне уже открыт диалог ядра.
-    fn take(window: &str) -> Option<Self> {
-        let mut busy = DIALOG_WINDOWS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        busy.insert(window.to_owned())
-            .then(|| Self(window.to_owned()))
-    }
-}
-
-impl Drop for DialogSlot {
-    fn drop(&mut self) {
-        DIALOG_WINDOWS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.0);
-    }
-}
-
 /// Проверяет адрес, спрашивает пользователя через `ask` и только после
 /// согласия передаёт ОС через `launch` ровно ту строку, что была в окне.
 ///
-/// В одном окне — не больше одного окна подтверждения: пока первое открыто,
-/// второй вызов сразу получает `cancelled` (окно не показывается, адрес в ОС
-/// не уходит).
+/// В одном окне — не больше одного диалога ядра любого вида (общий замок
+/// [`crate::dialogs::DialogSlot`]): пока первый открыт, второй вызов сразу
+/// получает `cancelled` (окно не показывается, адрес в ОС не уходит).
 pub(crate) fn open_checked(
     window: &str,
     url: &str,

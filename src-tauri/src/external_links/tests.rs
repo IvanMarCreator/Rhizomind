@@ -329,6 +329,25 @@ fn only_one_core_dialog_per_window() {
     );
 }
 
+/// Замок общий для всех диалогов ядра: пока в окне открыт выбор папки или
+/// подтверждение удаления, окно ссылки не показывается (задача 1.7).
+#[test]
+fn link_dialog_waits_for_no_other_core_dialog_in_the_window() {
+    let other_dialog = crate::dialogs::DialogSlot::take("w-other-kind").expect("свободно");
+    let seam = Seam::default();
+    assert_eq!(
+        seam.run("w-other-kind", "https://example.org/", true),
+        Ok(OpenExternalOutcome::Cancelled)
+    );
+    assert!(seam.asked.borrow().is_empty(), "окно ссылки не показано");
+    assert!(seam.launched.borrow().is_empty(), "адрес не ушёл в ОС");
+    drop(other_dialog);
+    assert_eq!(
+        seam.run("w-other-kind", "https://example.org/", true),
+        Ok(OpenExternalOutcome::Opened)
+    );
+}
+
 #[test]
 fn dialog_slot_is_released_after_panic_in_dialog() {
     let result = std::panic::catch_unwind(|| {

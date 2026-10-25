@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
-use super::Core;
 use super::error::{CoreError, CoreResult};
 use super::limits;
 use super::types::VaultPath;
+use super::{Core, blocking, checked_path};
 
 /// Запрос `links_resolve`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,11 +98,6 @@ pub struct SwitcherSearchResponse {
     pub items: Vec<SwitcherItem>,
 }
 
-fn read<T>(lock: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    lock.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// Цель, которую нет смысла отдавать модулю: пустая, с управляющими
 /// символами или длиннее любого допустимого пути. Такая ссылка —
 /// неразрешённая, а не ошибка всего ответа.
@@ -122,23 +117,27 @@ pub async fn links_resolve<R: Runtime>(
     core: State<'_, Core>,
     request: LinksResolveRequest,
 ) -> CoreResult<LinksResolveResponse> {
-    limits::path(&request.from, "from")?;
+    checked_path(&request.from, "from")?;
     limits::link_targets(request.targets.len())?;
     let open = core.require_vault(window.label())?;
-    let links = read(&open.links);
-    let results = request
-        .targets
-        .into_iter()
-        .map(|target| {
-            let path = if is_plausible_target(&target) {
-                links.resolve(&request.from, &target)?
-            } else {
-                None
-            };
-            Ok(ResolvedLink { target, path })
-        })
-        .collect::<Result<_, CoreError>>()?;
-    Ok(LinksResolveResponse { results })
+    blocking(move || {
+        let index = open.read_index();
+        let links = index.links();
+        let results = request
+            .targets
+            .into_iter()
+            .map(|target| {
+                let path = if is_plausible_target(&target) {
+                    links.resolve(&request.from, &target)?
+                } else {
+                    None
+                };
+                Ok(ResolvedLink { target, path })
+            })
+            .collect::<Result<_, CoreError>>()?;
+        Ok(LinksResolveResponse { results })
+    })
+    .await
 }
 
 /// Подсказки автодополнения вики-ссылки.
@@ -148,11 +147,17 @@ pub async fn links_suggest<R: Runtime>(
     core: State<'_, Core>,
     request: LinksSuggestRequest,
 ) -> CoreResult<LinksSuggestResponse> {
-    limits::path(&request.from, "from")?;
+    checked_path(&request.from, "from")?;
     limits::query(&request.query)?;
     let open = core.require_vault(window.label())?;
-    let items = read(&open.links).suggest(&request.from, &request.query)?;
-    Ok(LinksSuggestResponse { items })
+    blocking(move || {
+        let items = open
+            .read_index()
+            .links()
+            .suggest(&request.from, &request.query)?;
+        Ok(LinksSuggestResponse { items })
+    })
+    .await
 }
 
 /// Нечёткий поиск заметок для Ctrl+O.
@@ -164,8 +169,11 @@ pub async fn switcher_search<R: Runtime>(
 ) -> CoreResult<SwitcherSearchResponse> {
     limits::query(&request.query)?;
     let open = core.require_vault(window.label())?;
-    let items = read(&open.switcher).search(&request.query)?;
-    Ok(SwitcherSearchResponse { items })
+    blocking(move || {
+        let items = open.read_index().switcher().search(&request.query)?;
+        Ok(SwitcherSearchResponse { items })
+    })
+    .await
 }
 
 #[cfg(test)]

@@ -243,10 +243,12 @@ fn external_change_while_the_temp_file_is_written_is_kept() {
 
 #[test]
 fn trash_failure_on_a_volume_with_trash_is_an_error_without_permanent_delete() {
-    let t = TestVault::new();
+    let mut t = TestVault::new();
     t.put("Занята.md", "текст");
-    t.vault
-        .set_trash_backend(Box::new(|_: &Path| Err(TrashFailure::Failed)));
+    t.reopen_with(crate::vault::OpenOptions {
+        trash: Some(Box::new(|_: &Path| Err(TrashFailure::Failed))),
+        ..Default::default()
+    });
     let asked = std::cell::Cell::new(false);
 
     let result = t.vault.trash(&vp("Занята.md"), &|_| {

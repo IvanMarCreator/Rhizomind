@@ -1,13 +1,24 @@
-//! Журнал своих записей ядра (ADR 0006, уточнение 25.10.2026).
+//! Журнал своих записей ядра — один на хранилище (ADR 0006, уточнение
+//! 25.10.2026; задача 1.7).
 //!
-//! Модуль `vault` перед заменой файла заметки записывает сюда путь, хэш
-//! `blake3` и размер нового содержимого ([`OwnWrites::record`]): дата
-//! изменения до замены ещё неизвестна. Когда наблюдатель видит изменение
-//! этого файла, он сравнивает размер на диске с записанными версиями и, если
-//! размер какой-то из них совпал, считает хэш файла. Совпал хэш — на диске
-//! своя версия: модель дерева обновляется молча, наружу изменение не
-//! уходит, ложного конфликта нет. Любое другое содержимое — внешнее
-//! изменение.
+//! Нейтральный модуль: его пишет хранилище (`vault`) и читает наблюдатель
+//! (`watcher`). Один экземпляр (дешёвый клон общего состояния) создаёт слой
+//! команд при открытии хранилища и передаёт обоим: `Vault::open_with` и
+//! `VaultWatcher::start_with`.
+//!
+//! Хранилище перед заменой файла записывает сюда путь, хэш `blake3` и размер
+//! нового содержимого ([`OwnWrites::record`]): дата изменения до замены ещё
+//! неизвестна. Когда наблюдатель видит изменение этого файла, он сравнивает
+//! размер на диске с записанными версиями и, если размер какой-то из них
+//! совпал, считает хэш файла. Совпали и размер, и хэш — на диске своя
+//! версия: модель дерева обновляется молча, наружу изменение не уходит,
+//! ложного конфликта нет. Любое другое содержимое — внешнее изменение.
+//!
+//! **Ключ пути — ключ имени каждого компонента** (`names::key`: NFC →
+//! приведение регистра → NFC). Хранилище записывает путь в написании
+//! интерфейса, наблюдатель спрашивает в написании с диска; на Windows они
+//! могут различаться регистром или нормализацией Unicode — запись всё равно
+//! находится.
 //!
 //! На путь хранятся несколько последних версий ([`VERSIONS_PER_PATH`]):
 //! при быстрых автосохранениях следующая запись начинается раньше, чем
@@ -18,9 +29,6 @@
 //! внешнее изменение. Весь журнал ограничен
 //! [`MAX_TOTAL`] версиями — лишние, самые старые, забываются. Удаление и
 //! переименование пути забывают его версии.
-//!
-//! Журнал — дешёвый клон общего состояния: один экземпляр у наблюдателя и у
-//! хранилища; связывает их слой команд (задача 1.7).
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -51,9 +59,19 @@ struct Version {
     at: Instant,
 }
 
+/// Путь по ключам имён компонентов.
+type PathKey = Vec<String>;
+
+fn path_key(path: &VaultPath) -> PathKey {
+    path.components()
+        .iter()
+        .map(|c| crate::names::key(c).as_str().to_owned())
+        .collect()
+}
+
 #[derive(Debug, Default)]
 struct Journal {
-    by_path: HashMap<VaultPath, VecDeque<Version>>,
+    by_path: HashMap<PathKey, VecDeque<Version>>,
     total: usize,
 }
 
@@ -89,9 +107,21 @@ impl Journal {
 
 /// Журнал своих записей «путь → последние версии (хэш, размер)». Клон
 /// указывает на тот же журнал.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct OwnWrites {
     journal: Arc<Mutex<Journal>>,
+    /// Наблюдатель записей — только в тестах («записано до замены файла»).
+    #[cfg(test)]
+    observer: Arc<Mutex<Option<Observer>>>,
+}
+
+#[cfg(test)]
+type Observer = Box<dyn Fn(&VaultPath, &str, u64) + Send>;
+
+impl std::fmt::Debug for OwnWrites {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnWrites").finish_non_exhaustive()
+    }
 }
 
 impl OwnWrites {
@@ -107,9 +137,18 @@ impl OwnWrites {
     }
 
     pub(crate) fn record_at(&self, path: &VaultPath, hash: &str, size: u64, at: Instant) {
+        #[cfg(test)]
+        if let Some(observer) = self
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            observer(path, hash, size);
+        }
         let mut journal = self.lock();
         journal.expire(Instant::now());
-        let versions = journal.by_path.entry(path.clone()).or_default();
+        let versions = journal.by_path.entry(path_key(path)).or_default();
         versions.push_back(Version {
             hash: hash.to_ascii_lowercase(),
             size,
@@ -132,7 +171,7 @@ impl OwnWrites {
             journal.expire(Instant::now());
             journal
                 .by_path
-                .get(path)
+                .get(&path_key(path))
                 .map(|versions| {
                     versions
                         .iter()
@@ -155,7 +194,7 @@ impl OwnWrites {
         // к ним — это чужой откат, а не своя запись.
         let mut journal = self.lock();
         let mut dropped = 0;
-        if let Some(versions) = journal.by_path.get_mut(path)
+        if let Some(versions) = journal.by_path.get_mut(&path_key(path))
             && let Some(k) = versions
                 .iter()
                 .position(|v| v.size == size && v.hash == actual)
@@ -170,12 +209,34 @@ impl OwnWrites {
     /// Забывает версии по пути и всему, что под ним (путь удалён или
     /// переименован).
     pub(crate) fn forget(&self, path: &VaultPath) {
-        let prefix = path.components();
+        let prefix = path_key(path);
         let mut journal = self.lock();
+        journal.by_path.retain(|key, _| !key.starts_with(&prefix));
+        journal.total = journal.by_path.values().map(VecDeque::len).sum();
+    }
+
+    /// Записана ли своя версия с таким хэшем и размером (без чтения
+    /// файла) — для тестов хранилища.
+    pub fn contains(&self, path: &VaultPath, hash: &str, size: u64) -> bool {
+        let mut journal = self.lock();
+        journal.expire(Instant::now());
         journal
             .by_path
-            .retain(|key, _| !key.components().starts_with(prefix));
-        journal.total = journal.by_path.values().map(VecDeque::len).sum();
+            .get(&path_key(path))
+            .is_some_and(|versions| {
+                versions
+                    .iter()
+                    .any(|v| v.size == size && v.hash.eq_ignore_ascii_case(hash))
+            })
+    }
+
+    /// Тестовый шов: `observer` вызывается при каждой записи, до неё.
+    #[cfg(test)]
+    pub(crate) fn observe(&self, observer: Observer) {
+        *self
+            .observer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
     }
 
     /// Число версий по пути — для тестов.
@@ -183,7 +244,10 @@ impl OwnWrites {
     pub(crate) fn versions(&self, path: &VaultPath) -> usize {
         let mut journal = self.lock();
         journal.expire(Instant::now());
-        journal.by_path.get(path).map_or(0, VecDeque::len)
+        journal
+            .by_path
+            .get(&path_key(path))
+            .map_or(0, VecDeque::len)
     }
 
     /// Число версий во всём журнале — для тестов.
@@ -214,6 +278,35 @@ mod tests {
 
     fn vp(path: &str) -> VaultPath {
         VaultPath::from_components(path.split('/'))
+    }
+
+    #[test]
+    fn path_is_matched_by_name_key_not_spelling() {
+        let own = OwnWrites::new();
+        own.record(&vp("проекты/встреча.md"), &"a".repeat(64), 3);
+        assert!(own.contains(&vp("Проекты/Встреча.md"), &"a".repeat(64), 3));
+        // «й» в NFD (и + U+0306) — тот же ключ имени, что «й» в NFC.
+        own.record(&vp("Мой.md"), &"b".repeat(64), 1);
+        assert!(own.contains(&vp("Мои\u{306}.md"), &"b".repeat(64), 1));
+        assert!(!own.contains(&vp("Проекты/Встреча.md"), &"a".repeat(64), 4));
+        own.forget(&vp("ПРОЕКТЫ"));
+        assert!(!own.contains(&vp("проекты/встреча.md"), &"a".repeat(64), 3));
+    }
+
+    #[test]
+    fn suppression_needs_both_size_and_hash() {
+        let dir = tempfile::tempdir().expect("папка");
+        let file = dir.path().join("a.md");
+        std::fs::write(&file, "своё").expect("запись");
+        let own = OwnWrites::new();
+        let hash = blake3::hash("своё".as_bytes()).to_hex().to_string();
+        own.record(&vp("A.md"), &hash, "своё".len() as u64);
+        assert!(own.is_own(&vp("a.md"), &file, "своё".len() as u64));
+        std::fs::write(&file, "чужо").expect("запись");
+        assert!(
+            !own.is_own(&vp("a.md"), &file, "чужо".len() as u64),
+            "тот же размер, другой хэш — внешнее изменение"
+        );
     }
 
     #[test]

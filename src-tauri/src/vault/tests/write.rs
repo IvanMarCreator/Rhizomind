@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use super::read::generated;
 use super::*;
 use crate::commands::{NoteWriteResponse, ReadOnlyReason};
-use crate::vault::OwnWrite;
 
 fn saved_version(response: NoteWriteResponse) -> crate::commands::FileVersion {
     match response {
@@ -317,22 +316,28 @@ fn leftovers_of_an_interrupted_write_are_removed_on_open() {
     assert!(!leftover.exists());
 }
 
-/// Свои записи и содержимое диска в момент регистрации.
-type Seen = Vec<(OwnWrite, Vec<u8>)>;
+/// Свои записи (путь, хэш, размер) и содержимое диска в момент регистрации.
+type Seen = Vec<(VaultPath, String, u64, Vec<u8>)>;
 
 #[test]
 fn own_write_is_registered_before_the_file_is_replaced() {
-    let t = TestVault::new();
+    let mut t = TestVault::new();
     t.put("Заметка.md", "старое\n");
-    let note = t.vault.read_note(&vp("Заметка.md")).expect("чтение");
+    let journal = crate::own_writes::OwnWrites::new();
     let seen: Arc<Mutex<Seen>> = Arc::default();
     let disk = t.file("Заметка.md");
     let log = Arc::clone(&seen);
-    t.vault
-        .set_own_write_hook(Box::new(move |write: &OwnWrite| {
-            let on_disk = std::fs::read(&disk).expect("диск");
-            log.lock().expect("журнал").push((write.clone(), on_disk));
-        }));
+    journal.observe(Box::new(move |path: &VaultPath, hash: &str, size: u64| {
+        let on_disk = std::fs::read(&disk).expect("диск");
+        log.lock()
+            .expect("журнал")
+            .push((path.clone(), hash.to_owned(), size, on_disk));
+    }));
+    t.reopen_with(crate::vault::OpenOptions {
+        own_writes: journal.clone(),
+        ..Default::default()
+    });
+    let note = t.vault.read_note(&vp("Заметка.md")).expect("чтение");
 
     let version = saved_version(
         t.vault
@@ -342,11 +347,12 @@ fn own_write_is_registered_before_the_file_is_replaced() {
 
     let seen = seen.lock().expect("журнал");
     assert_eq!(seen.len(), 1);
-    let (write, on_disk_at_hook) = &seen[0];
-    assert_eq!(write.path, vp("Заметка.md"));
-    assert_eq!(write.hash, version.hash);
-    assert_eq!(write.size, version.size);
+    let (path, hash, size, on_disk_at_hook) = &seen[0];
+    assert_eq!(*path, vp("Заметка.md"));
+    assert_eq!(*hash, version.hash);
+    assert_eq!(*size, version.size);
     assert_eq!(on_disk_at_hook, "старое\n".as_bytes(), "до замены файла");
+    assert!(journal.contains(&vp("Заметка.md"), &version.hash, version.size));
     assert!(
         t.vault
             .is_own_write(&vp("Заметка.md"), &version.hash, version.size)

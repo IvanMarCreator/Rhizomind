@@ -24,7 +24,8 @@
 //!   [`WatcherEvent::Available`] и полная сверка; папка, которая не
 //!   прочиталась, остаётся в модели и сверяется снова через пару секунд;
 //! - паника получателя не останавливает поток: сигнал
-//!   [`WatcherEvent::DeliveryFailed`], следующая пачка — полная сверка.
+//!   [`WatcherEvent::DeliveryFailed`], через [`DELIVERY_RETRY`] (или со
+//!   следующей пачкой, если она раньше) — полная сверка.
 //!
 //! Кэш идентификаторов склейки (`FileIdMap`) не используется: он обходит
 //! дерево по ссылкам и вышел бы через точку соединения за контур.
@@ -43,7 +44,6 @@ use std::time::{Duration, Instant};
 use notify::{EventKindMask, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
 
-mod own_writes;
 mod tree;
 
 #[cfg(test)]
@@ -55,7 +55,10 @@ mod tree_tests;
 #[cfg(test)]
 mod watcher_tests;
 
-pub use own_writes::OwnWrites;
+// Журнал своих записей — общий с хранилищем, в нейтральном модуле
+// (`src-tauri/src/own_writes.rs`, задача 1.7).
+use crate::own_writes;
+pub use crate::own_writes::OwnWrites;
 
 use crate::commands::{
     CoreError, CoreResult, ErrorCode, FileVersion, VaultChangedPayload, VaultPath,
@@ -196,6 +199,7 @@ impl VaultWatcher {
                     retry_at: None,
                     retry_attempt: 0,
                     force_rescan: false,
+                    rescan_at: None,
                     debouncer: shared,
                     root: watched_root,
                 }
@@ -274,6 +278,10 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// (наблюдение заново, когда корень вернулся).
 type SharedDebouncer = Arc<Mutex<Option<Debouncer<notify::RecommendedWatcher, NoCache>>>>;
 
+/// Через сколько после сбоя получателя пройти полную сверку, даже если
+/// новых событий нет (повторное ревью 1.4, задача 1.7).
+pub(crate) const DELIVERY_RETRY: Duration = Duration::from_secs(2);
+
 /// Как часто проверять, вернулся ли недоступный корень.
 const UNAVAILABLE_POLL: Duration = Duration::from_secs(1);
 
@@ -295,6 +303,8 @@ struct Worker {
     root: PathBuf,
     /// Получатель упал — следующая пачка будет полной сверкой.
     force_rescan: bool,
+    /// Когда пройти полную сверку после сбоя получателя.
+    rescan_at: Option<Instant>,
 }
 
 impl Worker {
@@ -341,7 +351,10 @@ impl Worker {
         let deadline = if self.unavailable {
             Some(Instant::now() + UNAVAILABLE_POLL)
         } else {
-            self.retry_at
+            match (self.retry_at, self.rescan_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
         };
         let result = match deadline {
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -355,6 +368,14 @@ impl Worker {
     }
 
     fn on_timer(&mut self) {
+        if !self.unavailable && self.rescan_at.is_some_and(|at| at <= Instant::now()) {
+            self.rescan_at = None;
+            self.process(Batch {
+                paths: Vec::new(),
+                rescan: true,
+            });
+            return;
+        }
         if self.unavailable {
             // Корень вернулся — полная сверка: пока его не было, события
             // не приходили.
@@ -429,6 +450,9 @@ impl Worker {
                 changes: result.changes,
             }));
             self.force_rescan = !delivered;
+            if delivered && rescan {
+                self.rescan_at = None;
+            }
         }
     }
 
@@ -441,6 +465,7 @@ impl Worker {
             return true;
         }
         self.force_rescan = true;
+        self.rescan_at = Some(Instant::now() + DELIVERY_RETRY);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sink(WatcherEvent::DeliveryFailed)
         }));
