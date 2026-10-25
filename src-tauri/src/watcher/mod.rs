@@ -36,6 +36,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -112,7 +113,7 @@ pub struct VaultWatcher {
     own_writes: OwnWrites,
     messages: Sender<Message>,
     worker: Option<JoinHandle<()>>,
-    debouncer: Option<Debouncer<notify::RecommendedWatcher, NoCache>>,
+    debouncer: SharedDebouncer,
     #[cfg(test)]
     lose_os_events: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -180,6 +181,9 @@ impl VaultWatcher {
         let model =
             TreeModel::scan(root).map_err(|_| CoreError::new(ErrorCode::VaultUnavailable))?;
         let journal = own_writes.clone();
+        let debouncer: SharedDebouncer = Arc::new(Mutex::new(Some(debouncer)));
+        let shared = debouncer.clone();
+        let watched_root = root.to_path_buf();
         let worker = std::thread::Builder::new()
             .name("rhizomind-watcher".into())
             .spawn(move || {
@@ -190,7 +194,10 @@ impl VaultWatcher {
                     unavailable: false,
                     retry: Vec::new(),
                     retry_at: None,
+                    retry_attempt: 0,
                     force_rescan: false,
+                    debouncer: shared,
+                    root: watched_root,
                 }
                 .run(inbox);
             })
@@ -200,7 +207,7 @@ impl VaultWatcher {
             own_writes,
             messages,
             worker: Some(worker),
-            debouncer: Some(debouncer),
+            debouncer,
             #[cfg(test)]
             lose_os_events,
         })
@@ -233,7 +240,12 @@ impl VaultWatcher {
 
 impl Drop for VaultWatcher {
     fn drop(&mut self) {
-        if let Some(debouncer) = self.debouncer.take() {
+        let debouncer = self
+            .debouncer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(debouncer) = debouncer {
             debouncer.stop();
         }
         let _ = self.messages.send(Message::Stop);
@@ -248,9 +260,19 @@ const RETRY_AFTER: Duration = Duration::from_secs(2);
 
 /// Через сколько повторить сверку непрочитанных путей после `attempt`
 /// неудачных попыток подряд.
-fn retry_delay(_attempt: u32) -> Duration {
+fn retry_delay(attempt: u32) -> Duration {
     RETRY_AFTER
+        .saturating_mul(2u32.saturating_pow(attempt))
+        .min(RETRY_MAX)
 }
+
+/// Наибольшее ожидание повтора: папки, которые не читаются никогда
+/// (`System Volume Information`), не сверяются чаще раза в минуту.
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// Склейка событий; общая у наблюдателя (остановка) и потока сверки
+/// (наблюдение заново, когда корень вернулся).
+type SharedDebouncer = Arc<Mutex<Option<Debouncer<notify::RecommendedWatcher, NoCache>>>>;
 
 /// Как часто проверять, вернулся ли недоступный корень.
 const UNAVAILABLE_POLL: Duration = Duration::from_secs(1);
@@ -265,6 +287,12 @@ struct Worker {
     /// Пути, которые не прочитались, и когда их сверить снова.
     retry: Vec<VaultPath>,
     retry_at: Option<Instant>,
+    /// Сколько повторов подряд снова не прочитали пути.
+    retry_attempt: u32,
+    /// Склейка: когда корень вернулся, наблюдение ставится заново (ОС
+    /// снимает его, когда папка пропадает).
+    debouncer: SharedDebouncer,
+    root: PathBuf,
     /// Получатель упал — следующая пачка будет полной сверкой.
     force_rescan: bool,
 }
@@ -337,15 +365,42 @@ impl Worker {
         } else if self.retry_at.is_some_and(|at| at <= Instant::now()) {
             let paths = std::mem::take(&mut self.retry);
             self.retry_at = None;
+            self.retry_attempt = self.retry_attempt.saturating_add(1);
             self.process(Batch {
                 paths,
                 rescan: false,
             });
+            if self.retry.is_empty() {
+                self.retry_attempt = 0;
+            }
         }
+    }
+
+    /// Ставит наблюдение за корнем заново. `false` — не вышло (корня снова
+    /// нет), хранилище остаётся недоступным.
+    fn rewatch(&self) -> bool {
+        let mut guard = self
+            .debouncer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(debouncer) = guard.as_mut() else {
+            return false;
+        };
+        // Прежнее наблюдение могло остаться (папку переименовали туда и
+        // обратно) — его снимаем; ошибка «не наблюдается» не важна.
+        let _ = debouncer.unwatch(&self.root);
+        debouncer
+            .watch(&self.root, RecursiveMode::Recursive)
+            .is_ok()
     }
 
     fn process(&mut self, mut batch: Batch) {
         batch.rescan |= self.force_rescan;
+        // Корень вернулся: сначала наблюдение заново, потом полная сверка —
+        // изменения во время сверки придут событиями.
+        if self.unavailable && (!self.root.is_dir() || !self.rewatch()) {
+            return;
+        }
         let result = if batch.rescan || self.unavailable {
             self.model.rescan(&self.own)
         } else {
@@ -365,8 +420,8 @@ impl Worker {
         }
         if !result.retry.is_empty() {
             self.retry.extend(result.retry);
-            self.retry_at
-                .get_or_insert_with(|| Instant::now() + RETRY_AFTER);
+            let delay = retry_delay(self.retry_attempt);
+            self.retry_at.get_or_insert_with(|| Instant::now() + delay);
         }
         if rescan || !result.changes.is_empty() {
             let delivered = self.deliver(WatcherEvent::Changed(VaultChangedPayload {

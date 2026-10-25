@@ -13,7 +13,9 @@
 //! при быстрых автосохранениях следующая запись начинается раньше, чем
 //! событие о предыдущей дошло до сверки. Версия живёт [`VERSION_TTL`];
 //! расхождение с диском её не удаляет (чужая правка между своими записями
-//! не делает следующую свою запись внешней). Весь журнал ограничен
+//! не делает следующую свою запись внешней). Когда на диске оказалась своя
+//! версия, все более старые версии пути забываются: возврат к ним снаружи —
+//! внешнее изменение. Весь журнал ограничен
 //! [`MAX_TOTAL`] версиями — лишние, самые старые, забываются. Удаление и
 //! переименование пути забывают его версии.
 //!
@@ -143,7 +145,26 @@ impl OwnWrites {
         if candidates.is_empty() {
             return false;
         }
-        hash_file(file).is_ok_and(|actual| candidates.contains(&actual))
+        let Ok(actual) = hash_file(file) else {
+            return false;
+        };
+        if !candidates.contains(&actual) {
+            return false;
+        }
+        // На диске своя версия k: версии старше k уже пройдены, и возврат
+        // к ним — это чужой откат, а не своя запись.
+        let mut journal = self.lock();
+        let mut dropped = 0;
+        if let Some(versions) = journal.by_path.get_mut(path)
+            && let Some(k) = versions
+                .iter()
+                .position(|v| v.size == size && v.hash == actual)
+        {
+            versions.drain(..k);
+            dropped = k;
+        }
+        journal.total -= dropped;
+        true
     }
 
     /// Забывает версии по пути и всему, что под ним (путь удалён или
