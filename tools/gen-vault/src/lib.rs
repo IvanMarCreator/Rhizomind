@@ -19,7 +19,8 @@ mod words;
 use names::name_key;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Параметры генерации.
 #[derive(Debug, Clone)]
@@ -43,6 +44,25 @@ impl Config {
 
 pub use manifest::*;
 
+/// Наибольший размер файла «больше лимита», МБ.
+pub const MAX_BIG_MB: u64 = 1024;
+
+/// Пауза между раундами записи дубликатов: больше шага таймера ФС
+/// (NTFS обновляет время с шагом около 16 мс).
+const ROUND_PAUSE: Duration = Duration::from_millis(60);
+
+/// Скрытые файл и папка (С3.2: дерево их не показывает); в число заметок не входят.
+const HIDDEN: [(&str, &str); 2] = [
+    (
+        ".скрытая заметка.md",
+        "# Скрытая заметка\n\nФайл с точкой в начале имени.\n",
+    ),
+    (
+        ".скрытая папка/Заметка в скрытой папке.md",
+        "# Заметка в скрытой папке\n\nПапка с точкой в начале имени.\n",
+    ),
+];
+
 /// Создаёт хранилище в папке `out` (её нет или она пуста).
 pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     if out.exists() && fs::read_dir(out)?.next().is_some() {
@@ -61,6 +81,12 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
             ),
         ));
     }
+    if cfg.big_mb.is_some_and(|mb| mb > MAX_BIG_MB) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--big-mb: не больше {MAX_BIG_MB} МБ"),
+        ));
+    }
     let mut rng = rng::Rng::new(cfg.seed);
     let layout = plan::plan(cfg, &mut rng);
 
@@ -70,32 +96,53 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     // Содержимое считается последовательно (детерминированно), запись — потом.
     let mut links = links::Links::new(&layout);
     let mut counts = EolCounts::default();
-    let mut ordered = Vec::new();
+    let mut rounds: Vec<Vec<(PathBuf, Vec<u8>)>> = Vec::new();
     let mut files = Vec::new();
     for idx in 0..layout.notes.len() {
-        let bytes = text::note_bytes(&mut links, idx, &mut rng, cfg.big_mb);
-        counts.add(&bytes);
+        let path = out.join(layout.note_path(idx));
         if layout.notes[idx].special == layout::Special::Big {
-            counts.big_bytes = bytes.len() as u64;
+            // Большой файл пишется потоком, без сборки в памяти: LF, без BOM.
+            counts.big_bytes = text::write_big_file(&path, cfg.big_mb.unwrap_or(0))?;
+            counts.lf += 1;
+            continue;
         }
-        let file = (out.join(layout.note_path(idx)), bytes);
-        if layout.by_key[&name_key(&layout.notes[idx].name)].len() > 1 {
-            ordered.push(file);
+        let bytes = text::note_bytes(&mut links, idx, &mut rng);
+        counts.add(&bytes);
+        let group = &layout.by_key[&name_key(&layout.notes[idx].name)];
+        if group.len() > 1 {
+            let rank = group.iter().position(|&i| i == idx).unwrap();
+            if rounds.len() <= rank {
+                rounds.resize_with(rank + 1, Vec::new);
+            }
+            rounds[rank].push((path, bytes));
         } else {
-            files.push(file);
+            files.push((path, bytes));
         }
     }
     for idx in 0..layout.attachments.len() {
         let bytes = match layout.attachments[idx].kind {
             layout::AttachmentKind::Png => binary::png(&mut rng),
             layout::AttachmentKind::Pdf => binary::pdf(&mut rng),
+            layout::AttachmentKind::Txt => binary::txt(),
+            layout::AttachmentKind::Csv => binary::csv(&mut rng),
+            layout::AttachmentKind::Zip => binary::zip(),
         };
         files.push((out.join(layout.attachment_path(idx)), bytes));
     }
-    // Заметки с повторяющимися именами пишутся по порядку создания: ссылка без
-    // пути ведёт на самую старую (С3.4), манифест называет её `created_first`.
-    for (path, bytes) in &ordered {
-        fs::write(path, bytes)?;
+    for (path, text) in HIDDEN {
+        let path = out.join(path);
+        fs::create_dir_all(path.parent().unwrap())?;
+        files.push((path, text.as_bytes().to_vec()));
+    }
+    // Заметки с повторяющимися именами — раундами: сначала первые заметки всех
+    // групп, пауза больше шага таймера ФС, затем вторые и т. д. Так дата
+    // создания у `created_first` строго меньше, чем у остальных заметок группы:
+    // на неё ведёт ссылка без пути (С3.4).
+    for (n, round) in rounds.iter().enumerate() {
+        if n > 0 {
+            std::thread::sleep(ROUND_PAUSE);
+        }
+        write_parallel(round)?;
     }
     write_parallel(&files)?;
 
@@ -104,7 +151,7 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
 
 /// Запись файлов в несколько потоков: на Windows создание файла дорогое
 /// (антивирус проверяет каждый), а порядок этих файлов не важен.
-fn write_parallel(files: &[(std::path::PathBuf, Vec<u8>)]) -> io::Result<()> {
+fn write_parallel(files: &[(PathBuf, Vec<u8>)]) -> io::Result<()> {
     let threads = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
         .clamp(1, 8);
@@ -166,6 +213,12 @@ fn build_manifest(
         folders: l.folders.len() - 1,
         max_depth: (0..l.folders.len()).map(|f| l.depth(f)).max().unwrap_or(0),
         duplicates: duplicates(l),
+        key_rule: KEY_RULE.to_string(),
+        hidden: {
+            let mut h: Vec<String> = HIDDEN.iter().map(|(p, _)| p.to_string()).collect();
+            h.sort();
+            h
+        },
         attachments: Attachments {
             png: l
                 .attachments
@@ -178,6 +231,21 @@ fn build_manifest(
                 .filter(|a| a.kind == layout::AttachmentKind::Pdf)
                 .count(),
             paths: (0..l.attachments.len())
+                .filter(|&i| {
+                    matches!(
+                        l.attachments[i].kind,
+                        layout::AttachmentKind::Png | layout::AttachmentKind::Pdf
+                    )
+                })
+                .map(|i| l.attachment_path(i))
+                .collect(),
+            other: (0..l.attachments.len())
+                .filter(|&i| {
+                    !matches!(
+                        l.attachments[i].kind,
+                        layout::AttachmentKind::Png | layout::AttachmentKind::Pdf
+                    )
+                })
                 .map(|i| l.attachment_path(i))
                 .collect(),
         },
@@ -200,6 +268,7 @@ fn build_manifest(
             case_variants: paths(&["Учёба/Идеи.md", "Личное/идеи.md"]),
             nfd_name: format!("Юникод/{}.md", plan::SAMPLE_NFD),
             root_and_folder: paths(&["План.md", "Работа/План.md"]),
+            hash_in_name: format!("Юникод/{}.md", plan::SAMPLE_HASH),
             deepest: format!("{}/Глубокая заметка.md", plan::DEEP_FOLDERS.join("/")),
         },
     }

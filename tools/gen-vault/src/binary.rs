@@ -1,4 +1,4 @@
-//! Минимальные валидные вложения: картинка PNG и одностраничный PDF.
+//! Минимальные валидные вложения: PNG, одностраничный PDF, текст, CSV, пустой ZIP.
 
 use crate::rng::Rng;
 
@@ -94,4 +94,30 @@ pub fn pdf(rng: &mut Rng) -> Vec<u8> {
         objects.len() + 1
     ));
     out.into_bytes()
+}
+
+/// Текстовый файл (не заметка): UTF-8, LF.
+pub fn txt() -> Vec<u8> {
+    "Вложение в текстовом формате, не заметка.\nВторая строка.\n"
+        .as_bytes()
+        .to_vec()
+}
+
+/// Таблица CSV: UTF-8, LF.
+pub fn csv(rng: &mut Rng) -> Vec<u8> {
+    let mut out = String::from("дата;сумма;комментарий\n");
+    for day in 1..=5 {
+        out.push_str(&format!(
+            "2024-03-{day:02};{};расход\n",
+            rng.range(100, 9999)
+        ));
+    }
+    out.into_bytes()
+}
+
+/// Пустой ZIP: только запись «конец центрального каталога» (22 байта).
+pub fn zip() -> Vec<u8> {
+    let mut out = b"PK\x05\x06".to_vec();
+    out.extend_from_slice(&[0; 18]);
+    out
 }

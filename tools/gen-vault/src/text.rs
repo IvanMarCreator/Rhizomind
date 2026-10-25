@@ -6,18 +6,18 @@ use crate::rng::Rng;
 use crate::words::*;
 
 /// Байты файла заметки `idx`.
-pub fn note_bytes(links: &mut Links, idx: usize, rng: &mut Rng, big_mb: Option<u64>) -> Vec<u8> {
+pub fn note_bytes(links: &mut Links, idx: usize, rng: &mut Rng) -> Vec<u8> {
     let note = &links.layout.notes[idx];
     let style = note.style;
     match note.special {
-        Special::None => {
+        Special::None | Special::NotLinked => {
             let lines = bulk_lines(links, idx, rng);
             encode(&lines, style, rng)
         }
         Special::AllLinks => encode(&all_links_lines(links, idx), style, rng),
         Special::CodeNotLinks => encode(&code_lines(links, idx), style, rng),
         Special::InvalidUtf8 => invalid_utf8(),
-        Special::Big => big_file(big_mb.unwrap_or(0)),
+        Special::Big => unreachable!("большой файл пишется потоком: write_big_file"),
     }
 }
 
@@ -75,17 +75,13 @@ fn block_lines(links: &mut Links, idx: usize, rng: &mut Rng, lines: &mut Vec<Str
         15 | 16 => lines.push(format!("> {}", item(links, rng))),
         17 => {
             // Блок кода: `[[...]]` внутри — не ссылка.
-            let name = links.layout.notes[rng.below(links.layout.notes.len())]
-                .name
-                .clone();
+            let name = code_name(links, rng);
             lines.push("```rust".to_string());
             lines.push(links.code(format!("let link = \"[[{name}]]\";")));
             lines.push("```".to_string());
         }
         18 => {
-            let name = links.layout.notes[rng.below(links.layout.notes.len())]
-                .name
-                .clone();
+            let name = code_name(links, rng);
             let code = links.code(format!("`[[{name}]]`"));
             lines.push(format!("Пример разметки: {code} — это код, не ссылка."));
         }
@@ -198,17 +194,35 @@ fn invalid_utf8() -> Vec<u8> {
     out
 }
 
-/// Заметка больше `mb` МБ: текст, заголовки, без ссылок.
-fn big_file(mb: u64) -> Vec<u8> {
-    let limit = (mb as usize) * 1024 * 1024;
-    let mut out = "# Цели\n\n".as_bytes().to_vec();
+/// Заметка больше `mb` МБ: текст и заголовки, без ссылок; пишется потоком,
+/// в памяти — одна строка. Возвращает размер файла.
+pub fn write_big_file(path: &std::path::Path, mb: u64) -> std::io::Result<u64> {
+    use std::io::Write;
+    let limit = mb * 1024 * 1024;
     let line =
         "Большой файл: эта строка повторяется, чтобы превысить лимит размера для редактирования.\n";
-    while out.len() <= limit {
-        out.extend_from_slice(line.as_bytes());
+    let head = "# Цели\n\n";
+    let tail = "\n## Итоги\n\nКонец большого файла.\n";
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    out.write_all(head.as_bytes())?;
+    let mut size = head.len() as u64;
+    while size <= limit {
+        out.write_all(line.as_bytes())?;
+        size += line.len() as u64;
     }
-    out.extend_from_slice("\n## Итоги\n\nКонец большого файла.\n".as_bytes());
-    out
+    out.write_all(tail.as_bytes())?;
+    out.flush()?;
+    Ok(size + tail.len() as u64)
+}
+
+/// Имя заметки для примера в коде; имя с `#` не берётся (его не упоминаем).
+fn code_name(links: &Links, rng: &mut Rng) -> String {
+    let notes = &links.layout.notes;
+    let mut i = rng.below(notes.len());
+    while notes[i].special == Special::NotLinked {
+        i = (i + 1) % notes.len();
+    }
+    notes[i].name.clone()
 }
 
 pub fn sentence(rng: &mut Rng) -> String {

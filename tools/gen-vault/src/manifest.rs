@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 /// Версия формата манифеста; меняется при несовместимых правках.
 pub const FORMAT_VERSION: u32 = 1;
 
+/// Ключ имени генератора — упрощённый. Для его имён (кириллица, латиница,
+/// цифры, одно имя в NFD) он совпадает с ключом ядра; ядро (задача 1.1)
+/// использует полное приведение регистра и на нём не проверяется.
+pub const KEY_RULE: &str = "упрощённый ключ: NFC → нижний регистр (str::to_lowercase) → NFC; \
+годится только для имён этого генератора, правило ядра — полное приведение регистра (задача 1.1)";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub format_version: u32,
@@ -16,7 +22,11 @@ pub struct Manifest {
     /// Число папок без корня.
     pub folders: usize,
     pub max_depth: usize,
-    /// Группы заметок с одинаковым именем (ключ имени: NFC, нижний регистр).
+    /// Правило ключа имени в этом манифесте (поле `key` у дубликатов).
+    pub key_rule: String,
+    /// Скрытые файлы (точка в начале имени файла или папки); в `notes` не входят.
+    pub hidden: Vec<String>,
+    /// Группы заметок с одинаковым ключом имени (см. `key_rule`).
     pub duplicates: Vec<DuplicateGroup>,
     pub samples: Samples,
     pub attachments: Attachments,
@@ -81,6 +91,7 @@ pub struct ExpectedLink {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuplicateGroup {
+    /// Упрощённый ключ имени (см. `KEY_RULE`).
     pub key: String,
     pub notes: Vec<DuplicateNote>,
     /// Заметка, созданная первой: на неё ведёт ссылка без пути (С3.4).
@@ -109,6 +120,8 @@ pub struct Samples {
     pub nfd_name: String,
     /// Заметка в корне и заметка с тем же именем в папке.
     pub root_and_folder: Vec<String>,
+    /// Имя с `#`: ссылок на эту заметку нет (`#` в ссылке — начало заголовка).
+    pub hash_in_name: String,
     /// Заметка на глубине 5 папок.
     pub deepest: String,
 }
@@ -117,7 +130,10 @@ pub struct Samples {
 pub struct Attachments {
     pub png: usize,
     pub pdf: usize,
+    /// Пути PNG и PDF.
     pub paths: Vec<String>,
+    /// Вложения других форматов: TXT, CSV, ZIP.
+    pub other: Vec<String>,
 }
 
 /// Кодировки и переносы строк всех заметок (`.md`).

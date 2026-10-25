@@ -24,17 +24,20 @@ pub fn plan(cfg: &Config, rng: &mut Rng) -> Layout {
     while l.notes.len() < cfg.notes {
         add_bulk_note(&mut l, rng, open_from, bulk_from);
     }
-    add_attachments(&mut l, rng, open_from, (cfg.notes / 40).max(4));
+    add_attachments(&mut l, rng, open_from, (cfg.notes / 40).max(4) + 3);
     l
 }
 
-/// Вложения: четыре в «Вложения», остальные — по случайным папкам.
+/// Вложения: семь в «Вложения» (PNG, PDF, TXT, CSV, ZIP), остальные PNG и PDF — по случайным папкам.
 fn add_attachments(l: &mut Layout, rng: &mut Rng, open_from: usize, count: usize) {
     let inbox = l.ensure_folder(&["Вложения"]);
     l.add_attachment(inbox, "Схема.png", AttachmentKind::Png);
     l.add_attachment(inbox, "diagram.png", AttachmentKind::Png);
     l.add_attachment(inbox, "Скан договора.pdf", AttachmentKind::Pdf);
     l.add_attachment(inbox, "Report.pdf", AttachmentKind::Pdf);
+    l.add_attachment(inbox, "Заметки к встрече.txt", AttachmentKind::Txt);
+    l.add_attachment(inbox, "данные.csv", AttachmentKind::Csv);
+    l.add_attachment(inbox, "Архив.zip", AttachmentKind::Zip);
     while l.attachments.len() < count {
         let folder = random_open_folder(l, rng, open_from, false);
         let n = rng.range(1, 999);
@@ -159,6 +162,16 @@ fn duplicate_name(l: &Layout, rng: &mut Rng, folder: usize, bulk_from: usize) ->
     if source.folder == 0 || group.iter().any(|&i| l.notes[i].folder == 0) {
         return None;
     }
+    // Путь одной заметки не должен совпадать с концом пути другой: правило
+    // кратчайшего пути для таких пар (С3.4) ждёт решения владельца.
+    let keys = |f: usize| l.folders[f].iter().map(|s| name_key(s)).collect::<Vec<_>>();
+    let mine = keys(folder);
+    if group.iter().any(|&i| {
+        let other = keys(l.notes[i].folder);
+        mine.ends_with(&other) || other.ends_with(&mine)
+    }) {
+        return None;
+    }
     let name = if rng.chance(30) {
         source.name.to_lowercase()
     } else {
@@ -199,6 +212,7 @@ fn add_samples(l: &mut Layout, cfg: &Config) {
         );
     }
     note(l, &["Юникод"], SAMPLE_NFD, lf, Special::None);
+    note(l, &["Юникод"], SAMPLE_HASH, lf, Special::NotLinked);
     note(l, &["English", "Notes"], "Project Alpha", lf, Special::None);
     note(l, &["English", "Notes"], "reading list", lf, Special::None);
     note(l, &["English", "Notes"], "README", lf, Special::None);
@@ -262,6 +276,9 @@ pub const SAMPLE_ALL_LINKS: &str = "Все виды ссылок";
 pub const SAMPLE_CODE: &str = "Код и не ссылки";
 /// «Йогурт» в разложенной форме: «И» + U+0306.
 pub const SAMPLE_NFD: &str = "И\u{306}огурт";
+/// Имя с `#`: допустимо в Windows, но вики-ссылкой на него не сослаться
+/// (`#` — начало заголовка), поэтому ссылок на эту заметку нет.
+pub const SAMPLE_HASH: &str = "C# и F#";
 pub const DEEP_FOLDERS: [&str; 5] = [
     "Уровень 1",
     "Уровень 2",

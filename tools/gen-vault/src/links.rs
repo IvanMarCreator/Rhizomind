@@ -1,6 +1,6 @@
 //! Вики-ссылки: создание, разрешение по правилам С3.4 и учёт для манифеста.
 
-use crate::layout::Layout;
+use crate::layout::{Layout, Special};
 use crate::names::name_key;
 use crate::rng::Rng;
 use crate::shortest::shortest_link;
@@ -147,7 +147,7 @@ impl<'a> Links<'a> {
         }
         let l = self.layout;
         let mut t = rng.below(l.notes.len());
-        if t == source {
+        while t == source || l.notes[t].special == Special::NotLinked {
             t = (t + 1) % l.notes.len();
         }
         let note = &l.notes[t];

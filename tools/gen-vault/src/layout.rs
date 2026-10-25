@@ -38,6 +38,8 @@ pub enum Special {
     CodeNotLinks,
     InvalidUtf8,
     Big,
+    /// Обычный текст, но ссылок на заметку нет (имя с `#`).
+    NotLinked,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +55,9 @@ pub struct Note {
 pub enum AttachmentKind {
     Png,
     Pdf,
+    Txt,
+    Csv,
+    Zip,
 }
 
 #[derive(Debug, Clone)]
