@@ -146,9 +146,11 @@ impl OwnWrites {
         {
             observer(path, hash, size);
         }
+        // Ключ — вне замка: приведение регистра не должно держать журнал.
+        let key = path_key(path);
         let mut journal = self.lock();
         journal.expire(Instant::now());
-        let versions = journal.by_path.entry(path_key(path)).or_default();
+        let versions = journal.by_path.entry(key).or_default();
         versions.push_back(Version {
             hash: hash.to_ascii_lowercase(),
             size,
@@ -166,12 +168,13 @@ impl OwnWrites {
     /// На диске (`file` размером `size`) побайтно одна из своих версий
     /// пути? Хэш считается, только если размер совпал с какой-то версией.
     pub(crate) fn is_own(&self, path: &VaultPath, file: &Path, size: u64) -> bool {
+        let key = path_key(path);
         let candidates: Vec<String> = {
             let mut journal = self.lock();
             journal.expire(Instant::now());
             journal
                 .by_path
-                .get(&path_key(path))
+                .get(&key)
                 .map(|versions| {
                     versions
                         .iter()
@@ -184,7 +187,14 @@ impl OwnWrites {
         if candidates.is_empty() {
             return false;
         }
-        let Ok(actual) = hash_file(file) else {
+        // Файл может быть на мгновение занят заменой (Windows): несколько
+        // попыток чтения; совпасть всё равно должны и размер, и хэш.
+        let Some(actual) = (0..3).find_map(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            hash_file(file).ok()
+        }) else {
             return false;
         };
         if !candidates.contains(&actual) {
@@ -194,7 +204,7 @@ impl OwnWrites {
         // к ним — это чужой откат, а не своя запись.
         let mut journal = self.lock();
         let mut dropped = 0;
-        if let Some(versions) = journal.by_path.get_mut(&path_key(path))
+        if let Some(versions) = journal.by_path.get_mut(&key)
             && let Some(k) = versions
                 .iter()
                 .position(|v| v.size == size && v.hash == actual)
