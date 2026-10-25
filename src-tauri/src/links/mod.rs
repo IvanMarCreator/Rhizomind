@@ -9,7 +9,107 @@
 //! заметок в памяти, к диску не обращается.
 
 use crate::commands::{CoreError, CoreResult, LinkSuggestion, VaultPath};
+use crate::names;
 use crate::vault::NoteRef;
+
+/// Цель вики-ссылки после разбора текста между `[[` и `]]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkTarget {
+    /// Папки пути (`Проекты/Альфа/Встреча` → `["Проекты", "Альфа"]`).
+    pub folders: Vec<String>,
+    /// Имя заметки без `.md`.
+    pub name: String,
+    /// Заголовок после `#`.
+    pub heading: Option<String>,
+    /// Псевдоним после `|`.
+    pub alias: Option<String>,
+    /// Путь от корня хранилища (`[[/Встреча]]`).
+    pub from_root: bool,
+}
+
+/// Почему текст ссылки не может быть целью.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidTarget {
+    /// Нет имени: `[[]]`, `[[#Заголовок]]`, `[[|псевдоним]]`, `[[/]]`.
+    EmptyTarget,
+    /// Пустой компонент пути: `[[Альфа//Встреча]]`, `[[Альфа/]]`.
+    EmptyComponent,
+    /// Компонент `.` или `..`.
+    DotComponent,
+    /// Запрещённый в имени символ (`\ : * ? " < >`) или управляющий.
+    ForbiddenChars,
+}
+
+impl InvalidTarget {
+    /// Причина строкой — как в образцах `tests/fixtures/wikilinks/parse.json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EmptyTarget => "empty_target",
+            Self::EmptyComponent => "empty_component",
+            Self::DotComponent => "dot_component",
+            Self::ForbiddenChars => "forbidden_chars",
+        }
+    }
+}
+
+/// Пробелы и табуляции вокруг цели, заголовка и псевдонима. Другие
+/// пробельные символы (неразрывный пробел) Windows разрешает в конце имени,
+/// поэтому они остаются.
+fn trim_blanks(text: &str) -> &str {
+    text.trim_matches([' ', '\t'])
+}
+
+fn non_empty(text: &str) -> Option<String> {
+    let text = trim_blanks(text);
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Разбор текста между `[[` и `]]` по правилам общих образцов
+/// (`tests/fixtures/wikilinks/parse.json`; тот же разбор — в
+/// `src/core/wikilinks` интерфейса). Проверяется только синтаксис пути:
+/// зарезервированное имя или точка в конце дают допустимую цель, которая
+/// просто не разрешается.
+pub fn parse_target(inner: &str) -> Result<LinkTarget, InvalidTarget> {
+    let (target, alias) = match inner.split_once('|') {
+        // `\|` — разделитель псевдонима в таблице Markdown.
+        Some((target, alias)) => (target.strip_suffix('\\').unwrap_or(target), non_empty(alias)),
+        None => (inner, None),
+    };
+    let (path, heading) = match target.split_once('#') {
+        Some((path, heading)) => (path, non_empty(heading)),
+        None => (target, None),
+    };
+    let path = trim_blanks(path);
+    let (from_root, path) = match path.strip_prefix('/') {
+        Some(rest) => (true, rest),
+        None => (false, path),
+    };
+    if path.is_empty() {
+        return Err(InvalidTarget::EmptyTarget);
+    }
+    let mut components: Vec<String> = path.split('/').map(str::to_owned).collect();
+    if components.iter().any(String::is_empty) {
+        return Err(InvalidTarget::EmptyComponent);
+    }
+    if components.iter().any(|c| c == "." || c == "..") {
+        return Err(InvalidTarget::DotComponent);
+    }
+    if components
+        .iter()
+        .any(|c| c.chars().any(names::is_forbidden_char))
+    {
+        return Err(InvalidTarget::ForbiddenChars);
+    }
+    let file = components.pop().unwrap_or_default();
+    let name = names::note_stem(&file).map_or(file.clone(), str::to_owned);
+    Ok(LinkTarget {
+        folders: components,
+        name,
+        heading,
+        alias,
+        from_root,
+    })
+}
 
 /// Ссылки одного хранилища. Список заметок заменяется целиком при изменении
 /// дерева (`replace_notes`); запросы не меняют состояние.
