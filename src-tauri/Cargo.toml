@@ -37,6 +37,17 @@ tauri-plugin-dialog = "=2.8.3"
 # Типы команд ядра и их JSON (контракт API v1).
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
+# Хранилище (vault, задача 1.2): версия файла — хэш содержимого; он же — в
+# журнале своих записей наблюдателя (watcher, задача 1.4).
+# Без функций по умолчанию лишнего нет: std, без rayon и mmap.
+blake3 = "=1.8.7"
+# Атомарная запись: временный файл в .rhizomind/tmp/ (раньше — только в тестах).
+tempfile = "=3.27.0"
+# Канонизация корня хранилища без префикса \\?\ на Windows.
+dunce = "=1.0.5"
+# Удаление в корзину ОС. Без chrono (нужен только для списка корзины);
+# COM на Windows — однопоточная модель в отдельном потоке удаления.
+trash = { version = "=5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
 # Ключ имени (модуль names): NFC → полное приведение регистра → NFC.
 unicode-normalization = "=0.1.26"
 icu_casemap = "=2.4.0"
@@ -51,8 +62,18 @@ notify = "=9.0.0-rc.6"
 notify-debouncer-full = "=0.8.0-rc.2"
 # Идентификатор файла (FileId NTFS, inode) — распознавание переименований.
 file-id = "=0.2.3"
-# Хэш содержимого для журнала своих записей (версия файла, `FileVersion`).
-blake3 = "=1.8.7"
+
+[target.'cfg(windows)'.dependencies]
+# ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
+# (итоговый путь открытого файла) — хранилище, задача 1.2.
+# Местное время для имени копии при конфликте — FileTimeToSystemTime и
+# SystemTimeToTzSpecificLocalTime (Win32_System_Time).
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Time"] }
+
+[target.'cfg(unix)'.dependencies]
+# Местное время для имени копии при конфликте (localtime_r); уже было в
+# дереве через tauri и tempfile.
+libc = "=0.2.191"
 
 [dev-dependencies]
 # Свойства ключа имени, кратчайшего пути и разбора ссылок (модули names, links).
@@ -62,10 +83,13 @@ proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 tauri = { version = "=2.12.5", features = ["test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
-# Временная папка для заглушки хранилища в тестах прав.
-tempfile = "=3.27.0"
-# Генератор тестового хранилища (задача 1.6): ожидаемые разрешения ссылок и
-# кратчайшие пути из манифеста проверяют модуль links; нагрузочные тесты наблюдателя.
-gen-vault = { path = "../tools/gen-vault" }
+# Генератор тестового хранилища: образцы кодировок в тестах vault, ожидаемые
+# разрешения ссылок и кратчайшие пути в тестах links, нагрузочные тесты
+# наблюдателя.
+gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Точки соединения NTFS в тестах контура хранилища.
+junction = "=2.1.0"
 
 # Профиль выпуска — в корневом Cargo.toml (рабочее пространство).
