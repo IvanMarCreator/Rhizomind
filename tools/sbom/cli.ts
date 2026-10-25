@@ -27,5 +27,8 @@ execFileSync('cargo', ['cyclonedx', '--manifest-path', manifest, '--format', 'js
 const generated = path.join(root, 'src-tauri', 'sbom-rust.cdx.json');
 copyFileSync(generated, path.join(outDir, 'sbom-rust.cdx.json'));
 rmSync(generated);
+// cargo-cyclonedx пишет SBOM для каждого члена рабочего пространства. Генератор
+// тестового хранилища (tools/gen-vault) в программу не входит — его SBOM не нужен.
+rmSync(path.join(root, 'tools', 'gen-vault', 'sbom-rust.cdx.json'), { force: true });
 
 console.log('sbom — release/sbom-npm.cdx.json, release/sbom-rust.cdx.json');

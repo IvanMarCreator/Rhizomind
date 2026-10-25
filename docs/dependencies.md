@@ -1,6 +1,6 @@
 # Зависимости Rhizomind
 
-Каждая прямая зависимость — с точной версией, лицензией, назначением и ответом на вопрос «есть ли сетевой код». Новая зависимость добавляется сюда в той же задаче (план 0.1, раздел 1.2). Полный перечень с транзитивными зависимостями — SBOM (`npm run sbom`) и `cargo deny --manifest-path src-tauri/Cargo.toml list`.
+Каждая прямая зависимость — с точной версией, лицензией, назначением и ответом на вопрос «есть ли сетевой код». Новая зависимость добавляется сюда в той же задаче (план 0.1, раздел 1.2). Полный перечень с транзитивными зависимостями — SBOM (`npm run sbom`) и `cargo deny --manifest-path src-tauri/Cargo.toml list` (для генератора тестового хранилища — `cargo deny --manifest-path tools/gen-vault/Cargo.toml --config src-tauri/deny.toml list`).
 
 Автоматические проверки при каждом `npm run verify`:
 - лицензии крейтов, запрещённые крейты и функции — `cargo deny check` ([src-tauri/deny.toml](../src-tauri/deny.toml));
@@ -23,6 +23,18 @@
 | `tauri-build` | 2.7.4 | MIT OR Apache-2.0 | `build.rs`: встраивание конфигурации, `AppManifest::commands` | Нет |
 | `tauri` с функцией `test` | 2.12.5 | MIT OR Apache-2.0 | Подменный runtime для тестов ядра без окна | Нет |
 | `serde_json` | 1.0.154 | MIT OR Apache-2.0 | Тест конфигурации безопасности читает `tauri.conf.json` и файл разрешений | Нет |
+
+## Генератор тестового хранилища (`tools/gen-vault/Cargo.toml`) — в программу не попадает
+
+Отдельный крейт рабочего пространства, не зависимость `src-tauri`; `cargo deny` проверяет его с той же конфигурацией (`src-tauri/deny.toml`).
+
+| Крейт | Версия | Лицензия | Зачем | Сетевой код |
+|---|---|---|---|---|
+| `serde` (функция `derive`) | 1.0.229 | MIT OR Apache-2.0 | Типы манифеста | Нет |
+| `serde_json` | 1.0.154 | MIT OR Apache-2.0 | Манифест в JSON | Нет |
+| `unicode-normalization` | 0.1.26 | MIT OR Apache-2.0 | Ключ имени (NFC) для дубликатов и ссылок; тот же крейт выбран для ядра (исследование крейтов) | Нет |
+
+Транзитивно (`cargo tree -p gen-vault -e normal`): `serde_core`, `serde_derive`, `proc-macro2`, `quote`, `syn`, `unicode-ident` (макросы сборки), `itoa`, `memchr`, `zmij`, `tinyvec` — версии, которые уже были в `Cargo.lock`.
 
 ## Интерфейс (npm) — попадает в программу
 
