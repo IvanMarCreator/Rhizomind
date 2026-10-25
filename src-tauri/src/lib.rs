@@ -132,8 +132,9 @@ pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvi
             .title(main_window_title())
             .inner_size(1200.0, 800.0)
             .min_inner_size(640.0, 480.0)
-            // Кэш, cookies и хранилища страницы — только в памяти (InPrivate).
-            .incognito(true)
+            // Кэш, cookies и хранилища страницы — только в памяти (InPrivate);
+            // исключение — тестовая сборка Linux (security::incognito).
+            .incognito(security::incognito())
             // Служебная папка движка — во временной папке ОС, не в %LOCALAPPDATA%.
             .data_directory(shell.data_dir().to_path_buf())
             .additional_browser_args(shell.browser_args())

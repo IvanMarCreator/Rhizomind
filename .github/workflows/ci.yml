@@ -22,7 +22,9 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # Обычно ~25 мин на Windows с кэшем; запас на холодный кэш. Зависание —
+    # ошибка, а не часы ожидания.
+    timeout-minutes: 45
     steps:
       - name: Получить код
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,6 +117,7 @@ jobs:
         run: npm run build:e2e
 
       - name: Сценарный тест (Linux)
+        timeout-minutes: 10
         if: runner.os == 'Linux'
         env:
           # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
@@ -122,6 +125,7 @@ jobs:
         run: xvfb-run -a npm run test:e2e
 
       - name: Сценарный тест (Windows)
+        timeout-minutes: 10
         if: runner.os == 'Windows'
         run: npm run test:e2e
 

@@ -2,7 +2,7 @@
 // tauri-driver запускает собранный исполняемый файл и передаёт команды движку:
 // на Windows — msedgedriver (путь в MSEDGEDRIVER или в PATH), на Linux — WebKitWebDriver.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, openSync } from 'node:fs';
 import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import { remote } from 'webdriverio';
 
 const ROOT = path.join(import.meta.dirname, '..', '..');
 const PORT = 4444;
+const SESSION_TIMEOUT_MS = 60_000;
 
 export const SCREENSHOT_DIR = path.join(ROOT, 'test-results', 'e2e');
 
@@ -59,24 +60,46 @@ export async function startApp(): Promise<Session> {
   mkdirSync(SCREENSHOT_DIR, { recursive: true });
   const args = ['--port', String(PORT)];
   if (process.env.MSEDGEDRIVER) args.push('--native-driver', process.env.MSEDGEDRIVER);
-  const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', 'inherit', 'inherit'] });
-  await waitForPort(PORT, 30_000);
+  // Журнал tauri-driver и драйвера движка — рядом со снимками (артефакт CI).
+  const driverLog = path.join(SCREENSHOT_DIR, `tauri-driver-${process.platform}.log`);
+  const logFd = openSync(driverLog, 'a');
+  const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', logFd, logFd] });
+  try {
+    await waitForPort(PORT, 30_000);
+  } catch (error) {
+    driver.kill();
+    throw error;
+  }
 
   let browser: WebdriverIO.Browser;
+  let timer: NodeJS.Timeout | undefined;
   try {
-    browser = await remote({
+    // Зависание при создании сессии превращается в ошибку за минуту, а не в
+    // бесконечное ожидание CI: одна повторная попытка, общий предел.
+    const session = remote({
       hostname: '127.0.0.1',
       port: PORT,
       logLevel: 'warn',
+      connectionRetryTimeout: 30_000,
+      connectionRetryCount: 1,
       capabilities: {
         // tauri-driver принимает путь к приложению в своём расширении возможностей.
         'tauri:options': { application: applicationPath() },
       } as WebdriverIO.Capabilities,
     });
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`сессия WebDriver не создана за ${SESSION_TIMEOUT_MS / 1000} с; журнал — ${driverLog}`)),
+        SESSION_TIMEOUT_MS,
+      );
+    });
+    browser = await Promise.race([session, deadline]);
   } catch (error) {
     // Сессия не создана — afterAll не сможет остановить драйвер, останавливаем здесь.
     driver.kill();
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
 
   return {

@@ -50,6 +50,16 @@ const PROTECTED_BROWSER_ARGS: &[&str] = &[
     "--host-resolver-rules=\"MAP * ~NOTFOUND\"",
 ];
 
+/// Режим InPrivate (`incognito`): кэш, cookies и хранилища страницы — только в
+/// памяти. Включён во всех сборках, кроме тестовой на Linux (функция
+/// `webdriver`): там wry для `incognito` создаёт эфемерный контекст WebKitGTK с
+/// запретом автоматизации, и WebKitWebDriver не может открыть сессию
+/// («failed to create a new browsing context»). Выпуск на Linux и все сборки
+/// Windows — InPrivate.
+pub fn incognito() -> bool {
+    !cfg!(all(target_os = "linux", feature = "webdriver"))
+}
+
 /// Строка `additional_browser_args` для выпускной сборки.
 pub fn browser_args() -> String {
     PROTECTED_BROWSER_ARGS.join(" ")
@@ -161,6 +171,15 @@ mod tests {
              --no-proxy-server --disable-background-networking --disable-component-update \
              --disable-domain-reliability --no-pings \
              --host-resolver-rules=\"MAP * ~NOTFOUND\""
+        );
+    }
+
+    #[test]
+    fn incognito_is_on_in_every_build_except_linux_webdriver() {
+        // Выпуск и тестовая сборка Windows — всегда InPrivate (ADR 0007).
+        assert_eq!(
+            incognito(),
+            !cfg!(all(target_os = "linux", feature = "webdriver"))
         );
     }
 

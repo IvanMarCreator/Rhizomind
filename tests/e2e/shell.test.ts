@@ -8,7 +8,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { SCREENSHOT_DIR, startApp, type Session } from './driver.ts';
 
 // Адрес своего интерфейса: Windows — http://tauri.localhost, Linux — tauri://localhost.
-const OWN_URL = /^(http:\/\/tauri\.localhost|tauri:\/\/localhost)\//;
+// WebView2 отдаёт адрес со слешем (`http://tauri.localhost/`), WebKitGTK — без
+// него (`tauri://localhost`).
+const OWN_URL = /^(http:\/\/tauri\.localhost|tauri:\/\/localhost)(\/|$)/;
 const EXTERNAL = 'https://example.com/';
 
 describe('защищённая оболочка', () => {
@@ -111,7 +113,7 @@ describe('защищённая оболочка', () => {
   });
 
   it('вызов ядра идёт через изолированный iframe и его фильтр', async () => {
-    const result = await session.browser.execute(async () => {
+    const run = () => session.browser.execute(async () => {
       const internals = (
         window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }
       ).__TAURI_INTERNALS__;
@@ -123,6 +125,11 @@ describe('защищённая оболочка', () => {
         return { iframe: iframe !== null, error: String(error) };
       }
     });
+    // WebKitWebDriver (Linux) отдаёт отказ ядра ошибкой самой команды execute,
+    // а не значением из catch страницы; признак тот же — имя подменённой команды.
+    const hasIframe = await session.browser.execute(() => document.getElementById('__tauri_isolation__') !== null);
+    expect(hasIframe).toBe(true);
+    const result = await run().catch((error: unknown) => ({ iframe: hasIframe, error: String(error) }));
     expect(result.iframe).toBe(true);
     // Фильтр (src-isolation/index.js) подменил команду — ядро отвечает ошибкой
     // про подменённое имя, а не про plugin:app|version.
