@@ -16,6 +16,7 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost ws://localhost:5173; img-src 'self' asset: http://asset.localhost blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       "freezePrototype": true,
+      "pattern": { "use": "isolation", "options": { "dir": "../src-isolation" } },
       "capabilities": ["main"]
     }
   },

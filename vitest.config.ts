@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 // Сценарные тесты с настоящим окном — в vitest.e2e.config.ts.
 export default defineConfig({
   test: {
-    include: ['tools/**/*.test.ts', 'src/**/*.test.ts'],
+    include: ['tools/**/*.test.ts', 'src/**/*.test.ts', 'src-isolation/**/*.test.ts'],
     environment: 'node',
   },
 });

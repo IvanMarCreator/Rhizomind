@@ -24,12 +24,14 @@ path = "src/main.rs"
 webdriver = []
 
 [build-dependencies]
-tauri-build = { version = "=2.7.4", features = [] }
+tauri-build = { version = "=2.7.4", features = ["isolation"] }
 
 [dependencies]
 # Функции по умолчанию: wry, compression, common-controls-v6, dynamic-acl, x11, dbus.
-# Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls.
-tauri = { version = "=2.12.5", features = [] }
+# isolation — вызовы ядра через изолированный iframe с шифрованием (ADR 0009,
+# `app.security.pattern` в tauri.conf.json, код фильтра — src-isolation/).
+# Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls, protocol-asset.
+tauri = { version = "=2.12.5", features = ["isolation"] }
 
 [target.'cfg(windows)'.dependencies]
 # Те же версии, что уже приходят через wry: новых крейтов нет.
@@ -48,7 +50,7 @@ windows = { version = "=0.62.2", features = [
 [dev-dependencies]
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
-tauri = { version = "=2.12.5", features = ["test"] }
+tauri = { version = "=2.12.5", features = ["isolation", "test"] }
 serde_json = "=1.0.154"
 
 # Профиль выпуска и [patch.crates-io] (своя копия wry) — в корневом Cargo.toml

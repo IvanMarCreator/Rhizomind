@@ -68,7 +68,21 @@ deny = ["net"]
 
 [[bans.features]]
 crate = "tauri"
-deny = ["devtools", "native-tls", "native-tls-vendored", "rustls-tls"]
+# protocol-asset — отдача файлов с диска по asset://; пока не нужна (ADR 0009).
+deny = ["devtools", "native-tls", "native-tls-vendored", "rustls-tls", "protocol-asset"]
+
+# Инструменты разработчика нельзя включить и в обход крейта tauri.
+[[bans.features]]
+crate = "tauri-runtime-wry"
+deny = ["devtools"]
+
+[[bans.features]]
+crate = "tauri-runtime"
+deny = ["devtools"]
+
+[[bans.features]]
+crate = "wry"
+deny = ["devtools"]
 
 [sources]
 unknown-registry = "deny"
