@@ -2,7 +2,6 @@
 //! Всё решается до записи на диск, чтобы ссылки могли вести на любую заметку.
 
 use crate::names::{is_valid_windows_name, name_key};
-use crate::rng::Rng;
 use std::collections::{HashMap, HashSet};
 
 /// Наибольшая глубина вложенности папок.
@@ -192,16 +191,6 @@ impl Layout {
     pub fn attachment_path(&self, idx: usize) -> String {
         let a = &self.attachments[idx];
         join(&self.folders[a.folder], &a.file_name)
-    }
-
-    /// Случайная папка, в которой можно создать ещё одну вложенную.
-    pub fn random_parent(&self, rng: &mut Rng) -> usize {
-        loop {
-            let idx = rng.below(self.folders.len());
-            if self.depth(idx) < MAX_DEPTH {
-                return idx;
-            }
-        }
     }
 }
 

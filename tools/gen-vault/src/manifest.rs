@@ -19,6 +19,8 @@ pub struct Manifest {
     /// Группы заметок с одинаковым именем (ключ имени: NFC, нижний регистр).
     pub duplicates: Vec<DuplicateGroup>,
     pub samples: Samples,
+    pub attachments: Attachments,
+    pub encodings: Encodings,
     pub links: LinkStats,
     /// Ожидаемые разрешения ссылок: все ссылки образцов и ссылки из части
     /// массовых заметок (примерно 300 заметок).
@@ -109,4 +111,49 @@ pub struct Samples {
     pub root_and_folder: Vec<String>,
     /// Заметка на глубине 5 папок.
     pub deepest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachments {
+    pub png: usize,
+    pub pdf: usize,
+    pub paths: Vec<String>,
+}
+
+/// Кодировки и переносы строк всех заметок (`.md`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Encodings {
+    /// Только LF.
+    pub lf: usize,
+    /// Только CRLF.
+    pub crlf: usize,
+    /// И LF, и CRLF в одном файле.
+    pub mixed: usize,
+    /// UTF-8 с BOM.
+    pub bom: usize,
+    /// Последняя строка без перевода строки.
+    pub no_final_newline: usize,
+    pub samples: EncodingSamples,
+}
+
+/// Образцы с известными свойствами (все — в папке «Кодировки»).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncodingSamples {
+    pub lf: String,
+    pub crlf: String,
+    pub lf_bom: String,
+    pub crlf_bom: String,
+    pub mixed: String,
+    pub no_final_newline: String,
+    /// Невалидный UTF-8 посередине: ядро открывает только для чтения.
+    pub invalid_utf8: String,
+    /// Файл больше лимита (`--big-mb`); нет — `null`.
+    pub big: Option<BigFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BigFile {
+    pub path: String,
+    pub bytes: u64,
+    pub limit_mb: u64,
 }

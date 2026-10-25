@@ -1,7 +1,7 @@
 //! Построение раскладки: особые образцы и массовые заметки.
 
 use crate::Config;
-use crate::layout::{Eol, Layout, MAX_DEPTH, Special, Style};
+use crate::layout::{AttachmentKind, Eol, Layout, MAX_DEPTH, Special, Style};
 use crate::names::name_key;
 use crate::rng::Rng;
 use crate::words::*;
@@ -24,7 +24,33 @@ pub fn plan(cfg: &Config, rng: &mut Rng) -> Layout {
     while l.notes.len() < cfg.notes {
         add_bulk_note(&mut l, rng, open_from, bulk_from);
     }
+    add_attachments(&mut l, rng, open_from, (cfg.notes / 40).max(4));
     l
+}
+
+/// Вложения: четыре в «Вложения», остальные — по случайным папкам.
+fn add_attachments(l: &mut Layout, rng: &mut Rng, open_from: usize, count: usize) {
+    let inbox = l.ensure_folder(&["Вложения"]);
+    l.add_attachment(inbox, "Схема.png", AttachmentKind::Png);
+    l.add_attachment(inbox, "diagram.png", AttachmentKind::Png);
+    l.add_attachment(inbox, "Скан договора.pdf", AttachmentKind::Pdf);
+    l.add_attachment(inbox, "Report.pdf", AttachmentKind::Pdf);
+    while l.attachments.len() < count {
+        let folder = random_open_folder(l, rng, open_from, false);
+        let n = rng.range(1, 999);
+        let (name, kind) = if l.attachments.len() % 2 == 0 {
+            (
+                format!("{} {n}.png", rng.pick(&["Схема", "Скриншот", "photo"])),
+                AttachmentKind::Png,
+            )
+        } else {
+            (
+                format!("{} {n}.pdf", rng.pick(&["Скан", "Счёт", "Invoice"])),
+                AttachmentKind::Pdf,
+            )
+        };
+        l.add_attachment(folder, &name, kind);
+    }
 }
 
 /// Корень или папка не из образцов; `for_child` — с местом для вложенной папки.
@@ -230,7 +256,6 @@ fn add_samples(l: &mut Layout, cfg: &Config) {
     if cfg.big_mb.is_some() {
         note(l, &enc, "Большой файл", lf, Special::Big);
     }
-    l.ensure_folder(&["Вложения"]);
 }
 
 pub const SAMPLE_ALL_LINKS: &str = "Все виды ссылок";

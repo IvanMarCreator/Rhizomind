@@ -5,6 +5,7 @@
 //! дубликаты имён, вложения и образцы кодировок. Одинаковое зерно даёт
 //! байт в байт одинаковое хранилище. Служебную папку `.rhizomind/` не создаёт.
 
+mod binary;
 mod layout;
 mod links;
 mod manifest;
@@ -58,15 +59,58 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
         fs::create_dir_all(out.join(folder.join("/")))?;
     }
     let mut links = links::Links::new(&layout);
+    let mut counts = EolCounts::default();
     for idx in 0..layout.notes.len() {
         let bytes = text::note_bytes(&mut links, idx, &mut rng, cfg.big_mb);
+        counts.add(&bytes);
+        if layout.notes[idx].special == layout::Special::Big {
+            counts.big_bytes = bytes.len() as u64;
+        }
         fs::write(out.join(layout.note_path(idx)), bytes)?;
     }
+    for idx in 0..layout.attachments.len() {
+        let bytes = match layout.attachments[idx].kind {
+            layout::AttachmentKind::Png => binary::png(&mut rng),
+            layout::AttachmentKind::Pdf => binary::pdf(&mut rng),
+        };
+        fs::write(out.join(layout.attachment_path(idx)), bytes)?;
+    }
 
-    Ok(build_manifest(&layout, cfg, &links))
+    Ok(build_manifest(&layout, cfg, &links, counts))
 }
 
-fn build_manifest(l: &layout::Layout, cfg: &Config, links: &links::Links) -> Manifest {
+/// Подсчёт переносов строк и BOM по записанным заметкам.
+#[derive(Default)]
+struct EolCounts {
+    lf: usize,
+    crlf: usize,
+    mixed: usize,
+    bom: usize,
+    no_final_newline: usize,
+    big_bytes: u64,
+}
+
+impl EolCounts {
+    fn add(&mut self, bytes: &[u8]) {
+        let crlf = bytes.windows(2).filter(|w| w == b"\r\n").count();
+        let lf = bytes.iter().filter(|&&c| c == b'\n').count() - crlf;
+        match (crlf > 0, lf > 0) {
+            (false, true) => self.lf += 1,
+            (true, false) => self.crlf += 1,
+            (true, true) => self.mixed += 1,
+            (false, false) => {}
+        }
+        self.bom += bytes.starts_with(b"\xEF\xBB\xBF") as usize;
+        self.no_final_newline += !bytes.ends_with(b"\n") as usize;
+    }
+}
+
+fn build_manifest(
+    l: &layout::Layout,
+    cfg: &Config,
+    links: &links::Links,
+    eol: EolCounts,
+) -> Manifest {
     let paths = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Manifest {
         format_version: FORMAT_VERSION,
@@ -76,6 +120,29 @@ fn build_manifest(l: &layout::Layout, cfg: &Config, links: &links::Links) -> Man
         folders: l.folders.len() - 1,
         max_depth: (0..l.folders.len()).map(|f| l.depth(f)).max().unwrap_or(0),
         duplicates: duplicates(l),
+        attachments: Attachments {
+            png: l
+                .attachments
+                .iter()
+                .filter(|a| a.kind == layout::AttachmentKind::Png)
+                .count(),
+            pdf: l
+                .attachments
+                .iter()
+                .filter(|a| a.kind == layout::AttachmentKind::Pdf)
+                .count(),
+            paths: (0..l.attachments.len())
+                .map(|i| l.attachment_path(i))
+                .collect(),
+        },
+        encodings: Encodings {
+            lf: eol.lf,
+            crlf: eol.crlf,
+            mixed: eol.mixed,
+            bom: eol.bom,
+            no_final_newline: eol.no_final_newline,
+            samples: encoding_samples(l, cfg, eol.big_bytes),
+        },
         links: link_stats(links),
         expected_links: expected_links(l, links),
         samples: Samples {
@@ -174,4 +241,28 @@ fn expected_links(l: &layout::Layout, links: &links::Links) -> Vec<ExpectedLink>
             }
         })
         .collect()
+}
+
+fn encoding_samples(l: &layout::Layout, cfg: &Config, big_bytes: u64) -> EncodingSamples {
+    let p = |name: &str| format!("Кодировки/{name}.md");
+    let big = cfg.big_mb.map(|mb| {
+        let idx = (0..l.notes.len())
+            .find(|&i| l.notes[i].special == layout::Special::Big)
+            .unwrap();
+        BigFile {
+            path: l.note_path(idx),
+            bytes: big_bytes,
+            limit_mb: mb,
+        }
+    });
+    EncodingSamples {
+        lf: p("LF без BOM"),
+        crlf: p("CRLF без BOM"),
+        lf_bom: p("LF с BOM"),
+        crlf_bom: p("CRLF с BOM"),
+        mixed: p("Смешанные переносы"),
+        no_final_newline: p("Без перевода строки в конце"),
+        invalid_utf8: p("Невалидный UTF-8"),
+        big,
+    }
 }
