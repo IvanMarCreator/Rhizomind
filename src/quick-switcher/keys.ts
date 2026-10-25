@@ -7,9 +7,10 @@ export interface KeyLike {
   altKey: boolean;
   shiftKey: boolean;
   metaKey: boolean;
+  isComposing: boolean;
 }
 
 export function isQuickSwitcherKey(event: KeyLike): boolean {
-  if (!event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return false;
+  if (event.isComposing || !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return false;
   return event.code === 'KeyO' || event.key.toLowerCase() === 'o';
 }

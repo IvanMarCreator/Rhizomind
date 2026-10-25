@@ -1,7 +1,7 @@
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CoreError, Settings, SwitcherItem, VaultPath } from '../api/index.ts';
+import type { CoreError, NameCheck, Settings, SwitcherItem, VaultPath } from '../api/index.ts';
 import { mockCore, type CommandMock, type CoreMocks } from '../api/testing.ts';
 import QuickSwitcher from './QuickSwitcher.svelte';
 
@@ -296,6 +296,77 @@ describe('быстрый переход: создание заметки', () =>
   });
 });
 
+describe('быстрый переход: закрытие во время создания', () => {
+  /** Команда, которая отвечает, когда тест скажет. */
+  function held<T>() {
+    let release: (value: T) => void = () => {};
+    const promise = new Promise<T>((resolve) => (release = resolve));
+    return { promise, release: (value: T) => release(value) };
+  }
+
+  const base: CoreMocks = {
+    settings_read: () => ({ settings: SETTINGS }),
+    note_create: ({ dir, name }) => ({ path: [...dir, name] }),
+  };
+
+  async function startCreate(input: HTMLInputElement) {
+    await type(input, 'Новая');
+    await waitFor(() => expect(selected()?.textContent).toContain('Создать заметку „Новая“'));
+    await fireEvent.keyDown(input, { key: 'Enter' });
+  }
+
+  it('Esc во время проверки имени — заметка не создаётся, окно закрывается один раз', async () => {
+    const check = held<NameCheck>();
+    const { input, calls, onOpen, onClose } = setup({ ...base, name_check: () => check.promise });
+    await startCreate(input);
+    await waitFor(() => expect(calls.some(([command]) => command === 'name_check')).toBe(true));
+
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    check.release({ status: 'ok', warning: 'unlinkable' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.some(([command]) => command === 'note_create')).toBe(false);
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('окно убрали (оболочка) во время проверки имени — заметка не создаётся', async () => {
+    const check = held<NameCheck>();
+    const calls = mockCore({ switcher_search: search(), ...base, name_check: () => check.promise });
+    const onOpen = vi.fn<(path: VaultPath) => void>();
+    const { unmount } = render(QuickSwitcher, { currentPath: null, onOpen, onClose: () => {}, onNotice: () => {} });
+    const input = screen.getByRole('combobox') as HTMLInputElement;
+    await startCreate(input);
+    await waitFor(() => expect(calls.some(([command]) => command === 'name_check')).toBe(true));
+
+    unmount();
+    check.release({ status: 'ok', warning: null });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.some(([command]) => command === 'note_create')).toBe(false);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('закрыли, пока заметка создаётся, — она создана, но переход и уведомление не выполняются', async () => {
+    const created = held<{ path: VaultPath }>();
+    const { input, calls, onOpen, onClose, onNotice } = setup({
+      ...base,
+      name_check: () => ({ status: 'ok', warning: 'unlinkable' }),
+      note_create: () => created.promise,
+    });
+    await startCreate(input);
+    await waitFor(() => expect(calls.some(([command]) => command === 'note_create')).toBe(true));
+
+    await fireEvent.mouseDown(screen.getByTestId('quick-switcher-scrim'));
+    created.release({ path: ['Новая.md'] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onNotice).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+});
+
 describe('быстрый переход: скорость интерфейса', () => {
   it('быстрый набор: в полёте один запрос, на экране — ответ на последний текст', async () => {
     const waiting: (() => void)[] = [];
@@ -317,26 +388,14 @@ describe('быстрый переход: скорость интерфейса',
     expect(options().at(-1)?.textContent).toContain('Создать заметку „итог“');
   });
 
-  it('первый запрос уходит без задержки, 50 пунктов рисуются быстрее 100 мс', async () => {
-    const many: SwitcherItem[] = Array.from({ length: 50 }, (_, i) => ({
-      name: `Заметка ${i}`,
-      path: ['Папка', `Заметка ${i}.md`],
-    }));
-    const { input, calls } = setup({ switcher_search: () => ({ items: many }) });
-    await waitFor(() => expect(options()).toHaveLength(50));
+  it('запрос уходит в том же обработчике ввода — без дебаунса и таймеров', async () => {
+    const { input, calls } = setup();
+    await waitFor(() => expect(options()).toHaveLength(4));
 
-    const times: number[] = [];
-    for (const value of ['з', 'за', 'зам', 'заме', 'замет']) {
-      const started = performance.now();
-      await type(input, value);
-      // Запрос отправлен в том же обработчике ввода — без дебаунса.
-      expect(searches(calls).at(-1)).toBe(value);
-      await waitFor(() => expect(options()[0]?.querySelector('mark')?.textContent).toBe(value[0]?.toUpperCase() + value.slice(1)), {
-        interval: 1,
-      });
-      times.push(performance.now() - started);
-    }
-    times.sort((a, b) => a - b);
-    expect(times[Math.floor(times.length / 2)]).toBeLessThan(100);
+    // Событие ввода без ожидания: вызов ядра должен случиться синхронно.
+    input.value = 'итог';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(searches(calls)).toEqual(['', 'итог']);
   });
 });

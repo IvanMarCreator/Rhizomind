@@ -44,11 +44,11 @@
       openSwitcher();
       return;
     }
-    // Под модальным окном быстрого перехода история не листается.
-    if (switcherOpen) return;
     const action = historyKeyAction(event);
     if (!action) return;
     event.preventDefault();
+    // Под модальным окном быстрого перехода история не листается.
+    if (switcherOpen) return;
     model.navigate(action);
   }
 </script>

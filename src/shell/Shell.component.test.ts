@@ -184,9 +184,12 @@ describe('оболочка окна', () => {
     await screen.findByText('Б');
 
     await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
-    await fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowLeft', altKey: true });
+    const event = new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true });
+    screen.getByRole('combobox').dispatchEvent(event);
 
     expect(model.currentPath).toEqual(['Б.md']);
+    // Действие браузера по умолчанию (Alt+← — «назад» в WebView) тоже гасится.
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('без хранилища быстрый переход не открывается', async () => {

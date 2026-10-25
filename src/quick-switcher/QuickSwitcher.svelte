@@ -11,7 +11,7 @@
   import type { SwitcherItem, SwitcherSearchResponse, VaultPath } from '../api/index.ts';
   import { LIMITS } from '../api/limits.ts';
   import { userMessage } from '../i18n/errors.ts';
-  import { t, type MessageKey } from '../i18n/index.ts';
+  import { t } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
   import { createOffer, newNoteDir, noteFileName } from './create.ts';
   import { highlightItem } from './highlight.ts';
@@ -44,6 +44,8 @@
   let createError = $state<string | null>(null);
   let creating = $state(false);
   let selected = $state(0);
+  /** Окно закрыто (Esc, клик мимо) или убрано оболочкой: незаконченное создание не продолжается. */
+  let closed = false;
 
   /** Строка для ядра: не длиннее предела `max_query_chars` (символов Unicode). */
   function limited(text: string): string {
@@ -80,10 +82,17 @@
     input?.focus();
     searcher.request('');
     return () => {
+      closed = true;
       searcher.dispose();
       if (previous instanceof HTMLElement) previous.focus();
     };
   });
+
+  function close() {
+    if (closed) return;
+    closed = true;
+    onClose();
+  }
 
   function optionId(index: number): string {
     return `${LISTBOX_ID}-${index}`;
@@ -118,7 +127,7 @@
         break;
       case 'Escape':
         event.preventDefault();
-        onClose();
+        close();
         break;
       case 'Tab':
         // Окно модальное: фокус остаётся в поле.
@@ -132,7 +141,7 @@
     if (!option || creating) return;
     if (option.kind === 'note') {
       onOpen(option.item.path);
-      onClose();
+      close();
       return;
     }
     await create(option.title);
@@ -142,27 +151,38 @@
     creating = true;
     createError = null;
     try {
+      // После каждого ответа ядра: если окно закрыли, дальше не идём. Закрыли
+      // до `note_create` — заметка не создаётся; после — она создана, но
+      // переход и уведомление не выполняются.
       const { settings } = await core.settingsRead();
+      if (closed) return;
       const dir = newNoteDir(settings.new_note_location, currentPath);
       const name = noteFileName(title);
       const check = await core.nameCheck({ dir, name });
+      if (closed) return;
       if (check.status === 'rejected') {
-        createError = t(`names.${check.problem}` as MessageKey);
+        createError = t(`names.${check.problem}`);
         return;
       }
       const { path } = await core.noteCreate({ dir, name });
+      if (closed) return;
       onOpen(path);
-      onClose();
-      if (check.warning) onNotice(t(`names.warning.${check.warning}` as MessageKey));
+      close();
+      if (check.warning) onNotice(t(`names.warning.${check.warning}`));
     } catch (error) {
-      createError = userMessage(error);
+      if (!closed) createError = userMessage(error);
     } finally {
       creating = false;
     }
   }
 
   function onScrimMouseDown(event: MouseEvent) {
-    if (event.target === event.currentTarget) onClose();
+    if (event.target === event.currentTarget) close();
+  }
+
+  /** Клик по списку и подсказкам не забирает фокус у поля. */
+  function keepFocus(event: MouseEvent) {
+    event.preventDefault();
   }
 </script>
 
@@ -196,7 +216,8 @@
       <p class="field-error" id="quick-switcher-error" role="alert">{createError}</p>
     {/if}
 
-    <ul class="list" id={LISTBOX_ID} role="listbox" aria-label={t('quickSwitcher.results')}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <ul class="list" id={LISTBOX_ID} role="listbox" aria-label={t('quickSwitcher.results')} onmousedown={keepFocus}>
       {#each options as option, index (option.kind === 'note' ? option.item.path.join('/') : '\u0000create')}
         <!-- Выбор с клавиатуры — из поля (aria-activedescendant), мышью — кликом. -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -236,8 +257,9 @@
       <p class="message">{t('quickSwitcher.noNotes')}</p>
     {/if}
 
-    <div class="hints" aria-hidden="true">
-      <span><kbd>↑ ↓</kbd>{t('quickSwitcher.hint.select')}</span>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="hints" aria-hidden="true" onmousedown={keepFocus}>
+      <span><kbd>{t('quickSwitcher.key.arrows')}</kbd>{t('quickSwitcher.hint.select')}</span>
       <span><kbd>{t('quickSwitcher.key.enter')}</kbd>{t('quickSwitcher.hint.open')}</span>
       <span><kbd>{t('quickSwitcher.key.esc')}</kbd>{t('quickSwitcher.hint.close')}</span>
     </div>

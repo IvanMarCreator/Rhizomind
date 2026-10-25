@@ -40,6 +40,7 @@ export const ru = {
   'quickSwitcher.results': 'Заметки',
   'quickSwitcher.create': 'Создать заметку „{name}“',
   'quickSwitcher.noNotes': 'Заметок пока нет.',
+  'quickSwitcher.key.arrows': '↑ ↓',
   'quickSwitcher.key.enter': 'Enter',
   'quickSwitcher.key.esc': 'Esc',
   'quickSwitcher.hint.select': 'выбрать',
