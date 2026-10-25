@@ -18,6 +18,11 @@ path = "src/lib.rs"
 name = "rhizomind"
 path = "src/main.rs"
 
+[[test]]
+# Настоящее окно WebView2 на Windows: нужен главный поток, поэтому свой main.
+name = "webview2_runtime"
+harness = false
+
 [features]
 # Только для сборки сценарных тестов (npm run build:e2e): передаёт WebView2
 # флаги msedgedriver (порт отладки). Выпускные сборки (build, package:*) — без неё.

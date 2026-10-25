@@ -34,13 +34,17 @@ pub const MAIN_WINDOW_LABEL: &str = "main";
 /// строке `tools/package-portable` отказывается упаковывать тестовую сборку.
 pub const WEBDRIVER_BUILD_MARKER: &str = "ТЕСТОВАЯ СБОРКА (webdriver)";
 
-/// Заголовок главного окна.
+/// Заголовок главного окна. Пометка тестовой сборки — через `#[cfg]`, чтобы
+/// её строки не было в выпускном исполняемом файле.
+#[cfg(feature = "webdriver")]
 pub fn main_window_title() -> String {
-    if cfg!(feature = "webdriver") {
-        format!("Rhizomind — {WEBDRIVER_BUILD_MARKER}")
-    } else {
-        "Rhizomind".to_owned()
-    }
+    format!("Rhizomind — {WEBDRIVER_BUILD_MARKER}")
+}
+
+/// Заголовок главного окна.
+#[cfg(not(feature = "webdriver"))]
+pub fn main_window_title() -> String {
+    "Rhizomind".to_owned()
 }
 
 /// Настройки движка этого запуска: папка данных и строка флагов.

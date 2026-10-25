@@ -13,9 +13,17 @@ const PORT = 4444;
 
 export const SCREENSHOT_DIR = path.join(ROOT, 'test-results', 'e2e');
 
-export function applicationPath(): string {
+/**
+ * Исполняемый файл приложения.
+ * - `webdriver` — тестовая сборка с портом отладки для WebDriver (`npm run build:e2e`,
+ *   отдельная папка `src-tauri/target-e2e`);
+ * - `release` — выпускная сборка (`npm run build`): на ней идут тест следов и флагов,
+ *   потому что msedgedriver подменяет папку данных своей `--user-data-dir`.
+ */
+export function applicationPath(kind: 'webdriver' | 'release' = 'webdriver'): string {
   const exe = process.platform === 'win32' ? 'rhizomind.exe' : 'rhizomind';
-  return path.join(ROOT, 'src-tauri', 'target', 'release', exe);
+  const target = kind === 'webdriver' ? 'target-e2e' : 'target';
+  return path.join(ROOT, 'src-tauri', target, 'release', exe);
 }
 
 function tauriDriverPath(): string {

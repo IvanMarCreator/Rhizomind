@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { SCREENSHOT_DIR, startApp, type Session } from './driver.ts';
 
 // Фон окна из docs/design/tokens.md (bg/app): светлая и тёмная тема.
@@ -12,11 +12,16 @@ describe('главное окно', () => {
     session = await startApp();
   });
 
+  // Снимок и при падении теста: по нему видно, что было на экране.
+  afterEach(async () => {
+    await session?.browser.saveScreenshot(path.join(SCREENSHOT_DIR, `window-opened-${process.platform}.png`));
+  });
+
   afterAll(async () => {
     await session?.stop();
   });
 
-  it('открывается с заголовком «Rhizomind» на фоне темы и сохраняет снимок экрана', async () => {
+  it('открывается с заголовком «Rhizomind» на фоне темы', async () => {
     const { browser } = session;
     const heading = await browser.$('h1');
     await heading.waitForDisplayed({ timeout: 20_000 });
@@ -29,7 +34,5 @@ describe('главное окно', () => {
       background: getComputedStyle(document.body).backgroundColor,
     }));
     expect(look.background).toBe(look.dark ? BACKGROUND.dark : BACKGROUND.light);
-
-    await browser.saveScreenshot(path.join(SCREENSHOT_DIR, `window-opened-${process.platform}.png`));
   });
 });
