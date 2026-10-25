@@ -30,6 +30,7 @@
 
 pub(crate) mod atomic;
 mod contour;
+mod fsops;
 mod local_time;
 mod own_writes;
 mod settings;
@@ -38,10 +39,12 @@ mod text;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{PoisonError, RwLock};
 
 use crate::commands::{
-    CoreError, CoreResult, ErrorCode, FileVersion, NameCheck, NoteReadResponse, NoteWriteResponse,
-    ReadOnlyReason, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
+    CoreError, CoreResult, EntryKind, ErrorCode, FileVersion, NameCheck, NameProblem,
+    NoteReadResponse, NoteWriteResponse, ReadOnlyReason, Settings, TrashOutcome, TreeEntry,
+    VaultPath, Workspace,
 };
 
 pub use contour::{SERVICE_DIR, check_component};
@@ -98,13 +101,22 @@ pub type TrashBackend = Box<dyn Fn(&Path) -> Result<(), TrashFailure> + Send + S
 /// проверяют их компоненты; пределы длины уже проверены слоем команд.
 /// Методы блокируют поток (диск, корзина) — команды вызывают их вне
 /// главного потока.
-#[derive(Debug)]
 pub struct Vault {
     contour: Contour,
     /// `.rhizomind/` — канонический путь, проверен при открытии.
     service: PathBuf,
     /// Свои записи для наблюдателя за папкой.
     own_writes: own_writes::OwnWrites,
+    /// Подменённая корзина (тесты); `None` — корзина ОС.
+    trash_backend: RwLock<Option<TrashBackend>>,
+}
+
+impl std::fmt::Debug for Vault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vault")
+            .field("root", &self.contour.root())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Vault {
@@ -144,6 +156,7 @@ impl Vault {
             contour,
             service,
             own_writes: own_writes::OwnWrites::default(),
+            trash_backend: RwLock::new(None),
         };
         vault.clean_tmp();
         Ok(vault)
@@ -171,16 +184,76 @@ impl Vault {
 
     /// Все папки и файлы хранилища, кроме `.rhizomind/` и имён с точки в
     /// начале. Плоский список; дерево и сортировку строит интерфейс.
+    /// Символические ссылки и точки соединения не показываются и не
+    /// обходятся; имена, к которым нельзя обратиться командой (не UTF-8, не
+    /// проходят [`check_component`]), тоже не показываются.
     pub fn tree(&self) -> CoreResult<Vec<TreeEntry>> {
-        Err(CoreError::not_implemented())
+        let mut entries = Vec::new();
+        self.walk(self.root(), &mut Vec::new(), &mut |path, kind, _| {
+            entries.push(TreeEntry { path, kind });
+        })?;
+        Ok(entries)
     }
 
     /// Все заметки хранилища с датой создания — для модулей `links` и
     /// `switcher`. «Самая старая» из заметок с одним именем — с наименьшей
     /// `created_ms`; при равной дате — первая по пути в естественном
-    /// алфавитном порядке (С3.4).
+    /// алфавитном порядке (С3.4). ФС без даты создания — дата изменения.
     pub fn notes(&self) -> CoreResult<Vec<NoteRef>> {
-        Err(CoreError::not_implemented())
+        let mut notes = Vec::new();
+        self.walk(self.root(), &mut Vec::new(), &mut |path, kind, entry| {
+            if kind == EntryKind::Note {
+                let created_ms = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.created().or_else(|_| m.modified()).ok())
+                    .map(millis)
+                    .unwrap_or(0);
+                notes.push(NoteRef { path, created_ms });
+            }
+        })?;
+        Ok(notes)
+    }
+
+    /// Обход видимых элементов в глубину, без перехода по ссылкам.
+    fn walk(
+        &self,
+        dir: &Path,
+        prefix: &mut Vec<String>,
+        visit: &mut dyn FnMut(VaultPath, EntryKind, &std::fs::DirEntry),
+    ) -> CoreResult<()> {
+        if prefix.len() >= crate::commands::limits::MAX_PATH_COMPONENTS {
+            return Ok(());
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            // Папку удалили во время обхода или нет прав — пропускается.
+            return if prefix.is_empty() {
+                Err(unavailable())
+            } else {
+                Ok(())
+            };
+        };
+        for entry in entries.flatten() {
+            let Some((name, file_type)) = fsops::visible(&entry) else {
+                continue;
+            };
+            prefix.push(name);
+            let path = VaultPath::from_components(prefix.iter().cloned());
+            if file_type.is_dir() {
+                visit(path, EntryKind::Folder, &entry);
+                self.walk(&entry.path(), prefix, visit)?;
+            } else {
+                let name = prefix.last().map(String::as_str).unwrap_or_default();
+                let kind = if crate::names::is_note(name) {
+                    EntryKind::Note
+                } else {
+                    EntryKind::Attachment
+                };
+                visit(path, kind, &entry);
+            }
+            prefix.pop();
+        }
+        Ok(())
     }
 
     /// Читает заметку: текст без BOM с переносами `\n`, версию файла.
@@ -358,62 +431,212 @@ impl Vault {
     }
 
     /// Создаёт пустую заметку `name` (полное имя с `.md`; UTF-8 без BOM,
-    /// переносы LF) в папке `dir`.
+    /// переносы LF — пустой файл) в папке `dir`. Правила имён проверяются
+    /// и здесь (защита в глубину, повторное ревью 0.4.1, п. 2).
     pub fn create_note(&self, dir: &VaultPath, name: &str) -> CoreResult<VaultPath> {
-        self.contour.resolve(&child(dir, name))?;
-        Err(CoreError::not_implemented())
+        check_name(name)?;
+        if !crate::names::is_note(name) {
+            return Err(CoreError::invalid_name(NameProblem::NoteExtension));
+        }
+        let (dir_abs, path) = self.prepare_new_entry(dir, name)?;
+        let empty = blake3::hash(b"").to_hex().to_string();
+        self.own_writes.register(&path, &empty, 0);
+        File::create_new(dir_abs.join(name)).map_err(io_error)?;
+        Ok(path)
     }
 
     /// Создаёт папку `name` в папке `dir`.
     pub fn create_folder(&self, dir: &VaultPath, name: &str) -> CoreResult<VaultPath> {
-        self.contour.resolve(&child(dir, name))?;
-        Err(CoreError::not_implemented())
+        check_name(name)?;
+        let (dir_abs, path) = self.prepare_new_entry(dir, name)?;
+        std::fs::create_dir(dir_abs.join(name)).map_err(io_error)?;
+        Ok(path)
+    }
+
+    /// Папка существует, проверена по дескриптору, имени `name` в ней нет
+    /// (по ключу имени). Возвращает путь папки на диске и путь нового
+    /// элемента.
+    fn prepare_new_entry(&self, dir: &VaultPath, name: &str) -> CoreResult<(PathBuf, VaultPath)> {
+        let path = child(dir, name);
+        self.contour.resolve(&path)?;
+        let dir_abs = self.existing_dir(dir)?;
+        if self.sibling_taken(&dir_abs, name, None)? {
+            return Err(CoreError::new(ErrorCode::AlreadyExists));
+        }
+        Ok((dir_abs, path))
+    }
+
+    /// Существующая папка хранилища (не файл), итоговый путь проверен по
+    /// дескриптору. Нет или это файл — `not_found`.
+    fn existing_dir(&self, dir: &VaultPath) -> CoreResult<PathBuf> {
+        let abs = self.contour.resolve(dir)?;
+        let meta = std::fs::symlink_metadata(&abs).map_err(io_error)?;
+        if !meta.is_dir() {
+            return Err(CoreError::new(ErrorCode::NotFound));
+        }
+        let handle = contour::open_dir(&abs).map_err(io_error)?;
+        self.contour.check_opened(&handle, &abs, false)?;
+        Ok(abs)
+    }
+
+    /// Существующий элемент хранилища (не корень), итоговый путь проверен
+    /// по дескриптору (у папки — дескриптор папки).
+    fn existing_entry(&self, path: &VaultPath) -> CoreResult<(PathBuf, std::fs::Metadata)> {
+        require_not_root(path)?;
+        let abs = self.contour.resolve(path)?;
+        let meta = std::fs::symlink_metadata(&abs).map_err(io_error)?;
+        let handle = if meta.is_dir() {
+            contour::open_dir(&abs)
+        } else {
+            File::open(&abs)
+        }
+        .map_err(io_error)?;
+        self.contour.check_opened(&handle, &abs, false)?;
+        Ok((abs, meta))
     }
 
     /// Совпадение имени с соседями в папке `dir` по ключу имени
-    /// (`names::key`); правила самого имени уже проверены слоем команд.
+    /// (`names::key`); правила самого имени проверяются и здесь.
     /// `renaming` — переименовываемый элемент: он не совпадение сам с собой,
     /// поэтому смена только регистра разрешена.
     pub fn check_new_name(
         &self,
         dir: &VaultPath,
-        _name: &str,
-        _renaming: Option<&VaultPath>,
+        name: &str,
+        renaming: Option<&VaultPath>,
     ) -> CoreResult<NameCheck> {
-        self.contour.resolve(dir)?;
-        Err(CoreError::not_implemented())
+        let dir_abs = self.existing_dir(dir)?;
+        if let Some(problem) = crate::names::check(name) {
+            return Ok(NameCheck::rejected(problem));
+        }
+        let except = renaming
+            .filter(|r| r.components().len() == dir.components().len() + 1)
+            .filter(|r| same_keys(&r.components()[..dir.components().len()], dir.components()))
+            .and_then(VaultPath::file_name);
+        if self.sibling_taken(&dir_abs, name, except)? {
+            return Ok(NameCheck::rejected(NameProblem::Duplicate));
+        }
+        Ok(NameCheck::Ok)
     }
 
-    /// Переименовывает файл или папку; возвращает новый путь. Смена только
-    /// регистра разрешена (на Windows — через промежуточное имя).
-    pub fn rename(&self, path: &VaultPath, _new_name: &str) -> CoreResult<VaultPath> {
-        require_not_root(path)?;
-        self.contour.resolve(path)?;
-        Err(CoreError::not_implemented())
+    /// Переименовывает файл или папку; возвращает новый путь. Существующий
+    /// элемент не затирается (`already_exists`). Смена только регистра
+    /// разрешена; на Windows — через промежуточное скрытое имя в той же
+    /// папке.
+    pub fn rename(&self, path: &VaultPath, new_name: &str) -> CoreResult<VaultPath> {
+        let (abs, _) = self.existing_entry(path)?;
+        check_name(new_name)?;
+        let old_name = path.file_name().ok_or_else(contour::invalid_path)?;
+        if let Some(problem) = crate::names::check_rename_keeps_kind(old_name, new_name) {
+            return Err(CoreError::invalid_name(problem));
+        }
+        let new_path = child(
+            &VaultPath::from_components(
+                path.components()[..path.components().len() - 1]
+                    .iter()
+                    .cloned(),
+            ),
+            new_name,
+        );
+        self.contour.resolve(&new_path)?;
+        if new_name == old_name {
+            return Ok(path.clone());
+        }
+        let parent = abs.parent().ok_or_else(contour::invalid_path)?;
+        if self.sibling_taken(parent, new_name, Some(old_name))? {
+            return Err(CoreError::new(ErrorCode::AlreadyExists));
+        }
+        let target = parent.join(new_name);
+        let case_only = crate::names::key(old_name) == crate::names::key(new_name);
+        if case_only && cfg!(windows) {
+            let step = parent.join(format!(
+                ".{}.rhizomind-rename",
+                blake3::hash(new_name.as_bytes()).to_hex()
+            ));
+            fsops::rename_noreplace(&abs, &step).map_err(io_error)?;
+            if let Err(error) = fsops::rename_noreplace(&step, &target) {
+                let _ = fsops::rename_noreplace(&step, &abs);
+                return Err(io_error(error));
+            }
+        } else {
+            fsops::rename_noreplace(&abs, &target).map_err(io_error)?;
+        }
+        Ok(new_path)
     }
 
     /// Перемещает файл или папку в `new_dir`; возвращает новый путь.
+    /// Существующий элемент не затирается; папку нельзя переместить в себя
+    /// или в свою вложенную папку (`invalid_path`).
     pub fn move_entry(&self, path: &VaultPath, new_dir: &VaultPath) -> CoreResult<VaultPath> {
+        // Сначала контур обоих путей, потом их наличие на диске.
         require_not_root(path)?;
         self.contour.resolve(path)?;
         self.contour.resolve(new_dir)?;
-        Err(CoreError::not_implemented())
+        let (abs, _) = self.existing_entry(path)?;
+        let dir_abs = self.existing_dir(new_dir)?;
+        let n = path.components().len();
+        if new_dir.components().len() >= n
+            && same_keys(&new_dir.components()[..n], path.components())
+        {
+            return Err(contour::invalid_path());
+        }
+        let name = path.file_name().ok_or_else(contour::invalid_path)?;
+        if new_dir.components().len() == n - 1
+            && same_keys(new_dir.components(), &path.components()[..n - 1])
+        {
+            return Ok(path.clone());
+        }
+        if self.sibling_taken(&dir_abs, name, None)? {
+            return Err(CoreError::new(ErrorCode::AlreadyExists));
+        }
+        fsops::rename_noreplace(&abs, &dir_abs.join(name)).map_err(io_error)?;
+        Ok(child(new_dir, name))
     }
 
-    /// Подменяет корзину ОС (тесты; диалоги и корзина — задача 1.7).
-    pub fn set_trash_backend(&self, _backend: TrashBackend) {}
+    /// Подменяет корзину ОС (тесты; на настоящем ядре — `fsops::os_trash`).
+    pub fn set_trash_backend(&self, backend: TrashBackend) {
+        *self
+            .trash_backend
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(backend);
+    }
 
-    /// Удаляет в корзину ОС. На томе без корзины спрашивает
-    /// `confirm_permanent` (окно подтверждения ядра) и удаляет безвозвратно
-    /// только при согласии.
+    /// Удаляет в корзину ОС (в отдельном потоке). На томе без корзины
+    /// спрашивает `confirm_permanent` (окно подтверждения ядра, задача 1.7)
+    /// и удаляет безвозвратно только при согласии — после повторной
+    /// проверки пути по контуру (между вопросом и удалением могло пройти
+    /// время).
     pub fn trash(
         &self,
         path: &VaultPath,
-        _confirm_permanent: &dyn Fn(&VaultPath) -> bool,
+        confirm_permanent: &dyn Fn(&VaultPath) -> bool,
     ) -> CoreResult<TrashOutcome> {
-        require_not_root(path)?;
-        self.contour.resolve(path)?;
-        Err(CoreError::not_implemented())
+        let (abs, _) = self.existing_entry(path)?;
+        let result = match self
+            .trash_backend
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            Some(backend) => backend(&abs),
+            None => fsops::os_trash(&abs),
+        };
+        match result {
+            Ok(()) => Ok(TrashOutcome::Trashed),
+            Err(TrashFailure::NoTrash) => {
+                if !confirm_permanent(path) {
+                    return Ok(TrashOutcome::Cancelled);
+                }
+                let (abs, meta) = self.existing_entry(path)?;
+                if meta.is_dir() {
+                    std::fs::remove_dir_all(&abs)
+                } else {
+                    std::fs::remove_file(&abs)
+                }
+                .map_err(io_error)?;
+                Ok(TrashOutcome::DeletedPermanently)
+            }
+        }
     }
 
     /// Настройки хранилища из `.rhizomind/settings.json`
@@ -491,6 +714,27 @@ fn fit_name(stem: &str, suffix: &str, extension: &str) -> String {
         base.push(c);
     }
     format!("{}{tail}", base.trim_end_matches(['.', ' ']))
+}
+
+/// Правила имён для нового имени: `names::check` (с причиной для
+/// интерфейса), затем правила контура и служебная папка (`invalid_path`).
+fn check_name(name: &str) -> CoreResult<()> {
+    if let Some(problem) = crate::names::check(name) {
+        return Err(CoreError::invalid_name(problem));
+    }
+    check_component(name)?;
+    if contour::is_service_dir(name) {
+        return Err(contour::invalid_path());
+    }
+    Ok(())
+}
+
+/// Пути совпадают по ключам имён компонентов.
+fn same_keys(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| crate::names::key(x) == crate::names::key(y))
 }
 
 /// Операция не над корнем хранилища.
