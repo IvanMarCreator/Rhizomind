@@ -62,9 +62,22 @@ impl Node {
 /// Итог сверки.
 #[derive(Debug, Default)]
 pub(crate) struct Reconciled {
+    /// Изменения по порядку.
     pub(crate) changes: Vec<TreeChange>,
+    /// Пути, которые не удалось прочитать (ошибка, но не «нет такого»):
+    /// модель под ними не тронута, сверку надо повторить позже.
     pub(crate) retry: Vec<VaultPath>,
+    /// Корня хранилища нет или он недоступен: изменений нет, модель не
+    /// тронута.
     pub(crate) unavailable: bool,
+}
+
+/// Путь, который не удалось прочитать.
+struct Unreadable {
+    key: Key,
+    /// Сам элемент на диске известен (не прочиталось только содержимое
+    /// папки); иначе неизвестен и он.
+    self_known: bool,
 }
 
 /// Модель дерева одного хранилища.
@@ -91,9 +104,17 @@ impl TreeModel {
             #[cfg(test)]
             failing: HashSet::new(),
         };
-        fs::metadata(root)?;
+        if !fs::metadata(root)?.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotADirectory, "не папка"));
+        }
         let mut nodes = BTreeMap::new();
-        model.walk(&Key::new(), &mut nodes);
+        let mut unreadable = Vec::new();
+        model.walk(&Key::new(), &mut nodes, &mut unreadable);
+        if unreadable.iter().any(|u| u.key.is_empty()) {
+            return Err(io::Error::other("корень хранилища не читается"));
+        }
+        // Непрочитанные папки при открытии остаются пустыми в модели;
+        // их содержимое появится при следующей сверке этих путей.
         model.nodes = nodes;
         Ok(model)
     }
@@ -134,8 +155,16 @@ impl TreeModel {
         paths: impl IntoIterator<Item = VaultPath>,
         own: &OwnWrites,
     ) -> Reconciled {
+        // Нет корня (флешку вынули, папку переименовали) или нет доступа к
+        // нему — это не «удалено всё»: изменений нет, модель как была.
+        if !fs::metadata(&self.root).is_ok_and(|m| m.is_dir()) {
+            return Reconciled {
+                unavailable: true,
+                ..Reconciled::default()
+            };
+        }
         let mut targets = self.targets(paths);
-        let (mut disk, mut model) = self.collect(&targets);
+        let (mut disk, mut model, mut unreadable) = self.collect(&targets);
         // Появился элемент с идентификатором, который модель знает под другим
         // путём: возможно, это перенос, а событие о старом пути потерялось
         // (переполнение буфера) или придёт позже. Старый путь сверяется в
@@ -153,7 +182,32 @@ impl TreeModel {
                     .chain(origins)
                     .map(VaultPath::from_components),
             );
-            (disk, model) = self.collect(&targets);
+            (disk, model, unreadable) = self.collect(&targets);
+        }
+        if unreadable.iter().any(|u| u.key.is_empty()) {
+            return Reconciled {
+                unavailable: true,
+                ..Reconciled::default()
+            };
+        }
+        // Что не прочиталось, остаётся в модели как было.
+        let mut retry = Vec::new();
+        for u in &unreadable {
+            let under: Vec<Key> = disk
+                .range(u.key.clone()..)
+                .take_while(|(k, _)| k.starts_with(&u.key))
+                .filter(|(k, _)| !u.self_known || **k != u.key)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in under {
+                disk.remove(&key);
+            }
+            disk.extend(
+                self.range(&u.key)
+                    .filter(|(k, _)| !u.self_known || **k != u.key)
+                    .map(|(k, n)| (k.clone(), n.clone())),
+            );
+            retry.push(VaultPath::from_components(u.key.clone()));
         }
         let diff = diff(&disk, &model);
         let changes = self.resolve(diff, &disk, own);
@@ -168,7 +222,8 @@ impl TreeModel {
         self.nodes.extend(disk);
         Reconciled {
             changes,
-            ..Reconciled::default()
+            retry,
+            unavailable: false,
         }
     }
 
@@ -224,30 +279,40 @@ impl TreeModel {
     /// Диск и модель на путях сверки. Имена на диске берутся из списка
     /// папки, а не по имени файла: на Windows поиск по имени не различает
     /// регистр, и переименование `a.md` → `A.md` иначе не видно.
-    fn collect(&self, targets: &BTreeSet<Key>) -> (BTreeMap<Key, Node>, BTreeMap<Key, Node>) {
+    fn collect(
+        &self,
+        targets: &BTreeSet<Key>,
+    ) -> (BTreeMap<Key, Node>, BTreeMap<Key, Node>, Vec<Unreadable>) {
         let mut disk = BTreeMap::new();
         let mut model = BTreeMap::new();
+        let mut unreadable = Vec::new();
         let mut by_parent: BTreeMap<Key, Vec<&Key>> = BTreeMap::new();
         for target in targets {
             model.extend(self.range(target).map(|(k, n)| (k.clone(), n.clone())));
             match target.split_last() {
-                None => self.walk(target, &mut disk),
+                None => self.walk(target, &mut disk, &mut unreadable),
                 Some((_, parent)) => by_parent.entry(parent.to_vec()).or_default().push(target),
             }
         }
         for (parent, children) in by_parent {
-            let listing = self.list(&parent);
+            let Ok(listing) = self.list(&parent) else {
+                unreadable.extend(children.into_iter().map(|key| Unreadable {
+                    key: key.clone(),
+                    self_known: false,
+                }));
+                continue;
+            };
             for target in children {
                 let name = target.last().expect("не корень");
                 if let Some(node) = listing.get(name) {
                     if node.is_folder() {
-                        self.walk(target, &mut disk);
+                        self.walk(target, &mut disk, &mut unreadable);
                     }
                     disk.insert(target.clone(), node.clone());
                 }
             }
         }
-        (disk, model)
+        (disk, model, unreadable)
     }
 
     /// Изменения из разницы диска и модели: свои записи, переименования.
@@ -287,11 +352,14 @@ impl TreeModel {
             let Some(new) = created.get(&to).cloned() else {
                 continue; // уже ушёл вместе с папкой
             };
-            if let Some(from) = removed_index.find(&new, &removed) {
+            if let Some(from) = removed_index
+                .find(&new, &removed)
+                .filter(|from| !new.is_folder() || folder_confirmed(from, &to, &removed, &created))
+            {
                 let old = removed.remove(&from).expect("найден");
                 created.remove(&to);
                 if old.is_folder() {
-                    absorb_content(&from, &to, &mut removed, &mut created, &mut modified);
+                    absorb_content(&from, &to, &mut removed, &mut created);
                 } else if !old.same_content(&new) {
                     modified.push(to.clone());
                 }
@@ -322,10 +390,20 @@ impl TreeModel {
         // файлов и от верхних к вложенным: новые места уже есть.
         let is_folder = |key: &Key| disk.get(key).is_some_and(Node::is_folder);
         renamed.sort_by_key(|(from, to)| (!is_folder(to), to.len(), from.clone()));
+        // Новая папка, в которую что-то переносится, появляется раньше
+        // переноса.
         let mut applied: Vec<(Key, Key)> = Vec::new();
         let path = |key: Key| VaultPath::from_components(key);
         let mut changes = Vec::new();
         for (from, to) in renamed {
+            for n in 1..to.len() {
+                if let Some(node) = created.remove(&to[..n]) {
+                    changes.push(TreeChange::Created {
+                        path: path(to[..n].to_vec()),
+                        entry_kind: node.kind,
+                    });
+                }
+            }
             let from = through(&applied, from);
             changes.push(TreeChange::Renamed {
                 from: path(from.clone()),
@@ -363,34 +441,50 @@ impl TreeModel {
         path
     }
 
-    /// Содержимое папки на диске: точные имена → элементы. Нет папки —
-    /// пусто.
-    fn list(&self, dir: &[String]) -> HashMap<String, Node> {
+    /// Содержимое папки на диске: точные имена → элементы. Папки нет —
+    /// пусто; другая ошибка (нет доступа, диск отключается) — ошибка: это
+    /// не значит, что содержимого нет.
+    fn list(&self, dir: &[String]) -> io::Result<HashMap<String, Node>> {
+        #[cfg(test)]
+        if self.failing.contains(dir) {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
         let mut out = HashMap::new();
-        let Ok(entries) = fs::read_dir(self.abs(dir)) else {
-            return out;
+        let entries = match fs::read_dir(self.abs(dir)) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(err) => return Err(err),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry?;
             let Ok(name) = entry.file_name().into_string() else {
                 continue; // имя не UTF-8 в путях хранилища не выражается
             };
             if is_hidden(&name) {
                 continue;
             }
-            if let Some(node) = read_node(&entry, &name) {
+            if let Some(node) = read_node(&entry, &name)? {
                 out.insert(name, node);
             }
         }
-        out
+        Ok(out)
     }
 
-    /// Всё содержимое папки `dir` на диске, рекурсивно.
-    fn walk(&self, dir: &Key, out: &mut BTreeMap<Key, Node>) {
-        for (name, node) in self.list(dir) {
+    /// Всё содержимое папки `dir` на диске, рекурсивно. Папки, которые не
+    /// прочитались, — в `unreadable`.
+    fn walk(&self, dir: &Key, out: &mut BTreeMap<Key, Node>, unreadable: &mut Vec<Unreadable>) {
+        let Ok(listing) = self.list(dir) else {
+            unreadable.push(Unreadable {
+                key: dir.clone(),
+                self_known: true,
+            });
+            return;
+        };
+        for (name, node) in listing {
             let mut key = dir.clone();
             key.push(name);
             if node.is_folder() {
-                self.walk(&key, out);
+                self.walk(&key, out, unreadable);
             }
             out.insert(key, node);
         }
@@ -414,28 +508,43 @@ fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
 }
 
-/// Элемент на диске; символические ссылки, точки соединения и прочее — нет.
-fn read_node(entry: &fs::DirEntry, name: &str) -> Option<Node> {
+/// Элемент на диске; символические ссылки, точки соединения и прочее —
+/// `None`, файл исчез между списком и чтением — тоже. Другая ошибка чтения
+/// — ошибка.
+fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
+    let gone = |err: io::Error| {
+        if err.kind() == io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(err)
+        }
+    };
     // `file_type` не переходит по ссылке; на Windows точка соединения тоже
     // считается ссылкой.
-    let file_type = entry.file_type().ok()?;
+    let file_type = match entry.file_type() {
+        Ok(t) => t,
+        Err(err) => return gone(err),
+    };
     if file_type.is_symlink() {
-        return None;
+        return Ok(None);
     }
     let id = file_id::get_file_id(entry.path()).ok();
     if file_type.is_dir() {
-        return Some(Node {
+        return Ok(Some(Node {
             kind: EntryKind::Folder,
             size: 0,
             modified: None,
             id,
-        });
+        }));
     }
     if !file_type.is_file() {
-        return None;
+        return Ok(None);
     }
-    let meta = entry.metadata().ok()?;
-    Some(Node {
+    let meta = match entry.metadata() {
+        Ok(meta) => meta,
+        Err(err) => return gone(err),
+    };
+    Ok(Some(Node {
         kind: if names::is_note(name) {
             EntryKind::Note
         } else {
@@ -444,7 +553,7 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> Option<Node> {
         size: meta.len(),
         modified: meta.modified().ok(),
         id,
-    })
+    }))
 }
 
 /// Разница диска и модели на путях сверки.
@@ -484,13 +593,6 @@ fn diff(disk: &BTreeMap<Key, Node>, model: &BTreeMap<Key, Node>) -> Diff {
     out
 }
 
-/// Идентификатор файла не переходит к новому файлу после удаления
-/// прежнего. Так на NTFS (в 128-битном FileId есть счётчик повторного
-/// использования); на Linux и macOS номер inode удалённого файла сразу
-/// достаётся новому, поэтому там совпадение идентификатора подтверждается
-/// размером и датой изменения (переименование их не меняет).
-const FILE_ID_IS_UNIQUE: bool = cfg!(windows);
-
 /// Указатель исчезнувших элементов для поиска переименований.
 struct Origins {
     by_id: HashMap<FileId, Vec<Key>>,
@@ -519,16 +621,17 @@ impl Origins {
     }
 
     /// Откуда приехал появившийся элемент: ещё не сопоставленный
-    /// исчезнувший с тем же идентификатором; если идентификатора нет —
-    /// единственный исчезнувший файл с теми же размером и датой изменения.
+    /// исчезнувший с тем же идентификатором (у файла — ещё и с теми же
+    /// размером и датой: идентификатор удалённого файла может достаться
+    /// новому — inode на Linux, FAT/exFAT); иначе — единственный исчезнувший
+    /// файл с теми же размером и датой изменения, даже с другим
+    /// идентификатором (на FAT он меняется при переносе).
     fn find(&self, new: &Node, gone: &BTreeMap<Key, Node>) -> Option<Key> {
         let same_kind = |old: &Node| old.kind == new.kind;
         if let Some(id) = new.id {
             let found = self.by_id.get(&id).into_iter().flatten().find(|key| {
-                gone.get(*key).is_some_and(|old| {
-                    same_kind(old)
-                        && (FILE_ID_IS_UNIQUE || old.is_folder() || old.same_content(new))
-                })
+                gone.get(*key)
+                    .is_some_and(|old| same_kind(old) && (old.is_folder() || old.same_content(new)))
             });
             if let Some(key) = found {
                 return Some(key.clone());
@@ -540,10 +643,7 @@ impl Origins {
             .get(&(new.size, modified))
             .into_iter()
             .flatten()
-            .filter(|key| {
-                gone.get(*key)
-                    .is_some_and(|old| same_kind(old) && (old.id.is_none() || new.id.is_none()))
-            });
+            .filter(|key| gone.get(*key).is_some_and(same_kind));
         match (candidates.next(), candidates.next()) {
             (Some(key), None) => Some(key.clone()),
             _ => None,
@@ -558,7 +658,6 @@ fn absorb_content(
     to: &Key,
     removed: &mut BTreeMap<Key, Node>,
     created: &mut BTreeMap<Key, Node>,
-    modified: &mut Vec<Key>,
 ) {
     let inner: Vec<Key> = removed
         .range(from.clone()..)
@@ -571,15 +670,40 @@ fn absorb_content(
         let (Some(old), Some(new)) = (removed.get(&old_key), created.get(&new_key)) else {
             continue;
         };
-        if old.kind != new.kind {
+        // Тот же файл — только с теми же размером и датой; иначе на этом
+        // месте другой файл: исчез и появился.
+        if old.kind != new.kind || (!old.is_folder() && !old.same_content(new)) {
             continue;
-        }
-        if !old.is_folder() && !old.same_content(new) {
-            modified.push(new_key.clone());
         }
         removed.remove(&old_key);
         created.remove(&new_key);
     }
+}
+
+/// Папка с тем же идентификатором — та же папка, если в ней нет файлов или
+/// хотя бы один файл на том же относительном пути подтверждён размером и
+/// датой: идентификатор папки тоже может достаться новой (FAT/exFAT).
+fn folder_confirmed(
+    from: &Key,
+    to: &Key,
+    removed: &BTreeMap<Key, Node>,
+    created: &BTreeMap<Key, Node>,
+) -> bool {
+    let mut files = removed
+        .range(from.clone()..)
+        .take_while(|(k, _)| k.starts_with(from))
+        .filter(|(_, n)| !n.is_folder())
+        .peekable();
+    if files.peek().is_none() {
+        return true;
+    }
+    files.any(|(old_key, old)| {
+        let mut new_key = to.clone();
+        new_key.extend_from_slice(&old_key[from.len()..]);
+        created
+            .get(&new_key)
+            .is_some_and(|new| new.kind == old.kind && old.same_content(new))
+    })
 }
 
 #[cfg(test)]

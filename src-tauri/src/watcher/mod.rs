@@ -18,7 +18,16 @@
 //!   размер)», куда хранилище пишет до замены файла;
 //! - переполнение буфера ОС (событие Rescan), ошибка наблюдателя или вызов
 //!   [`VaultWatcher::rescan`] — полная сверка с диском и пачка с
-//!   `rescan: true` (даже без изменений: интерфейс перечитывает дерево).
+//!   `rescan: true` (даже без изменений: интерфейс перечитывает дерево);
+//! - пропавший или недоступный корень — не «удалено всё»: изменений нет,
+//!   сигнал [`WatcherEvent::Unavailable`], после возвращения —
+//!   [`WatcherEvent::Available`] и полная сверка; папка, которая не
+//!   прочиталась, остаётся в модели и сверяется снова через пару секунд;
+//! - паника получателя не останавливает поток: сигнал
+//!   [`WatcherEvent::DeliveryFailed`], следующая пачка — полная сверка.
+//!
+//! Кэш идентификаторов склейки (`FileIdMap`) не используется: он обходит
+//! дерево по ссылкам и вышел бы через точку соединения за контур.
 //!
 //! Сетевого кода нет: только уведомления файловой системы ОС
 //! (`ReadDirectoryChangesW`, inotify, FSEvents) и чтение файлов хранилища.
@@ -31,7 +40,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use notify::{EventKindMask, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer_opt};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
 
 mod own_writes;
 mod tree;
@@ -103,7 +112,7 @@ pub struct VaultWatcher {
     own_writes: OwnWrites,
     messages: Sender<Message>,
     worker: Option<JoinHandle<()>>,
-    debouncer: Option<Debouncer<notify::RecommendedWatcher, RecommendedCache>>,
+    debouncer: Option<Debouncer<notify::RecommendedWatcher, NoCache>>,
     #[cfg(test)]
     lose_os_events: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -156,7 +165,11 @@ impl VaultWatcher {
                     let _ = to_worker.send(Message::Events(batch));
                 }
             },
-            RecommendedCache::new(),
+            // Без кэша идентификаторов: `FileIdMap` склейки обходит дерево по
+            // ссылкам (`follow_links(true)`) и открывает каждый файл — через
+            // точку соединения внутри хранилища он ушёл бы за его пределы.
+            // Переносы распознаёт своя модель по `file-id`.
+            NoCache,
             config,
         )
         .map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
@@ -169,7 +182,18 @@ impl VaultWatcher {
         let journal = own_writes.clone();
         let worker = std::thread::Builder::new()
             .name("rhizomind-watcher".into())
-            .spawn(move || run(model, journal, inbox, sink))
+            .spawn(move || {
+                Worker {
+                    model,
+                    own: journal,
+                    sink,
+                    unavailable: false,
+                    retry: Vec::new(),
+                    retry_at: None,
+                    force_rescan: false,
+                }
+                .run(inbox);
+            })
             .map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
 
         Ok(Self {
@@ -219,46 +243,154 @@ impl Drop for VaultWatcher {
     }
 }
 
+/// Через сколько повторить сверку путей, которые не прочитались.
+const RETRY_AFTER: Duration = Duration::from_secs(2);
+
+/// Как часто проверять, вернулся ли недоступный корень.
+const UNAVAILABLE_POLL: Duration = Duration::from_secs(1);
+
 /// Поток сверки: владеет моделью, сверяет пачки и отдаёт изменения.
-fn run(mut model: TreeModel, own: OwnWrites, inbox: Receiver<Message>, sink: ChangeSink) {
-    while let Ok(message) = inbox.recv() {
-        let mut batch = match message {
-            Message::Stop => return,
-            Message::Rescan => Batch {
-                paths: Vec::new(),
-                rescan: true,
-            },
-            Message::Events(batch) => batch,
-        };
-        // Пачки, идущие подряд, — одной сверкой: склейка выдаёт события по
-        // каждому пути отдельно, и при переносе многих файлов в новую папку
-        // папка приходит раньше, чем исчезновения старых путей. В одной
-        // сверке это переименования, а не «появилось» и «исчезло».
-        let started = Instant::now();
-        while started.elapsed() < GATHER_MAX {
-            match inbox.recv_timeout(GATHER_QUIET) {
-                Ok(Message::Stop) | Err(RecvTimeoutError::Disconnected) => return,
-                Ok(Message::Rescan) => batch.rescan = true,
-                Ok(Message::Events(more)) => {
-                    batch.rescan |= more.rescan;
-                    batch.paths.extend(more.paths);
+struct Worker {
+    model: TreeModel,
+    own: OwnWrites,
+    sink: ChangeSink,
+    /// Корень недоступен: изменений нет, ждём его возвращения.
+    unavailable: bool,
+    /// Пути, которые не прочитались, и когда их сверить снова.
+    retry: Vec<VaultPath>,
+    retry_at: Option<Instant>,
+    /// Получатель упал — следующая пачка будет полной сверкой.
+    force_rescan: bool,
+}
+
+impl Worker {
+    fn run(mut self, inbox: Receiver<Message>) {
+        loop {
+            let first = match self.wait(&inbox) {
+                Waited::Message(message) => message,
+                Waited::Timer => {
+                    self.on_timer();
+                    continue;
                 }
-                Err(RecvTimeoutError::Timeout) => break,
+                Waited::Stop => return,
+            };
+            let mut batch = match first {
+                Message::Stop => return,
+                Message::Rescan => Batch {
+                    paths: Vec::new(),
+                    rescan: true,
+                },
+                Message::Events(batch) => batch,
+            };
+            // Пачки, идущие подряд, — одной сверкой: склейка выдаёт события
+            // по каждому пути отдельно, и при переносе многих файлов в новую
+            // папку папка приходит раньше, чем исчезновения старых путей. В
+            // одной сверке это переименования, а не «появилось» и «исчезло».
+            let started = Instant::now();
+            while started.elapsed() < GATHER_MAX {
+                match inbox.recv_timeout(GATHER_QUIET) {
+                    Ok(Message::Stop) | Err(RecvTimeoutError::Disconnected) => return,
+                    Ok(Message::Rescan) => batch.rescan = true,
+                    Ok(Message::Events(more)) => {
+                        batch.rescan |= more.rescan;
+                        batch.paths.extend(more.paths);
+                    }
+                    Err(RecvTimeoutError::Timeout) => break,
+                }
             }
-        }
-        let changes = if batch.rescan {
-            model.rescan(&own)
-        } else {
-            model.reconcile(batch.paths, &own)
-        }
-        .changes;
-        if batch.rescan || !changes.is_empty() {
-            sink(WatcherEvent::Changed(VaultChangedPayload {
-                rescan: batch.rescan,
-                changes,
-            }));
+            self.process(batch);
         }
     }
+
+    /// Ждёт сообщения или срока повтора / проверки корня.
+    fn wait(&self, inbox: &Receiver<Message>) -> Waited {
+        let deadline = if self.unavailable {
+            Some(Instant::now() + UNAVAILABLE_POLL)
+        } else {
+            self.retry_at
+        };
+        let result = match deadline {
+            None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(at) => inbox.recv_timeout(at.saturating_duration_since(Instant::now())),
+        };
+        match result {
+            Ok(message) => Waited::Message(message),
+            Err(RecvTimeoutError::Timeout) => Waited::Timer,
+            Err(RecvTimeoutError::Disconnected) => Waited::Stop,
+        }
+    }
+
+    fn on_timer(&mut self) {
+        if self.unavailable {
+            // Корень вернулся — полная сверка: пока его не было, события
+            // не приходили.
+            self.process(Batch {
+                paths: Vec::new(),
+                rescan: true,
+            });
+        } else if self.retry_at.is_some_and(|at| at <= Instant::now()) {
+            let paths = std::mem::take(&mut self.retry);
+            self.retry_at = None;
+            self.process(Batch {
+                paths,
+                rescan: false,
+            });
+        }
+    }
+
+    fn process(&mut self, mut batch: Batch) {
+        batch.rescan |= self.force_rescan;
+        let result = if batch.rescan || self.unavailable {
+            self.model.rescan(&self.own)
+        } else {
+            self.model.reconcile(batch.paths, &self.own)
+        };
+        if result.unavailable {
+            if !self.unavailable {
+                self.unavailable = true;
+                self.deliver(WatcherEvent::Unavailable);
+            }
+            return;
+        }
+        let rescan = batch.rescan || self.unavailable;
+        if self.unavailable {
+            self.unavailable = false;
+            self.deliver(WatcherEvent::Available);
+        }
+        if !result.retry.is_empty() {
+            self.retry.extend(result.retry);
+            self.retry_at
+                .get_or_insert_with(|| Instant::now() + RETRY_AFTER);
+        }
+        if rescan || !result.changes.is_empty() {
+            let delivered = self.deliver(WatcherEvent::Changed(VaultChangedPayload {
+                rescan,
+                changes: result.changes,
+            }));
+            self.force_rescan = !delivered;
+        }
+    }
+
+    /// Отдаёт сообщение получателю. Паника получателя не останавливает
+    /// поток: получатель узнаёт о сбое ([`WatcherEvent::DeliveryFailed`]),
+    /// а следующая пачка будет полной сверкой.
+    fn deliver(&mut self, event: WatcherEvent) -> bool {
+        let sink = &self.sink;
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(event))).is_ok() {
+            return true;
+        }
+        self.force_rescan = true;
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sink(WatcherEvent::DeliveryFailed)
+        }));
+        false
+    }
+}
+
+enum Waited {
+    Message(Message),
+    Timer,
+    Stop,
 }
 
 /// Перевод путей событий ОС в пути хранилища и фильтр служебных.

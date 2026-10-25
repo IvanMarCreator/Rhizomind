@@ -224,13 +224,13 @@ fn renamed_file_is_recognised_by_file_id() {
     assert_eq!(
         changes,
         vec![
-            TreeChange::Renamed {
-                from: vp("старое.md"),
-                to: vp("Папка/новое.md")
-            },
             TreeChange::Created {
                 path: vp("Папка"),
                 entry_kind: EntryKind::Folder
+            },
+            TreeChange::Renamed {
+                from: vp("старое.md"),
+                to: vp("Папка/новое.md")
             },
         ]
     );
@@ -465,13 +465,13 @@ fn rename_is_recognised_when_event_about_old_path_was_lost() {
     assert_eq!(
         changes,
         vec![
-            TreeChange::Renamed {
-                from: vp("А/заметка.md"),
-                to: vp("Б/заметка.md")
-            },
             TreeChange::Created {
                 path: vp("Б"),
                 entry_kind: EntryKind::Folder
+            },
+            TreeChange::Renamed {
+                from: vp("А/заметка.md"),
+                to: vp("Б/заметка.md")
             },
         ]
     );

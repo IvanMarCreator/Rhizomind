@@ -129,13 +129,12 @@ impl Collector {
         timeout: Duration,
     ) -> Result<Duration, String> {
         let start = Instant::now();
-        let mut applied = 0;
         loop {
             let payloads = self.payloads();
-            for payload in &payloads[applied..] {
+            for payload in &payloads[mirror.applied..] {
                 mirror.apply(payload);
             }
-            applied = payloads.len();
+            mirror.applied = payloads.len();
             // Тишина считается и от начала ожидания: изменения содержимого
             // дерево не меняют, и до первой пачки зеркало уже «совпадает».
             if self.quiet_for().min(start.elapsed()) >= quiet && mirror.tree == disk_tree(root) {
@@ -170,12 +169,15 @@ impl Collector {
 /// поддерживает интерфейс.
 pub(crate) struct Mirror {
     pub(crate) tree: BTreeMap<Vec<String>, EntryKind>,
+    /// Сколько пачек сборщика уже применено.
+    applied: usize,
 }
 
 impl Mirror {
     pub(crate) fn from_disk(root: &Path) -> Self {
         Self {
             tree: disk_tree(root),
+            applied: 0,
         }
     }
 
