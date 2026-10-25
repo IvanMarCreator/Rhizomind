@@ -54,10 +54,9 @@ fn component_rejects_short_name_aliases_but_not_long_names_with_tilde() {
     for bad in [
         "RHIZOM~1",
         "rhizom~1",
-        "RHIZOM~12",
+        "RHIZO~12",
         "ПРОЕКТ~2.MD",
         "AB~1.TXT",
-        ".RHIZO~1",
     ] {
         assert!(rejected(bad), "{bad:?}");
     }

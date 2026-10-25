@@ -1,40 +1,58 @@
-//! Хранилище: контур, файлы и служебные данные — интерфейс модуля,
-//! реализация в задаче 1.2.
+//! Хранилище: контур, файлы и служебные данные (задача 1.2).
 //!
 //! Модуль — единственное место ядра, которое обращается к файлам хранилища.
-//! Всё, что приходит от интерфейса, проходит здесь один порядок проверки
-//! контура (исследование крейтов, раздел «Контур хранилища»):
-//! 1. каждый компонент пути — [`check_component`];
+//! Всё, что приходит от интерфейса, проходит один порядок проверки контура
+//! ([`contour`], исследование крейтов — «Контур хранилища»):
+//! 1. каждый компонент пути — [`check_component`]; служебная папка
+//!    `.rhizomind` недоступна обычным командам (по ключу имени и коротким
+//!    именам 8.3);
 //! 2. корень канонизирован один раз в [`Vault::open`] (`dunce::canonicalize`);
-//! 3. каждый промежуточный компонент — `symlink_metadata`: символическая
-//!    ссылка или точка соединения NTFS → `outside_vault`;
-//! 4. итоговый путь начинается с корня.
+//! 3. каждый промежуточный компонент и сам элемент — `symlink_metadata`:
+//!    символическая ссылка или точка соединения NTFS → `outside_vault`;
+//! 4. итоговый путь начинается с корня;
+//! 5. после открытия — итоговый путь по дескриптору (против гонки
+//!    «проверил — открыл»).
 //!
 //! Запись заметки атомарная (временный файл в `.rhizomind/tmp/` → замена),
 //! с проверкой ожидаемой версии файла. Удаление — в корзину ОС; на томе без
 //! корзины — безвозвратно и только после отдельного подтверждения
 //! (инвариант 4). Служебные данные — `.rhizomind/settings.json`
-//! ([`SettingsFile`]) и `.rhizomind/workspace.json` с версией формата.
+//! ([`SettingsFile`]) и `.rhizomind/workspace.json`.
 //!
 //! **Дата создания заметки** — источник «самой старой» заметки при
 //! дубликатах имён (С3.4, [`NoteRef::created_ms`]). Берётся из файловой
-//! системы, поэтому атомарная запись обязана её сохранять: на Windows
-//! замена через `ReplaceFileW` (сохраняет дату создания и идентификатор
-//! файла), на других ОС — перенос времени создания на новый файл, где ФС
-//! это позволяет (macOS — `setattrlist`; на Linux времени создания обычно не
-//! задать — там дата создания после записи может сдвинуться, это известное
-//! ограничение). Это уточнение к ADR 0006, раздел «Последствия»: ADR нужно
-//! дописать, выбор сделан в пользу `ReplaceFileW`, а не «даты появления».
+//! системы, поэтому атомарная запись её сохраняет: на Windows замена через
+//! `ReplaceFileW` (сохраняет дату создания заменяемого файла). На Linux
+//! времени создания не задать — дата создания после записи может
+//! сдвинуться; на macOS перенос даты создания (`setattrlist`) пока не
+//! сделан. Это известное ограничение до перехода на эти ОС (ADR 0006,
+//! уточнение 25.10.2026).
 
+mod contour;
+mod settings;
+mod text;
+
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-
 use crate::commands::{
-    CoreError, CoreResult, FileVersion, NameCheck, NewNoteLocation, NoteReadResponse,
-    NoteWriteResponse, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace, limits,
+    CoreError, CoreResult, ErrorCode, FileVersion, NameCheck, NoteReadResponse,
+    NoteWriteResponse, ReadOnlyReason, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
 };
+
+pub use contour::{SERVICE_DIR, check_component};
+pub use settings::{SETTINGS_FORMAT_VERSION, SettingsFile};
+
+use contour::Contour;
+
+/// Временные файлы атомарной записи — `.rhizomind/tmp/`.
+const TMP_DIR: &str = "tmp";
+/// Настройки хранилища — `.rhizomind/settings.json`.
+const SETTINGS_FILE: &str = "settings.json";
+/// Служебный файл больше этого не читается (правка руками) — значения по
+/// умолчанию.
+const MAX_SERVICE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Заметка в списке, по которому разрешаются ссылки и идёт быстрый переход.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,8 +72,9 @@ pub struct NoteRef {
 /// главного потока.
 #[derive(Debug)]
 pub struct Vault {
-    #[allow(dead_code)]
-    root: PathBuf,
+    contour: Contour,
+    /// `.rhizomind/` — канонический путь, проверен при открытии.
+    service: PathBuf,
 }
 
 impl Vault {
@@ -68,12 +87,49 @@ impl Vault {
 
     /// Открывает папку как хранилище: канонизирует корень, создаёт
     /// `.rhizomind/` и `.rhizomind/tmp/`, убирает остатки временных файлов.
-    ///
-    /// Заглушка 0.4 только запоминает путь и к диску не обращается.
+    /// Служебная папка или её `tmp` — ссылка (в том числе точка соединения)
+    /// → `outside_vault`: запись через них ушла бы за контур.
     pub fn open(root: &Path) -> CoreResult<Self> {
-        Ok(Self {
-            root: root.to_path_buf(),
-        })
+        let root = dunce::canonicalize(root).map_err(|_| unavailable())?;
+        if !std::fs::metadata(&root).map_err(|_| unavailable())?.is_dir() {
+            return Err(unavailable());
+        }
+        let contour = Contour::new(root.clone());
+        let service = root.join(SERVICE_DIR);
+        for dir in [service.clone(), service.join(TMP_DIR)] {
+            match std::fs::symlink_metadata(&dir) {
+                Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
+                    return Err(contour::outside_vault());
+                }
+                Ok(_) => {}
+                Err(_) => std::fs::create_dir(&dir).map_err(io_error)?,
+            }
+            let handle = contour::open_dir(&dir).map_err(io_error)?;
+            contour.check_opened(&handle, &dir, true)?;
+        }
+        let vault = Self { contour, service };
+        vault.clean_tmp();
+        Ok(vault)
+    }
+
+    /// Корень хранилища (канонический).
+    pub fn root(&self) -> &Path {
+        self.contour.root()
+    }
+
+    /// Убирает остатки временных файлов прерванных записей.
+    fn clean_tmp(&self) {
+        if let Ok(entries) = std::fs::read_dir(self.tmp_dir()) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_file()) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+
+    fn tmp_dir(&self) -> PathBuf {
+        self.service.join(TMP_DIR)
     }
 
     /// Все папки и файлы хранилища, кроме `.rhizomind/` и имён с точки в
@@ -92,8 +148,40 @@ impl Vault {
 
     /// Читает заметку: текст без BOM с переносами `\n`, версию файла.
     /// Больше лимита из настроек или не UTF-8 — только чтение.
-    pub fn read_note(&self, _path: &VaultPath) -> CoreResult<NoteReadResponse> {
-        Err(CoreError::not_implemented())
+    pub fn read_note(&self, path: &VaultPath) -> CoreResult<NoteReadResponse> {
+        let abs = self.contour.resolve(path)?;
+        require_note_name(path)?;
+        let (bytes, version) = self.read_existing_note(&abs)?;
+        let decoded = text::decode(&bytes);
+        let limit = self.read_settings()?.max_edit_size_bytes;
+        let read_only = if decoded.invalid_utf8 {
+            Some(ReadOnlyReason::InvalidUtf8)
+        } else if version.size > limit {
+            Some(ReadOnlyReason::TooLarge { limit_bytes: limit })
+        } else {
+            None
+        };
+        Ok(NoteReadResponse {
+            text: decoded.text,
+            version,
+            read_only,
+        })
+    }
+
+    /// Байты и версия существующей заметки; итоговый путь проверен по
+    /// дескриптору. Папка — `not_a_note`, нет файла — `not_found`.
+    fn read_existing_note(&self, abs: &Path) -> CoreResult<(Vec<u8>, FileVersion)> {
+        let meta = std::fs::metadata(abs).map_err(io_error)?;
+        if meta.is_dir() {
+            return Err(CoreError::new(ErrorCode::NotANote));
+        }
+        let mut file = File::open(abs).map_err(io_error)?;
+        self.contour.check_opened(&file, abs, false)?;
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.read_to_end(&mut bytes).map_err(io_error)?;
+        let meta = file.metadata().map_err(io_error)?;
+        let version = version_of(&bytes, &meta);
+        Ok((bytes, version))
     }
 
     /// Записывает заметку атомарно по правилу «байт в байт»
@@ -105,21 +193,24 @@ impl Vault {
     /// модуля).
     pub fn write_note(
         &self,
-        _path: &VaultPath,
+        path: &VaultPath,
         _text: &str,
         _expected: &FileVersion,
     ) -> CoreResult<NoteWriteResponse> {
+        self.contour.resolve(path)?;
         Err(CoreError::not_implemented())
     }
 
     /// Создаёт пустую заметку `name` (полное имя с `.md`; UTF-8 без BOM,
     /// переносы LF) в папке `dir`.
-    pub fn create_note(&self, _dir: &VaultPath, _name: &str) -> CoreResult<VaultPath> {
+    pub fn create_note(&self, dir: &VaultPath, name: &str) -> CoreResult<VaultPath> {
+        self.contour.resolve(&child(dir, name))?;
         Err(CoreError::not_implemented())
     }
 
     /// Создаёт папку `name` в папке `dir`.
-    pub fn create_folder(&self, _dir: &VaultPath, _name: &str) -> CoreResult<VaultPath> {
+    pub fn create_folder(&self, dir: &VaultPath, name: &str) -> CoreResult<VaultPath> {
+        self.contour.resolve(&child(dir, name))?;
         Err(CoreError::not_implemented())
     }
 
@@ -129,21 +220,27 @@ impl Vault {
     /// поэтому смена только регистра разрешена.
     pub fn check_new_name(
         &self,
-        _dir: &VaultPath,
+        dir: &VaultPath,
         _name: &str,
         _renaming: Option<&VaultPath>,
     ) -> CoreResult<NameCheck> {
+        self.contour.resolve(dir)?;
         Err(CoreError::not_implemented())
     }
 
     /// Переименовывает файл или папку; возвращает новый путь. Смена только
     /// регистра разрешена (на Windows — через промежуточное имя).
-    pub fn rename(&self, _path: &VaultPath, _new_name: &str) -> CoreResult<VaultPath> {
+    pub fn rename(&self, path: &VaultPath, _new_name: &str) -> CoreResult<VaultPath> {
+        require_not_root(path)?;
+        self.contour.resolve(path)?;
         Err(CoreError::not_implemented())
     }
 
     /// Перемещает файл или папку в `new_dir`; возвращает новый путь.
-    pub fn move_entry(&self, _path: &VaultPath, _new_dir: &VaultPath) -> CoreResult<VaultPath> {
+    pub fn move_entry(&self, path: &VaultPath, new_dir: &VaultPath) -> CoreResult<VaultPath> {
+        require_not_root(path)?;
+        self.contour.resolve(path)?;
+        self.contour.resolve(new_dir)?;
         Err(CoreError::not_implemented())
     }
 
@@ -152,16 +249,46 @@ impl Vault {
     /// только при согласии.
     pub fn trash(
         &self,
-        _path: &VaultPath,
+        path: &VaultPath,
         _confirm_permanent: &dyn Fn(&VaultPath) -> bool,
     ) -> CoreResult<TrashOutcome> {
+        require_not_root(path)?;
+        self.contour.resolve(path)?;
         Err(CoreError::not_implemented())
     }
 
     /// Настройки хранилища из `.rhizomind/settings.json`
-    /// ([`SettingsFile::to_settings`]); файла нет — значения по умолчанию.
+    /// ([`SettingsFile::to_settings`]); файла нет или он не читается как
+    /// JSON — значения по умолчанию.
     pub fn read_settings(&self) -> CoreResult<Settings> {
-        Err(CoreError::not_implemented())
+        Ok(self.read_settings_file()?.to_settings())
+    }
+
+    fn read_settings_file(&self) -> CoreResult<SettingsFile> {
+        Ok(self
+            .read_service_file(SETTINGS_FILE)?
+            .and_then(|bytes| SettingsFile::parse(&bytes))
+            .unwrap_or_default())
+    }
+
+    /// Служебный файл `.rhizomind/<name>`; нет файла — `None`. Итоговый путь
+    /// проверен по дескриптору; слишком большой файл не читается (`None`).
+    fn read_service_file(&self, name: &str) -> CoreResult<Option<Vec<u8>>> {
+        let path = self.service.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => return Err(contour::outside_vault()),
+            Ok(meta) if !meta.is_file() || meta.len() > MAX_SERVICE_FILE_BYTES => return Ok(None),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_error(e)),
+        }
+        let file = File::open(&path).map_err(io_error)?;
+        self.contour.check_opened(&file, &path, true)?;
+        let mut bytes = Vec::new();
+        file.take(MAX_SERVICE_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        Ok((bytes.len() as u64 <= MAX_SERVICE_FILE_BYTES).then_some(bytes))
     }
 
     /// Записывает настройки хранилища атомарно ([`SettingsFile::update`]).
@@ -180,143 +307,60 @@ impl Vault {
     }
 }
 
-/// Проверка одного компонента пути от интерфейса: нет `..`, `.`, `:`,
-/// разделителей `/` и `\`, NUL и управляющих символов, зарезервированных имён
-/// Windows (в том числе с расширением: `nul.md`), точки или пробела в конце;
-/// не пустой. Ошибка — `invalid_path`.
-///
-/// Заглушка 0.4: правила — задача 1.2.
-pub fn check_component(_component: &str) -> CoreResult<()> {
-    Err(CoreError::not_implemented())
+/// Путь `dir/name`.
+fn child(dir: &VaultPath, name: &str) -> VaultPath {
+    VaultPath::from_components(dir.components().iter().cloned().chain([name.to_owned()]))
 }
 
-/// Версия формата `settings.json`, которую пишет это ядро.
-pub const SETTINGS_FORMAT_VERSION: u32 = 1;
-
-/// `.rhizomind/settings.json` на диске — отдельно от типа контракта
-/// [`Settings`]. Чтение терпимое: неизвестные поля, значения, которых это
-/// ядро не знает, и файл более новой версии не ломают чтение — непонятное
-/// значение заменяется значением по умолчанию, а неизвестные поля
-/// сохраняются при записи. Версию формата ставит ядро.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SettingsFile {
-    /// Версия формата файла.
-    #[serde(default)]
-    pub format_version: u32,
-    /// Все остальные поля как есть.
-    #[serde(flatten)]
-    pub values: Map<String, Value>,
+/// Операция не над корнем хранилища.
+fn require_not_root(path: &VaultPath) -> CoreResult<()> {
+    if path.components().is_empty() {
+        Err(contour::invalid_path())
+    } else {
+        Ok(())
+    }
 }
 
-impl SettingsFile {
-    /// Настройки для интерфейса: известные поля, остальное — по умолчанию.
-    pub fn to_settings(&self) -> Settings {
-        fn field<T: serde::de::DeserializeOwned>(
-            values: &Map<String, Value>,
-            key: &str,
-        ) -> Option<T> {
-            values
-                .get(key)
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-        }
-        let defaults = Settings::default();
-        // Значение вне диапазона (файл правили руками) — по умолчанию.
-        let (min_font, max_font) = limits::FONT_SIZE_RANGE;
-        let (min_edit, max_edit) = limits::EDIT_SIZE_RANGE;
-        let new_note_location = field(&self.values, "new_note_location")
-            .filter(|location| match location {
-                NewNoteLocation::Folder { path } => limits::path(path, "path").is_ok(),
-                _ => true,
-            })
-            .unwrap_or_else(|| defaults.new_note_location.clone());
-        Settings {
-            theme: field(&self.values, "theme").unwrap_or(defaults.theme),
-            editor_mode: field(&self.values, "editor_mode").unwrap_or(defaults.editor_mode),
-            text_width: field(&self.values, "text_width").unwrap_or(defaults.text_width),
-            font_size: field(&self.values, "font_size")
-                .filter(|size| (min_font..=max_font).contains(size))
-                .unwrap_or(defaults.font_size),
-            new_note_location,
-            confirm_delete: field(&self.values, "confirm_delete")
-                .unwrap_or(defaults.confirm_delete),
-            max_edit_size_bytes: field(&self.values, "max_edit_size_bytes")
-                .filter(|size| (min_edit..=max_edit).contains(size))
-                .unwrap_or(defaults.max_edit_size_bytes),
-        }
+/// Имя пути — имя заметки (`.md`).
+fn require_note_name(path: &VaultPath) -> CoreResult<()> {
+    if path.file_name().is_some_and(crate::names::is_note) {
+        Ok(())
+    } else {
+        Err(CoreError::new(ErrorCode::NotANote))
     }
+}
 
-    /// Записывает настройки поверх файла: известные поля заменяются,
-    /// неизвестные сохраняются, версия формата — [`SETTINGS_FORMAT_VERSION`]
-    /// (не ниже прочитанной: более новый файл не понижается).
-    pub fn update(&mut self, settings: &Settings) {
-        if let Ok(Value::Object(known)) = serde_json::to_value(settings) {
-            self.values.extend(known);
-        }
-        self.format_version = self.format_version.max(SETTINGS_FORMAT_VERSION);
+/// Версия файла по содержимому и метаданным того же дескриптора.
+fn version_of(bytes: &[u8], meta: &std::fs::Metadata) -> FileVersion {
+    FileVersion {
+        hash: blake3::hash(bytes).to_hex().to_string(),
+        size: bytes.len() as u64,
+        modified_ms: meta.modified().map(millis).unwrap_or(0),
     }
+}
+
+/// Время файловой системы → миллисекунды UTC.
+fn millis(time: std::time::SystemTime) -> i64 {
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(after) => after.as_millis() as i64,
+        Err(before) => -(before.duration().as_millis() as i64),
+    }
+}
+
+/// Ошибка ОС → ошибка ядра без подробностей (в ошибках для интерфейса нет
+/// путей и текста ОС, инварианты 2, 3).
+fn io_error(error: std::io::Error) -> CoreError {
+    use std::io::ErrorKind;
+    CoreError::new(match error.kind() {
+        ErrorKind::NotFound | ErrorKind::NotADirectory => ErrorCode::NotFound,
+        ErrorKind::AlreadyExists | ErrorKind::DirectoryNotEmpty => ErrorCode::AlreadyExists,
+        _ => ErrorCode::IoFailed,
+    })
+}
+
+fn unavailable() -> CoreError {
+    CoreError::new(ErrorCode::VaultUnavailable)
 }
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod settings_tests {
-    use super::*;
-    use crate::commands::Theme;
-    use serde_json::json;
-
-    #[test]
-    fn newer_settings_file_with_unknown_fields_and_values_still_reads() {
-        let file: SettingsFile = serde_json::from_value(json!({
-            "format_version": 2,
-            "theme": "sepia",
-            "font_size": 18,
-            "graph": { "physics": true }
-        }))
-        .expect("файл следующей версии читается");
-
-        let settings = file.to_settings();
-
-        assert_eq!(
-            settings.theme,
-            Theme::System,
-            "неизвестная тема — по умолчанию"
-        );
-        assert_eq!(settings.font_size, 18);
-        assert_eq!(settings.new_note_location, NewNoteLocation::VaultRoot);
-    }
-
-    #[test]
-    fn update_keeps_unknown_fields_and_sets_format_version() {
-        let mut file: SettingsFile =
-            serde_json::from_value(json!({ "graph": { "physics": true } })).expect("файл");
-
-        file.update(&Settings {
-            theme: Theme::Dark,
-            ..Settings::default()
-        });
-
-        let written = serde_json::to_value(&file).expect("запись");
-        assert_eq!(written["format_version"], 1);
-        assert_eq!(written["theme"], "dark");
-        assert_eq!(written["graph"], json!({ "physics": true }));
-    }
-
-    #[test]
-    fn out_of_range_values_fall_back_to_defaults() {
-        let file: SettingsFile =
-            serde_json::from_value(json!({ "max_edit_size_bytes": 1, "theme": "dark" }))
-                .expect("файл");
-        let settings = file.to_settings();
-        assert_eq!(
-            settings.max_edit_size_bytes,
-            Settings::default().max_edit_size_bytes
-        );
-        assert_eq!(settings.theme, Theme::Dark);
-    }
-
-    #[test]
-    fn missing_file_content_gives_defaults() {
-        assert_eq!(SettingsFile::default().to_settings(), Settings::default());
-    }
-}
