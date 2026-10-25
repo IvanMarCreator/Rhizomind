@@ -34,7 +34,9 @@ pub const SERVICE_DIR: &str = ".rhizomind";
 /// `ПРОЕКТ~2.MD`) — через них NTFS открыла бы элемент под другим именем, в
 /// том числе служебную папку.
 pub fn check_component(component: &str) -> CoreResult<()> {
-    let forbidden = |c: char| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
+    let forbidden = |c: char| {
+        c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+    };
     let ok = !component.is_empty()
         && component != "."
         && component != ".."
@@ -43,25 +45,30 @@ pub fn check_component(component: &str) -> CoreResult<()> {
         && !component.ends_with(' ')
         && !is_reserved_device(component)
         && !looks_like_short_name(component);
-    if ok {
-        Ok(())
-    } else {
-        Err(invalid_path())
-    }
+    if ok { Ok(()) } else { Err(invalid_path()) }
 }
 
 /// Зарезервированное имя устройства Windows: основа до первой точки (без
 /// пробелов в конце) — `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`,
 /// `COM1`–`COM9`, `LPT1`–`LPT9` и `COM¹`–`COM³`, `LPT¹`–`LPT³`.
 fn is_reserved_device(component: &str) -> bool {
-    let base = component.split('.').next().unwrap_or(component).trim_end_matches(' ');
+    let base = component
+        .split('.')
+        .next()
+        .unwrap_or(component)
+        .trim_end_matches(' ');
     let upper = base.to_uppercase();
-    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        || ["COM", "LPT"].iter().any(|prefix| {
-            upper.strip_prefix(prefix).is_some_and(|rest| {
-                matches!(rest, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
-            })
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ["COM", "LPT"].iter().any(|prefix| {
+        upper.strip_prefix(prefix).is_some_and(|rest| {
+            matches!(
+                rest,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
         })
+    })
 }
 
 /// Имя по форме короткого имени 8.3, которое NTFS создаёт сама: основа до
@@ -120,7 +127,11 @@ impl Contour {
     /// все промежуточные компоненты — не ссылки.
     pub fn resolve(&self, path: &VaultPath) -> CoreResult<PathBuf> {
         path.check()?;
-        if path.components().first().is_some_and(|first| is_service_dir(first)) {
+        if path
+            .components()
+            .first()
+            .is_some_and(|first| is_service_dir(first))
+        {
             return Err(invalid_path());
         }
         let mut current = self.root.clone();
@@ -142,8 +153,17 @@ impl Contour {
 
     /// Шаг 6: итоговый путь открытого файла или папки лежит в корне и не в
     /// служебной папке. `allow_service` — для своих служебных файлов ядра.
-    pub fn check_opened(&self, file: &File, fallback: &Path, allow_service: bool) -> CoreResult<()> {
-        let real = final_path(file).or_else(|| std::fs::canonicalize(fallback).ok().map(|p| dunce::simplified(&p).to_path_buf()));
+    pub fn check_opened(
+        &self,
+        file: &File,
+        fallback: &Path,
+        allow_service: bool,
+    ) -> CoreResult<()> {
+        let real = final_path(file).or_else(|| {
+            std::fs::canonicalize(fallback)
+                .ok()
+                .map(|p| dunce::simplified(&p).to_path_buf())
+        });
         let Some(real) = real else {
             return Err(outside_vault());
         };
@@ -193,7 +213,9 @@ fn strip_root<'a>(root: &Path, real: &'a Path) -> Option<&'a Path> {
 pub fn final_path(file: &File) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
+    };
 
     let handle = file.as_raw_handle();
     let mut buffer = vec![0u16; 512];
@@ -260,12 +282,18 @@ mod tests {
         let outside = outer.path().join("secret.md");
         std::fs::write(&outside, "секрет").expect("файл");
         let file = File::open(&outside).expect("открыт");
-        assert_eq!(contour.check_opened(&file, &outside, false), Err(outside_vault()));
+        assert_eq!(
+            contour.check_opened(&file, &outside, false),
+            Err(outside_vault())
+        );
 
         let service = root.join(SERVICE_DIR).join("settings.json");
         std::fs::write(&service, "{}").expect("файл");
         let file = File::open(&service).expect("открыт");
-        assert_eq!(contour.check_opened(&file, &service, false), Err(outside_vault()));
+        assert_eq!(
+            contour.check_opened(&file, &service, false),
+            Err(outside_vault())
+        );
         assert_eq!(contour.check_opened(&file, &service, true), Ok(()));
 
         let note = root.join("Заметка.md");

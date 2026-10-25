@@ -4,6 +4,7 @@
 
 mod contour;
 mod read;
+mod write;
 
 use std::path::{Path, PathBuf};
 
@@ -39,7 +40,8 @@ impl TestVault {
 
     /// Файл в хранилище по относительному пути `a/b.md`.
     pub fn file(&self, rel: &str) -> PathBuf {
-        rel.split('/').fold(self.root(), |path, part| path.join(part))
+        rel.split('/')
+            .fold(self.root(), |path, part| path.join(part))
     }
 
     /// Записывает файл в хранилище (с промежуточными папками).

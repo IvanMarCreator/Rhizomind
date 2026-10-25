@@ -28,6 +28,7 @@
 //! сделан. Это известное ограничение до перехода на эти ОС (ADR 0006,
 //! уточнение 25.10.2026).
 
+pub(crate) mod atomic;
 mod contour;
 mod settings;
 mod text;
@@ -37,8 +38,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::commands::{
-    CoreError, CoreResult, ErrorCode, FileVersion, NameCheck, NoteReadResponse,
-    NoteWriteResponse, ReadOnlyReason, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
+    CoreError, CoreResult, ErrorCode, FileVersion, NameCheck, NoteReadResponse, NoteWriteResponse,
+    ReadOnlyReason, Settings, TrashOutcome, TreeEntry, VaultPath, Workspace,
 };
 
 pub use contour::{SERVICE_DIR, check_component};
@@ -63,6 +64,21 @@ pub struct NoteRef {
     /// заметки при дубликатах имён.
     pub created_ms: i64,
 }
+
+/// Своя запись ядра: путь, хэш и размер новой версии файла. Сообщается
+/// **до** замены файла (ADR 0006, уточнение 25.10.2026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnWrite {
+    /// Путь заметки.
+    pub path: VaultPath,
+    /// Хэш `blake3` нового содержимого.
+    pub hash: String,
+    /// Размер нового содержимого.
+    pub size: u64,
+}
+
+/// Получатель своих записей.
+pub type OwnWriteHook = Box<dyn Fn(&OwnWrite) + Send + Sync + 'static>;
 
 /// Открытое хранилище: корень и операции над файлами внутри контура.
 ///
@@ -91,7 +107,10 @@ impl Vault {
     /// → `outside_vault`: запись через них ушла бы за контур.
     pub fn open(root: &Path) -> CoreResult<Self> {
         let root = dunce::canonicalize(root).map_err(|_| unavailable())?;
-        if !std::fs::metadata(&root).map_err(|_| unavailable())?.is_dir() {
+        if !std::fs::metadata(&root)
+            .map_err(|_| unavailable())?
+            .is_dir()
+        {
             return Err(unavailable());
         }
         let contour = Contour::new(root.clone());
@@ -191,6 +210,14 @@ impl Vault {
     /// рядом, текст из редактора — в заметку (`conflict_saved`, С3.6).
     /// Файла нет — `not_found`. Дата создания сохраняется (см. описание
     /// модуля).
+    /// Регистрирует получателя своих записей (наблюдатель, задача 1.4).
+    pub fn set_own_write_hook(&self, _hook: OwnWriteHook) {}
+
+    /// Своя ли это недавняя запись (путь, хэш и размер новой версии).
+    pub fn is_own_write(&self, _path: &VaultPath, _hash: &str, _size: u64) -> bool {
+        false
+    }
+
     pub fn write_note(
         &self,
         path: &VaultPath,

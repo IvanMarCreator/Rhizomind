@@ -32,7 +32,14 @@ fn copy_dir(from: &Path, to: &Path) {
 fn encoding_samples_read_without_bom_and_with_lf() {
     let (t, manifest) = generated(None);
     let s = &manifest.encodings.samples;
-    for sample in [&s.lf, &s.crlf, &s.lf_bom, &s.crlf_bom, &s.mixed, &s.no_final_newline] {
+    for sample in [
+        &s.lf,
+        &s.crlf,
+        &s.lf_bom,
+        &s.crlf_bom,
+        &s.mixed,
+        &s.no_final_newline,
+    ] {
         let note = t.vault.read_note(&vp(sample)).expect(sample);
         let disk = t.bytes(sample);
         let expected = String::from_utf8(disk.clone())
@@ -82,7 +89,12 @@ fn file_larger_than_settings_limit_opens_read_only() {
         r#"{ "format_version": 1, "max_edit_size_bytes": 1048576 }"#,
     )
     .expect("настройки");
-    let big = manifest.encodings.samples.big.as_ref().expect("большой файл");
+    let big = manifest
+        .encodings
+        .samples
+        .big
+        .as_ref()
+        .expect("большой файл");
 
     let note = t.vault.read_note(&vp(&big.path)).expect("чтение");
 
@@ -105,8 +117,17 @@ fn not_a_note_missing_and_folder() {
     let t = TestVault::new();
     t.put("схема.png", [0x89, b'P', b'N', b'G']);
     std::fs::create_dir(t.file("Папка.md")).expect("папка с именем заметки");
-    assert_eq!(code(t.vault.read_note(&vp("схема.png"))), ErrorCode::NotANote);
-    assert_eq!(code(t.vault.read_note(&vp("Папка.md"))), ErrorCode::NotANote);
+    assert_eq!(
+        code(t.vault.read_note(&vp("схема.png"))),
+        ErrorCode::NotANote
+    );
+    assert_eq!(
+        code(t.vault.read_note(&vp("Папка.md"))),
+        ErrorCode::NotANote
+    );
     assert_eq!(code(t.vault.read_note(&vp("Нет.md"))), ErrorCode::NotFound);
-    assert_eq!(code(t.vault.read_note(&vp("Нет/Нет.md"))), ErrorCode::NotFound);
+    assert_eq!(
+        code(t.vault.read_note(&vp("Нет/Нет.md"))),
+        ErrorCode::NotFound
+    );
 }

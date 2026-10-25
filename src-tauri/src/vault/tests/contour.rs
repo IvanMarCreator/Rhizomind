@@ -31,7 +31,15 @@ fn component_rejects_traversal_separators_and_absolute_paths() {
 #[test]
 fn component_rejects_windows_reserved_names_with_and_without_extension() {
     for bad in [
-        "CON", "nul", "NUL.md", "com1.txt", "LPT9", "CONIN$", "conout$.md", "COM¹", "aux .md",
+        "CON",
+        "nul",
+        "NUL.md",
+        "com1.txt",
+        "LPT9",
+        "CONIN$",
+        "conout$.md",
+        "COM¹",
+        "aux .md",
     ] {
         assert!(rejected(bad), "{bad:?}");
     }
@@ -42,7 +50,16 @@ fn component_rejects_windows_reserved_names_with_and_without_extension() {
 #[test]
 fn component_rejects_trailing_dot_space_and_control_characters() {
     for bad in [
-        "Заметка.", "Заметка ", "a\0b", "a\u{1}b", "a\nb", "a*b", "a?b", "a|b", "a<b", "a>b",
+        "Заметка.",
+        "Заметка ",
+        "a\0b",
+        "a\u{1}b",
+        "a\nb",
+        "a*b",
+        "a?b",
+        "a|b",
+        "a<b",
+        "a>b",
         "a\"b",
     ] {
         assert!(rejected(bad), "{bad:?}");
@@ -99,12 +116,21 @@ fn every_operation(t: &TestVault, bad: &VaultPath) -> Vec<(&'static str, ErrorCo
     vec![
         ("read_note", code(v.read_note(bad))),
         ("write_note", code(v.write_note(bad, "взлом", &any_version))),
-        ("write_note внутрь", code(v.write_note(&inside, "взлом", &any_version))),
+        (
+            "write_note внутрь",
+            code(v.write_note(&inside, "взлом", &any_version)),
+        ),
         ("create_note", code(v.create_note(bad, "Новая.md"))),
         ("create_folder", code(v.create_folder(bad, "Новая"))),
-        ("check_new_name", code(v.check_new_name(bad, "Новая.md", None))),
+        (
+            "check_new_name",
+            code(v.check_new_name(bad, "Новая.md", None)),
+        ),
         ("rename", code(v.rename(bad, "Другое.md"))),
-        ("move_entry откуда", code(v.move_entry(bad, &VaultPath::root()))),
+        (
+            "move_entry откуда",
+            code(v.move_entry(bad, &VaultPath::root())),
+        ),
         ("move_entry куда", code(v.move_entry(&vp("Своя.md"), bad))),
         ("trash", code(v.trash(bad, &|_| true))),
     ]
@@ -170,7 +196,12 @@ fn symlinks_never_leave_the_vault() {
     symlink_dir(&t.outside(), &t.file("Папка/вглубь"));
     symlink_file(&t.outside().join("secret.md"), &t.file("секрет.md"));
 
-    for bad in ["ссылка", "ссылка/secret.md", "Папка/вглубь/secret.md", "секрет.md"] {
+    for bad in [
+        "ссылка",
+        "ссылка/secret.md",
+        "Папка/вглубь/secret.md",
+        "секрет.md",
+    ] {
         assert_never_escapes(&t, bad);
     }
 }
@@ -233,11 +264,17 @@ fn link_to_service_folder_inside_vault_is_rejected() {
 fn vault_root_itself_cannot_be_renamed_moved_or_trashed() {
     let t = TestVault::new();
     let root = VaultPath::root();
-    assert_eq!(code(t.vault.rename(&root, "Другое")), ErrorCode::InvalidPath);
+    assert_eq!(
+        code(t.vault.rename(&root, "Другое")),
+        ErrorCode::InvalidPath
+    );
     assert_eq!(
         code(t.vault.move_entry(&root, &root)),
         ErrorCode::InvalidPath
     );
-    assert_eq!(code(t.vault.trash(&root, &|_| true)), ErrorCode::InvalidPath);
+    assert_eq!(
+        code(t.vault.trash(&root, &|_| true)),
+        ErrorCode::InvalidPath
+    );
     assert!(t.root().is_dir());
 }
