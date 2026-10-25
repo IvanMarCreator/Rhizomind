@@ -1,6 +1,7 @@
 # cargo-deny 0.20: лицензии, запрет сетевых крейтов и функций, источники.
 # Основа — исследование docs/research/2026-10-24-rust-crates.md, ADR 0009.
 # Запуск: cargo deny --manifest-path src-tauri/Cargo.toml check
+# Список [bans] deny читает и tools/check-cargo-tree (вторая, независимая проверка).
 
 [graph]
 # Только десктопные цели: reqwest в Tauri есть лишь для мобильных целей.
@@ -56,6 +57,10 @@ deny = [
   { crate = "tokio-tungstenite" }, { crate = "tauri-plugin-http" }, { crate = "tauri-plugin-updater" },
   { crate = "tauri-plugin-websocket" }, { crate = "tauri-plugin-upload" }, { crate = "tauri-plugin-localhost" },
   { crate = "tauri-plugin-shell" },
+  # Добавлено по ревью 0.2: HTTP-серверы и клиенты, DNS, WebSocket, почта, SSH.
+  { crate = "tiny_http" }, { crate = "hyperlocal" }, { crate = "axum" }, { crate = "async-net" },
+  { crate = "hickory-resolver" }, { crate = "trust-dns-resolver" }, { crate = "ws" }, { crate = "websocket" },
+  { crate = "lettre" }, { crate = "russh" }, { crate = "ssh2" }, { crate = "libssh2-sys" },
 ]
 
 [[bans.features]]
