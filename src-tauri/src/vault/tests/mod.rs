@@ -5,6 +5,7 @@
 mod contour;
 mod ops;
 mod read;
+mod service;
 mod write;
 
 use std::path::{Path, PathBuf};
