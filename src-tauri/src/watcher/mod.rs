@@ -14,7 +14,11 @@ use std::path::Path;
 mod own_writes;
 mod tree;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tree_tests;
+#[cfg(test)]
+mod watcher_tests;
 
 pub use own_writes::OwnWrites;
 
@@ -39,4 +43,11 @@ impl VaultWatcher {
     /// Запоминает версию файла после своей записи: событие о файле с этой
     /// версией не будет внешним изменением.
     pub fn remember_own_write(&self, _path: &VaultPath, _version: &FileVersion) {}
+
+    /// Полная сверка с диском.
+    pub fn rescan(&self) {}
+
+    /// Тестовый шов: события ОС теряются.
+    #[cfg(test)]
+    pub(crate) fn lose_os_events(&self, _lose: bool) {}
 }
