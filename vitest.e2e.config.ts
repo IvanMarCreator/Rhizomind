@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 // Сценарные тесты: настоящее окно собранного приложения через tauri-driver
-// (WebDriver). Перед запуском нужна сборка: `npm run build`.
+// (WebDriver). Перед запуском нужна сборка: `npm run build:e2e`.
 export default defineConfig({
   test: {
     include: ['tests/e2e/**/*.test.ts'],

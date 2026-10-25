@@ -1,0 +1,115 @@
+/* Переменные темы (CONTEXT.md: «Переменные темы») из docs/design/tokens.md:
+   концепт К2, акцент индиго. Имя в Figma `bg/app` → `--bg-app`.
+   Светлая тема — на :root, тёмная — при data-theme="dark" на <html>.
+   Атрибут ставит src/theme/theme.ts по режиму «Как в системе / Светлая /
+   Тёмная». Совпадение значений с tokens.md проверяет theme.test.ts. */
+
+:root {
+  color-scheme: light;
+
+  --bg-app: #ffffff;
+  --bg-sidebar: #f6f7f8;
+  --bg-ribbon: #eef0f2;
+  --bg-titlebar: #eef0f2;
+  --bg-hover: #e9ebee;
+  --bg-active: #e1e4e8;
+  --bg-code: #f4f5f7;
+  --bg-popover: #ffffff;
+  --bg-scrim: rgb(15 17 20 / 32%);
+
+  --border-default: #e3e5e8;
+  --border-strong: #cdd1d6;
+
+  --text-primary: #1f2328;
+  --text-secondary: #545c66;
+  --text-muted: #737b85;
+  --text-faint: #8e959e;
+  --text-on-accent: #ffffff;
+
+  --icon-default: #5e6670;
+  --icon-muted: #959ca5;
+
+  --link-unresolved: #7a818b;
+
+  --status-saved: #3d8c5c;
+  --status-warning: #8f5b00;
+  --status-warning-subtle: #fbf1dc;
+  --status-error: #c0362c;
+
+  --code-keyword: #8250df;
+  --code-string: #0a6e54;
+  --code-comment: #7a828c;
+
+  --accent-indigo-base: #4a55c8;
+  --accent-indigo-text: #3f49b5;
+  --accent-indigo-subtle: #e8eafb;
+
+  --control-knob: #ffffff;
+
+  --accent: var(--accent-indigo-base);
+  --accent-text: var(--accent-indigo-text);
+  --accent-subtle: var(--accent-indigo-subtle);
+
+  /* Шрифты (fonts.css) и размеры из раздела «Размеры и отступы». */
+  --font-ui: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+  --font-size-ui: 13px;
+  --font-size-caption: 12px;
+  --font-size-heading: 11px;
+
+  --ribbon-width: 44px;
+  --ribbon-button: 32px;
+  --ribbon-icon: 18px;
+  --sidebar-width: 260px;
+  --sidebar-header-height: 34px;
+  --sidebar-footer-height: 46px;
+  --note-header-height: 42px;
+  --note-header-button: 26px;
+  --note-header-icon: 15px;
+  --note-column-width: 700px;
+  --notification-width: 440px;
+  --focus-ring: 0 0 0 2px var(--accent);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg-app: #1c1d20;
+  --bg-sidebar: #17181a;
+  --bg-ribbon: #131416;
+  --bg-titlebar: #131416;
+  --bg-hover: #26282c;
+  --bg-active: #2e3135;
+  --bg-code: #25272b;
+  --bg-popover: #232529;
+  --bg-scrim: rgb(0 0 0 / 55%);
+
+  --border-default: #2b2d31;
+  --border-strong: #3a3d42;
+
+  --text-primary: #e4e6e9;
+  --text-secondary: #abb1b9;
+  --text-muted: #8a919a;
+  --text-faint: #70767e;
+  --text-on-accent: #141518;
+
+  --icon-default: #a1a7af;
+  --icon-muted: #6e747c;
+
+  --link-unresolved: #7a818a;
+
+  --status-saved: #6cc08c;
+  --status-warning: #e2ae4c;
+  --status-warning-subtle: #3a301c;
+  --status-error: #f08a80;
+
+  --code-keyword: #c29bf5;
+  --code-string: #7fd1b1;
+  --code-comment: #7d848d;
+
+  --accent-indigo-base: #8e97f0;
+  --accent-indigo-text: #a3abf5;
+  --accent-indigo-subtle: #2a2e52;
+
+  --control-knob: #e4e6e9;
+}
