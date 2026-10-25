@@ -136,17 +136,6 @@ fn webdriver_debug_port_from_env() -> Option<u16> {
 #[cfg(feature = "webdriver")]
 fn webdriver_user_data_folder_from_env() -> Option<std::path::PathBuf> {
     let folder = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER");
-    // [DEBUG-t03] какие переменные WEBVIEW2_* передал драйвер (только имена).
-    if let Some(dir) = std::env::var_os("RHIZOMIND_E2E_LOG_DIR") {
-        let names: Vec<String> = std::env::vars_os()
-            .filter_map(|(k, _)| k.into_string().ok())
-            .filter(|k| k.to_ascii_uppercase().starts_with("WEBVIEW2_"))
-            .collect();
-        let _ = std::fs::write(
-            std::path::Path::new(&dir).join(format!("webdriver-env-{}.txt", std::process::id())),
-            format!("[DEBUG-t03] {names:?}\n"),
-        );
-    }
     security::webdriver_user_data_folder(folder.as_deref())
 }
 
