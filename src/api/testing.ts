@@ -18,6 +18,13 @@ const notImplemented: CoreError = { code: 'not_implemented', message_key: 'error
 
 type Invoke = (command: string, args?: unknown, options?: unknown) => Promise<unknown>;
 
+declare global {
+  interface Window {
+    /** Мост Tauri; в тестах его ставит @tauri-apps/api/mocks. */
+    __TAURI_INTERNALS__: { invoke: Invoke };
+  }
+}
+
 /**
  * Подменяет ядро: команды из `mocks` отвечают подменой, остальные — ошибкой
  * `not_implemented`, как заглушки ядра. Окно — `main`; события подменяются
@@ -36,7 +43,7 @@ export function mockCore(mocks: CoreMocks): RecordedCall[] {
     },
     { shouldMockEvents: true },
   );
-  const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: Invoke } }).__TAURI_INTERNALS__;
+  const internals = window.__TAURI_INTERNALS__;
   const invoke = internals.invoke;
   internals.invoke = (command, args, options) => {
     calls.push([command, args ?? {}]);
