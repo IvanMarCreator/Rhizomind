@@ -6,6 +6,16 @@
 
 use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+// Модули ядра (спецификация 0.1, С5.2) и команды API v1 (С5.5) — задача 0.4.
+pub mod commands;
+pub mod external_links;
+pub mod links;
+pub mod names;
+pub mod registry;
+pub mod switcher;
+pub mod vault;
+pub mod watcher;
+
 /// Метка главного окна; на неё выдаются права в `capabilities/main.json`.
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
@@ -53,6 +63,8 @@ pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvi
 /// Запуск приложения.
 pub fn run() {
     tauri::Builder::default()
+        .manage(commands::Core::new(registry::Registry::from_profile()))
+        .invoke_handler(commands::handler())
         .setup(|app| {
             create_main_window(app.handle())?;
             Ok(())

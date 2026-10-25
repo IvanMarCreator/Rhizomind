@@ -30,12 +30,16 @@ tauri-build = { version = "=2.7.4", features = [] }
 # Функции по умолчанию: wry, compression, common-controls-v6, dynamic-acl, x11, dbus.
 # Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls.
 tauri = { version = "=2.12.5", features = [] }
+# Типы команд ядра и их JSON (контракт API v1).
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
 
 [dev-dependencies]
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
 tauri = { version = "=2.12.5", features = ["test"] }
-serde_json = "=1.0.154"
+# Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
+insta = { version = "=1.49.0", features = ["json"] }
 
 [profile.release]
 codegen-units = 1
