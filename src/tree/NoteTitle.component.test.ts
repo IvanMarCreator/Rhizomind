@@ -80,12 +80,11 @@ describe('заголовок заметки над текстом', () => {
 
   it('путь сменился, пока идёт сохранение: переименовывается та заметка, на которой открыли поле', async () => {
     let answer: (() => void) | undefined;
-    const vault = new FakeVault(ENTRIES);
-    const check = vault.mocks().name_check;
+    const rules = new FakeVault(ENTRIES);
     const { calls, view } = await setup({
-      name_check: (request) =>
+      name_check: ({ dir, name, renaming }) =>
         new Promise((resolve) => {
-          answer = () => resolve(check!(request) as never);
+          answer = () => resolve(rules.check(dir, name, renaming));
         }),
     });
     await fireEvent.click(screen.getByRole('button', { name: 'Встреча по запуску' }));
