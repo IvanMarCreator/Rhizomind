@@ -110,7 +110,8 @@ describe('оболочка окна', () => {
     await renderShell({ ...WITH_VAULT, workspace_read: () => ({ workspace: savedLayout(['Проекты', 'Альфа', 'Встреча по запуску.md']) }) });
 
     const path = await screen.findByRole('navigation', { name: 'Путь к заметке' });
-    expect(path.textContent?.replace(/\s+/g, ' ').trim()).toBe('Проекты / Альфа / Встреча по запуску');
+    // Отступы вокруг «/» — средствами CSS, в тексте их нет.
+    expect(path.textContent?.replace(/\s*\/\s*/g, '/').trim()).toBe('Проекты/Альфа/Встреча по запуску');
     expect(screen.queryByText('Нет открытой заметки')).toBeNull();
 
     const preview = screen.getByRole('button', { name: 'Живой предпросмотр' });

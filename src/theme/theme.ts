@@ -23,7 +23,11 @@ export function resolveTheme(mode: Theme, systemDark: boolean): AppliedTheme {
   return mode;
 }
 
+/** Тема системы; без `matchMedia` (jsdom в тестах) — светлая, без слежения. */
 export function systemScheme(): SystemScheme {
+  if (typeof window.matchMedia !== 'function') {
+    return { matches: false, addEventListener: () => {}, removeEventListener: () => {} };
+  }
   return window.matchMedia('(prefers-color-scheme: dark)');
 }
 

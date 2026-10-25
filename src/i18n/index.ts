@@ -13,7 +13,7 @@ export function hasMessage(key: string): key is MessageKey {
 
 /** Текст по ключу; `{имя}` заменяется параметром, без параметра остаётся как есть. */
 export function t(key: MessageKey, params: MessageParams = {}): string {
-  return messages[key]!.replace(/\{(\w+)\}/g, (whole, name: string) =>
+  return (messages[key] ?? key).replace(/\{(\w+)\}/g, (whole, name: string) =>
     Object.hasOwn(params, name) ? String(params[name]) : whole,
   );
 }
