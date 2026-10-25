@@ -9,7 +9,9 @@
 // `http://localhost:5173`. Она бывает только отладочной (`tauri dev`). Голый
 // `cargo build --release` без tauri CLI тоже дал бы `cfg(dev)` — такую сборку
 // запрещаем: выпуск собирается только через `npm run build` / `package:*`.
-#[cfg(all(dev, not(debug_assertions)))]
+// Модульные тесты в выпускном профиле (`cargo test --release --lib`, замеры
+// скорости) — не программа: окна не открывают, поэтому `cfg(test)` пропускается.
+#[cfg(all(dev, not(debug_assertions), not(test)))]
 compile_error!(
     "Выпускная сборка без tauri CLI грузила бы интерфейс с http://localhost:5173. \
      Собирайте через `npm run build` или `npm run package:*`."
