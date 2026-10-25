@@ -53,6 +53,9 @@ describe('защищённая оболочка', () => {
       link.id = 'e2e-external-link';
       link.href = url;
       link.textContent = 'внешняя ссылка';
+      // Поверх оболочки окна (2.2), иначе WebDriver не может нажать ссылку.
+      // Свойства CSSOM, а не атрибут style: CSP style-src 'self' их не запрещает.
+      Object.assign(link.style, { position: 'fixed', top: '8px', left: '8px', zIndex: '2147483647', background: 'white', padding: '4px' });
       document.body.append(link);
     }, EXTERNAL);
     await (await browser.$('#e2e-external-link')).click();
@@ -79,6 +82,9 @@ describe('защищённая оболочка', () => {
       link.download = fileName;
       link.href = URL.createObjectURL(new Blob(['rhizomind'], { type: 'text/plain' }));
       link.textContent = 'скачать';
+      // Поверх оболочки окна (2.2), иначе WebDriver не может нажать ссылку.
+      // Свойства CSSOM, а не атрибут style: CSP style-src 'self' их не запрещает.
+      Object.assign(link.style, { position: 'fixed', top: '8px', left: '8px', zIndex: '2147483647', background: 'white', padding: '4px' });
       document.body.append(link);
     }, name);
     await (await browser.$('#e2e-download')).click();

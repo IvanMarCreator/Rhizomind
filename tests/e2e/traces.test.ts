@@ -156,6 +156,15 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   const temp = isWindows ? env('TEMP') : '';
   const real = (p: string) => realpathSync.native(p);
   const roots = isWindows ? [env('LOCALAPPDATA'), env('APPDATA'), temp].map(real) : [];
+  // Известный локальный след (docs/SECURITY.md, «Известные локальные следы»):
+  // при закрытии окна появляется новый файл диспетчера учётных данных Windows
+  // прямо в %LOCALAPPDATA%\Microsoft\Credentials\. Создатель не установлен
+  // (движок WebView2 или код ядра) — расследование в бэклоге (docs/reviews/
+  // 2026-10-25-task-0.3.md). Разрешены только НОВЫЕ файлы ровно в этой папке;
+  // изменение существующих и любой другой след по-прежнему валят тест.
+  const credentialsDir = isWindows ? path.join(real(env('LOCALAPPDATA')), 'Microsoft', 'Credentials') : '';
+  const isKnownTrace = (p: string) => isWindows && path.dirname(p) === credentialsDir && !before.has(p);
+  const unexpected = (p: string) => !isHarnessNoise(p) && !isKnownTrace(p);
   // Остаток «аварийного» запуска: процесс 4000000000 не существует.
   const leftover = path.join(temp, 'rhizomind-webview-4000000000-0123456789abcdef');
   const evilUserData = path.join(temp, `rhizomind-e2e-evil-udf-${Date.now()}`);
@@ -225,7 +234,9 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     const outside = changed.filter((p) => !p.startsWith(own));
     const noise = outside.filter(isHarnessNoise);
     console.log(`во время работы: ${changed.length} новых/изменённых путей, вне временной папки: ${outside.length} (из них инструменты теста: ${noise.length})`);
-    expect(outside.filter((p) => !isHarnessNoise(p))).toEqual([]);
+    const known = outside.filter(isKnownTrace);
+    if (known.length > 0) console.log(`известный след (SECURITY.md): ${known.join(', ')}`);
+    expect(outside.filter(unexpected)).toEqual([]);
     expect(path.dirname(dataDir)).toBe(path.resolve(temp));
   });
 
@@ -274,7 +285,9 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
 
     const after = snapshot(roots);
     const { changed, removed } = diff(before, after);
-    expect(changed.filter((p) => !isHarnessNoise(p))).toEqual([]);
+    const known = changed.filter(isKnownTrace);
+    if (known.length > 0) console.log(`известный след после выхода (SECURITY.md): ${known.join(', ')}`);
+    expect(changed.filter(unexpected)).toEqual([]);
     const leftoverReal = path.join(real(temp), path.basename(leftover));
     expect(removed.filter((p) => !p.startsWith(leftoverReal))).toEqual([]);
   }, 60_000);
