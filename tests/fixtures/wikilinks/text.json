@@ -1,0 +1,630 @@
+{
+  "format_version": 1,
+  "description": "Вики-ссылки в тексте заметки для редактора (src/core/wikilinks, задача 1.8). from и to — смещения в единицах UTF-16 (как индексы строк JavaScript и CodeMirror), to — после ]]; у встраивания ![[…]] from указывает на !. target — результат разбора текста между [[ и ]] по правилам parse.json. Ссылка — в пределах одной строки. Не ссылки: [[ внутри кода в строке (пары обратных кавычек одинаковой длины в пределах абзаца), блоков ``` и ~~~ (до трёх пробелов отступа; закрывает такая же строка из тех же символов не короче открывающей; незакрытый блок — до конца текста) и кода с отступом (4 пробела или табуляция после пустой строки или в начале текста, кроме продолжения пункта списка).",
+  "cases": [
+    {
+      "note": "простые ссылки",
+      "text": "См. [[Встреча]] и [[Альфа/Встреча|встречи]].",
+      "links": [
+        {
+          "from": 4,
+          "to": 15,
+          "raw": "[[Встреча]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "Встреча",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 18,
+          "to": 43,
+          "raw": "[[Альфа/Встреча|встречи]]",
+          "embed": false,
+          "target": {
+            "folders": [
+              "Альфа"
+            ],
+            "name": "Встреча",
+            "heading": null,
+            "alias": "встречи",
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "заголовок, корень, встраивание",
+      "text": "[[Встреча#Итоги]], [[/План]] и ![[Схема.png]]",
+      "links": [
+        {
+          "from": 0,
+          "to": 17,
+          "raw": "[[Встреча#Итоги]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "Встреча",
+            "heading": "Итоги",
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 19,
+          "to": 28,
+          "raw": "[[/План]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "План",
+            "heading": null,
+            "alias": null,
+            "from_root": true
+          }
+        },
+        {
+          "from": 31,
+          "to": 45,
+          "raw": "![[Схема.png]]",
+          "embed": true,
+          "target": {
+            "folders": [],
+            "name": "Схема.png",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "смещения в единицах UTF-16: эмодзи — две единицы",
+      "text": "😀 [[Заметка]] 👍🏽 [[Ещё]]",
+      "links": [
+        {
+          "from": 3,
+          "to": 14,
+          "raw": "[[Заметка]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "Заметка",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 20,
+          "to": 27,
+          "raw": "[[Ещё]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "Ещё",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "подряд без пробела",
+      "text": "[[а]][[б]]",
+      "links": [
+        {
+          "from": 0,
+          "to": 5,
+          "raw": "[[а]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "а",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 5,
+          "to": 10,
+          "raw": "[[б]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "б",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "код в строке — не ссылка",
+      "text": "Код `[[не ссылка]]` и [[ссылка]]",
+      "links": [
+        {
+          "from": 22,
+          "to": 32,
+          "raw": "[[ссылка]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "ссылка",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "код в строке из двух обратных кавычек с одиночной внутри",
+      "text": "``код с ` и [[x]]`` потом [[y]]",
+      "links": [
+        {
+          "from": 26,
+          "to": 31,
+          "raw": "[[y]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "y",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "одиночная обратная кавычка без пары — не код",
+      "text": "Один ` апостроф [[ссылка]]",
+      "links": [
+        {
+          "from": 16,
+          "to": 26,
+          "raw": "[[ссылка]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "ссылка",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "код в строке через перенос строки внутри абзаца",
+      "text": "Текст `начало\n[[x]] конец` и [[y]]",
+      "links": [
+        {
+          "from": 29,
+          "to": 34,
+          "raw": "[[y]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "y",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "код в строке не переходит через пустую строку",
+      "text": "Текст `начало\n\n[[x]] конец`",
+      "links": [
+        {
+          "from": 15,
+          "to": 20,
+          "raw": "[[x]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "x",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "блок кода ```",
+      "text": "До [[a]]\n```\n[[в коде]]\n```\nПосле [[b]]\n",
+      "links": [
+        {
+          "from": 3,
+          "to": 8,
+          "raw": "[[a]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "a",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 34,
+          "to": 39,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "блок кода ~~~ со строкой языка",
+      "text": "~~~markdown\n[[в коде]]\n~~~\n[[b]]",
+      "links": [
+        {
+          "from": 27,
+          "to": 32,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "блок из четырёх ` не закрывается тремя",
+      "text": "````\n```\n[[в коде]]\n````\n[[b]]",
+      "links": [
+        {
+          "from": 25,
+          "to": 30,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "~~~ не закрывает блок ```",
+      "text": "```\n~~~\n[[в коде]]\n```\n[[b]]",
+      "links": [
+        {
+          "from": 23,
+          "to": 28,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "незакрытый блок кода — до конца текста",
+      "text": "[[a]]\n```\n[[в коде]]\n\n[[тоже в коде]]",
+      "links": [
+        {
+          "from": 0,
+          "to": 5,
+          "raw": "[[a]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "a",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "блок кода с отступом до трёх пробелов",
+      "text": "  ```\n[[в коде]]\n   ```\n[[b]]",
+      "links": [
+        {
+          "from": 24,
+          "to": 29,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "четыре пробела перед ``` — не блок ```, а код с отступом после пустой строки",
+      "text": "\n    ```\n[[b]]",
+      "links": [
+        {
+          "from": 9,
+          "to": 14,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "код с отступом после пустой строки",
+      "text": "Абзац\n\n    [[в коде]]\n\n[[b]]",
+      "links": [
+        {
+          "from": 23,
+          "to": 28,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "код с отступом табуляцией в начале текста",
+      "text": "\t[[в коде]]\n[[b]]",
+      "links": [
+        {
+          "from": 12,
+          "to": 17,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "строка с отступом продолжает абзац — не код",
+      "text": "Абзац\n    [[ссылка]]",
+      "links": [
+        {
+          "from": 10,
+          "to": 20,
+          "raw": "[[ссылка]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "ссылка",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "отступ в списке после пустой строки — продолжение пункта, не код",
+      "text": "- пункт\n\n    [[ссылка]]\n\n1. второй\n\n    [[ещё]]",
+      "links": [
+        {
+          "from": 13,
+          "to": 23,
+          "raw": "[[ссылка]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "ссылка",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 40,
+          "to": 47,
+          "raw": "[[ещё]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "ещё",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "после списка снова абзац — код с отступом снова возможен",
+      "text": "- пункт\n\nАбзац\n\n    [[в коде]]",
+      "links": []
+    },
+    {
+      "note": "переносы CRLF",
+      "text": "[[a]]\r\n```\r\n[[в коде]]\r\n```\r\n[[b]]\r\n",
+      "links": [
+        {
+          "from": 0,
+          "to": 5,
+          "raw": "[[a]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "a",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        },
+        {
+          "from": 29,
+          "to": 34,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "ссылка не переходит через перенос строки",
+      "text": "[[a\nb]] и [[c\r\nd]]",
+      "links": []
+    },
+    {
+      "note": "незакрытая [[ перед ссылкой",
+      "text": "[[a [[b]]",
+      "links": [
+        {
+          "from": 4,
+          "to": 9,
+          "raw": "[[b]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "b",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "нет закрывающих скобок",
+      "text": "[[a] и [[b",
+      "links": []
+    },
+    {
+      "note": "недопустимые цели — тоже найдены, с причиной",
+      "text": "[[]] [[a//b]] [[../x]] [[a:b]]",
+      "links": [
+        {
+          "from": 0,
+          "to": 4,
+          "raw": "[[]]",
+          "embed": false,
+          "target": {
+            "invalid": "empty_target"
+          }
+        },
+        {
+          "from": 5,
+          "to": 13,
+          "raw": "[[a//b]]",
+          "embed": false,
+          "target": {
+            "invalid": "empty_component"
+          }
+        },
+        {
+          "from": 14,
+          "to": 22,
+          "raw": "[[../x]]",
+          "embed": false,
+          "target": {
+            "invalid": "dot_component"
+          }
+        },
+        {
+          "from": 23,
+          "to": 30,
+          "raw": "[[a:b]]",
+          "embed": false,
+          "target": {
+            "invalid": "forbidden_chars"
+          }
+        }
+      ]
+    },
+    {
+      "note": "псевдоним в таблице через \\|",
+      "text": "| [[Заметка\\|псевдоним]] | 2 |",
+      "links": [
+        {
+          "from": 2,
+          "to": 24,
+          "raw": "[[Заметка\\|псевдоним]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "Заметка",
+            "heading": null,
+            "alias": "псевдоним",
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "лишняя ] после ссылки",
+      "text": "[[a]]]",
+      "links": [
+        {
+          "from": 0,
+          "to": 5,
+          "raw": "[[a]]",
+          "embed": false,
+          "target": {
+            "folders": [],
+            "name": "a",
+            "heading": null,
+            "alias": null,
+            "from_root": false
+          }
+        }
+      ]
+    },
+    {
+      "note": "пустой текст",
+      "text": "",
+      "links": []
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+/* Общие стили окна: шрифт интерфейса, фон, кнопки без оформления браузера,
+   кольцо фокуса (tokens.md: 2 px accent/indigo/base снаружи). */
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  line-height: 1.4;
+  font-feature-settings: 'cv11', 'calt';
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

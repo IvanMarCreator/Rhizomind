@@ -1,23 +1,9 @@
 {
+  // Проверки, сценарные тесты, конфигурации и модульные тесты интерфейса —
+  // в Node, с типами Node. Код интерфейса без тестов — src/tsconfig.json.
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2024",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
-    "types": ["node"],
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": true,
-    "verbatimModuleSyntax": true,
-    "isolatedModules": true,
-    "erasableSyntaxOnly": true,
-    "allowImportingTsExtensions": true,
-    "allowJs": true,
-    "checkJs": false,
-    "skipLibCheck": true,
-    "noEmit": true
+    "types": ["node"]
   },
-  "include": ["src", "src-isolation", "tools", "tests", "*.config.ts", "*.config.js"]
+  "include": ["tools", "tests", "src-isolation", "*.config.ts", "*.config.js", "src/**/*.test.ts", "src/env.d.ts"]
 }

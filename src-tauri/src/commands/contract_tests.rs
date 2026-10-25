@@ -330,7 +330,9 @@ fn name_check() {
             name: "Встреча.md".into(),
             renaming: Some(path(&["Проекты", "встреча.md"])),
         },
-        &NameCheck::Ok,
+        &NameCheck::Ok {
+            warning: Some(NameWarning::Unlinkable),
+        },
         &[
             err(ErrorCode::InvalidPath),
             CoreError::invalid_argument("dir"),
@@ -417,14 +419,22 @@ fn links_suggest() {
         &LinksSuggestResponse {
             items: vec![
                 LinkSuggestion {
-                    insert: "Альфа/Встреча".into(),
+                    insert: Some("Альфа/Встреча".into()),
                     name: "Встреча".into(),
                     path: path(&["Проекты", "Альфа", "Встреча.md"]),
+                    linkable: true,
                 },
                 LinkSuggestion {
-                    insert: "/Встреча".into(),
+                    insert: Some("/Встреча".into()),
                     name: "Встреча".into(),
                     path: path(&["Встреча.md"]),
+                    linkable: true,
+                },
+                LinkSuggestion {
+                    insert: None,
+                    name: "#Встреча 2".into(),
+                    path: path(&["#Встреча 2.md"]),
+                    linkable: false,
                 },
             ],
         },
@@ -728,10 +738,13 @@ fn enums() {
             NoteWriteResponse::Saved { .. } | NoteWriteResponse::ConflictSaved { .. } => {}
         }
     }
-    let name_check = [NameCheck::Ok, NameCheck::rejected(NameProblem::Empty)];
+    let name_check = [
+        NameCheck::Ok { warning: None },
+        NameCheck::rejected(NameProblem::Empty),
+    ];
     for value in &name_check {
         match value {
-            NameCheck::Ok | NameCheck::Rejected { .. } => {}
+            NameCheck::Ok { .. } | NameCheck::Rejected { .. } => {}
         }
     }
     let vault_choose = [
@@ -776,6 +789,7 @@ fn enums() {
     let enums = json!({
         "ErrorCode": tags(&error_codes, ""),
         "NameProblem": tags(&name_problems, ""),
+        "NameWarning": tags(&all_variants!(NameWarning: Unlinkable, Hidden), ""),
         "EntryKind": tags(&all_variants!(EntryKind: Folder, Note, Attachment), ""),
         "Theme": tags(&all_variants!(Theme: System, Light, Dark), ""),
         "EditorMode": tags(&all_variants!(EditorMode: LivePreview, Source), ""),

@@ -1,12 +1,21 @@
 // Проверка для ИБ: `cargo tree -e normal,no-proc-macro --target <цель>` по каждой десктопной
 // цели не содержит сетевых крейтов, и набор крейтов совпадает со списком в
-// crates.json (новый крейт — только после просмотра).
+// crates.json (новый крейт — только после просмотра). Ещё: в `cargo tree -e
+// normal,build` нет крейтов только для тестов (gen-vault, proptest).
 // Запуск: node tools/check-cargo-tree/cli.ts [--update]. Код выхода 1 при находке
 // или расхождении. `--update` записывает текущий набор в crates.json.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { DESKTOP_TARGETS, cargoTreeArgs, compareWithBaseline, crateNames, deniedCrates, findNetworkCrates } from './tree.ts';
+import {
+  DESKTOP_TARGETS,
+  cargoTreeArgs,
+  compareWithBaseline,
+  crateNames,
+  deniedCrates,
+  findNetworkCrates,
+  findTestOnlyCrates,
+} from './tree.ts';
 
 const root = path.join(import.meta.dirname, '..', '..');
 const manifest = path.join(root, 'src-tauri', 'Cargo.toml');
@@ -40,6 +49,17 @@ for (const target of DESKTOP_TARGETS) {
         (removed.length ? `\n  пропали: ${removed.join(', ')}` : ''),
     );
   }
+  const withBuild = execFileSync('cargo', cargoTreeArgs(target, manifest, 'normal,build'), {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const testOnly = findTestOnlyCrates(withBuild);
+  if (testOnly.length === 0) {
+    console.log(`check:cargo-tree — ${target}: крейтов для тестов в программе и сборке нет (gen-vault, proptest)`);
+  } else {
+    failed = true;
+    console.error(`check:cargo-tree — ${target}: в программу попали крейты для тестов: ${testOnly.join(', ')}`);
+  }
 }
 
 if (update) {
@@ -47,7 +67,7 @@ if (update) {
   console.log(`check:cargo-tree — записан ${path.relative(root, baselinePath)}`);
 } else if (failed) {
   console.error(
-    'В ядре не должно быть сетевых библиотек (инвариант 1, ADR 0009). Новый крейт: проверить лицензию и ' +
+    'В ядре не должно быть сетевых библиотек (инвариант 1, ADR 0009) и крейтов для тестов. Новый крейт: проверить лицензию и ' +
       'сетевой код (docs/dependencies.md), затем node tools/check-cargo-tree/cli.ts --update.',
   );
   process.exit(1);

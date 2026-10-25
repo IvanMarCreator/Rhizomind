@@ -19,6 +19,7 @@ source: src/commands/contract_tests.rs
     "items": [
       {
         "insert": "Альфа/Встреча",
+        "linkable": true,
         "name": "Встреча",
         "path": [
           "Проекты",
@@ -28,9 +29,18 @@ source: src/commands/contract_tests.rs
       },
       {
         "insert": "/Встреча",
+        "linkable": true,
         "name": "Встреча",
         "path": [
           "Встреча.md"
+        ]
+      },
+      {
+        "insert": null,
+        "linkable": false,
+        "name": "#Встреча 2",
+        "path": [
+          "#Встреча 2.md"
         ]
       }
     ]

@@ -16,17 +16,24 @@ const SESSION_TIMEOUT_MS = 100_000;
 
 export const SCREENSHOT_DIR = path.join(ROOT, 'test-results', 'e2e');
 
+/** Папка сборки Cargo: CARGO_TARGET_DIR (общая папка сборки) или src-tauri/target (.cargo/config.toml). */
+function targetDir(): string {
+  const fromEnv = process.env.CARGO_TARGET_DIR;
+  return fromEnv ? path.resolve(ROOT, fromEnv) : path.join(ROOT, 'src-tauri', 'target');
+}
+
 /**
  * Исполняемый файл приложения.
- * - `webdriver` — тестовая сборка с портом отладки для WebDriver (`npm run build:e2e`,
- *   отдельная папка `src-tauri/target-e2e`);
- * - `release` — выпускная сборка (`npm run build`): на ней идут тест следов и флагов,
- *   потому что msedgedriver подменяет папку данных своей `--user-data-dir`.
+ * - `webdriver` — тестовая сборка с портом отладки для WebDriver (`npm run build:e2e`):
+ *   всегда в отдельной папке `src-tauri/target-e2e`, чтобы тестовый файл не оказался
+ *   там, откуда берут выпускной;
+ * - `release` — выпускная сборка (`npm run build`, папка сборки Cargo): на ней идут
+ *   тест следов и флагов, потому что msedgedriver подменяет папку данных.
  */
 export function applicationPath(kind: 'webdriver' | 'release' = 'webdriver'): string {
   const exe = process.platform === 'win32' ? 'rhizomind.exe' : 'rhizomind';
-  const target = kind === 'webdriver' ? 'target-e2e' : 'target';
-  return path.join(ROOT, 'src-tauri', target, 'release', exe);
+  const dir = kind === 'webdriver' ? path.join(ROOT, 'src-tauri', 'target-e2e') : targetDir();
+  return path.join(dir, 'release', exe);
 }
 
 function tauriDriverPath(): string {

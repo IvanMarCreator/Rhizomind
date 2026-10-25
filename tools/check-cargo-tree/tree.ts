@@ -43,6 +43,10 @@ const ALLOWED = new Map([
 // Крейты, которые допустимы только без сетевой функции.
 const NET_FEATURE_CRATES = new Set(['tokio', 'mio']);
 
+// Крейты только для тестов (dev-зависимости ядра): в программу и в сборку
+// попадать не должны (решение оркестратора по ревью 1.1).
+const TEST_ONLY_CRATES = new Set(['gen-vault', 'proptest']);
+
 /** Имена крейтов из `[bans] deny = [ { crate = "…" }, … ]`. */
 export function deniedCrates(denyToml: string): Set<string> {
   const bans = denyToml.split(/^\[bans\]\s*$/m)[1] ?? '';
@@ -54,14 +58,19 @@ export function deniedCrates(denyToml: string): Set<string> {
 // сборки, а не для цели, — их набор зависел бы от ОС раннера CI (на Windows у
 // любой цели появлялись winapi-util, windows-sys). В программу они не попадают;
 // сетевые крейты во всём графе, включая макросы, запрещает `cargo deny` (bans).
-export function cargoTreeArgs(target: string, manifestPath: string): string[] {
+// `normal,build` — для проверки, что крейты тестов не попадают и в сборку.
+export function cargoTreeArgs(
+  target: string,
+  manifestPath: string,
+  edges: 'normal,no-proc-macro' | 'normal,build' = 'normal,no-proc-macro',
+): string[] {
   return [
     'tree',
     '--manifest-path',
     manifestPath,
     '--locked',
     '-e',
-    'normal,no-proc-macro',
+    edges,
     '--target',
     target,
     '--prefix',
@@ -79,6 +88,15 @@ function parseLines(output: string): { name: string; version: string; features: 
     const [name = '', version = ''] = pkg.trim().split(/\s+/);
     return { name, version, features: features.split(',') };
   });
+}
+
+/** Крейты только для тестов в выводе cargo tree (формат `{p}|{f}`), без повторов. */
+export function findTestOnlyCrates(output: string): string[] {
+  const hits = new Set<string>();
+  for (const { name, version } of parseLines(output)) {
+    if (TEST_ONLY_CRATES.has(name)) hits.add(`${name} ${version}`);
+  }
+  return [...hits];
 }
 
 /** Сетевые крейты в выводе cargo tree (формат `{p}|{f}`), без повторов, в порядке вывода. */

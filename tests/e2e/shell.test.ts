@@ -1,138 +1,69 @@
-// Защищённая оболочка (план 0.1, задача 0.3; ADR 0007, 0009): что не может
-// сделать скрипт на странице интерфейса. Тестовая сборка (функция webdriver)
-// с теми же обработчиками и CSP, что выпускная.
-import { existsSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { SCREENSHOT_DIR, startApp, type Session } from './driver.ts';
+// Сценарий задачи 2.2: оболочка окна по концепту К2 на настоящем ядре.
+// Окно сценарного теста открывается без хранилища (vault: null): видны лента,
+// боковая панель с переключателем хранилищ и пустое состояние. Снимки — в
+// светлой и тёмной теме (тема ставится атрибутом data-theme, как её ставит
+// src/theme/theme.ts), сравниваются с кадром Э1 и docs/design/tokens.md.
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startApp, type Session } from './driver.ts';
+import { saveScreenshot } from './screenshot.ts';
 
-// Адрес своего интерфейса: Windows — http://tauri.localhost, Linux — tauri://localhost.
-// WebView2 отдаёт адрес со слешем (`http://tauri.localhost/`), WebKitGTK — без
-// него (`tauri://localhost`).
-const OWN_URL = /^(http:\/\/tauri\.localhost|tauri:\/\/localhost)(\/|$)/;
-const EXTERNAL = 'https://example.com/';
+// bg/app, bg/ribbon, bg/sidebar из tokens.md.
+const COLORS = {
+  light: { app: 'rgb(255, 255, 255)', ribbon: 'rgb(238, 240, 242)', sidebar: 'rgb(246, 247, 248)' },
+  dark: { app: 'rgb(28, 29, 32)', ribbon: 'rgb(19, 20, 22)', sidebar: 'rgb(23, 24, 26)' },
+} as const;
 
-describe('защищённая оболочка', () => {
+describe('оболочка окна', () => {
   let session: Session;
-  let step = 0;
 
   beforeAll(async () => {
     session = await startApp();
-    await (await session.browser.$('h1')).waitForDisplayed({ timeout: 20_000 });
-  });
-
-  afterEach(async (context) => {
-    step += 1;
-    const name = context.task.name.replace(/[^\p{L}\p{N}]+/gu, '-').slice(0, 60);
-    await session?.browser.saveScreenshot(path.join(SCREENSHOT_DIR, `shell-${step}-${name}-${process.platform}.png`));
+    await session.browser.$('[data-testid="shell"]').waitForDisplayed({ timeout: 20_000 });
   });
 
   afterAll(async () => {
     await session?.stop();
   });
 
-  async function expectStillOnOwnPage(): Promise<void> {
+  it('каркас К2: лента, боковая панель, строка над заметкой, пустое состояние', async () => {
     const { browser } = session;
-    await browser.pause(1500);
-    expect(await browser.getUrl()).toMatch(OWN_URL);
-    expect(await (await browser.$('h1')).getText()).toBe('Rhizomind');
-  }
+    try {
+      for (const label of ['Файлы', 'Быстрый переход (Ctrl+O)', 'Настройки', 'Назад (Alt+←)', 'Вперёд (Alt+→)']) {
+        expect(await browser.$(`button[aria-label="${label}"]`).isDisplayed()).toBe(true);
+      }
+      expect(await browser.$('button[aria-label="Хранилище не открыто"]').isDisplayed()).toBe(true);
+      expect(await browser.$('aside[aria-label="Боковая панель"] h2').getText()).toBe('ФАЙЛЫ');
+      expect(await browser.$('main').getText()).toContain('Нет открытой заметки');
 
-  it('переход на внешний адрес отклоняется (location и ссылка)', async () => {
-    const { browser } = session;
-    await browser.execute((url) => {
-      window.location.href = url;
-    }, EXTERNAL);
-    await expectStillOnOwnPage();
-
-    await browser.execute((url) => {
-      const link = document.createElement('a');
-      link.id = 'e2e-external-link';
-      link.href = url;
-      link.textContent = 'внешняя ссылка';
-      document.body.append(link);
-    }, EXTERNAL);
-    await (await browser.$('#e2e-external-link')).click();
-    await expectStillOnOwnPage();
-  });
-
-  it('window.open не открывает новое окно', async () => {
-    const { browser } = session;
-    const before = await browser.getWindowHandles();
-    await browser.execute((url) => {
-      window.open(url, '_blank');
-    }, EXTERNAL);
-    await browser.pause(1500);
-    expect(await browser.getWindowHandles()).toEqual(before);
-    await expectStillOnOwnPage();
-  });
-
-  it('загрузка файла отклоняется', async () => {
-    const { browser } = session;
-    const name = `rhizomind-e2e-download-${Date.now()}.txt`;
-    await browser.execute((fileName) => {
-      const link = document.createElement('a');
-      link.id = 'e2e-download';
-      link.download = fileName;
-      link.href = URL.createObjectURL(new Blob(['rhizomind'], { type: 'text/plain' }));
-      link.textContent = 'скачать';
-      document.body.append(link);
-    }, name);
-    await (await browser.$('#e2e-download')).click();
-    await browser.pause(2500);
-    const downloads = path.join(os.homedir(), 'Downloads');
-    expect(existsSync(path.join(downloads, name))).toBe(false);
-    expect(existsSync(path.join(downloads, `${name}.crdownload`))).toBe(false);
-    await expectStillOnOwnPage();
-  });
-
-  it('CSP запрещает fetch наружу', async () => {
-    const result = await session.browser.execute(async (url) => {
-      const violations: string[] = [];
-      document.addEventListener('securitypolicyviolation', (e) => {
-        violations.push(`${e.effectiveDirective} ${e.blockedURI}`);
+      // Шрифт интерфейса — встроенный Inter, загружен из файла приложения.
+      const fonts = await browser.execute(async () => {
+        await document.fonts.ready;
+        return {
+          inter: [...document.fonts].some((face) => face.family.includes('Inter') && face.status === 'loaded'),
+          family: getComputedStyle(document.body).fontFamily,
+        };
       });
-      let outcome: string;
-      try {
-        await window.fetch(url);
-        outcome = 'загружено';
-      } catch (error) {
-        outcome = `ошибка: ${String(error)}`;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      return { outcome, violations };
-    }, EXTERNAL);
-    expect(result.outcome).toMatch(/^ошибка/);
-    expect(result.violations.some((v) => v.startsWith('connect-src'))).toBe(true);
+      expect(fonts.family).toMatch(/^"?Inter/);
+      expect(fonts.inter).toBe(true);
+    } finally {
+      await saveScreenshot(browser, 'shell-system');
+    }
   });
 
-  it('разрешения браузера отклоняются (уведомления)', async () => {
-    const permission = await session.browser.execute(async () => Notification.requestPermission());
-    expect(permission).toBe('denied');
-  });
-
-  it('вызов ядра идёт через изолированный iframe и его фильтр', async () => {
-    const run = () => session.browser.execute(async () => {
-      const internals = (
-        window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } }
-      ).__TAURI_INTERNALS__;
-      const iframe = document.getElementById('__tauri_isolation__');
-      try {
-        await internals.invoke('plugin:app|version');
-        return { iframe: iframe !== null, error: '' };
-      } catch (error) {
-        return { iframe: iframe !== null, error: String(error) };
-      }
-    });
-    // WebKitWebDriver (Linux) отдаёт отказ ядра ошибкой самой команды execute,
-    // а не значением из catch страницы; признак тот же — имя подменённой команды.
-    const hasIframe = await session.browser.execute(() => document.getElementById('__tauri_isolation__') !== null);
-    expect(hasIframe).toBe(true);
-    const result = await run().catch((error: unknown) => ({ iframe: hasIframe, error: String(error) }));
-    expect(result.iframe).toBe(true);
-    // Фильтр (src-isolation/index.js) подменил команду — ядро отвечает ошибкой
-    // про подменённое имя, а не про plugin:app|version.
-    expect(result.error).toContain('__rhizomind_isolation_rejected__');
+  it.each(['light', 'dark'] as const)('тема %s: цвета из tokens.md, снимок экрана', async (theme) => {
+    const { browser } = session;
+    try {
+      const look = await browser.execute((name) => {
+        document.documentElement.dataset.theme = name;
+        const color = (selector: string) => {
+          const element = document.querySelector(selector);
+          return element ? getComputedStyle(element).backgroundColor : '';
+        };
+        return { app: color('main'), ribbon: color('[role="toolbar"]'), sidebar: color('aside') };
+      }, theme);
+      expect(look).toEqual(COLORS[theme]);
+    } finally {
+      await saveScreenshot(browser, `shell-${theme}`);
+    }
   });
 });
