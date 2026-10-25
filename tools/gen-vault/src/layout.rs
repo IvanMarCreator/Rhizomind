@@ -69,6 +69,8 @@ pub struct Layout {
     pub folders: Vec<Vec<String>>,
     /// Заметки в порядке создания (порядок записи на диск).
     pub notes: Vec<Note>,
+    /// Число образцов: они идут первыми в `notes`.
+    pub samples: usize,
     pub attachments: Vec<Attachment>,
     folder_index: HashMap<Vec<String>, usize>,
     /// Занятые имена в папке: (папка, ключ имени с расширением).

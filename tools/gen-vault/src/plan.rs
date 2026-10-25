@@ -9,6 +9,7 @@ use crate::words::*;
 pub fn plan(cfg: &Config, rng: &mut Rng) -> Layout {
     let mut l = Layout::new();
     add_samples(&mut l, cfg);
+    l.samples = l.notes.len();
     let open_from = l.folders.len();
     let bulk_from = l.notes.len();
 
@@ -144,7 +145,7 @@ fn duplicate_name(l: &Layout, rng: &mut Rng, folder: usize, bulk_from: usize) ->
 /// ё/е, регистр, NFD, глубина 5, кодировки и переносы.
 fn add_samples(l: &mut Layout, cfg: &Config) {
     let h = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let mut note = |l: &mut Layout, folder: &[&str], name: &str, style: Style, special: Special| {
+    let note = |l: &mut Layout, folder: &[&str], name: &str, style: Style, special: Special| {
         let f = l.ensure_folder(folder);
         l.add_note(f, name, h(&["Цели", "Итоги"]), style, special);
     };

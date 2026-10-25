@@ -19,6 +19,62 @@ pub struct Manifest {
     /// Группы заметок с одинаковым именем (ключ имени: NFC, нижний регистр).
     pub duplicates: Vec<DuplicateGroup>,
     pub samples: Samples,
+    pub links: LinkStats,
+    /// Ожидаемые разрешения ссылок: все ссылки образцов и ссылки из части
+    /// массовых заметок (примерно 300 заметок).
+    pub expected_links: Vec<ExpectedLink>,
+}
+
+/// Число ссылок по видам (вне кода). Виды пересекаются: `[[Папка/Имя#З|п]]`
+/// считается и в `path`, и в `heading`, и в `alias`; `plain` — без всего этого.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkStats {
+    pub total: usize,
+    /// `[[Имя]]`.
+    pub plain: usize,
+    /// `[[…|псевдоним]]`.
+    pub alias: usize,
+    /// `[[…#Заголовок]]`.
+    pub heading: usize,
+    /// `[[Папка/Имя]]` (путь не от корня).
+    pub path: usize,
+    /// `[[/Имя]]`, `[[/Папка/Имя]]`.
+    pub root: usize,
+    /// Ссылки на заметки, которых нет.
+    pub unresolved: usize,
+    /// Ссылки без пути на имя, которое есть у нескольких заметок.
+    pub ambiguous_bare: usize,
+    /// Имя в ссылке написано иначе, чем имя файла (регистр, форма Unicode).
+    pub case_variant: usize,
+    /// `[[` внутри кода (блоки ``` и ~~~, отступ, код в строке) — не ссылки.
+    pub in_code: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resolution {
+    /// Ведёт ровно на одну заметку (`target`).
+    Unique,
+    /// Ссылка без пути, заметок с именем несколько (`candidates`); ведёт на
+    /// самую старую по дате создания — у генератора это созданная первой (`target`).
+    Oldest,
+    /// Заметки нет.
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectedLink {
+    /// Заметка, в которой стоит ссылка.
+    pub source: String,
+    /// Текст ссылки со скобками, как в файле.
+    pub link: String,
+    pub resolution: Resolution,
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<String>,
+    pub heading: Option<String>,
+    /// Есть ли заголовок в целевой заметке (для ссылок с `#`).
+    pub heading_exists: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

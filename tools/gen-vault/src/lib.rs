@@ -6,6 +6,7 @@
 //! байт в байт одинаковое хранилище. Служебную папку `.rhizomind/` не создаёт.
 
 mod layout;
+mod links;
 mod manifest;
 mod names;
 mod plan;
@@ -56,16 +57,16 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     for folder in &layout.folders {
         fs::create_dir_all(out.join(folder.join("/")))?;
     }
+    let mut links = links::Links::new(&layout);
     for idx in 0..layout.notes.len() {
-        let lines = text::bulk_lines(&layout, idx, &mut rng);
-        let bytes = text::encode(&lines, layout.notes[idx].style, &mut rng);
+        let bytes = text::note_bytes(&mut links, idx, &mut rng, cfg.big_mb);
         fs::write(out.join(layout.note_path(idx)), bytes)?;
     }
 
-    Ok(build_manifest(&layout, cfg))
+    Ok(build_manifest(&layout, cfg, &links))
 }
 
-fn build_manifest(l: &layout::Layout, cfg: &Config) -> Manifest {
+fn build_manifest(l: &layout::Layout, cfg: &Config, links: &links::Links) -> Manifest {
     let paths = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Manifest {
         format_version: FORMAT_VERSION,
@@ -75,6 +76,8 @@ fn build_manifest(l: &layout::Layout, cfg: &Config) -> Manifest {
         folders: l.folders.len() - 1,
         max_depth: (0..l.folders.len()).map(|f| l.depth(f)).max().unwrap_or(0),
         duplicates: duplicates(l),
+        links: link_stats(links),
+        expected_links: expected_links(l, links),
         samples: Samples {
             natural_sort: [1, 2, 3, 10, 11, 20, 100]
                 .iter()
@@ -105,6 +108,70 @@ fn duplicates(l: &layout::Layout) -> Vec<DuplicateGroup> {
                 })
                 .collect(),
             created_first: l.note_path(*members.iter().min().unwrap()),
+        })
+        .collect()
+}
+
+fn link_stats(links: &links::Links) -> LinkStats {
+    let mut s = LinkStats {
+        total: 0,
+        plain: 0,
+        alias: 0,
+        heading: 0,
+        path: 0,
+        root: 0,
+        unresolved: 0,
+        ambiguous_bare: 0,
+        case_variant: 0,
+        in_code: links.in_code,
+    };
+    for r in &links.records {
+        let root = r.target_text.starts_with('/');
+        let path = !root && r.target_text.contains('/');
+        s.total += 1;
+        s.root += root as usize;
+        s.path += path as usize;
+        s.heading += r.heading.is_some() as usize;
+        s.alias += r.alias as usize;
+        s.plain += (!root && !path && r.heading.is_none() && !r.alias) as usize;
+        s.unresolved += (r.target == links::Target::Unresolved) as usize;
+        s.ambiguous_bare += matches!(r.target, links::Target::Oldest(_)) as usize;
+        s.case_variant += r.case_variant as usize;
+    }
+    s
+}
+
+/// Все ссылки образцов и ссылки примерно 300 массовых заметок.
+fn expected_links(l: &layout::Layout, links: &links::Links) -> Vec<ExpectedLink> {
+    let samples = l.samples;
+    let step = ((l.notes.len() - samples) / 300).max(1);
+    links
+        .records
+        .iter()
+        .filter(|r| r.source < samples || (r.source - samples) % step == 0)
+        .map(|r| {
+            let (resolution, target, candidates) = match &r.target {
+                links::Target::Unique(t) => (Resolution::Unique, Some(*t), Vec::new()),
+                links::Target::Oldest(c) => (
+                    Resolution::Oldest,
+                    c.iter().min().copied(),
+                    c.iter().map(|&i| l.note_path(i)).collect(),
+                ),
+                links::Target::Unresolved => (Resolution::Unresolved, None, Vec::new()),
+            };
+            let heading_exists = match (&r.heading, target) {
+                (Some(h), Some(t)) => Some(l.notes[t].headings.contains(h)),
+                _ => None,
+            };
+            ExpectedLink {
+                source: l.note_path(r.source),
+                link: r.raw.clone(),
+                resolution,
+                target: target.map(|t| l.note_path(t)),
+                candidates,
+                heading: r.heading.clone(),
+                heading_exists,
+            }
         })
         .collect()
 }

@@ -68,7 +68,8 @@ fn scan_inline(line: &str, out: &mut Scan) {
                 continue;
             }
             i += run;
-        } else if line[i..].starts_with("[[") {
+        } else if b[i..].starts_with(b"[[") {
+            // `[[`, `]]` и ` — ASCII, поэтому индексы рядом с ними — границы символов.
             match line[i + 2..].find("]]") {
                 Some(end) => {
                     out.links.push(line[i + 2..i + 2 + end].to_string());
@@ -77,7 +78,7 @@ fn scan_inline(line: &str, out: &mut Scan) {
                 None => i += 2,
             }
         } else {
-            i += 1;
+            i += line[i..].chars().next().unwrap().len_utf8();
         }
     }
 }
@@ -275,7 +276,9 @@ fn expected_links_resolve_as_manifest_says() {
         }
         assert_eq!(e.heading.as_deref(), p.heading, "{}", e.link);
         if let (Some(h), Some(target)) = (&e.heading, &e.target) {
-            let found = headings_of(&text_of(&tree[target]).unwrap()).contains(h);
+            let found =
+                headings_of(String::from_utf8_lossy(&tree[target]).trim_start_matches('\u{feff}'))
+                    .contains(h);
             assert_eq!(
                 e.heading_exists,
                 Some(found),
