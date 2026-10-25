@@ -181,3 +181,59 @@ describe('scanSource: Svelte и HTML', () => {
     expect(kinds('<html><script>\nfetch(u)\n</script></html>', 'index.html')).toEqual(['fetch']);
   });
 });
+
+describe('scanSource: разметка Svelte — внешние адреса и загрузки (ревью 0.2, п. 10)', () => {
+  it.each([
+    ['<a href="https://x.test/">x</a>', 'внешний адрес https://x.test/'],
+    ['<img src="//cdn.test/a.png" alt="">', 'внешний адрес //cdn.test/a.png'],
+    ['<button formaction="https://x.test/send">x</button>', 'внешний адрес https://x.test/send'],
+    ['<div action="wss://x.test/s"></div>', 'внешний адрес wss://x.test/s'],
+  ])('%s — сеть', (markup, what) => {
+    expect(scanSource(`<div>\n${markup}\n</div>`, 'L.svelte')).toEqual([{ line: 2, what, severity: 'network' }]);
+  });
+
+  it('атрибут download — сеть (загрузка файла)', () => {
+    expect(scanSource('<a href="/x" download>x</a>', 'D.svelte')).toEqual([
+      { line: 1, what: 'атрибут download', severity: 'network' },
+    ]);
+  });
+
+  it('<svelte:element> — подозрительно (имя элемента вычисляется)', () => {
+    expect(scanSource('<svelte:element this={tag}></svelte:element>', 'S.svelte')).toEqual([
+      { line: 1, what: 'элемент <svelte:element>', severity: 'suspicious' },
+    ]);
+  });
+
+  it('свои адреса в атрибутах не трогает', () => {
+    expect(kinds('<a href="/notes/x">x</a>\n<img src="./a.png" alt="">', 'O.svelte')).toEqual([]);
+  });
+});
+
+describe('scanSource: обходы через глобальный объект и строки (ревью 0.2, п. 10)', () => {
+  it.each([
+    ['document.defaultView.fetch(u)', 'fetch', 'network'],
+    ['document.defaultView[x]', 'document.defaultView[<вычисляемое>]', 'suspicious'],
+    ['const w = document.defaultView;\nw[x]', 'w[<вычисляемое>]', 'suspicious'],
+    ['navigator[x](u)', 'navigator[<вычисляемое>]', 'suspicious'],
+    ['setTimeout("fetch(u)", 1)', 'setTimeout(<строка>)', 'suspicious'],
+    ['setInterval(`x`, 1)', 'setInterval(<строка>)', 'suspicious'],
+    ['window.setTimeout("x" + y)', 'setTimeout(<строка>)', 'suspicious'],
+    ['document.createElement("script")', 'createElement(script)', 'suspicious'],
+    ['document.createElement("IFRAME")', 'createElement(iframe)', 'suspicious'],
+    ['document.createElement(tag)', 'createElement(<вычисляемое>)', 'suspicious'],
+    ['new Image().src = u', 'Image', 'suspicious'],
+    ['new Audio(u)', 'Audio', 'suspicious'],
+    ['form.submit()', 'form.submit', 'network'],
+    ['el.requestSubmit()', 'form.submit', 'network'],
+  ])('%s', (code, what, severity) => {
+    expect(scanSource(code, 'a.ts')).toEqual([{ line: code.split('\n').length, what, severity }]);
+  });
+
+  it('обычные таймеры и элементы не трогает', () => {
+    expect(kinds('setTimeout(() => f(), 1);\nsetInterval(tick, 5);\ndocument.createElement("div");')).toEqual([]);
+  });
+
+  it('проверяет и .tsx', () => {
+    expect(kinds('const a = <div onClick={() => fetch(u)} />;', 'A.tsx')).toEqual(['fetch']);
+  });
+});
