@@ -4,6 +4,8 @@
 //! только так задача 0.3 сможет настроить движок до создания окна — папку
 //! данных во временной папке, InPrivate и флаги (ADR 0007).
 
+pub mod security;
+
 use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 /// Метка главного окна; на неё выдаются права в `capabilities/main.json`.
