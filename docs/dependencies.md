@@ -4,7 +4,7 @@
 
 Автоматические проверки при каждом `npm run verify`:
 - лицензии крейтов, запрещённые крейты и функции — `cargo deny check` ([src-tauri/deny.toml](../src-tauri/deny.toml));
-- сетевые крейты по каждой десктопной цели — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
+- сетевые крейты по каждой десктопной цели и крейты только для тестов (`gen-vault`, `proptest`) в программе и сборке — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
 - лицензии production-зависимостей npm с разбором SPDX — [tools/check-licenses/](../tools/check-licenses/);
 - сетевой код в исходниках и собранном интерфейсе — [tools/check-no-network/](../tools/check-no-network/).
 
@@ -22,6 +22,9 @@
 | `trash` | 5.2.9 | MIT | Удаление в корзину ОС. Без функций по умолчанию (`chrono` нужен только для списка корзины), с `coinit_apartmentthreaded` (COM в отдельном потоке удаления). Windows: `IFileOperation` через `windows` 0.62.2 (уже в дереве); Linux: freedesktop-корзина в файлах (`libc`, `log`, `once_cell`, `scopeguard`, `urlencoding` 2.1.3 — новый, MIT); macOS: `objc2` | Нет: только файловые операции и COM/Objective-C вызовы корзины |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | Только Windows: `ReplaceFileW` (замена с сохранением даты создания), `GetFinalPathNameByHandleW` (итоговый путь по дескриптору), `MoveFileExW` без замены, `GetVolumePathNameW`/`GetDriveTypeW` (есть ли корзина), `FileTimeToSystemTime`/`SystemTimeToTzSpecificLocalTime` (имя копии при конфликте). Функции `Win32_Foundation`, `Win32_Storage_FileSystem`, `Win32_System_Time`; уже был в дереве | Нет |
 | `libc` | 0.2.191 | MIT OR Apache-2.0 | Только Unix: `renameat2(RENAME_NOREPLACE)` (переименование без затирания), `localtime_r` (имя копии при конфликте); уже был в дереве | Нет |
+| `unicode-normalization` | 0.1.26 | MIT OR Apache-2.0 | Ключ имени (модуль `names`): NFC до и после приведения регистра. Уже был в дереве (генератор, `tauri`) | Нет |
+| `icu_casemap` | 2.4.0 | Unicode-3.0 | Ключ имени: полное приведение регистра Unicode (`ß` = `ss`, `ς` = `σ`) по встроенным данным (`compiled_data`, функция по умолчанию). Приносит `icu_casemap_data`, `icu_collections`, `icu_properties`, `icu_provider`, `icu_locale_core`, `zerovec`, `zerotrie`, `yoke`, `zerofrom`, `writeable`, `potential_utf`, `tinystr`, `litemap` (Unicode-3.0; часть уже была в дереве через нормализацию URL в `tauri`) | Нет: только таблицы данных и функции над строками |
+| `nucleo-matcher` | 0.3.1 | MPL-2.0 | Нечёткий поиск быстрого перехода (Ctrl+O) и подсказок вики-ссылок (модули `switcher`, `links`). Без функций по умолчанию, только `unicode-casefold` и `unicode-normalization` (встроенные таблицы, без них 0.3.1 не собирается); `unicode-segmentation` не подключается. Приносит только `memchr` (уже в дереве). Последний выпуск — 02.2024; запасной вариант — `frizbee` (исследование крейтов) | Нет |
 
 Транзитивно приходят `wry` 0.57.1 (WebView), `tao` 0.37.2 (окна), `webview2-com` 0.39.1 (Windows), `webkit2gtk` 2.0.2 и `soup3` 0.5.0 (Linux — привязки к системным WebKitGTK и libsoup, через которые WebKitGTK обслуживает свои схемы адресов), `tokio` 1.54.1 без функции `net`. Лицензии всего дерева: MIT, Apache-2.0, BSD-3-Clause, MPL-2.0, Unicode-3.0, Unlicense, Zlib, 0BSD, MIT-0, CC0-1.0 — все совместимы с GPL-3.0.
 
@@ -32,7 +35,8 @@
 | `tauri-build` | 2.7.4 | MIT OR Apache-2.0 | `build.rs`: встраивание конфигурации, `AppManifest::commands` | Нет |
 | `tauri` с функцией `test` | 2.12.5 | MIT OR Apache-2.0 | Подменный runtime для тестов ядра без окна | Нет |
 | `insta` | 1.49.0 | Apache-2.0 | Снимки контракта команд ядра `contracts/v1/*.snap` (функция `json`); те же файлы читает Vitest | Нет |
-| `gen-vault` | 0.1.0 (путь `tools/gen-vault`) | GPL-3.0-only | Генератор тестового хранилища в тестах `vault`: образцы кодировок, невалидный UTF-8, большой файл | Нет |
+| `proptest` | 1.12.0 | MIT OR Apache-2.0 | Свойства: ключ имени идемпотентен, кратчайший различающий путь разрешается обратно, разбор ссылок и проверка имён не падают на любой строке. Без функций по умолчанию (`fork`, `timeout` не нужны), только `std`. Приносит `rand` 0.10, `rand_xorshift`, `chacha20`, `regex-syntax`, `num-traits`, `core_detect` и др. (только тесты) | Нет |
+| `gen-vault` | 0.1.0 (путь `tools/gen-vault`) | GPL-3.0-only | Генератор тестового хранилища (задача 1.6): образцы кодировок, невалидный UTF-8 и большой файл в тестах `vault`; сверка `links` с манифестом (`expected_links`, `duplicates`) и 10 000 имён для теста производительности `switcher` | Нет |
 | `junction` | 2.1.0 | MIT | Только Windows: точки соединения NTFS в тестах контура хранилища | Нет |
 
 ## Генератор тестового хранилища (`tools/gen-vault/Cargo.toml`) — в программу не попадает

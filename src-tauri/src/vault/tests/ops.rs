@@ -178,7 +178,7 @@ fn name_check_compares_by_name_key_and_ignores_the_renamed_entry() {
 
     assert_eq!(
         v.check_new_name(&vp(""), "Новое.md", None),
-        Ok(NameCheck::Ok)
+        Ok(NameCheck::Ok { warning: None })
     );
     assert_eq!(
         v.check_new_name(&vp(""), "план.MD", None),
@@ -186,7 +186,7 @@ fn name_check_compares_by_name_key_and_ignores_the_renamed_entry() {
     );
     assert_eq!(
         v.check_new_name(&vp(""), "план.md", Some(&vp("План.md"))),
-        Ok(NameCheck::Ok),
+        Ok(NameCheck::Ok { warning: None }),
         "смена только регистра"
     );
     assert_eq!(

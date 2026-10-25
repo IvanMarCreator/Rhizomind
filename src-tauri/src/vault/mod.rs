@@ -645,7 +645,7 @@ impl Vault {
         if self.sibling_taken(&dir_abs, name, except)? {
             return Ok(NameCheck::rejected(NameProblem::Duplicate));
         }
-        Ok(NameCheck::Ok)
+        Ok(NameCheck::Ok { warning: None })
     }
 
     /// Переименовывает файл или папку; возвращает новый путь. Существующий

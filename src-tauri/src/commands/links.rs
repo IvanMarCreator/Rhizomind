@@ -51,12 +51,17 @@ pub struct LinksSuggestRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LinkSuggestion {
-    /// Что вставить между `[[` и `]]`: имя или кратчайший различающий путь.
-    pub insert: String,
+    /// Что вставить между `[[` и `]]`: имя или кратчайший различающий путь;
+    /// `null`, если на заметку нельзя сослаться (`linkable: false`).
+    pub insert: Option<String>,
     /// Имя заметки без `.md` — для показа в списке.
     pub name: String,
     /// Заметка.
     pub path: VaultPath,
+    /// Можно ли сослаться: `false`, если во вставляемом тексте есть `#`, `[`,
+    /// `]` или имя с пробелом в начале (С3.2). Интерфейс показывает такую
+    /// заметку помеченной и ничего не вставляет.
+    pub linkable: bool,
 }
 
 /// Ответ `links_suggest`.

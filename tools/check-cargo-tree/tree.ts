@@ -28,14 +28,22 @@ const NETWORK_PARTS = new Set([
 // Крейты, которые допустимы только без сетевой функции.
 const NET_FEATURE_CRATES = new Set(['tokio', 'mio']);
 
-export function cargoTreeArgs(target: string, manifestPath: string): string[] {
+// Крейты только для тестов (dev-зависимости ядра): в программу и в сборку
+// попадать не должны (решение оркестратора по ревью 1.1).
+const TEST_ONLY_CRATES = new Set(['gen-vault', 'proptest']);
+
+export function cargoTreeArgs(
+  target: string,
+  manifestPath: string,
+  edges: 'normal' | 'normal,build' = 'normal',
+): string[] {
   return [
     'tree',
     '--manifest-path',
     manifestPath,
     '--locked',
     '-e',
-    'normal',
+    edges,
     '--target',
     target,
     '--prefix',
@@ -45,13 +53,26 @@ export function cargoTreeArgs(target: string, manifestPath: string): string[] {
   ];
 }
 
-/** Сетевые крейты в выводе cargo tree (формат `{p}|{f}`), без повторов, в порядке вывода. */
-export function findNetworkCrates(output: string): string[] {
+function treeLines(output: string): string[] {
   const lines = output.split(/\r?\n/).filter((l) => l.trim() !== '');
   if (lines.length === 0) throw new Error('cargo tree ничего не вывел — дерево зависимостей не построено');
+  return lines;
+}
 
+/** Крейты только для тестов в выводе cargo tree (формат `{p}|{f}`), без повторов. */
+export function findTestOnlyCrates(output: string): string[] {
   const hits = new Set<string>();
-  for (const line of lines) {
+  for (const line of treeLines(output)) {
+    const [name = '', version = ''] = (line.split('|')[0] ?? '').trim().split(/\s+/);
+    if (TEST_ONLY_CRATES.has(name)) hits.add(`${name} ${version}`);
+  }
+  return [...hits];
+}
+
+/** Сетевые крейты в выводе cargo tree (формат `{p}|{f}`), без повторов, в порядке вывода. */
+export function findNetworkCrates(output: string): string[] {
+  const hits = new Set<string>();
+  for (const line of treeLines(output)) {
     const [pkg = '', features = ''] = line.split('|');
     const [name = '', version = ''] = pkg.trim().split(/\s+/);
     const parts = name.split(/[-_]/);

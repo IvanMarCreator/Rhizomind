@@ -47,6 +47,14 @@ dunce = "=1.0.5"
 # Удаление в корзину ОС. Без chrono (нужен только для списка корзины);
 # COM на Windows — однопоточная модель в отдельном потоке удаления.
 trash = { version = "=5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
+# Ключ имени (модуль names): NFC → полное приведение регистра → NFC.
+unicode-normalization = "=0.1.26"
+icu_casemap = "=2.4.0"
+# Нечёткий поиск быстрого перехода (модуль switcher). Без `unicode-segmentation`
+# (лишний крейт): строки уже приведены ключом имени; `unicode-casefold` и
+# `unicode-normalization` — встроенные таблицы без зависимостей, без них крейт
+# не собирается.
+nucleo-matcher = { version = "=0.3.1", default-features = false, features = ["unicode-casefold", "unicode-normalization"] }
 
 [target.'cfg(windows)'.dependencies]
 # ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
@@ -61,12 +69,15 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Stor
 libc = "=0.2.191"
 
 [dev-dependencies]
+# Свойства ключа имени, кратчайшего пути и разбора ссылок (модули names, links).
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
 tauri = { version = "=2.12.5", features = ["test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
-# Генератор тестового хранилища: образцы кодировок и переносов в тестах vault.
+# Генератор тестового хранилища: образцы кодировок в тестах vault, ожидаемые
+# разрешения ссылок и кратчайшие пути в тестах links.
 gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
 
 [target.'cfg(windows)'.dev-dependencies]
