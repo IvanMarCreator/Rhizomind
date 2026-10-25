@@ -47,7 +47,7 @@ const NETWORK_GLOBALS = new Set([
 ]);
 
 // Глобальный объект: через него можно добраться до любого API по имени.
-const GLOBAL_OBJECTS = new Set(['window', 'globalThis', 'self', 'top', 'parent', 'frames']);
+const GLOBAL_OBJECTS = new Set(['window', 'globalThis', 'self', 'top', 'parent', 'frames', 'document.defaultView']);
 
 // Элементы разметки Svelte, которые загружают внешнее содержимое, отправляют
 // данные или меняют базовый адрес страницы.
@@ -55,6 +55,14 @@ const SUSPICIOUS_ELEMENTS = new Set(['iframe', 'object', 'embed', 'script', 'lin
 
 // Выполнение строки как кода: так можно собрать любое обращение к сети.
 const CODE_FROM_STRING = new Set(['eval', 'Function']);
+// Таймеры тоже выполняют строку как код: setTimeout('fetch(u)').
+const TIMERS = new Set(['setTimeout', 'setInterval']);
+// Объекты, которые загружают адрес из свойства `src`.
+const LOADING_CONSTRUCTORS = new Set(['Image', 'Audio']);
+// Атрибуты разметки, которые ведут на адрес.
+const URL_ATTRIBUTES = new Set(['href', 'src', 'action', 'formaction', 'srcset', 'poster', 'data']);
+// Отправка формы — запрос по адресу из action.
+const SUBMIT_METHODS = new Set(['submit', 'requestSubmit']);
 
 // Модули Node с сетью (в любом виде: `http`, `node:http`, `node:dns/promises`)
 // и пакеты с сетевым кодом, включая сетевые плагины Tauri и opener/shell
@@ -155,14 +163,34 @@ function children(node: Node): Node[] {
   return out;
 }
 
+/** `document.defaultView` — тот же глобальный объект, что и `window`. */
+function isDefaultView(node: unknown): boolean {
+  return (
+    isNode(node) &&
+    node.type === 'MemberExpression' &&
+    memberName(node) === 'defaultView' &&
+    (node.object as Node).type === 'Identifier' &&
+    (node.object as Node).name === 'document'
+  );
+}
+
+/** Имя глобального объекта для выражения: идентификатор или `document.defaultView`. */
+function globalName(node: unknown): string | undefined {
+  if (!isNode(node)) return undefined;
+  if (node.type === 'Identifier') return node.name as string;
+  if (isDefaultView(node)) return 'document.defaultView';
+  return undefined;
+}
+
 function aliasDefinition(node: Node): { alias: string; source: string } | undefined {
   let target: unknown;
   let value: unknown;
   if (node.type === 'VariableDeclarator') [target, value] = [node.id, node.init];
   else if (node.type === 'AssignmentExpression' && node.operator === '=') [target, value] = [node.left, node.right];
   else return undefined;
-  if (isNode(target) && target.type === 'Identifier' && isNode(value) && value.type === 'Identifier') {
-    return { alias: target.name as string, source: value.name as string };
+  const source = globalName(value);
+  if (isNode(target) && target.type === 'Identifier' && source !== undefined) {
+    return { alias: target.name as string, source };
   }
   return undefined;
 }
@@ -257,7 +285,9 @@ class Scanner {
       return;
     }
     if (!isReference(node, parent)) return;
-    if (CODE_FROM_STRING.has(name)) {
+    if (LOADING_CONSTRUCTORS.has(name)) {
+      this.report(node, name, 'suspicious');
+    } else if (CODE_FROM_STRING.has(name)) {
       this.report(node, name, 'suspicious');
     } else if (this.globals.has(name) && !isHarmlessGlobalUse(node, parent)) {
       this.report(node, `глобальный объект ${name} без свойства`, 'suspicious');
@@ -266,10 +296,16 @@ class Scanner {
 
   private checkMember(node: Node): void {
     const object = node.object as Node;
-    if (object.type !== 'Identifier' || !this.globals.has(object.name as string)) return;
     const name = memberName(node);
+    // navigator['send' + 'Beacon'] — вычисляемое имя у navigator.
+    if (object.type === 'Identifier' && object.name === 'navigator' && name === undefined) {
+      this.report(node, 'navigator[<вычисляемое>]', 'suspicious');
+      return;
+    }
+    const objectName = globalName(object);
+    if (objectName === undefined || !this.globals.has(objectName)) return;
     if (name === undefined) {
-      this.report(node, `${object.name as string}[<вычисляемое>]`, 'suspicious');
+      this.report(node, `${objectName}[<вычисляемое>]`, 'suspicious');
     } else if (name === 'open') {
       this.report(node, 'window.open', 'network');
     } else if (node.computed && NETWORK_GLOBALS.has(name)) {
@@ -277,17 +313,58 @@ class Scanner {
     }
   }
 
+  private checkTimer(node: Node, name: string): void {
+    const first = (node.arguments as Node[])[0];
+    if (!first) return;
+    const isString =
+      stringValue(first) !== undefined ||
+      first.type === 'TemplateLiteral' ||
+      (first.type === 'BinaryExpression' && first.operator === '+');
+    if (isString) this.report(node, `${name}(<строка>)`, 'suspicious');
+  }
+
+  private checkCreateElement(node: Node): void {
+    const first = (node.arguments as Node[])[0];
+    // Вычисляемое имя не считается находкой: так создаёт элементы сам Svelte
+    // (create_element в собранном интерфейсе). Элементы, загружающие адрес, из
+    // разметки ловит проверка <svelte:element> и RegularElement, а сеть — CSP.
+    const tag = stringValue(first);
+    if (tag !== undefined && SUSPICIOUS_ELEMENTS.has(tag.toLowerCase())) {
+      this.report(node, `createElement(${tag.toLowerCase()})`, 'suspicious');
+    }
+  }
+
   private checkCall(node: Node): void {
     const callee = node.callee as Node;
     if (callee.type === 'Identifier') {
-      if (callee.name === 'require') this.checkModule(node, (node.arguments as Node[])[0], 'require');
-      if (callee.name === 'open') this.report(node, 'window.open', 'network');
+      const name = callee.name as string;
+      if (name === 'require') this.checkModule(node, (node.arguments as Node[])[0], 'require');
+      if (name === 'open') this.report(node, 'window.open', 'network');
+      if (TIMERS.has(name)) this.checkTimer(node, name);
       return;
     }
     const method = memberName(callee);
+    if (method !== undefined && TIMERS.has(method)) this.checkTimer(node, method);
+    if (method === 'createElement' || method === 'createElementNS') this.checkCreateElement(node);
+    if (method !== undefined && SUBMIT_METHODS.has(method)) this.report(node, 'form.submit', 'network');
     if ((method === 'assign' || method === 'replace') && involvesLocation(callee.object as Node)) {
       this.report(node, `location.${method}`, 'network');
     }
+  }
+
+  /** Атрибут разметки Svelte: внешний адрес в href/src/… и `download`. */
+  private checkAttribute(node: Node): void {
+    const name = (node.name as string).toLowerCase();
+    if (name === 'download') {
+      this.report(node, 'атрибут download', 'network');
+      return;
+    }
+    if (!URL_ATTRIBUTES.has(name) || !Array.isArray(node.value)) return;
+    const text = (node.value as Node[])
+      .filter((part) => part.type === 'Text')
+      .map((part) => part.data as string)
+      .join('');
+    if (EXTERNAL_URL.test(text.trim())) this.report(node, `внешний адрес ${text.trim()}`, 'network');
   }
 
   visit(node: Node, parent?: Node): void {
@@ -296,6 +373,12 @@ class Scanner {
         if (SUSPICIOUS_ELEMENTS.has(node.name as string)) {
           this.report(node, `элемент <${node.name as string}>`, 'suspicious');
         }
+        break;
+      case 'SvelteElement':
+        this.report(node, 'элемент <svelte:element>', 'suspicious');
+        break;
+      case 'Attribute':
+        this.checkAttribute(node);
         break;
       case 'Identifier':
         this.checkIdentifier(node, parent);
@@ -326,8 +409,8 @@ function lineAt(text: string, offset: number): number {
   return text.slice(0, offset).split('\n').length;
 }
 
-function scanScript(text: string, lineOffset = 0): Finding[] {
-  const ast = parseTs(text, { loc: true, range: false, jsx: false }) as unknown as Node;
+function scanScript(text: string, lineOffset = 0, jsx = false): Finding[] {
+  const ast = parseTs(text, { loc: true, range: false, jsx }) as unknown as Node;
   const scanner = new Scanner(text, ast);
   scanner.visit(ast);
   return scanner.findings.map((f) => ({ ...f, line: f.line + lineOffset }));
@@ -367,7 +450,7 @@ export function scanSource(text: string, fileName: string): Finding[] {
   let findings: Finding[];
   if (fileName.endsWith('.svelte')) findings = scanSvelte(text);
   else if (fileName.endsWith('.html')) findings = scanHtml(text);
-  else findings = scanScript(text);
+  else findings = scanScript(text, 0, /\.[jt]sx$/.test(fileName));
   return findings.sort((a, b) => a.line - b.line);
 }
 
@@ -376,10 +459,10 @@ export interface FileFinding extends Finding {
   file: string;
 }
 
-const SOURCE_FILE = /\.(?:ts|mts|cts|js|mjs|cjs|svelte|html)$/;
+const SOURCE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs|svelte|html)$/;
 // Модульные тесты в сборку не попадают (их подмены используют глобальные
 // объекты); то, что попадает в сборку, проверяется ещё и в dist/.
-const TEST_FILE = /\.test\.[cm]?[jt]s$/;
+const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
 
 async function* walk(target: string): AsyncGenerator<string> {
   const info = await stat(target);

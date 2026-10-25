@@ -220,7 +220,6 @@ describe('scanSource: обходы через глобальный объект 
     ['window.setTimeout("x" + y)', 'setTimeout(<строка>)', 'suspicious'],
     ['document.createElement("script")', 'createElement(script)', 'suspicious'],
     ['document.createElement("IFRAME")', 'createElement(iframe)', 'suspicious'],
-    ['document.createElement(tag)', 'createElement(<вычисляемое>)', 'suspicious'],
     ['new Image().src = u', 'Image', 'suspicious'],
     ['new Audio(u)', 'Audio', 'suspicious'],
     ['form.submit()', 'form.submit', 'network'],
@@ -231,6 +230,8 @@ describe('scanSource: обходы через глобальный объект 
 
   it('обычные таймеры и элементы не трогает', () => {
     expect(kinds('setTimeout(() => f(), 1);\nsetInterval(tick, 5);\ndocument.createElement("div");')).toEqual([]);
+    // Вычисляемое имя элемента — так работает сам Svelte (create_element).
+    expect(kinds('document.createElement(tag)')).toEqual([]);
   });
 
   it('проверяет и .tsx', () => {
