@@ -1,103 +1,240 @@
 //! Ядро Rhizomind.
 //!
-//! Главное окно создаётся здесь, в Rust, а не в `tauri.conf.json` (там окон нет):
-//! только так задача 0.3 сможет настроить движок до создания окна — папку
-//! данных во временной папке, InPrivate и флаги (ADR 0007).
+//! Главное окно создаётся здесь, в Rust, а не в `tauri.conf.json` (там окон
+//! нет): только так движку до создания окна задаются временная папка данных,
+//! режим InPrivate и флаги (ADR 0007). Меры защищённой оболочки — в
+//! `security` и `webview_traces`.
+
+// Сборка «разработки» (`cfg(dev)`) грузит интерфейс с сервера разработки
+// `http://localhost:5173`. Она бывает только отладочной (`tauri dev`). Голый
+// `cargo build --release` без tauri CLI тоже дал бы `cfg(dev)` — такую сборку
+// запрещаем: выпуск собирается только через `npm run build` / `package:*`.
+#[cfg(all(dev, not(debug_assertions)))]
+compile_error!(
+    "Выпускная сборка без tauri CLI грузила бы интерфейс с http://localhost:5173. \
+     Собирайте через `npm run build` или `npm run package:*`."
+);
 
 pub mod security;
 pub mod webview_traces;
 
-use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use std::path::Path;
+
+use tauri::{
+    AppHandle, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    webview::{NewWindowResponse, PermissionResponse},
+};
+
+use webview_traces::WebviewDataDir;
 
 /// Метка главного окна; на неё выдаются права в `capabilities/main.json`.
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
-/// Флаги WebView2, которые wry 0.57 передаёт по умолчанию (`src/webview2/mod.rs`).
-const WRY_DEFAULT_BROWSER_ARGS: &str =
-    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+/// Пометка в заголовке окна тестовой сборки (функция `webdriver`). По этой же
+/// строке `tools/package-portable` отказывается упаковывать тестовую сборку.
+pub const WEBDRIVER_BUILD_MARKER: &str = "ТЕСТОВАЯ СБОРКА (webdriver)";
 
-/// Флаги движка для сборки сценарных тестов (функция `webdriver`).
-///
-/// msedgedriver просит WebView2 открыть порт отладки через переменную
-/// `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, но WebView2 её не применяет, если
-/// приложение задаёт флаги само (wry задаёт всегда). Поэтому тестовая сборка
-/// добавляет флаги драйвера к флагам wry. Выпускные сборки собираются без
-/// функции `webdriver` и переменную не читают.
-#[cfg_attr(not(all(windows, feature = "webdriver")), allow(dead_code))]
-fn webdriver_browser_args(from_driver: Option<&str>) -> Option<String> {
-    let extra = from_driver?.trim();
-    if extra.is_empty() {
-        return None;
+/// Заголовок главного окна.
+pub fn main_window_title() -> String {
+    if cfg!(feature = "webdriver") {
+        format!("Rhizomind — {WEBDRIVER_BUILD_MARKER}")
+    } else {
+        "Rhizomind".to_owned()
     }
-    Some(format!("{WRY_DEFAULT_BROWSER_ARGS} {extra}"))
 }
 
-/// Создаёт главное окно со страницей интерфейса из сборки (`dist/index.html`).
-pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
-    let builder =
-        WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
-            .title("Rhizomind")
-            .inner_size(1200.0, 800.0)
-            .min_inner_size(640.0, 480.0);
+/// Настройки движка этого запуска: папка данных и строка флагов.
+#[derive(Debug)]
+pub struct Shell {
+    data_dir: WebviewDataDir,
+    browser_args: String,
+}
 
-    #[cfg(all(windows, feature = "webdriver"))]
-    let builder = match webdriver_browser_args(
-        std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
-            .ok()
-            .as_deref(),
-    ) {
-        Some(args) => builder.additional_browser_args(&args),
-        None => builder,
+impl Shell {
+    /// Готовит процесс до создания окна. Вызывается первым делом в `main`,
+    /// пока в процессе один поток:
+    /// 1. тестовая сборка читает порт отладки msedgedriver;
+    /// 2. из окружения удаляются `WEBVIEW2_*` (и `TAURI_WEBVIEW_AUTOMATION`
+    ///    вне тестовой сборки);
+    /// 3. Windows: ограничиваются отчёты WER;
+    /// 4. убираются остатки прошлых запусков и создаётся временная папка данных.
+    pub fn prepare() -> std::io::Result<Self> {
+        let debug_port = webdriver_debug_port_from_env();
+        security::remove_webview_overrides(cfg!(feature = "webdriver"));
+        #[cfg(windows)]
+        security::windows::limit_error_reporting();
+        Ok(Self::new(
+            WebviewDataDir::prepare()?,
+            security::browser_args_with_debug_port(debug_port),
+        ))
+    }
+
+    pub fn new(data_dir: WebviewDataDir, browser_args: String) -> Self {
+        Self {
+            data_dir,
+            browser_args,
+        }
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        self.data_dir.path()
+    }
+
+    pub fn browser_args(&self) -> &str {
+        &self.browser_args
+    }
+
+    /// После выхода: дождаться процесса браузера и удалить папку данных.
+    pub fn clean_up(&self) -> std::io::Result<()> {
+        self.data_dir
+            .remove_after_exit(webview_traces::EXIT_TIMEOUT)
+    }
+}
+
+/// Порт отладки для msedgedriver — только в тестовой сборке (функция `webdriver`).
+#[cfg(feature = "webdriver")]
+fn webdriver_debug_port_from_env() -> Option<u16> {
+    let value = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+    security::webdriver_debug_port(value.as_deref())
+}
+
+#[cfg(not(feature = "webdriver"))]
+fn webdriver_debug_port_from_env() -> Option<u16> {
+    None
+}
+
+/// Создаёт главное окно со страницей интерфейса из сборки (`dist/index.html`)
+/// и защищёнными настройками движка. `Shell` должен быть в состоянии приложения.
+pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
+    let shell = app.state::<Shell>();
+    let dev_url = if cfg!(dev) {
+        app.config().build.dev_url.clone()
+    } else {
+        None
     };
 
-    builder.build()
+    let window =
+        WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
+            .title(main_window_title())
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(640.0, 480.0)
+            // Кэш, cookies и хранилища страницы — только в памяти (InPrivate).
+            .incognito(true)
+            // Служебная папка движка — во временной папке ОС, не в %LOCALAPPDATA%.
+            .data_directory(shell.data_dir().to_path_buf())
+            .additional_browser_args(shell.browser_args())
+            // Автозаполнение форм (в Tauri по умолчанию включено).
+            .general_autofill_enabled(false)
+            // Переходы — только по адресам своего интерфейса.
+            .on_navigation(move |url| security::is_allowed_navigation(url, dev_url.as_ref()))
+            // Новые окна (`window.open`, `target=_blank`) — запрет.
+            .on_new_window(|_url, _features| NewWindowResponse::Deny)
+            // Загрузки файлов — запрет.
+            .on_download(|_webview, _event| false)
+            // Разрешения браузера: камера, микрофон, геолокация, уведомления,
+            // буфер обмена, файловая система, MIDI и др. — всё отклоняется.
+            .on_permission_request(|_webview, _kind| PermissionResponse::Deny)
+            .build()?;
+
+    harden_platform_webview(&window);
+    Ok(window)
+}
+
+/// Настройки WebView2, которых нет в Tauri: SmartScreen выключается, номер
+/// процесса браузера запоминается для удаления папки данных после выхода.
+fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(windows)]
+    {
+        let app = window.app_handle().clone();
+        let _ = window.with_webview(move |webview| {
+            let controller = webview.controller();
+            if let Err(error) = security::windows::disable_smartscreen(&controller) {
+                eprintln!("Rhizomind: не удалось выключить SmartScreen WebView2: {error}");
+            }
+            if let Ok(pid) = security::windows::browser_process_id(&controller) {
+                app.state::<Shell>().data_dir.set_browser_pid(pid);
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = window;
+}
+
+/// Обработка событий приложения: после выхода удаляется папка данных движка.
+pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
+    if let RunEvent::Exit = event
+        && let Some(shell) = app.try_state::<Shell>()
+    {
+        // Не удалось — папку уберёт следующий запуск (уборка остатков).
+        let _ = shell.clean_up();
+    }
+}
+
+/// Конфигурация и встроенный интерфейс приложения.
+pub fn context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }
 
 /// Запуск приложения.
 pub fn run() {
+    let shell = Shell::prepare().expect("Rhizomind: не удалось подготовить временную папку движка");
     tauri::Builder::default()
+        .manage(shell)
         .setup(|app| {
             create_main_window(app.handle())?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("не удалось запустить Rhizomind");
+        .build(context())
+        .expect("не удалось запустить Rhizomind")
+        .run(|app, event| handle_run_event(app, &event));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tauri::Manager;
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        let temp = std::env::temp_dir().join(format!("rhz-lib-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).expect("временная папка теста");
+        let data_dir = WebviewDataDir::prepare_in(&temp, std::process::id()).expect("папка данных");
+        tauri::test::mock_builder()
+            .manage(Shell::new(data_dir, security::browser_args()))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("тестовое приложение")
+    }
 
     #[test]
     fn main_window_is_created_in_rust_with_label_from_capabilities() {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("тестовое приложение");
-
+        let app = mock_app();
         let window = create_main_window(app.handle()).expect("главное окно");
 
-        // Подменный runtime Tauri не хранит заголовок окна: заголовок и страницу
-        // проверяет сценарный тест (tests/e2e/).
+        // Подменный runtime Tauri не хранит заголовок и настройки движка: их
+        // проверяют сценарные тесты и тест следов (tests/e2e/).
         assert_eq!(window.label(), "main");
         assert!(app.get_webview_window(MAIN_WINDOW_LABEL).is_some());
     }
 
     #[test]
-    fn webdriver_args_extend_wry_defaults_with_driver_args() {
-        assert_eq!(
-            webdriver_browser_args(Some("--remote-debugging-port=9222 --user-data-dir=C:\\t")),
-            Some(
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-                 --remote-debugging-port=9222 --user-data-dir=C:\\t"
-                    .to_owned()
-            )
-        );
+    fn exit_removes_webview_data_dir() {
+        let app = mock_app();
+        let dir = app.state::<Shell>().data_dir().to_path_buf();
+        std::fs::write(dir.join("Local State"), "{}").unwrap();
+        assert!(dir.is_dir());
+
+        handle_run_event(app.handle(), &RunEvent::Exit);
+
+        assert!(!dir.exists(), "папка данных осталась: {}", dir.display());
     }
 
     #[test]
-    fn webdriver_args_absent_without_driver() {
-        assert_eq!(webdriver_browser_args(None), None);
-        assert_eq!(webdriver_browser_args(Some("  ")), None);
+    fn title_marks_webdriver_build_only() {
+        if cfg!(feature = "webdriver") {
+            assert_eq!(
+                main_window_title(),
+                "Rhizomind — ТЕСТОВАЯ СБОРКА (webdriver)"
+            );
+        } else {
+            assert_eq!(main_window_title(), "Rhizomind");
+        }
     }
 }

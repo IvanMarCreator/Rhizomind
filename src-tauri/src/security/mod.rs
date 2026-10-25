@@ -7,6 +7,8 @@
 
 use std::ffi::{OsStr, OsString};
 
+#[cfg(windows)]
+pub mod windows;
 
 /// Флаги, которые wry 0.57 передаёт WebView2 по умолчанию (`src/webview2/mod.rs`
 /// в wry). Свои `additional_browser_args` **заменяют** этот набор, поэтому он
@@ -186,7 +188,9 @@ mod tests {
             Some(9222)
         );
         assert_eq!(
-            webdriver_debug_port(Some("--user-data-dir=C:\\t   --remote-debugging-port=51234")),
+            webdriver_debug_port(Some(
+                "--user-data-dir=C:\\t   --remote-debugging-port=51234"
+            )),
             Some(51234)
         );
     }
@@ -213,7 +217,10 @@ mod tests {
     #[test]
     fn webview2_and_automation_vars_are_removed() {
         let vars = [
-            ("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9333"),
+            (
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--remote-debugging-port=9333",
+            ),
             ("WEBVIEW2_USER_DATA_FOLDER", "C:\\x"),
             ("webview2_browser_executable_folder", "C:\\y"),
             ("WEBVIEW2_RELEASE_CHANNEL_PREFERENCE", "1"),
@@ -236,7 +243,8 @@ mod tests {
             .map(OsString::from)
         );
         assert!(
-            !webview_override_vars(vars, true).contains(&OsString::from("TAURI_WEBVIEW_AUTOMATION"))
+            !webview_override_vars(vars, true)
+                .contains(&OsString::from("TAURI_WEBVIEW_AUTOMATION"))
         );
     }
 
@@ -254,7 +262,10 @@ mod tests {
     #[test]
     fn navigation_only_to_own_interface() {
         assert!(is_allowed_navigation(&url("http://tauri.localhost/"), None));
-        assert!(is_allowed_navigation(&url("http://tauri.localhost/index.html#x"), None));
+        assert!(is_allowed_navigation(
+            &url("http://tauri.localhost/index.html#x"),
+            None
+        ));
         assert!(is_allowed_navigation(&url("tauri://localhost/"), None));
     }
 
@@ -283,9 +294,18 @@ mod tests {
     #[test]
     fn dev_server_allowed_only_when_given() {
         let dev = url("http://localhost:5173");
-        assert!(is_allowed_navigation(&url("http://localhost:5173/src/x"), Some(&dev)));
-        assert!(!is_allowed_navigation(&url("http://localhost:5174/"), Some(&dev)));
-        assert!(!is_allowed_navigation(&url("http://example.com/"), Some(&dev)));
+        assert!(is_allowed_navigation(
+            &url("http://localhost:5173/src/x"),
+            Some(&dev)
+        ));
+        assert!(!is_allowed_navigation(
+            &url("http://localhost:5174/"),
+            Some(&dev)
+        ));
+        assert!(!is_allowed_navigation(
+            &url("http://example.com/"),
+            Some(&dev)
+        ));
     }
 
     #[test]
@@ -293,7 +313,11 @@ mod tests {
         // Доступ страницы к буферу обмена и инструменты разработчика не
         // включаются нигде в коде ядра (ADR 0007, 0009).
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let forbidden = ["enable_clipboard_access", ".devtools(true)", "open_devtools"];
+        let forbidden = [
+            "enable_clipboard_access",
+            ".devtools(true)",
+            "open_devtools",
+        ];
         let mut stack = vec![src];
         let mut checked = 0;
         while let Some(dir) = stack.pop() {

@@ -86,7 +86,9 @@ pub fn sweep_leftovers(
     let mut removed = Vec::new();
     for entry in entries.flatten() {
         // file_type() не следует по ссылкам: ссылка на папку — не папка.
-        let Ok(kind) = entry.file_type() else { continue };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         if !kind.is_dir() || kind.is_symlink() {
             continue;
         }
@@ -137,11 +139,14 @@ impl WebviewDataDir {
     /// Убирает остатки прошлых запусков и создаёт папку для этого запуска в
     /// системной временной папке.
     pub fn prepare() -> io::Result<Self> {
-        let temp = std::env::temp_dir();
-        let pid = std::process::id();
-        sweep_leftovers(&temp, pid, is_process_alive);
+        Self::prepare_in(&std::env::temp_dir(), std::process::id())
+    }
+
+    /// То же в заданной папке и для заданного процесса (тесты).
+    pub fn prepare_in(temp: &Path, pid: u32) -> io::Result<Self> {
+        sweep_leftovers(temp, pid, is_process_alive);
         Ok(Self {
-            path: create_data_dir(&temp, pid)?,
+            path: create_data_dir(temp, pid)?,
             browser_pid: Mutex::new(None),
         })
     }
@@ -167,7 +172,9 @@ impl WebviewDataDir {
         }
         remove_with_retries(
             &self.path,
-            deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1)),
+            deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_secs(1)),
         )
     }
 }
@@ -184,8 +191,14 @@ mod tests {
 
     #[test]
     fn name_has_prefix_pid_and_16_hex_digits() {
-        assert_eq!(data_dir_name(4242, 0xab), "rhizomind-webview-4242-00000000000000ab");
-        assert_eq!(owner_pid("rhizomind-webview-4242-00000000000000ab"), Some(4242));
+        assert_eq!(
+            data_dir_name(4242, 0xab),
+            "rhizomind-webview-4242-00000000000000ab"
+        );
+        assert_eq!(
+            owner_pid("rhizomind-webview-4242-00000000000000ab"),
+            Some(4242)
+        );
     }
 
     #[test]
@@ -217,7 +230,10 @@ mod tests {
         for dir in [&a, &b] {
             assert!(dir.is_dir());
             assert_eq!(dir.parent(), Some(root.as_path()));
-            assert_eq!(owner_pid(dir.file_name().unwrap().to_str().unwrap()), Some(7));
+            assert_eq!(
+                owner_pid(dir.file_name().unwrap().to_str().unwrap()),
+                Some(7)
+            );
         }
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -292,7 +308,8 @@ mod tests {
             browser_pid: Mutex::new(None),
         };
         std::fs::write(dir.path().join("Local State"), "{}").unwrap();
-        dir.remove_after_exit(Duration::from_secs(1)).expect("удалено");
+        dir.remove_after_exit(Duration::from_secs(1))
+            .expect("удалено");
         assert!(!dir.path().exists());
         std::fs::remove_dir_all(&root).unwrap();
     }

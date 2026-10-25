@@ -43,9 +43,15 @@ mod imp {
 
     fn open(pid: u32) -> Option<Handle> {
         // SAFETY: вызов WinAPI без указателей; ошибка — процесса нет или нет прав.
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid) }
-            .ok()
-            .map(Handle)
+        unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                false,
+                pid,
+            )
+        }
+        .ok()
+        .map(Handle)
     }
 
     pub fn is_process_alive(pid: u32) -> bool {
