@@ -254,22 +254,23 @@ impl TreeModel {
         // Появился элемент с идентификатором, который модель знает под другим
         // путём: возможно, это перенос, а событие о старом пути потерялось
         // (переполнение буфера) или придёт позже. Старый путь сверяется в
-        // этой же пачке — тогда перенос распознаётся. Повторный обход может
-        // найти ещё перенесённые за это время — повторяется, пока новые
-        // старые пути находятся (с пределом).
+        // этой же пачке — тогда перенос распознаётся. Читаются только старые
+        // пути, а уже прочитанное заново не обходится: иначе за время
+        // повторного обхода находились новые перенесённые, и при пределе
+        // кругов последние из них оставались без пары.
         for _ in 0..MAX_ORIGIN_ROUNDS {
             let origins = self.known_elsewhere(&disk, &model, targets);
             if origins.is_empty() {
                 break;
             }
-            *targets = self.targets(
-                std::mem::take(targets)
-                    .into_iter()
-                    .chain(origins)
-                    .map(VaultPath::from_components),
-            );
-            (disk, model, unreadable) = self.collect(targets);
+            let extra = self.targets(origins.into_iter().map(VaultPath::from_components));
+            let (more_disk, more_model, more_unreadable) = self.collect(&extra);
+            disk.extend(more_disk);
+            model.extend(more_model);
+            unreadable.extend(more_unreadable);
+            targets.extend(extra);
         }
+        self.drop_stale_duplicates(&mut disk);
         (disk, model, unreadable)
     }
 
@@ -424,11 +425,7 @@ impl TreeModel {
 
         for (key, old) in changed {
             let new = &disk[&key];
-            if own.is_own(
-                &VaultPath::from_components(key.clone()),
-                &self.abs(&key),
-                new.size,
-            ) {
+            if own.is_own(&VaultPath::from_components(key.clone()), &self.abs(&key)) {
                 continue;
             }
             match (old.id, new.id) {

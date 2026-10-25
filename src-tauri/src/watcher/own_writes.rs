@@ -126,29 +126,27 @@ impl OwnWrites {
 
     /// На диске (`file` размером `size`) побайтно одна из своих версий
     /// пути? Хэш считается, только если размер совпал с какой-то версией.
-    pub(crate) fn is_own(&self, path: &VaultPath, file: &Path, size: u64) -> bool {
-        let candidates: Vec<String> = {
+    ///
+    /// Размер из списка папки не используется: на Windows он обновляется с
+    /// запозданием (`FindNextFile`), поэтому размер и хэш берутся из самого
+    /// файла по одному дескриптору.
+    pub(crate) fn is_own(&self, path: &VaultPath, file: &Path) -> bool {
+        let candidates: Vec<(u64, String)> = {
             let mut journal = self.lock();
             journal.expire(Instant::now());
             journal
                 .by_path
                 .get(path)
-                .map(|versions| {
-                    versions
-                        .iter()
-                        .filter(|v| v.size == size)
-                        .map(|v| v.hash.clone())
-                        .collect()
-                })
+                .map(|versions| versions.iter().map(|v| (v.size, v.hash.clone())).collect())
                 .unwrap_or_default()
         };
         if candidates.is_empty() {
             return false;
         }
-        let Ok(actual) = hash_file(file) else {
+        let Ok((size, actual)) = read_version(file, &candidates) else {
             return false;
         };
-        if !candidates.contains(&actual) {
+        if !candidates.iter().any(|(s, h)| *s == size && *h == actual) {
             return false;
         }
         // На диске своя версия k: версии старше k уже пройдены, и возврат
@@ -201,11 +199,39 @@ impl OwnWrites {
 }
 
 /// Хэш `blake3` содержимого файла в шестнадцатеричном виде.
-fn hash_file(file: &Path) -> io::Result<String> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update_reader(File::open(file)?)?;
-    Ok(hasher.finalize().to_hex().to_string())
+/// Размер и хэш `blake3` файла по одному дескриптору. Хэш считается,
+/// только если размер совпал с какой-то своей версией (иначе — пустая
+/// строка). Открытие повторяется: на Windows сразу после замены файл может
+/// быть ненадолго занят (антивирус, индексатор) — ошибка доступа не должна
+/// превращать свою запись во внешнюю.
+fn read_version(file: &Path, candidates: &[(u64, String)]) -> io::Result<(u64, String)> {
+    let mut last = None;
+    for attempt in 0..OPEN_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(OPEN_RETRY_PAUSE);
+        }
+        match File::open(file) {
+            Ok(mut handle) => {
+                let size = handle.metadata()?.len();
+                if !candidates.iter().any(|(s, _)| *s == size) {
+                    return Ok((size, String::new()));
+                }
+                let mut hasher = blake3::Hasher::new();
+                hasher.update_reader(&mut handle)?;
+                return Ok((size, hasher.finalize().to_hex().to_string()));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(err),
+            Err(err) => last = Some(err),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("файл не открылся")))
 }
+
+/// Сколько раз пробовать открыть файл для хэша.
+const OPEN_ATTEMPTS: u32 = 4;
+
+/// Пауза между попытками открыть файл.
+const OPEN_RETRY_PAUSE: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 mod tests {
@@ -214,6 +240,23 @@ mod tests {
 
     fn vp(path: &str) -> VaultPath {
         VaultPath::from_components(path.split('/'))
+    }
+
+    #[test]
+    fn stale_size_from_directory_listing_does_not_hide_own_version() {
+        // На Windows размер в списке папки (FindNextFile) обновляется с
+        // запозданием: сверка может передать прежний размер файла.
+        let dir = tempfile::tempdir().expect("временная папка");
+        let file = dir.path().join("a.md");
+        let text = "своя версия";
+        std::fs::write(&file, text).expect("запись");
+        let own = OwnWrites::new();
+        let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        own.record(&vp("a.md"), &hash, text.len() as u64);
+
+        // Раньше сверка передавала размер из списка папки, и при устаревшем
+        // размере своя версия считалась внешней. Теперь размер — из файла.
+        assert!(own.is_own(&vp("a.md"), &file));
     }
 
     #[test]
