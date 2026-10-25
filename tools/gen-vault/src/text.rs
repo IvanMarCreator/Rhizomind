@@ -53,7 +53,10 @@ pub fn sentence(rng: &mut Rng) -> String {
         out.push_str(rng.pick(words));
     }
     let mut chars = out.chars();
-    let first: String = chars.next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+    let first: String = chars
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
     format!("{first}{}.", chars.as_str())
 }
 

@@ -24,7 +24,12 @@ fn windows_name_problem(name: &str) -> Option<&'static str> {
     if name.ends_with('.') || name.ends_with(' ') {
         return Some("точка или пробел в конце");
     }
-    let stem = name.split('.').next().unwrap().trim_end().to_ascii_uppercase();
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap()
+        .trim_end()
+        .to_ascii_uppercase();
     let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
         || ((stem.starts_with("COM") || stem.starts_with("LPT"))
             && stem.len() == 4
@@ -42,17 +47,26 @@ fn vault(notes: usize, seed: u64) -> (TempDir, Manifest) {
     (dir, manifest)
 }
 
-/// Заметки: путь без `.md` по компонентам.
-fn notes_of(tree: &BTreeMap<String, Vec<u8>>) -> Vec<Vec<String>> {
+/// Заметка: путь без `.md` по компонентам и ключи компонентов.
+struct NoteRef {
+    parts: Vec<String>,
+    keys: Vec<String>,
+}
+
+fn notes_of(tree: &BTreeMap<String, Vec<u8>>) -> Vec<NoteRef> {
     tree.keys()
         .filter_map(|p| p.strip_suffix(".md"))
-        .map(|p| p.split('/').map(str::to_string).collect())
+        .map(|p| {
+            let parts: Vec<String> = p.split('/').map(str::to_string).collect();
+            let keys = parts.iter().map(|s| key(s)).collect();
+            NoteRef { parts, keys }
+        })
         .collect()
 }
 
 /// Заметки, на которые указывает ссылка по правилам С3.4: `/` — путь от
 /// корня, иначе — совпадение конца пути (без учёта регистра, с NFC).
-fn resolve<'a>(notes: &'a [Vec<String>], link: &str) -> Vec<&'a Vec<String>> {
+fn resolve<'a>(notes: &'a [NoteRef], link: &str) -> Vec<&'a Vec<String>> {
     let (anchored, body) = match link.strip_prefix('/') {
         Some(rest) => (true, rest),
         None => (false, link),
@@ -61,9 +75,13 @@ fn resolve<'a>(notes: &'a [Vec<String>], link: &str) -> Vec<&'a Vec<String>> {
     notes
         .iter()
         .filter(|n| {
-            let have: Vec<String> = n.iter().map(|s| key(s)).collect();
-            if anchored { have == want } else { have.ends_with(&want) }
+            if anchored {
+                n.keys == want
+            } else {
+                n.keys.ends_with(&want)
+            }
         })
+        .map(|n| &n.parts)
         .collect()
 }
 
@@ -80,7 +98,10 @@ fn every_name_is_valid_on_windows_and_unique_in_its_folder() {
         if let Some(problem) = windows_name_problem(name) {
             panic!("{path}: {problem}");
         }
-        assert!(siblings.insert((key(parent), key(name))), "имя повторяется в папке без учёта регистра: {path}");
+        assert!(
+            siblings.insert((key(parent), key(name))),
+            "имя повторяется в папке без учёта регистра: {path}"
+        );
     }
     assert!(!dirs.iter().any(|d| d.split('/').any(|c| c == ".rhizomind")));
 
@@ -96,16 +117,34 @@ fn name_samples_cover_numbers_case_yo_and_unicode_forms() {
     let tree = read_tree(dir.path());
     let has = |p: &str| tree.contains_key(p);
 
-    assert!(has("Нумерация/Заметка 2.md") && has("Нумерация/Заметка 10.md"), "естественная сортировка");
-    assert!(has("Учёба/Ёлка.md") && has("Учёба/Елка.md"), "ё и е — разные имена");
-    assert!(has("Учёба/Идеи.md") && has("Личное/идеи.md"), "одно имя в разном регистре");
+    assert!(
+        has("Нумерация/Заметка 2.md") && has("Нумерация/Заметка 10.md"),
+        "естественная сортировка"
+    );
+    assert!(
+        has("Учёба/Ёлка.md") && has("Учёба/Елка.md"),
+        "ё и е — разные имена"
+    );
+    assert!(
+        has("Учёба/Идеи.md") && has("Личное/идеи.md"),
+        "одно имя в разном регистре"
+    );
     // Имя в разложенной форме Unicode (NFD): «Й» = «И» + U+0306.
     let nfd = "Юникод/И\u{306}огурт.md";
     assert!(has(nfd), "имя в NFD");
     assert_eq!(manifest.samples.nfd_name, nfd);
-    assert!(tree.keys().any(|p| p.chars().any(|c| c.is_ascii_alphabetic())), "английские имена");
+    assert!(
+        tree.keys()
+            .any(|p| p.chars().any(|c| c.is_ascii_alphabetic())),
+        "английские имена"
+    );
     assert!(tree.keys().any(|p| p.contains(' ')), "пробелы в именах");
-    assert!(manifest.samples.natural_sort.contains(&"Нумерация/Заметка 10.md".to_string()));
+    assert!(
+        manifest
+            .samples
+            .natural_sort
+            .contains(&"Нумерация/Заметка 10.md".to_string())
+    );
 }
 
 #[test]
@@ -117,13 +156,21 @@ fn duplicates_match_manifest_and_get_shortest_unique_paths() {
     // Группы одинаковых имён по диску.
     let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for n in &notes {
-        groups.entry(key(n.last().unwrap())).or_default().insert(format!("{}.md", n.join("/")));
+        groups
+            .entry(n.keys.last().unwrap().clone())
+            .or_default()
+            .insert(format!("{}.md", n.parts.join("/")));
     }
     groups.retain(|_, v| v.len() > 1);
     let from_manifest: BTreeMap<String, BTreeSet<String>> = manifest
         .duplicates
         .iter()
-        .map(|g| (g.key.clone(), g.notes.iter().map(|n| n.path.clone()).collect()))
+        .map(|g| {
+            (
+                g.key.clone(),
+                g.notes.iter().map(|n| n.path.clone()).collect(),
+            )
+        })
         .collect();
     assert_eq!(groups, from_manifest);
     assert!(groups.len() > 10, "мало дубликатов: {}", groups.len());
@@ -137,16 +184,29 @@ fn duplicates_match_manifest_and_get_shortest_unique_paths() {
             assert_eq!(format!("{}.md", hits[0].join("/")), n.path);
             // Короче нельзя: без первой папки ссылка уже неоднозначна.
             if let Some(rest) = link.strip_prefix('/') {
-                assert!(resolve(&notes, rest).len() > 1, "{link}: хватило бы конца пути");
+                assert!(
+                    resolve(&notes, rest).len() > 1,
+                    "{link}: хватило бы конца пути"
+                );
             } else if let Some((_, shorter)) = link.split_once('/') {
-                assert!(resolve(&notes, shorter).len() > 1, "{link}: есть путь короче");
+                assert!(
+                    resolve(&notes, shorter).len() > 1,
+                    "{link}: есть путь короче"
+                );
             }
         }
     }
 
     // Примеры из С3.4 — известные значения.
     let link_of = |path: &str| -> String {
-        manifest.duplicates.iter().flat_map(|g| &g.notes).find(|n| n.path == path).unwrap().shortest_link.clone()
+        manifest
+            .duplicates
+            .iter()
+            .flat_map(|g| &g.notes)
+            .find(|n| n.path == path)
+            .unwrap()
+            .shortest_link
+            .clone()
     };
     assert_eq!(link_of("Проекты/Альфа/Встреча.md"), "Альфа/Встреча");
     assert_eq!(link_of("Проекты/Бета/Встреча.md"), "Бета/Встреча");

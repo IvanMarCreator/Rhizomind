@@ -24,7 +24,11 @@ pub struct Style {
 }
 
 impl Style {
-    pub const LF: Style = Style { eol: Eol::Lf, bom: false, final_newline: true };
+    pub const LF: Style = Style {
+        eol: Eol::Lf,
+        bom: false,
+        final_newline: true,
+    };
 }
 
 /// Особое содержимое заметки вместо обычного текста.
@@ -92,7 +96,9 @@ impl Layout {
             let path: Vec<String> = parts[..=i].iter().map(|s| s.to_string()).collect();
             current = match self.folder_index.get(&path) {
                 Some(&idx) => idx,
-                None => self.add_folder(current, parts[i]).expect("имя папки занято"),
+                None => self
+                    .add_folder(current, parts[i])
+                    .expect("имя папки занято"),
             };
         }
         current
@@ -100,7 +106,10 @@ impl Layout {
 
     /// Новая папка в `parent`, если имя свободно и допустимо.
     pub fn add_folder(&mut self, parent: usize, name: &str) -> Option<usize> {
-        assert!(is_valid_windows_name(name), "недопустимое имя папки {name:?}");
+        assert!(
+            is_valid_windows_name(name),
+            "недопустимое имя папки {name:?}"
+        );
         if self.depth(parent) >= MAX_DEPTH || !self.siblings.insert((parent, name_key(name))) {
             return None;
         }
@@ -114,24 +123,53 @@ impl Layout {
 
     /// Свободно ли имя заметки `name` (без `.md`) в папке.
     pub fn note_name_free(&self, folder: usize, name: &str) -> bool {
-        !self.siblings.contains(&(folder, name_key(&format!("{name}.md"))))
+        !self
+            .siblings
+            .contains(&(folder, name_key(&format!("{name}.md"))))
     }
 
-    pub fn add_note(&mut self, folder: usize, name: &str, headings: Vec<String>, style: Style, special: Special) -> usize {
-        assert!(is_valid_windows_name(&format!("{name}.md")), "недопустимое имя заметки {name:?}");
-        assert!(self.siblings.insert((folder, name_key(&format!("{name}.md")))), "имя {name:?} занято");
+    pub fn add_note(
+        &mut self,
+        folder: usize,
+        name: &str,
+        headings: Vec<String>,
+        style: Style,
+        special: Special,
+    ) -> usize {
+        assert!(
+            is_valid_windows_name(&format!("{name}.md")),
+            "недопустимое имя заметки {name:?}"
+        );
+        assert!(
+            self.siblings
+                .insert((folder, name_key(&format!("{name}.md")))),
+            "имя {name:?} занято"
+        );
         let idx = self.notes.len();
-        self.notes.push(Note { folder, name: name.to_string(), headings, style, special });
+        self.notes.push(Note {
+            folder,
+            name: name.to_string(),
+            headings,
+            style,
+            special,
+        });
         self.by_key.entry(name_key(name)).or_default().push(idx);
         idx
     }
 
     pub fn add_attachment(&mut self, folder: usize, file_name: &str, kind: AttachmentKind) -> bool {
-        assert!(is_valid_windows_name(file_name), "недопустимое имя вложения {file_name:?}");
+        assert!(
+            is_valid_windows_name(file_name),
+            "недопустимое имя вложения {file_name:?}"
+        );
         if !self.siblings.insert((folder, name_key(file_name))) {
             return false;
         }
-        self.attachments.push(Attachment { folder, file_name: file_name.to_string(), kind });
+        self.attachments.push(Attachment {
+            folder,
+            file_name: file_name.to_string(),
+            kind,
+        });
         true
     }
 

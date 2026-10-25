@@ -11,8 +11,8 @@ pub fn name_key(name: &str) -> String {
 
 const FORBIDDEN: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
 const RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
-    "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
 /// Имя допустимо в Windows: без запрещённых и управляющих символов, не
@@ -21,7 +21,10 @@ pub fn is_valid_windows_name(name: &str) -> bool {
     if name.is_empty() || name.ends_with('.') || name.ends_with(' ') {
         return false;
     }
-    if name.chars().any(|c| FORBIDDEN.contains(&c) || c.is_control()) {
+    if name
+        .chars()
+        .any(|c| FORBIDDEN.contains(&c) || c.is_control())
+    {
         return false;
     }
     let stem = name.split('.').next().unwrap_or("").trim_end();

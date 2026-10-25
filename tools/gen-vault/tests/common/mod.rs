@@ -13,7 +13,8 @@ impl TempDir {
     pub fn new(tag: &str) -> Self {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("gen-vault-test-{}-{tag}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("gen-vault-test-{}-{tag}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         TempDir(dir)

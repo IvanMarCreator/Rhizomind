@@ -26,7 +26,16 @@ fn same_seed_gives_byte_identical_vault() {
     let mb = generate(b.path(), &Config::new(400, 42)).unwrap();
     generate(c.path(), &Config::new(400, 43)).unwrap();
 
-    assert!(read_tree(a.path()) == read_tree(b.path()), "одинаковый seed — разные хранилища");
-    assert_eq!(serde_json::to_string(&ma).unwrap(), serde_json::to_string(&mb).unwrap());
-    assert!(read_tree(a.path()) != read_tree(c.path()), "разный seed — одинаковые хранилища");
+    assert!(
+        read_tree(a.path()) == read_tree(b.path()),
+        "одинаковый seed — разные хранилища"
+    );
+    assert_eq!(
+        serde_json::to_string(&ma).unwrap(),
+        serde_json::to_string(&mb).unwrap()
+    );
+    assert!(
+        read_tree(a.path()) != read_tree(c.path()),
+        "разный seed — одинаковые хранилища"
+    );
 }
