@@ -83,7 +83,9 @@ impl Vault {
     }
 
     /// Все заметки хранилища с датой создания — для модулей `links` и
-    /// `switcher`.
+    /// `switcher`. «Самая старая» из заметок с одним именем — с наименьшей
+    /// `created_ms`; при равной дате — первая по пути в естественном
+    /// алфавитном порядке (С3.4).
     pub fn notes(&self) -> CoreResult<Vec<NoteRef>> {
         Err(CoreError::not_implemented())
     }
