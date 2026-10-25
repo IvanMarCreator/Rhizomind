@@ -22,27 +22,96 @@ fn csp_has_no_external_hosts_and_matches_adr_0009() {
     assert_eq!(config()["app"]["security"]["csp"], EXPECTED_CSP);
 }
 
+/// CSP как словарь «директива → источники».
+fn directives(csp: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    csp.split(';')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            let mut parts = d.split_whitespace().map(str::to_owned);
+            let name = parts.next().expect("имя директивы");
+            (name, parts.collect())
+        })
+        .collect()
+}
+
 #[test]
-fn dev_csp_differs_only_by_dev_server_on_localhost() {
-    let dev = config()["app"]["security"]["devCsp"]
-        .as_str()
-        .expect("devCsp")
-        .to_owned();
-    for source in dev
-        .split([' ', ';'])
-        .filter(|s| s.contains("://") || s.ends_with(':'))
-    {
-        let allowed = [
-            "ipc:",
-            "http://ipc.localhost",
-            "asset:",
-            "http://asset.localhost",
-            "blob:",
-            "data:",
-        ];
+fn dev_csp_differs_exactly_by_dev_server_and_inline_styles() {
+    // devCsp (только `npm run dev`) = CSP выпуска + сервер разработки
+    // `ws://localhost:5173` в connect-src + встроенные стили Vite в style-src.
+    let security = &config()["app"]["security"];
+    let release = directives(security["csp"].as_str().expect("csp"));
+    let mut expected = release.clone();
+    expected
+        .get_mut("connect-src")
+        .expect("connect-src")
+        .push("ws://localhost:5173".into());
+    expected
+        .get_mut("style-src")
+        .expect("style-src")
+        .push("'unsafe-inline'".into());
+    let dev = directives(security["devCsp"].as_str().expect("devCsp"));
+    assert_eq!(dev, expected);
+}
+
+#[test]
+fn csp_leaves_frames_to_default_src_for_isolation_iframe() {
+    // Tauri добавляет адрес изолированного iframe (isolation pattern) в
+    // default-src; своя frame-src/child-src перекрыла бы его и сломала мост.
+    let csp = directives(config()["app"]["security"]["csp"].as_str().expect("csp"));
+    assert!(!csp.contains_key("frame-src") && !csp.contains_key("child-src"));
+    assert_eq!(csp["default-src"], ["'self'"]);
+}
+
+#[test]
+fn isolation_pattern_is_enabled() {
+    assert_eq!(
+        config()["app"]["security"]["pattern"],
+        serde_json::json!({ "use": "isolation", "options": { "dir": "../src-isolation" } })
+    );
+}
+
+/// Раздел TOML-файла от заголовка до следующего заголовка.
+fn toml_section(text: &str, header: &str) -> String {
+    let start = text
+        .find(&format!("\n{header}\n"))
+        .unwrap_or_else(|| panic!("нет раздела {header}"));
+    let body = &text[start + header.len() + 2..];
+    body[..body.find("\n[").unwrap_or(body.len())].to_owned()
+}
+
+fn read_text(relative: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[test]
+fn release_profile_keeps_debug_assertions_off_and_does_not_abort() {
+    // debug-assertions = true в выпуске включили бы cfg(debug_assertions) и с
+    // ним отладочные ветки Tauri; panic = "abort" запускал бы WER с дампом.
+    let release = toml_section(&read_text("Cargo.toml"), "[profile.release]");
+    let compact = release.replace(' ', "");
+    assert!(!compact.contains("debug-assertions=true"), "{release}");
+    assert!(!compact.contains("panic=\"abort\""), "{release}");
+}
+
+#[test]
+fn deny_bans_devtools_on_every_crate_and_asset_protocol() {
+    let deny = read_text("deny.toml").replace(' ', "");
+    for (krate, feature) in [
+        ("tauri", "devtools"),
+        ("tauri-runtime-wry", "devtools"),
+        ("tauri-runtime", "devtools"),
+        ("wry", "devtools"),
+        ("tauri", "protocol-asset"),
+    ] {
+        let block = deny
+            .split("[[bans.features]]")
+            .find(|b| b.contains(&format!("\ncrate=\"{krate}\"\n")))
+            .unwrap_or_else(|| panic!("нет [[bans.features]] для {krate}"));
         assert!(
-            allowed.contains(&source) || source == "ws://localhost:5173",
-            "в devCsp внешний источник: {source}"
+            block.contains(&format!("\"{feature}\"")),
+            "{krate}: функция {feature} не запрещена"
         );
     }
 }
