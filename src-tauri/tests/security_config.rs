@@ -218,6 +218,19 @@ fn lock_package(name: &str) -> String {
 }
 
 #[test]
+fn wry_never_enables_single_sign_on_with_os_account() {
+    // AllowSingleSignOnUsingOSPrimaryAccount: по умолчанию false
+    // (webview2-com CoreWebView2EnvironmentOptions::default), wry его не
+    // меняет. Своя копия wry не должна его включать (вход через учётную
+    // запись Windows — токены WAM).
+    let wry = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../vendor/wry/src/webview2/mod.rs"),
+    )
+    .expect("vendor/wry");
+    assert!(!wry.contains("set_allow_single_sign_on_using_os_primary_account(true)"));
+}
+
+#[test]
 fn wry_comes_from_own_patched_copy_of_the_same_version() {
     // Своя копия wry с IsCustomCrashReportingEnabled = true (ADR 0007). Если
     // версия wry в зависимостях Tauri сменится, cargo молча перестанет

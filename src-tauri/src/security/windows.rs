@@ -2,7 +2,7 @@
 //! Windows об ошибках (WER) для процесса `rhizomind.exe`.
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2Controller, ICoreWebView2Settings8,
+    ICoreWebView2_13, ICoreWebView2Controller, ICoreWebView2Settings8,
 };
 use windows::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode,
@@ -63,6 +63,40 @@ pub fn is_reputation_checking_required(
     // SAFETY: см. settings8; value — локальная переменная.
     unsafe { settings8(controller)?.IsReputationCheckingRequired(&mut value)? };
     Ok(value.as_bool())
+}
+
+/// Включён ли режим InPrivate у профиля движка (`ICoreWebView2_13::Profile`,
+/// `ICoreWebView2Profile::IsInPrivateModeEnabled`). Ошибка — движок слишком
+/// старый, чтобы ответить (тогда и InPrivate wry включить не смог).
+pub fn is_in_private_mode_enabled(
+    controller: &ICoreWebView2Controller,
+) -> windows::core::Result<bool> {
+    let mut value = BOOL::default();
+    // SAFETY: COM-вызовы у живого контроллера в главном потоке (with_webview);
+    // value — локальная переменная.
+    unsafe {
+        controller
+            .CoreWebView2()?
+            .cast::<ICoreWebView2_13>()?
+            .Profile()?
+            .IsInPrivateModeEnabled(&mut value)?
+    };
+    Ok(value.as_bool())
+}
+
+/// Системное окно с сообщением об ошибке (до открытия интерфейса).
+pub fn show_error(text: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    use windows::core::HSTRING;
+    // SAFETY: строки живут до конца вызова; окна-владельца нет.
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            &HSTRING::from("Rhizomind"),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 /// Номер процесса браузера WebView2 (`BrowserProcessId`): ядро ждёт его

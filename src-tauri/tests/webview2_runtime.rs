@@ -2,6 +2,7 @@
 //! WebView2, созданное тем же кодом, что в приложении. Проверяет то, что видно
 //! только у живого движка:
 //! - `IsReputationCheckingRequired = false` (SmartScreen выключен);
+//! - `IsInPrivateModeEnabled = true` у профиля движка, окно показано после проверки;
 //! - `IsCustomCrashReportingEnabled = true` (правка wry): WebView2 запускает
 //!   процесс браузера с ключом `--edge-webview-disable-crash-reporting=1`
 //!   (проверено в CI: без правки ключа нет), тест читает командную строку
@@ -59,6 +60,13 @@ mod windows_only {
         match security::windows::is_reputation_checking_required(controller) {
             Ok(false) => println!("ok: IsReputationCheckingRequired = false"),
             other => failures.push(format!("IsReputationCheckingRequired: {other:?}")),
+        }
+
+        // InPrivate подтверждён движком (ICoreWebView2_13::Profile): без него
+        // приложение окно не показывает.
+        match security::windows::is_in_private_mode_enabled(controller) {
+            Ok(true) => println!("ok: IsInPrivateModeEnabled = true"),
+            other => failures.push(format!("IsInPrivateModeEnabled: {other:?}")),
         }
 
         let pid = match security::windows::browser_process_id(controller) {
@@ -127,13 +135,20 @@ mod windows_only {
                     let window = handle
                         .get_webview_window(MAIN_WINDOW_LABEL)
                         .expect("главное окно");
+                    // Окно создаётся скрытым и показывается после проверки InPrivate.
+                    let visible = window.is_visible().unwrap_or(false);
                     let window_to_close = window.clone();
                     let _ = window.with_webview(move |webview| {
-                        let failures = check_live_webview(
+                        let mut failures = check_live_webview(
                             &webview.controller(),
                             &data_dir_for_check,
                             &browser_args,
                         );
+                        if visible {
+                            println!("ok: окно показано после проверки InPrivate");
+                        } else {
+                            failures.push("окно не показано после проверки InPrivate".into());
+                        }
                         *outcome_for_check.lock().unwrap() = failures;
                         // Выход как у пользователя — закрытием окна: WebView
                         // уничтожается, процесс браузера завершается, затем

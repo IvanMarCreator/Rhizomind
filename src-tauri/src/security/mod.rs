@@ -60,6 +60,23 @@ pub fn incognito() -> bool {
     !cfg!(all(target_os = "linux", feature = "webdriver"))
 }
 
+/// Решение по проверке InPrivate у живого движка (Windows): окно показывается,
+/// только если WebView2 подтвердил режим InPrivate. `None` — движок не умеет
+/// сообщить (старый WebView2 без `ICoreWebView2_13`); с таким движком wry
+/// создаёт окно без InPrivate молча, поэтому это тоже отказ.
+pub fn in_private_check(checked: Option<bool>) -> Result<(), String> {
+    match checked {
+        Some(true) => Ok(()),
+        _ => Err(
+            "Rhizomind не открывает окно: установленная версия WebView2 Runtime не \
+                  поддерживает режим InPrivate, без него движок сохранял бы данные \
+                  страницы на диск. Обновите WebView2 Runtime (через службу ИТ) и \
+                  запустите Rhizomind снова."
+                .to_owned(),
+        ),
+    }
+}
+
 /// Строка `additional_browser_args` для выпускной сборки.
 pub fn browser_args() -> String {
     PROTECTED_BROWSER_ARGS.join(" ")
@@ -67,6 +84,9 @@ pub fn browser_args() -> String {
 
 /// Строка флагов для тестовой сборки (функция `webdriver`): защищённый набор и
 /// порт отладки для msedgedriver поверх него. Без порта — защищённый набор.
+/// Код порта отладки в выпуск не компилируется вовсе (`cfg`), а не только
+/// вырезается оптимизатором; проверка — tests/e2e/release-binary.test.ts.
+#[cfg(any(test, feature = "webdriver"))]
 pub fn browser_args_with_debug_port(port: Option<u16>) -> String {
     match port {
         Some(port) => format!("{} --remote-debugging-port={port}", browser_args()),
@@ -81,6 +101,7 @@ pub fn browser_args_with_debug_port(port: Option<u16>) -> String {
 /// теми же временной папкой и флагами, что и выпускная. Порт 0 допустим:
 /// msedgedriver 155 просит его, движок выбирает свободный порт и пишет его в
 /// `DevToolsActivePort` в своей папке данных.
+#[cfg(any(test, feature = "webdriver"))]
 pub fn webdriver_debug_port(driver_args: Option<&str>) -> Option<u16> {
     driver_args?
         .split_whitespace()
@@ -93,6 +114,7 @@ pub fn webdriver_debug_port(driver_args: Option<&str>) -> Option<u16> {
 /// тестовой сборки: драйвер ищет в ней `DevToolsActivePort` (номер порта
 /// отладки). Принимается только абсолютный путь. Выпускная сборка переменную
 /// не читает и удаляет (`remove_webview_overrides`).
+#[cfg(any(test, feature = "webdriver"))]
 pub fn webdriver_user_data_folder(value: Option<&OsStr>) -> Option<std::path::PathBuf> {
     let path = std::path::Path::new(value?);
     (!path.as_os_str().is_empty() && path.is_absolute()).then(|| path.to_path_buf())
@@ -181,6 +203,18 @@ mod tests {
              --disable-domain-reliability --no-pings \
              --host-resolver-rules=\"MAP * ~NOTFOUND\""
         );
+    }
+
+    #[test]
+    fn window_opens_only_when_engine_confirms_in_private() {
+        assert_eq!(in_private_check(Some(true)), Ok(()));
+        // Старый WebView2 без ICoreWebView2Environment10/ICoreWebView2_13: wry
+        // молча создаёт окно без InPrivate — окно не открывается.
+        for checked in [Some(false), None] {
+            let message = in_private_check(checked).expect_err("без InPrivate окно не открывается");
+            assert!(message.contains("InPrivate"), "{message}");
+            assert!(message.contains("WebView2"), "{message}");
+        }
     }
 
     #[test]

@@ -77,15 +77,11 @@ impl Shell {
     /// 3. Windows: ограничиваются отчёты WER;
     /// 4. убираются остатки прошлых запусков и создаётся временная папка данных.
     pub fn prepare() -> std::io::Result<Self> {
-        let debug_port = webdriver_debug_port_from_env();
-        let driver_data_dir = webdriver_user_data_folder_from_env();
+        let (browser_args, driver_data_dir) = webdriver_overrides_from_env();
         security::remove_webview_overrides(cfg!(feature = "webdriver"));
         #[cfg(windows)]
         security::windows::limit_error_reporting();
-        let mut shell = Self::new(
-            WebviewDataDir::prepare()?,
-            security::browser_args_with_debug_port(debug_port),
-        );
+        let mut shell = Self::new(WebviewDataDir::prepare()?, browser_args);
         shell.driver_data_dir = driver_data_dir;
         Ok(shell)
     }
@@ -122,28 +118,23 @@ impl Shell {
     }
 }
 
-/// Порт отладки для msedgedriver — только в тестовой сборке (функция `webdriver`).
+/// Тестовая сборка (функция `webdriver`): флаги движка с портом отладки и
+/// папка данных msedgedriver — читаются до удаления `WEBVIEW2_*`.
 #[cfg(feature = "webdriver")]
-fn webdriver_debug_port_from_env() -> Option<u16> {
-    let value = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
-    security::webdriver_debug_port(value.as_deref())
-}
-
-#[cfg(not(feature = "webdriver"))]
-fn webdriver_debug_port_from_env() -> Option<u16> {
-    None
-}
-
-/// Папка данных msedgedriver — только в тестовой сборке (функция `webdriver`).
-#[cfg(feature = "webdriver")]
-fn webdriver_user_data_folder_from_env() -> Option<std::path::PathBuf> {
+fn webdriver_overrides_from_env() -> (String, Option<std::path::PathBuf>) {
+    let args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+    let port = security::webdriver_debug_port(args.as_deref());
     let folder = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER");
-    security::webdriver_user_data_folder(folder.as_deref())
+    (
+        security::browser_args_with_debug_port(port),
+        security::webdriver_user_data_folder(folder.as_deref()),
+    )
 }
 
+/// Выпуск: защищённый набор флагов, переменные окружения не читаются.
 #[cfg(not(feature = "webdriver"))]
-fn webdriver_user_data_folder_from_env() -> Option<std::path::PathBuf> {
-    None
+fn webdriver_overrides_from_env() -> (String, Option<std::path::PathBuf>) {
+    (security::browser_args(), None)
 }
 
 /// Создаёт главное окно со страницей интерфейса из сборки (`dist/index.html`)
@@ -169,6 +160,9 @@ pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvi
             .additional_browser_args(shell.browser_args())
             // Автозаполнение форм (в Tauri по умолчанию включено).
             .general_autofill_enabled(false)
+            // Windows: окно показывается только после проверки InPrivate у
+            // живого движка (harden_platform_webview).
+            .visible(!cfg!(windows))
             // Переходы — только по адресам своего интерфейса.
             .on_navigation(move |url| security::is_allowed_navigation(url, dev_url.as_ref()))
             // Новые окна (`window.open`, `target=_blank`) — запрет.
@@ -185,11 +179,13 @@ pub fn create_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Webvi
 }
 
 /// Настройки WebView2, которых нет в Tauri: SmartScreen выключается, номер
-/// процесса браузера запоминается для удаления папки данных после выхода.
+/// процесса браузера запоминается для удаления папки данных после выхода;
+/// окно показывается, только если движок подтвердил InPrivate.
 fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>) {
     #[cfg(windows)]
     {
         let app = window.app_handle().clone();
+        let window_to_show = window.clone();
         let _ = window.with_webview(move |webview| {
             let controller = webview.controller();
             if let Err(error) = security::windows::disable_smartscreen(&controller) {
@@ -197,6 +193,20 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>) {
             }
             if let Ok(pid) = security::windows::browser_process_id(&controller) {
                 app.state::<Shell>().data_dir.set_browser_pid(pid);
+            }
+            let checked = security::windows::is_in_private_mode_enabled(&controller).ok();
+            match security::in_private_check(checked) {
+                Ok(()) => {
+                    let _ = window_to_show.show();
+                }
+                Err(message) => {
+                    // Журнала ошибок ещё нет (выпуск 0.5): сообщение — в stderr и окном.
+                    eprintln!("Rhizomind: {message}");
+                    security::windows::show_error(&message);
+                    // Закрытие окна (а не exit): WebView уничтожается, папка
+                    // данных удаляется при выходе (handle_run_event).
+                    let _ = window_to_show.destroy();
+                }
             }
         });
     }
