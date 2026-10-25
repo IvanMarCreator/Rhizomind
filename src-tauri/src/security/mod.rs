@@ -68,14 +68,15 @@ pub fn browser_args_with_debug_port(port: Option<u16>) -> String {
 ///
 /// Берётся только `--remote-debugging-port=<цифры>`; остальные флаги драйвера
 /// (`--user-data-dir` и др.) отбрасываются, чтобы тестовая сборка работала с
-/// теми же временной папкой и флагами, что и выпускная.
+/// теми же временной папкой и флагами, что и выпускная. Порт 0 допустим:
+/// msedgedriver 155 просит его, движок выбирает свободный порт и пишет его в
+/// `DevToolsActivePort` в своей папке данных.
 pub fn webdriver_debug_port(driver_args: Option<&str>) -> Option<u16> {
     driver_args?
         .split_whitespace()
         .filter_map(|arg| arg.strip_prefix("--remote-debugging-port="))
         .find(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|digits| digits.parse::<u16>().ok())
-        .filter(|port| *port != 0)
 }
 
 /// Удалять ли переменную окружения до создания окна.
@@ -196,6 +197,16 @@ mod tests {
     }
 
     #[test]
+    fn webdriver_keeps_port_zero_from_msedgedriver() {
+        // msedgedriver 155 просит свободный порт (`=0`): движок выбирает его сам
+        // и пишет в DevToolsActivePort в своей папке данных, драйвер читает оттуда.
+        let driver = "--allow-pre-commit-input --disable-background-networking \
+            --enable-automation --remote-debugging-port=0 --test-type=webdriver";
+        assert_eq!(webdriver_debug_port(Some(driver)), Some(0));
+        assert!(browser_args_with_debug_port(Some(0)).ends_with(" --remote-debugging-port=0"));
+    }
+
+    #[test]
     fn webdriver_rejects_everything_else() {
         for args in [
             None,
@@ -203,7 +214,6 @@ mod tests {
             Some("  "),
             Some("--user-data-dir=C:\\t"),
             Some("--remote-debugging-port="),
-            Some("--remote-debugging-port=0"),
             Some("--remote-debugging-port=-1"),
             Some("--remote-debugging-port=9222;--x"),
             Some("--remote-debugging-port=99999"),

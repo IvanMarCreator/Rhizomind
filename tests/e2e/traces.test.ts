@@ -63,10 +63,28 @@ function diff(before: Snapshot, after: Snapshot): { changed: string[]; removed: 
 }
 
 // Пишут сами инструменты теста, а не приложение: PowerShell (список
-// процессов, закрытие окна) ведёт кэш модулей и профиль запуска.
-const TEST_HARNESS_PATHS = [path.join('Microsoft', 'Windows', 'PowerShell') + path.sep];
+// процессов, закрытие окна) ведёт кэш модулей и профиль запуска
+// (%LOCALAPPDATA%\Microsoft\Windows\PowerShell, %LOCALAPPDATA%\Microsoft\PowerShell).
+const TEST_HARNESS_PATHS = [
+  path.join('Microsoft', 'Windows', 'PowerShell') + path.sep,
+  path.join('AppData', 'Local', 'Microsoft', 'PowerShell') + path.sep,
+];
 
-const isHarnessNoise = (p: string) => TEST_HARNESS_PATHS.some((h) => p.includes(h));
+// Точные пути, которые меняет PowerShell без приложения (например, список
+// переходов PowerShell в Recent\CustomDestinations): калибровка до запуска.
+const calibratedNoise = new Set<string>();
+
+const isHarnessNoise = (p: string) => calibratedNoise.has(p) || TEST_HARNESS_PATHS.some((h) => p.includes(h));
+
+/** Калибровка: что меняют вызовы PowerShell самого теста, пока приложение не запущено. */
+function calibrateHarnessNoise(roots: string[]): string[] {
+  const start = snapshot(roots);
+  processes();
+  execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${process.pid}) | Out-Null`]);
+  const { changed } = diff(start, snapshot(roots));
+  for (const p of changed) calibratedNoise.add(p);
+  return changed;
+}
 
 // --- процессы --------------------------------------------------------------
 
@@ -159,6 +177,8 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     mkdirSync(path.join(leftover, 'EBWebView'), { recursive: true });
     writeFileSync(path.join(leftover, 'EBWebView', 'Local State'), '{}');
     processes(); // прогрев PowerShell до первого снимка
+    const harness = calibrateHarnessNoise(roots);
+    console.log(`калибровка: вызовы PowerShell теста без приложения меняют ${harness.length} путей: ${harness.join(', ')}`);
     before = snapshot(roots);
 
     app = spawn(exe, [], {
