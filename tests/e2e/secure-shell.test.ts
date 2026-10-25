@@ -12,6 +12,7 @@ import { SCREENSHOT_DIR, startApp, type Session } from './driver.ts';
 // него (`tauri://localhost`).
 const OWN_URL = /^(http:\/\/tauri\.localhost|tauri:\/\/localhost)(\/|$)/;
 const EXTERNAL = 'https://example.com/';
+const SHELL = '[data-testid="shell"]';
 
 describe('защищённая оболочка', () => {
   let session: Session;
@@ -19,13 +20,14 @@ describe('защищённая оболочка', () => {
 
   beforeAll(async () => {
     session = await startApp();
-    await (await session.browser.$('h1')).waitForDisplayed({ timeout: 20_000 });
+    // Оболочка окна интерфейса (задача 2.2) отрисована.
+    await session.browser.$(SHELL).waitForDisplayed({ timeout: 20_000 });
   });
 
   afterEach(async (context) => {
     step += 1;
     const name = context.task.name.replace(/[^\p{L}\p{N}]+/gu, '-').slice(0, 60);
-    await session?.browser.saveScreenshot(path.join(SCREENSHOT_DIR, `shell-${step}-${name}-${process.platform}.png`));
+    await session?.browser.saveScreenshot(path.join(SCREENSHOT_DIR, `secure-shell-${step}-${name}-${process.platform}.png`));
   });
 
   afterAll(async () => {
@@ -36,7 +38,7 @@ describe('защищённая оболочка', () => {
     const { browser } = session;
     await browser.pause(1500);
     expect(await browser.getUrl()).toMatch(OWN_URL);
-    expect(await (await browser.$('h1')).getText()).toBe('Rhizomind');
+    expect(await browser.$(SHELL).isDisplayed()).toBe(true);
   }
 
   it('переход на внешний адрес отклоняется (location и ссылка)', async () => {
