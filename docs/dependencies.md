@@ -12,9 +12,14 @@
 
 | Крейт | Версия | Лицензия | Зачем | Сетевой код |
 |---|---|---|---|---|
-| `tauri` | 2.12.5 | MIT OR Apache-2.0 | Платформа: окно, WebView, команды ядра, разрешения (ADR 0008). Функции по умолчанию: `wry`, `compression`, `common-controls-v6`, `dynamic-acl`, `x11`, `dbus` | Нет для десктопа: `reqwest` у Tauri только для мобильных целей. `cargo tree` по Windows, macOS, Linux — пусто; функции `devtools`, `native-tls*`, `rustls-tls` запрещены в `deny.toml` |
+| `tauri` | 2.12.5 | MIT OR Apache-2.0 | Платформа: окно, WebView, команды ядра, разрешения (ADR 0008). Функции по умолчанию: `wry`, `compression`, `common-controls-v6`, `dynamic-acl`, `x11`, `dbus`; плюс `isolation` (isolation pattern, ADR 0009) | Нет для десктопа: `reqwest` у Tauri только для мобильных целей. `cargo tree` по Windows, macOS, Linux — пусто; функции `devtools`, `native-tls*`, `rustls-tls`, `protocol-asset` запрещены в `deny.toml` |
+| `webview2-com` (только Windows) | 0.39.1 | MIT | Настройки WebView2, которых нет в Tauri: SmartScreen (`IsReputationCheckingRequired`), `BrowserProcessId` (задача 0.3). Та же версия уже приходит через wry — новых крейтов нет | Нет: привязки к COM-интерфейсам WebView2 |
+| `windows` (только Windows) | 0.62.2 | MIT OR Apache-2.0 | `SetErrorMode`/`WerSetFlags` (отчёты WER), ожидание процессов движка (`OpenProcess`, снимок процессов). Та же версия уже приходит через wry и tao; функции перечислены в `Cargo.toml` | Нет: привязки к Win32 API, сетевых функций (`Win32_Networking_*`) не включено |
+| `wry` — своя копия `vendor/wry/` | 0.57.1 | MIT OR Apache-2.0 | WebView (приходит через Tauri) с одной правкой `IsCustomCrashReportingEnabled = true`, подключена через `[patch.crates-io]` (ADR 0007, `vendor/wry/RHIZOMIND-PATCH.md`) | Нет (как у wry 0.57.1 из crates.io; отличие — одна строка) |
 
-Транзитивно приходят `wry` 0.57.1 (WebView), `tao` 0.37.2 (окна), `webview2-com` 0.39.1 (Windows), `webkit2gtk` 2.0.2 и `soup3` 0.5.0 (Linux — привязки к системным WebKitGTK и libsoup, через которые WebKitGTK обслуживает свои схемы адресов), `tokio` 1.54.1 без функции `net`. Лицензии всего дерева: MIT, Apache-2.0, BSD-3-Clause, MPL-2.0, Unicode-3.0, Unlicense, Zlib, 0BSD, MIT-0, CC0-1.0 — все совместимы с GPL-3.0.
+Функция `isolation` приносит крейты шифрования RustCrypto: `aes-gcm` 0.10.3, `aes` 0.8.4, `aead` 0.5.2, `cipher` 0.4.4, `ctr` 0.9.2, `ghash` 0.5.1, `polyval` 0.6.2, `universal-hash` 0.5.1, `inout` 0.1.4, `opaque-debug` 0.3.1 (MIT OR Apache-2.0), `subtle` 2.6.1 (BSD-3-Clause), `getrandom` 0.2.17, `rand_core` 0.6.4 (MIT OR Apache-2.0) — без сетевого кода, проверены `cargo deny`.
+
+Транзитивно приходят `tao` 0.37.2 (окна), `webview2-com` 0.39.1 (Windows), `webkit2gtk` 2.0.2 и `soup3` 0.5.0 (Linux — привязки к системным WebKitGTK и libsoup, через которые WebKitGTK обслуживает свои схемы адресов), `tokio` 1.54.1 без функции `net`. Лицензии всего дерева: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-3-Clause, MPL-2.0, Unicode-3.0, Unlicense, Zlib, 0BSD, MIT-0, CC0-1.0 — все совместимы с GPL-3.0. Набор крейтов по каждой цели зафиксирован в `tools/check-cargo-tree/crates.json`: новый крейт валит `npm run verify`, пока его не проверят и не обновят список.
 
 ## Ядро — только сборка и тесты (в программу не попадают)
 
@@ -60,7 +65,7 @@
 | `eslint-plugin-svelte` | 3.23.1 | MIT | ESLint для Svelte | Нет |
 | `globals` | 17.13.0 | MIT | Списки глобальных имён для ESLint | Нет |
 | `@types/node` | 22.20.5 | MIT | Типы Node для `tools/` и тестов | Нет |
-| `webdriverio` | 10.1.0 | MIT | Клиент WebDriver для сценарных тестов | Да: HTTP-клиент к tauri-driver на `127.0.0.1:4444` во время теста |
+| `webdriverio` | 10.1.0 | MIT | Клиент WebDriver для сценарных тестов | Да: HTTP-клиент к tauri-driver на `127.0.0.1:4444` во время теста. В его дереве есть пакеты `edgedriver` и `geckodriver`, которые в `postinstall` скачивают драйверы браузеров; скрипты установки выключены (`.npmrc`: `ignore-scripts=true`), `npm ci` ничего не скачивает |
 
 ## Инструменты, которые ставятся отдельно
 
