@@ -41,7 +41,8 @@ source: src/commands/contract_tests.rs
     "note_extension"
   ],
   "NameWarning": [
-    "unlinkable"
+    "unlinkable",
+    "hidden"
   ],
   "NewNoteLocation.kind": [
     "vault_root",

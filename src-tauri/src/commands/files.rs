@@ -108,6 +108,8 @@ pub enum NameWarning {
     /// На заметку с таким именем нельзя сослаться вики-ссылкой: `#`, `[`,
     /// `]` или пробел в начале (С3.2, решение владельца 25.10.2026).
     Unlinkable,
+    /// Имя начинается с точки: элемент будет скрыт в дереве файлов (С3.2).
+    Hidden,
 }
 
 impl NameWarning {
@@ -115,6 +117,7 @@ impl NameWarning {
     pub fn message_key(self) -> String {
         match self {
             Self::Unlinkable => "names.warning.unlinkable".to_owned(),
+            Self::Hidden => "names.warning.hidden".to_owned(),
         }
     }
 }

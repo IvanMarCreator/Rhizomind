@@ -488,7 +488,7 @@
       }
     },
     {
-      "input": "Отчёт‮gpj",
+      "input": "Отчёт\u202egpj",
       "note": "символ направления текста — как управляющий",
       "expected": {
         "invalid": "forbidden_chars"

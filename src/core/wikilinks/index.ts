@@ -44,9 +44,12 @@ export interface WikiLink {
 /** Запрещённые в именах Windows символы (как `names::FORBIDDEN` в ядре). */
 const FORBIDDEN = new Set(['\\', '/', ':', '*', '?', '"', '<', '>', '|']);
 
-/** Управляющий символ — общая категория Cc, как `char::is_control` в Rust. */
+/** Символы направления текста — запрещены как управляющие (как `names::BIDI_CONTROLS`). */
+const BIDI_CONTROLS = new Set([0x61c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069]);
+
+/** Управляющий символ — общая категория Cc, как `char::is_control` в Rust, и символы направления текста. */
 function isControl(code: number): boolean {
-  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+  return code <= 0x1f || (code >= 0x7f && code <= 0x9f) || BIDI_CONTROLS.has(code);
 }
 
 function hasForbiddenChar(text: string): boolean {

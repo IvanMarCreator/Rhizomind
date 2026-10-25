@@ -69,9 +69,18 @@ pub fn note_stem(name: &str) -> Option<&str> {
 /// Символы, запрещённые в именах Windows (кроме управляющих).
 pub const FORBIDDEN: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
 
-/// Запрещённый в имени символ: из [`FORBIDDEN`] или управляющий.
+/// Символы направления текста: в имени они меняют видимый порядок букв
+/// (`Отчёт` + U+202E + `gpj.md` выглядит как `Отчётdm.jpg`) — запрещены как
+/// управляющие.
+const BIDI_CONTROLS: &[char] = &[
+    '\u{61C}', '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
+    '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+];
+
+/// Запрещённый в имени символ: из [`FORBIDDEN`], управляющий или символ
+/// направления текста.
 pub fn is_forbidden_char(c: char) -> bool {
-    c.is_control() || FORBIDDEN.contains(&c)
+    c.is_control() || FORBIDDEN.contains(&c) || BIDI_CONTROLS.contains(&c)
 }
 
 /// Зарезервированные имена устройств Windows: без учёта регистра, с любым
@@ -137,10 +146,14 @@ pub fn is_linkable(component: &str) -> bool {
     !component.starts_with(' ') && !component.contains(['#', '[', ']'])
 }
 
-/// Предупреждение о допустимом имени: [`NameWarning::Unlinkable`], если на
-/// элемент нельзя будет сослаться (для заметки проверяется имя без `.md`).
-/// Имя при этом допустимо, как в Windows (С3.2).
+/// Предупреждение о допустимом имени (С3.2), по важности:
+/// [`NameWarning::Hidden`] — точка в начале, элемент будет скрыт в дереве;
+/// [`NameWarning::Unlinkable`] — на элемент нельзя будет сослаться (для
+/// заметки проверяется имя без `.md`). Имя при этом допустимо, как в Windows.
 pub fn warning(name: &str) -> Option<NameWarning> {
+    if name.starts_with('.') {
+        return Some(NameWarning::Hidden);
+    }
     let base = note_stem(name).unwrap_or(name);
     (!is_linkable(base)).then_some(NameWarning::Unlinkable)
 }
@@ -506,9 +519,17 @@ mod tests {
     #[test]
     fn bidi_controls_are_forbidden() {
         // Подмена видимого расширения: «Отчёт» + U+202E + «gpj.md» выглядит как «Отчётdm.jpg».
-        for c in ['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{61C}'] {
+        for c in [
+            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}', '\u{200E}', '\u{200F}', '\u{61C}',
+        ] {
             let name = format!("Отчёт{c}gpj.md");
-            assert_eq!(check(&name), Some(NameProblem::ForbiddenChars), "U+{:04X}", c as u32);
+            assert_eq!(
+                check(&name),
+                Some(NameProblem::ForbiddenChars),
+                "U+{:04X}",
+                c as u32
+            );
         }
         // Соединитель для эмодзи — не управляющий.
         assert_eq!(check("👩\u{200D}💻 Код.md"), None);

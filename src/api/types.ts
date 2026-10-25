@@ -157,9 +157,10 @@ export type TrashOutcome =
 
 /**
  * Предупреждение о допустимом имени; текст — `names.warning.<предупреждение>`.
- * `unlinkable` — на заметку нельзя сослаться: `#`, `[`, `]` или пробел в начале (С3.2).
+ * `unlinkable` — на заметку нельзя сослаться: `#`, `[`, `]` или пробел в начале;
+ * `hidden` — имя с точкой в начале, элемент будет скрыт в дереве (С3.2).
  */
-export type NameWarning = 'unlinkable';
+export type NameWarning = 'unlinkable' | 'hidden';
 
 export type NameCheck =
   | { status: 'ok'; warning: NameWarning | null }
