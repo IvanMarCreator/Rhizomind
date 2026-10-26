@@ -734,3 +734,65 @@ fn exit_waits_while_a_window_is_closing() {
     closing::on_window_event(&first.as_ref().window(), &tauri::WindowEvent::Destroyed);
     assert!(!closing::exit_must_wait(app.handle()));
 }
+
+/// Ревью 0.7 (W2): хранилище открывают, пока его окно закрывается (скрыто и
+/// пишет ввод), — открытие дожидается конца закрытия и открывает хранилище
+/// в новом окне, а не даёт «фокус» скрытому окну.
+#[test]
+fn opening_a_vault_whose_window_is_closing_waits_and_opens_it_anew() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let label = first.label().to_owned();
+    let manager = manager(&app);
+    assert!(on_close_requested(&first.as_ref().window()));
+
+    let handle = app.handle().clone();
+    let closing_label = label.clone();
+    let closer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            handle
+                .state::<Closing>()
+                .answer(&closing_label, closing::Answer::Ready)
+        );
+        wait_for("уничтожение", || {
+            handle.state::<Closing>().phase(&closing_label) == Some(Phase::Destroying)
+        });
+        let window = handle.get_webview_window(&closing_label).expect("окно");
+        crate::commands::on_window_event(&window.as_ref().window(), &tauri::WindowEvent::Destroyed);
+    });
+
+    assert_eq!(open(&manager, &a), json!({ "outcome": "opened" }));
+    closer.join().expect("поток");
+    let now = app.state::<Core>().window_of_vault(&a).expect("А открыто");
+    assert_ne!(now, label, "хранилище — в новом окне");
+}
+
+/// Ревью 0.7 (W2): окно вернулось (запись не удалась) — открытие даёт фокус
+/// показанному окну, как обычно.
+#[test]
+fn opening_a_vault_whose_close_was_cancelled_focuses_its_window() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let manager = manager(&app);
+    assert!(on_close_requested(&first.as_ref().window()));
+    let handle = app.handle().clone();
+    let closing_label = first.label().to_owned();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        handle
+            .state::<Closing>()
+            .answer(&closing_label, closing::Answer::Cancel);
+    });
+
+    assert_eq!(open(&manager, &a), json!({ "outcome": "focused" }));
+    canceller.join().expect("поток");
+    assert_eq!(
+        app.state::<Core>().window_of_vault(&a).as_deref(),
+        Some(first.label())
+    );
+}

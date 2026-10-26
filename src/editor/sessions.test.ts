@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteRequest, NoteWriteResponse, VaultPath } from '../api/index.ts';
 import { CoreCallError } from '../api/index.ts';
 import type { NoteStore, SaveStatus } from './session.ts';
-import { EditorSessions, MISSING_GRACE_MS, type EditorPane } from './sessions.ts';
+import { CLOSE_FLUSH_DEADLINE_MS, EditorSessions, MISSING_GRACE_MS, SaveTooSlow, type EditorPane } from './sessions.ts';
 
 const A = ['А.md'];
 const B = ['Папка', 'Б.md'];
@@ -568,5 +568,53 @@ describe('закрытие окна (задача 0.7): flushForClose', () => {
     sessions.removed(A);
 
     expect(await sessions.flushForClose()).toEqual([]);
+  });
+});
+
+describe('ревью 0.7: ожидание при закрытии ограничено временем, а не кругами', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+  });
+
+  it('файла нет: пока ждём сигнала о переименовании, запись не повторяется', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.files.delete(key(A));
+
+    const result = sessions.flushForClose();
+    await vi.advanceTimersByTimeAsync(MISSING_GRACE_MS + 500);
+    await result;
+
+    expect(store.writes).toHaveLength(1);
+  });
+
+  it('запись зависла (медленный диск): к крайнему сроку — ответ «не записано», а не ожидание без конца', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.write = () => new Promise(() => undefined);
+
+    let unsaved: Awaited<ReturnType<EditorSessions['flushForClose']>> | null = null;
+    void sessions.flushForClose().then((result) => (unsaved = result));
+    await vi.advanceTimersByTimeAsync(CLOSE_FLUSH_DEADLINE_MS - 100);
+    expect(unsaved).toBeNull();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(unsaved).not.toBeNull();
+    const notes = unsaved as unknown as { path: string[]; error: unknown }[];
+    expect(notes.map((note) => note.path)).toEqual([A]);
+    expect(notes[0]?.error).toBeInstanceOf(SaveTooSlow);
+  });
+
+  it('крайний срок — с запасом до предела ядра (10 с)', () => {
+    expect(CLOSE_FLUSH_DEADLINE_MS).toBeLessThanOrEqual(8000);
+    expect(MISSING_GRACE_MS).toBeLessThan(CLOSE_FLUSH_DEADLINE_MS);
   });
 });

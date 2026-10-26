@@ -10,12 +10,18 @@
 // src-tauri/src/windows/closing.rs), потом закрывает окно само.
 import { core } from '../api/index.ts';
 import type { UnsavedNote } from '../editor/sessions.ts';
-import { noteName } from '../editor/sessions.ts';
+import { SaveTooSlow, noteName } from '../editor/sessions.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t } from '../i18n/index.ts';
 
 /** Сколько после отказа повторное закрытие закрывает окно без сохранения. */
 export const REFUSAL_WINDOW_MS = 60_000;
+/**
+ * Повторное закрытие раньше этого срока после отказа — не осознанное
+ * (автоповтор Alt+F4, лишний клик по «×» сразу после возврата окна): окно
+ * снова возвращается, без второго уведомления.
+ */
+export const DELIBERATE_REPEAT_MS = 2_000;
 
 export interface ClosingHost {
   /** Записать ввод; вернуть заметки, ввод которых записать не удалось. */
@@ -51,14 +57,26 @@ export class WindowClosing {
   }
 
   async #close(): Promise<void> {
-    let unsaved: readonly UnsavedNote[];
+    // `null` — сама запись бросила исключение: какие заметки, неизвестно.
+    let unsaved: readonly UnsavedNote[] | null;
     try {
       unsaved = await this.#host.flush();
-    } catch (error) {
-      unsaved = [{ path: [], error }];
+    } catch {
+      unsaved = null;
     }
-    const refusedRecently = this.#refusedAt !== null && Date.now() - this.#refusedAt < REFUSAL_WINDOW_MS;
-    if (unsaved.length === 0 || refusedRecently) {
+    if (unsaved?.length === 0) {
+      this.#refusedAt = null;
+      await this.#host.ready().catch(() => undefined);
+      return;
+    }
+    const sinceRefusal = this.#refusedAt === null ? null : Date.now() - this.#refusedAt;
+    if (sinceRefusal !== null && sinceRefusal < DELIBERATE_REPEAT_MS) {
+      // Случайный повтор: окно снова вернуть, отсчёт минуты — от первого отказа.
+      await this.#host.cancel().catch(() => undefined);
+      return;
+    }
+    if (sinceRefusal !== null && sinceRefusal < REFUSAL_WINDOW_MS) {
+      // Осознанное повторное закрытие: без сохранения (пользователь предупреждён).
       this.#refusedAt = null;
       await this.#host.ready().catch(() => undefined);
       return;
@@ -69,9 +87,14 @@ export class WindowClosing {
   }
 }
 
-function refusalText(unsaved: readonly UnsavedNote[]): string {
+function reason(error: unknown): string {
+  return error instanceof SaveTooSlow ? t('window.closeRefused.tooSlow') : userMessage(error);
+}
+
+function refusalText(unsaved: readonly UnsavedNote[] | null): string {
+  if (unsaved === null) return t('window.closeRefused.unknown');
   const names = unsaved.map((note) => `«${noteName(note.path)}»`).join(', ');
-  const message = userMessage(unsaved[0]?.error);
+  const message = reason(unsaved[0]?.error);
   return unsaved.length === 1
     ? t('window.closeRefused.one', { names, message })
     : t('window.closeRefused.many', { names, message });

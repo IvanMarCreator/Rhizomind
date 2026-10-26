@@ -214,6 +214,19 @@ async fn open_vault_in_window<R: Runtime>(
     vault: VaultSummary,
 ) -> CoreResult<VaultOpenOutcome> {
     let core = app.state::<Core>();
+    // Окно этого хранилища закрывается (скрыто, пишет ввод): дождаться конца —
+    // окно вернётся (фокус) или хранилище освободится (новое окно).
+    if let Some(label) = core.window_of_vault(&vault.id)
+        && closing::is_closing(app, &label)
+    {
+        let waiting_app = app.clone();
+        let id = vault.id.clone();
+        crate::commands::blocking(move || {
+            closing::wait_closed(&waiting_app, &label, &id);
+            Ok(())
+        })
+        .await?;
+    }
     let focus_on = |label: &str| {
         if let Some(window) = app.get_webview_window(label) {
             focus(&window);

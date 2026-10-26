@@ -3,7 +3,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreCallError } from '../api/index.ts';
 import type { UnsavedNote } from '../editor/sessions.ts';
-import { REFUSAL_WINDOW_MS, WindowClosing } from './closing.ts';
+import { SaveTooSlow } from '../editor/sessions.ts';
+import { DELIBERATE_REPEAT_MS, REFUSAL_WINDOW_MS, WindowClosing } from './closing.ts';
 
 const ioFailed = new CoreCallError('note_write', { code: 'io_failed', message_key: 'errors.io_failed' });
 
@@ -122,5 +123,41 @@ describe('закрытие окна', () => {
     await Promise.all([first, second]);
     expect(flushes).toBe(1);
     expect(answers).toEqual(['ready']);
+  });
+
+  it('ревью 0.7: повтор закрытия сразу после возврата окна (автоповтор Alt+F4, лишний клик) — не согласие закрыть без сохранения', async () => {
+    const failed = [{ path: ['План.md'], error: ioFailed }];
+    const { closing, answers, notices } = setup([failed, failed, failed]);
+    await closing.closeRequested();
+    await vi.advanceTimersByTimeAsync(DELIBERATE_REPEAT_MS - 500);
+    await closing.closeRequested();
+    expect(answers).toEqual(['cancel', 'cancel']);
+    expect(notices).toHaveLength(1);
+    // Осознанный повтор — позже, но в пределах минуты от первого отказа.
+    await vi.advanceTimersByTimeAsync(1000);
+    await closing.closeRequested();
+    expect(answers).toEqual(['cancel', 'cancel', 'ready']);
+  });
+
+  it('ревью 0.7: сбой самой записи (исключение) — уведомление без имени заметки', async () => {
+    const answers: string[] = [];
+    const notices: string[] = [];
+    const closing = new WindowClosing({
+      flush: () => Promise.reject(new Error('сбой')),
+      ready: () => Promise.resolve(answers.push('ready')),
+      cancel: () => Promise.resolve(answers.push('cancel')),
+      notify: (text) => notices.push(text),
+    });
+    await closing.closeRequested();
+    expect(answers).toEqual(['cancel']);
+    expect(notices).toEqual([
+      'Окно не закрыто: не удалось сохранить ввод. Текст остаётся в редакторе. Чтобы закрыть окно без сохранения, закройте его ещё раз в течение минуты.',
+    ]);
+  });
+
+  it('ревью 0.7: запись не успела к крайнему сроку — причина «диск не отвечает»', async () => {
+    const { closing, notices } = setup([[{ path: ['План.md'], error: new SaveTooSlow() }]]);
+    await closing.closeRequested();
+    expect(notices[0]).toContain('«План». Запись не завершилась вовремя: диск не отвечает.');
   });
 });

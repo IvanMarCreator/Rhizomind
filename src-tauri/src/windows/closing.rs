@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use tauri::{Emitter, EventTarget, Manager, Runtime};
 
-use crate::commands::{Core, WindowCloseRequestedPayload, event};
+use crate::commands::{Core, VaultId, WindowCloseRequestedPayload, event};
 
 /// Сколько ядро ждёт ответа интерфейса после закрытия окна.
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -68,6 +68,8 @@ enum Entry {
 pub struct Closing {
     timeout: Duration,
     windows: Mutex<HashMap<String, Entry>>,
+    /// Окна, уничтоженные после закрытия (метки окон не повторяются).
+    gone: Mutex<std::collections::HashSet<String>>,
     /// Окно вышло из цикла закрытия (уничтожено или показано снова).
     changed: Condvar,
 }
@@ -85,6 +87,7 @@ impl Closing {
         Self {
             timeout,
             windows: Mutex::default(),
+            gone: Mutex::default(),
             changed: Condvar::new(),
         }
     }
@@ -139,6 +142,22 @@ impl Closing {
         }
     }
 
+    /// Окно уничтожено (`Destroyed`): вышло из цикла закрытия навсегда.
+    pub fn destroyed(&self, label: &str) {
+        self.gone
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(label.to_owned());
+        self.finished(label);
+    }
+
+    fn is_gone(&self, label: &str) -> bool {
+        self.gone
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(label)
+    }
+
     /// Ни одно окно не закрывается.
     pub fn is_idle(&self) -> bool {
         self.windows().is_empty()
@@ -176,7 +195,7 @@ pub fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &tauri::Win
         }
         tauri::WindowEvent::Destroyed => {
             if let Some(closing) = window.try_state::<Closing>() {
-                closing.finished(window.label());
+                closing.destroyed(window.label());
             }
         }
         _ => {}
@@ -255,9 +274,11 @@ fn finish<R: Runtime>(
     };
     match (answer, window) {
         (Answer::Cancel, Some(window)) => {
+            // Сначала — вне цикла закрытия: показанное окно сразу можно
+            // закрыть снова (ревью 0.7, W5).
+            closing.finished(label);
             let _ = window.show();
             super::focus(&window);
-            closing.finished(label);
         }
         (_, Some(window)) => {
             closing.mark_destroying(label);
@@ -279,19 +300,51 @@ pub fn answer<R: Runtime>(window: &tauri::Window<R>, answer: Answer) {
     }
 }
 
+/// Окно `label` с хранилищем `vault` закрывается (скрыто, пишет ввод)?
+pub fn is_closing<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+    app.try_state::<Closing>()
+        .is_some_and(|closing| closing.phase(label).is_some())
+}
+
+/// Ждёт конца закрытия окна `label`, в котором открыто хранилище `vault`
+/// (ревью 0.7, W2): окно показано снова — или уничтожено и отвязано от
+/// хранилища. Не дольше предела ожидания с запасом. Блокирует поток.
+pub fn wait_closed<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, vault: &VaultId) {
+    let Some(closing) = app.try_state::<Closing>() else {
+        return;
+    };
+    let deadline = Instant::now() + closing.timeout() + EXIT_GRACE;
+    while Instant::now() < deadline {
+        let settled = closing.phase(label).is_none()
+            && (!closing.is_gone(label)
+                || app
+                    .try_state::<Core>()
+                    .is_none_or(|core| core.window_of_vault(vault).as_deref() != Some(label)));
+        if settled {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Выход из программы откладывается, пока какое-то окно ещё записывает ввод.
 pub fn exit_must_wait<R: Runtime>(app: &tauri::AppHandle<R>) -> bool {
     app.try_state::<Closing>()
         .is_some_and(|closing| !closing.is_idle())
 }
 
-/// Отложенный выход: дождаться всех закрытий (не дольше предела с запасом) и
-/// выйти снова. Блокирует поток — вызывать вне главного.
-pub fn exit_after_closing<R: Runtime>(app: &tauri::AppHandle<R>, code: i32) {
+/// Отложенный выход: дождаться всех закрытий (не дольше предела с запасом).
+/// Явный выход (`code`) повторяется; выход после последнего окна (`None`)
+/// наступит сам, когда уничтожится последнее окно (ревью 0.7, W3): `exit`
+/// при ещё живом WebView оставил бы временную папку движка.
+/// Блокирует поток — вызывать вне главного.
+pub fn exit_after_closing<R: Runtime>(app: &tauri::AppHandle<R>, code: Option<i32>) {
     if let Some(closing) = app.try_state::<Closing>() {
         closing.wait_idle(closing.timeout() + EXIT_GRACE);
     }
-    app.exit(code);
+    if let Some(code) = code {
+        app.exit(code);
+    }
 }
 
 /// Запас сверх предела ожидания для выхода: уничтожение окна идёт через цикл

@@ -285,7 +285,7 @@ pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
         if windows::closing::exit_must_wait(app) {
             api.prevent_exit();
             let app = app.clone();
-            let code = code.unwrap_or(0);
+            let code = *code;
             // Поток не создать — выход остаётся отложенным: окна сами
             // закроются по пределу ожидания, и выход наступит обычным путём.
             let _ = std::thread::Builder::new()

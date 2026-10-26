@@ -23,6 +23,40 @@ export type EditorPane =
 export const MISSING_GRACE_MS = 1500;
 const MISSING_POLL_MS = 100;
 
+/**
+ * Крайний срок записи при закрытии окна — с запасом до предела ожидания ядра
+ * (10 с, `CLOSE_TIMEOUT` в src-tauri/src/windows/closing.rs): не успели —
+ * интерфейс сам отвечает «не записано» и окно возвращается, а не ядро
+ * уничтожает его по пределу с потерей ввода. Время — по `performance.now()`:
+ * таймеры скрытого окна движок может замедлять.
+ */
+export const CLOSE_FLUSH_DEADLINE_MS = 7000;
+
+/** Запись не завершилась к крайнему сроку закрытия окна (диск не отвечает). */
+export class SaveTooSlow extends Error {
+  constructor() {
+    super('note_write: не завершилась к крайнему сроку закрытия окна');
+    this.name = 'SaveTooSlow';
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Ждёт `work` не дольше чем до `deadline` (`performance.now()`); `true` — дождались. */
+async function settlesBy(work: Promise<unknown>, deadline: number): Promise<boolean> {
+  let done = false;
+  void work.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  // Короткие шаги, а не один таймер на весь срок: замедленный таймер
+  // скрытого окна не продлевает ожидание сверх крайнего срока.
+  while (!done && performance.now() < deadline) {
+    await Promise.race([work.catch(() => undefined), sleep(Math.min(MISSING_POLL_MS, deadline - performance.now()))]);
+  }
+  return done;
+}
+
 /** Заметка, ввод которой при закрытии окна записать не удалось. */
 export interface UnsavedNote {
   path: VaultPath;
@@ -200,21 +234,29 @@ export class EditorSessions {
    * их текст остаётся в памяти. Удалённые заметки (`removed()`) не пишутся.
    */
   async flushForClose(): Promise<UnsavedNote[]> {
-    let waited = 0;
-    for (;;) {
-      await this.flushAll();
+    const started = performance.now();
+    const deadline = started + CLOSE_FLUSH_DEADLINE_MS;
+    const missingUntil = started + MISSING_GRACE_MS;
+    // Одна попытка записи каждой заметки; дальше — только ожидание: запись
+    // заметки без файла повторяется лишь после `renamed()` (`moveTo`).
+    let inTime = await settlesBy(this.flushAll(), deadline);
+    while (inTime) {
       const sessions = this.#sessions();
-      if (sessions.some((session) => session.writing)) continue;
+      const writing = sessions.filter((session) => session.writing);
+      if (writing.length > 0) {
+        inTime = await settlesBy(Promise.all(writing.map((session) => session.idle())), deadline);
+        continue;
+      }
       const missing = sessions.some((session) => session.status.kind === 'missing' && session.hasUnsavedChanges);
-      if (!missing || waited >= MISSING_GRACE_MS) break;
+      if (!missing || performance.now() >= missingUntil) break;
       // Файла нет: ждём сигнала о переименовании (запись по новому пути).
-      await new Promise((resolve) => setTimeout(resolve, MISSING_POLL_MS));
-      waited += MISSING_POLL_MS;
+      await sleep(MISSING_POLL_MS);
     }
     return this.#sessions()
       .filter((session) => session.hasUnsavedChanges)
       .map((session) => {
         const status = session.status;
+        if (session.writing) return { path: session.path, error: new SaveTooSlow() };
         return { path: session.path, error: status.kind === 'failed' ? status.error : notFound() };
       });
   }
