@@ -4,7 +4,7 @@
 //!   шестнадцатеричных цифр>` ([`new_label`]). Права окна выдаются по
 //!   шаблону `vault-*` (`capabilities/main.json`), одни и те же у каждого
 //!   окна. Изоляция событий между окнами держится на фильтре изолированного
-//!   iframe (`src-isolation/index.js`): подписка — только на 6 событий ядра
+//!   iframe (`src-isolation/index.js`): подписка — только на 7 событий ядра
 //!   (`commands::EVENT_NAMES`) и только с целью «окно с меткой». Встроенные
 //!   события Tauri (`tauri://window-created`, `tauri://webview-created`)
 //!   рассылаются всем окнам и несут метку нового окна — подписка на них
@@ -34,6 +34,9 @@
 //! - Размер и положение окна запоминаются в списке хранилищ при закрытии
 //!   окна ([`remember_placement`]); при запуске открывается последнее
 //!   хранилище ([`open_at_startup`]).
+//! - Закрытие окна хранилища (задача 0.7, решение владельца 53): окно сразу
+//!   скрывается, а уничтожается после того, как интерфейс записал ввод (или
+//!   через предел ожидания) — [`closing`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -47,6 +50,7 @@ use crate::commands::{
 use crate::events::WindowEmitter;
 use crate::registry::WindowState;
 
+pub mod closing;
 #[cfg(test)]
 mod tests;
 
@@ -210,6 +214,19 @@ async fn open_vault_in_window<R: Runtime>(
     vault: VaultSummary,
 ) -> CoreResult<VaultOpenOutcome> {
     let core = app.state::<Core>();
+    // Окно этого хранилища закрывается (скрыто, пишет ввод): дождаться конца —
+    // окно вернётся (фокус) или хранилище освободится (новое окно).
+    if let Some(label) = core.window_of_vault(&vault.id)
+        && closing::is_closing(app, &label)
+    {
+        let waiting_app = app.clone();
+        let id = vault.id.clone();
+        crate::commands::blocking(move || {
+            closing::wait_closed(&waiting_app, &label, &id);
+            Ok(())
+        })
+        .await?;
+    }
     let focus_on = |label: &str| {
         if let Some(window) = app.get_webview_window(label) {
             focus(&window);
@@ -314,6 +331,12 @@ pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
 /// программы (задача 0.5, решение владельца 58). Вызывать можно из любого
 /// потока, в том числе из главного: замков на время создания окна не держит.
 pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
+    // Выход начат (последнее окно закрывается, браузер завершён): окно не
+    // создаётся. Повторный запуск в эти доли секунды ничего не откроет —
+    // программу запускают ещё раз после выхода.
+    if closing::is_exiting(app) {
+        return Ok(());
+    }
     let core = app.state::<Core>();
     match core.reserve_manager(&new_manager_label()) {
         ManagerSlot::Existing(label) => {
@@ -417,6 +440,50 @@ pub mod e2e {
     /// `vault_open_folder`): папка, которую «выбрал» пользователь. Окно не
     /// показывается (задача 2.8а: сценарные тесты создания и открытия).
     pub const PICK_FOLDER_ENV: &str = "RHIZOMIND_E2E_PICK_FOLDER";
+    /// Пауза перед каждой записью заметки (`note_write`), миллисекунды:
+    /// «медленный диск» для сценарного теста предела ожидания при закрытии
+    /// окна (задача 0.7).
+    pub const SLOW_WRITE_ENV: &str = "RHIZOMIND_E2E_SLOW_WRITE_MS";
+
+    /// Любая папка хранилища считается лежащей на внешнем носителе (флешка):
+    /// сценарный тест решения владельца 66 (задача 0.7).
+    pub const REMOVABLE_ENV: &str = "RHIZOMIND_E2E_REMOVABLE";
+
+    /// Не завершать процесс браузера при закрытии последнего окна (решение
+    /// 64): контрольный прогон сценарного теста — проверка, что тест видит
+    /// загрузку OneAuth при штатном закрытии.
+    pub const KEEP_BROWSER_ENV: &str = "RHIZOMIND_E2E_KEEP_BROWSER";
+
+    /// Задана ли [`KEEP_BROWSER_ENV`].
+    pub fn keep_browser() -> bool {
+        std::env::var_os(KEEP_BROWSER_ENV).is_some()
+    }
+
+    /// Файл-признак «носитель вынут»: пока он есть, запись заметки
+    /// отклоняется (`vault_unavailable`), а папка хранилища считается
+    /// недоступной (решение 66). На Windows папку, за которой следит
+    /// наблюдатель, не переименовать — поэтому подмена, а не переименование.
+    pub const UNPLUG_FLAG_ENV: &str = "RHIZOMIND_E2E_UNPLUG_FLAG";
+
+    /// Носитель «вынут»: файл из [`UNPLUG_FLAG_ENV`] существует.
+    pub fn unplugged() -> bool {
+        std::env::var_os(UNPLUG_FLAG_ENV).is_some_and(|flag| std::path::Path::new(&flag).exists())
+    }
+
+    /// Задана ли [`REMOVABLE_ENV`].
+    pub fn removable_volume() -> bool {
+        std::env::var_os(REMOVABLE_ENV).is_some()
+    }
+
+    /// Пауза из [`SLOW_WRITE_ENV`] перед записью заметки.
+    pub fn slow_note_write() {
+        let delay = std::env::var(SLOW_WRITE_ENV)
+            .ok()
+            .and_then(|ms| ms.parse::<u64>().ok());
+        if let Some(ms) = delay {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
 
     /// Папка из [`PICK_FOLDER_ENV`] вместо системного окна выбора папки.
     pub fn picked_folder() -> Option<std::path::PathBuf> {

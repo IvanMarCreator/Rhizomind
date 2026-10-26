@@ -41,6 +41,8 @@
     'workspace_read',
     'workspace_write',
     'open_external',
+    'window_close_ready',
+    'window_close_cancel',
   ]);
 
   // События ядра API v1 — ровно модуль `event` в src-tauri/src/commands/events.rs
@@ -55,6 +57,7 @@
     'note:deleted',
     'note:conflict-saved',
     'vault:availability',
+    'window:close-requested',
   ]);
 
   // Служебные команды Tauri, без которых не работают события ядра (`listen`).

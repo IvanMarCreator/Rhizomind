@@ -336,6 +336,10 @@ export interface CoreCommands {
   workspace_read: { request: null; response: WorkspaceReadResponse };
   workspace_write: { request: WorkspaceWriteRequest; response: null };
   open_external: { request: OpenExternalRequest; response: OpenExternalOutcome };
+  /** Ответ на `window:close-requested`: ввод записан, окно закрывается (задача 0.7). */
+  window_close_ready: { request: null; response: null };
+  /** Ответ на `window:close-requested`: запись не удалась, окно показывается снова. */
+  window_close_cancel: { request: null; response: null };
 }
 
 export type CommandName = keyof CoreCommands;
@@ -386,6 +390,13 @@ export interface VaultAvailabilityPayload {
 }
 
 /**
+ * `window:close-requested`: пользователь закрыл окно хранилища (задача 0.7).
+ * Окно уже скрыто; интерфейс записывает ввод и отвечает `window_close_ready`
+ * или `window_close_cancel`. Данных нет.
+ */
+export type WindowCloseRequestedPayload = Record<string, never>;
+
+/**
  * Все события ядра → интерфейс и их данные. Ядро отправляет их только окну
  * своего хранилища; `note:*` — для любой заметки хранилища, интерфейс
  * фильтрует открытые сам.
@@ -397,6 +408,7 @@ export interface CoreEvents {
   'note:deleted': NoteDeletedPayload;
   'note:conflict-saved': NoteConflictSavedPayload;
   'vault:availability': VaultAvailabilityPayload;
+  'window:close-requested': WindowCloseRequestedPayload;
 }
 
 export type EventName = keyof CoreEvents;

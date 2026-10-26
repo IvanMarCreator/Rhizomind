@@ -45,16 +45,21 @@ pub mod event {
     /// Папка хранилища стала недоступна или снова доступна (расширение
     /// контракта v1 в задаче 1.7).
     pub const VAULT_AVAILABILITY: &str = "vault:availability";
+    /// Пользователь закрывает окно хранилища: окно уже скрыто, интерфейс
+    /// записывает ввод и отвечает `window_close_ready` или
+    /// `window_close_cancel` (задача 0.7, решение владельца 53).
+    pub const WINDOW_CLOSE_REQUESTED: &str = "window:close-requested";
 }
 
 /// Все события API v1 — для тестов снимков.
-pub const EVENT_NAMES: [&str; 6] = [
+pub const EVENT_NAMES: [&str; 7] = [
     event::VAULT_CHANGED,
     event::NOTE_CHANGED,
     event::NOTE_RENAMED,
     event::NOTE_DELETED,
     event::NOTE_CONFLICT_SAVED,
     event::VAULT_AVAILABILITY,
+    event::WINDOW_CLOSE_REQUESTED,
 ];
 
 /// Одно изменение дерева.
@@ -156,3 +161,17 @@ pub struct VaultAvailabilityPayload {
     /// `false` — папка недоступна; `true` — снова доступна.
     pub available: bool,
 }
+
+/// `window:close-requested`: пользователь закрыл окно хранилища (задача 0.7,
+/// решение владельца 53). Окно уже скрыто; ядро ждёт, пока интерфейс запишет
+/// несохранённый ввод всех заметок окна, и уничтожает окно по
+/// `window_close_ready` (или через [`crate::windows::closing::CLOSE_TIMEOUT`]
+/// без ответа). `window_close_cancel` — запись не удалась: окно снова
+/// показывается и не закрывается. Данных нет; пустой объект оставляет место
+/// для расширения.
+///
+/// Расширение контракта v1 (задача 0.7): новое событие и две команды,
+/// прежние команды и события не менялись.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowCloseRequestedPayload {}

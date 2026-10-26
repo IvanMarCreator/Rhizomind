@@ -57,4 +57,9 @@ export const core = {
   // Внешние ссылки
   /** Подтверждение показывает ядро; интерфейс обойти его не может. */
   openExternal: withRequest('open_external'),
+  // Окно (задача 0.7)
+  /** Ввод окна записан после `window:close-requested`: окно закрывается. */
+  windowCloseReady: withoutRequest('window_close_ready'),
+  /** Запись не удалась: окно показывается снова и не закрывается. */
+  windowCloseCancel: withoutRequest('window_close_cancel'),
 } as const;

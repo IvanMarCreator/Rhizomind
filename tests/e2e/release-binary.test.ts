@@ -22,9 +22,18 @@ describe('выпускной исполняемый файл', () => {
   // Задача 1.3: открытие тестового хранилища без окна выбора папки и свой
   // список хранилищ есть только в тестовой сборке (src-tauri/src/windows/mod.rs).
   // Задача 2.8а: подмена ответа окна выбора папки — тоже только там.
+  // Задача 0.7: «медленный диск» для теста предела ожидания при закрытии окна.
   it('без переменных окружения сценарных тестов', () => {
     const binary = readFileSync(exe);
-    for (const name of ['RHIZOMIND_E2E_VAULT', 'RHIZOMIND_E2E_PROFILE_DIR', 'RHIZOMIND_E2E_PICK_FOLDER']) {
+    for (const name of [
+      'RHIZOMIND_E2E_VAULT',
+      'RHIZOMIND_E2E_PROFILE_DIR',
+      'RHIZOMIND_E2E_PICK_FOLDER',
+      'RHIZOMIND_E2E_SLOW_WRITE_MS',
+      'RHIZOMIND_E2E_REMOVABLE',
+      'RHIZOMIND_E2E_KEEP_BROWSER',
+      'RHIZOMIND_E2E_UNPLUG_FLAG',
+    ]) {
       expect(binary.includes(Buffer.from(name, 'utf8')), name).toBe(false);
     }
   });

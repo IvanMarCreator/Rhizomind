@@ -9,7 +9,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteResponse, Settings, VaultPath } from '../api/index.ts';
-import { mockCore, type CoreMocks, type RecordedCall } from '../api/testing.ts';
+import { emitCoreEvent, mockCore, type CoreMocks, type RecordedCall } from '../api/testing.ts';
 import Shell from '../shell/Shell.svelte';
 import Editor from './Editor.svelte';
 import { WindowModel } from '../shell/window.svelte.ts';
@@ -250,6 +250,64 @@ describe('автосохранение и индикатор', () => {
     type(view, '1');
     window.dispatchEvent(new Event('beforeunload'));
     expect(writes(calls)).toHaveLength(1);
+  });
+});
+
+describe('закрытие окна (задача 0.7): сигнал ядра window:close-requested', () => {
+  const answers = (calls: RecordedCall[]) =>
+    calls.map(([command]) => command).filter((command) => command.startsWith('window_close_'));
+
+  it('ввод записывается, и только потом ядру уходит «готово»', async () => {
+    const disk = new Disk(SAMPLES);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const { view, calls } = await openWindow(disk, ['LF без BOM.md'], {
+      note_write: async ({ path, text }) => {
+        await held;
+        return disk.write(path, text);
+      },
+      window_close_ready: () => null,
+      window_close_cancel: () => null,
+    });
+    type(view, 'ещё');
+
+    await emitCoreEvent('window:close-requested', {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(writes(calls)).toHaveLength(1);
+    expect(answers(calls)).toEqual([]);
+
+    release();
+    await waitFor(() => expect(answers(calls)).toEqual(['window_close_ready']));
+    expect(disk.decode('LF без BOM.md').text).toBe('# Заметка\nПервая строка\n\n- пункт\nещё');
+  });
+
+  it('без заметки — сразу «готово»', async () => {
+    const calls = mockCore(mocksFor(new Disk({}), { tree_list: () => ({ entries: [] }), window_close_ready: () => null }));
+    const model = new WindowModel();
+    render(Shell, { model });
+    await waitFor(() => expect(model.status.kind).toBe('ready'));
+
+    await emitCoreEvent('window:close-requested', {});
+    await waitFor(() => expect(answers(calls)).toEqual(['window_close_ready']));
+  });
+
+  it('запись не удалась — окно не закрывается: «отмена» ядру и уведомление; текст в редакторе', async () => {
+    const disk = new Disk(SAMPLES);
+    const failure: CoreError = { code: 'io_failed', message_key: 'errors.io_failed' };
+    const { view, calls } = await openWindow(disk, ['LF без BOM.md'], {
+      note_write: () => {
+        throw failure;
+      },
+      window_close_ready: () => null,
+      window_close_cancel: () => null,
+    });
+    type(view, 'ещё');
+
+    await emitCoreEvent('window:close-requested', {});
+
+    await waitFor(() => expect(answers(calls)).toEqual(['window_close_cancel']));
+    expect(await screen.findByText(/Окно не закрыто: не удалось сохранить заметку «LF без BOM»/)).toBeTruthy();
+    expect(view.state.doc.toString()).toContain('ещё');
   });
 });
 

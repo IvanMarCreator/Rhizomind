@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteRequest, NoteWriteResponse, VaultPath } from '../api/index.ts';
 import { CoreCallError } from '../api/index.ts';
 import type { NoteStore, SaveStatus } from './session.ts';
-import { EditorSessions, type EditorPane } from './sessions.ts';
+import { CLOSE_FLUSH_DEADLINE_MS, EditorSessions, MISSING_GRACE_MS, SaveTooSlow, type EditorPane } from './sessions.ts';
 
 const A = ['А.md'];
 const B = ['Папка', 'Б.md'];
@@ -474,5 +474,161 @@ describe('повторное ревью 2.4: чтение нового пути 
     expect(notices).toEqual([
       'Заметка «А» изменилась на диске одновременно с вашими правками. Сохранены обе версии: ваша — в заметке, версия с диска — рядом, в «А (внешняя версия)».',
     ]);
+  });
+});
+
+describe('закрытие окна (задача 0.7): flushForClose', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  it('записывает ввод всех заметок окна и сообщает, что не записано ничего', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('А, ввод');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+    sessions.show(B);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('Б, ввод');
+    store.failWrites = null;
+
+    const unsaved = await sessions.flushForClose();
+
+    expect(unsaved).toEqual([]);
+    expect(store.files.get(key(A))).toBe('А, ввод');
+    expect(store.files.get(key(B))).toBe('Б, ввод');
+  });
+
+  it('ждёт ответа записи, ушедшей раньше (автосохранение в полёте), и дописывает ввод после неё', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const session = (pane() as Open).session;
+    session.edit('первое');
+    void session.flush();
+    session.edit('первое и второе');
+
+    expect(await sessions.flushForClose()).toEqual([]);
+    expect(store.files.get(key(A))).toBe('первое и второе');
+  });
+
+  it('запись не удалась — заметка в ответе с причиной, текст остаётся в памяти', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('ввод');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+
+    const unsaved = await sessions.flushForClose();
+
+    expect(unsaved.map((note) => note.path)).toEqual([A]);
+    expect(unsaved[0]?.error).toBeInstanceOf(CoreCallError);
+    expect((pane() as Open).session.text).toBe('ввод');
+  });
+
+  it('файла нет (переименован снаружи, событие ещё в пути): ждёт сигнала и пишет по новому пути', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.files.set('А2.md', 'текст А');
+    store.files.delete(key(A));
+
+    const result = sessions.flushForClose();
+    await vi.advanceTimersByTimeAsync(300);
+    sessions.renamed(A, ['А2.md']);
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(await result).toEqual([]);
+    expect(store.files.get('А2.md')).toBe('мой ввод');
+  });
+
+  it('файла нет и сигнала не было — после короткого ожидания заметка в ответе', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.files.delete(key(A));
+
+    const result = sessions.flushForClose();
+    await vi.advanceTimersByTimeAsync(MISSING_GRACE_MS);
+
+    expect((await result).map((note) => note.path)).toEqual([A]);
+  });
+
+  it('удалённая заметка не мешает закрытию: её ввод отброшен (решение владельца)', async () => {
+    const { sessions, pane } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('ввод');
+    sessions.removed(A);
+
+    expect(await sessions.flushForClose()).toEqual([]);
+  });
+});
+
+describe('ревью 0.7: ожидание при закрытии ограничено временем, а не кругами', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
+  });
+
+  it('файла нет: пока ждём сигнала о переименовании, запись не повторяется', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.files.delete(key(A));
+
+    const result = sessions.flushForClose();
+    await vi.advanceTimersByTimeAsync(MISSING_GRACE_MS + 500);
+    await result;
+
+    expect(store.writes).toHaveLength(1);
+  });
+
+  it('запись зависла (медленный диск): к крайнему сроку — ответ «не записано», а не ожидание без конца', async () => {
+    const store = new FakeStore();
+    const { sessions, pane } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('мой ввод');
+    store.write = () => new Promise(() => undefined);
+
+    let unsaved: Awaited<ReturnType<EditorSessions['flushForClose']>> | null = null;
+    void sessions.flushForClose().then((result) => (unsaved = result));
+    await vi.advanceTimersByTimeAsync(CLOSE_FLUSH_DEADLINE_MS - 100);
+    expect(unsaved).toBeNull();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(unsaved).not.toBeNull();
+    const notes = unsaved as unknown as { path: string[]; error: unknown }[];
+    expect(notes.map((note) => note.path)).toEqual([A]);
+    expect(notes[0]?.error).toBeInstanceOf(SaveTooSlow);
+  });
+
+  it('крайний срок — с запасом до предела ядра (10 с)', () => {
+    expect(CLOSE_FLUSH_DEADLINE_MS).toBeLessThanOrEqual(8000);
+    expect(MISSING_GRACE_MS).toBeLessThan(CLOSE_FLUSH_DEADLINE_MS);
+  });
+
+  it('решение 67: всё уже записано — ответ сразу, без записей и без ожидания', async () => {
+    const store = new FakeStore();
+    const { sessions } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+
+    let unsaved: unknown = null;
+    void sessions.flushForClose().then((result) => (unsaved = result));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(unsaved).toEqual([]);
+    expect(store.writes).toEqual([]);
   });
 });

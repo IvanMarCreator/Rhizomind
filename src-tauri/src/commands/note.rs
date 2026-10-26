@@ -129,6 +129,15 @@ pub async fn note_write<R: Runtime>(
     let open = core.require_vault(window.label())?;
     let path = request.path.clone();
     let response = blocking(move || {
+        // Тестовая сборка: медленный диск для сценарного теста предела
+        // ожидания при закрытии окна (задача 0.7).
+        #[cfg(feature = "webdriver")]
+        {
+            crate::windows::e2e::slow_note_write();
+            if crate::windows::e2e::unplugged() {
+                return Err(super::CoreError::new(super::ErrorCode::VaultUnavailable));
+            }
+        }
         let response =
             open.vault
                 .write_note(&request.path, &request.text, &request.expected_version)?;

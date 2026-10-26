@@ -140,6 +140,47 @@ pub fn confirm_permanent_delete<R: tauri::Runtime>(
     ask_permanent_delete(window, &PermanentDelete::for_entry(name, kind))
 }
 
+/// Текст сообщения «окно закрыто без записи» (решение владельца 66).
+pub fn closed_unsaved_text(vault_name: &str) -> String {
+    format!("Хранилище «{vault_name}» недоступно. Окно закрыто, несохранённый ввод не записан.")
+}
+
+/// Системное сообщение: окно хранилища `label` закрыто, ввод не записан —
+/// хранилище на внешнем носителе стало недоступно (решение владельца 66).
+/// Ждёт, пока пользователь закроет сообщение: окно уничтожается после
+/// (иначе выход программы убрал бы сообщение раньше, чем его прочли).
+/// Блокирует поток — вызывать вне главного.
+pub fn tell_closed_unsaved<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    vault_name: &str,
+) {
+    let text = closed_unsaved_text(vault_name);
+    show_closed_unsaved(app, label, &text);
+}
+
+#[cfg(all(not(test), not(feature = "webdriver")))]
+fn show_closed_unsaved<R: tauri::Runtime>(app: &tauri::AppHandle<R>, _label: &str, text: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    app.dialog()
+        .message(text)
+        .title("Rhizomind")
+        .kind(MessageDialogKind::Warning)
+        .blocking_show();
+}
+
+/// Тестовая сборка: сообщение — в stderr, без окна (сценарный тест не
+/// нажимает «ОК» в системном окне).
+#[cfg(all(not(test), feature = "webdriver"))]
+fn show_closed_unsaved<R: tauri::Runtime>(_app: &tauri::AppHandle<R>, _label: &str, text: &str) {
+    eprintln!("Rhizomind (тестовая сборка, сообщение): {text}");
+}
+
+#[cfg(test)]
+fn show_closed_unsaved<R: tauri::Runtime>(_app: &tauri::AppHandle<R>, label: &str, text: &str) {
+    test_answers::record_closed_unsaved(label, text);
+}
+
 #[cfg(all(not(test), windows))]
 fn ask_folder<R: tauri::Runtime>(
     window: &tauri::Window<R>,
@@ -246,6 +287,25 @@ pub(crate) mod test_answers {
     }
 
     static ANSWERS: Mutex<Option<HashMap<String, Answers>>> = Mutex::new(None);
+    static CLOSED_UNSAVED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+    /// Показанное сообщение «окно закрыто, ввод не записан» окна `label`.
+    pub fn record_closed_unsaved(label: &str, text: &str) {
+        CLOSED_UNSAVED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .insert(label.to_owned(), text.to_owned());
+    }
+
+    /// Сообщение «окно закрыто, ввод не записан» окна `label`, если было.
+    pub fn closed_unsaved(label: &str) -> Option<String> {
+        CLOSED_UNSAVED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|all| all.get(label).cloned())
+    }
 
     /// Задаёт ответы для окна `label`.
     pub fn set(label: &str, answers: Answers) {

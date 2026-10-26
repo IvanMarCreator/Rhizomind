@@ -43,7 +43,10 @@ macro_rules! with_core_commands {
             workspace_read,
             workspace_write,
             // Внешние ссылки
-            open_external
+            open_external,
+            // Окно, задача 0.7
+            window_close_ready,
+            window_close_cancel
         )
     };
 }

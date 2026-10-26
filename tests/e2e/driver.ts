@@ -124,6 +124,22 @@ export interface StartOptions {
    * тестовой сборке; задача 2.8а).
    */
   pickFolder?: string;
+  /**
+   * «Медленный диск»: пауза перед каждой записью заметки, мс (переменная
+   * RHIZOMIND_E2E_SLOW_WRITE_MS, только в тестовой сборке; задача 0.7 —
+   * предел ожидания при закрытии окна).
+   */
+  slowWriteMs?: number;
+  /**
+   * Папки хранилищ считаются лежащими на внешнем носителе (переменная
+   * RHIZOMIND_E2E_REMOVABLE, только в тестовой сборке; решение владельца 66).
+   */
+  removable?: boolean;
+  /**
+   * Файл-признак «носитель вынут» (RHIZOMIND_E2E_UNPLUG_FLAG, только в
+   * тестовой сборке; решение 66): пока файл есть, запись отклоняется.
+   */
+  unplugFlag?: string;
 }
 
 /**
@@ -153,6 +169,12 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   else delete env.RHIZOMIND_E2E_VAULT;
   if (options.pickFolder) env.RHIZOMIND_E2E_PICK_FOLDER = options.pickFolder;
   else delete env.RHIZOMIND_E2E_PICK_FOLDER;
+  if (options.slowWriteMs !== undefined) env.RHIZOMIND_E2E_SLOW_WRITE_MS = String(options.slowWriteMs);
+  else delete env.RHIZOMIND_E2E_SLOW_WRITE_MS;
+  if (options.removable) env.RHIZOMIND_E2E_REMOVABLE = '1';
+  else delete env.RHIZOMIND_E2E_REMOVABLE;
+  if (options.unplugFlag) env.RHIZOMIND_E2E_UNPLUG_FLAG = options.unplugFlag;
+  else delete env.RHIZOMIND_E2E_UNPLUG_FLAG;
   const removeProfile = () => rmSync(profile, { recursive: true, force: true });
   await waitForPortsFree(30_000);
   const args = ['--port', String(PORT)];

@@ -275,6 +275,8 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: { outcome: 'opened' },
     errors: [err('scheme_not_allowed')],
   },
+  window_close_ready: { command: 'window_close_ready', request: null, response: null, errors: [] },
+  window_close_cancel: { command: 'window_close_cancel', request: null, response: null, errors: [] },
 };
 
 const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
@@ -309,6 +311,10 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
   'vault:availability': {
     event: 'vault:availability',
     payload: { available: false },
+  },
+  'window:close-requested': {
+    event: 'window:close-requested',
+    payload: {},
   },
 };
 
