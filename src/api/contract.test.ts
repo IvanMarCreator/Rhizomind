@@ -314,7 +314,7 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
   },
   'window:close-requested': {
     event: 'window:close-requested',
-    payload: {},
+    payload: { sessionEnd: true },
   },
 };
 

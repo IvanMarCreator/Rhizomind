@@ -267,7 +267,7 @@ pub fn on_close_requested<R: Runtime>(window: &tauri::Window<R>) -> bool {
     let _ = window.emit_to(
         EventTarget::webview_window(label.clone()),
         event::WINDOW_CLOSE_REQUESTED,
-        WindowCloseRequestedPayload {},
+        WindowCloseRequestedPayload { session_end: false },
     );
     let app = window.app_handle().clone();
     let timeout = closing.timeout();

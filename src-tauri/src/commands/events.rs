@@ -167,11 +167,19 @@ pub struct VaultAvailabilityPayload {
 /// несохранённый ввод всех заметок окна, и уничтожает окно по
 /// `window_close_ready` (или через [`crate::windows::closing::CLOSE_TIMEOUT`]
 /// без ответа). `window_close_cancel` — запись не удалась: окно снова
-/// показывается и не закрывается. Данных нет; пустой объект оставляет место
-/// для расширения.
+/// показывается и не закрывается.
+///
+/// То же событие уходит каждому окну хранилища при конце сеанса Windows
+/// (задача 0.11): окно не скрыто и не закрывается, ядро только ждёт записи.
 ///
 /// Расширение контракта v1 (задача 0.7): новое событие и две команды,
-/// прежние команды и события не менялись.
+/// прежние команды и события не менялись. Поле `sessionEnd` — задача 0.11а
+/// (решение 79).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WindowCloseRequestedPayload {}
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WindowCloseRequestedPayload {
+    /// `true` — запрос записи перед выходом из системы или выключением
+    /// Windows (не закрытие окна): интерфейс только записывает ввод и
+    /// отвечает, правило «повторное закрытие в течение минуты» не действует.
+    pub session_end: bool,
+}

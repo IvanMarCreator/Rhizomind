@@ -12,7 +12,9 @@
 //    надёжной: без задачи 0.11 процесс завершается раньше записи.
 // 2. Без WebDriver (как tests/e2e/browser-exit.test.ts): процесс браузера
 //    завершается без загрузки oneauth.dll (решение 64), временная папка
-//    движка удалена.
+//    движка удалена. Дважды: `WM_ENDSESSION` окнам в порядке перечисления и
+//    в обратном (ревью 0.11, п. 2) — порядок рассылки решает Windows; если
+//    первым известили окно tao, браузер завершается в `RunEvent::Exit`.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -25,7 +27,10 @@ const isWindows = process.platform === 'win32';
 const NOTE = 'Заметка';
 const TYPED = 'typed-right-before-logoff-0123456789';
 
-/** Windows ждёт ответа на `WM_QUERYENDSESSION` ~5 с, программа — 4 с. */
+/**
+ * Программа ждёт записи до 10 с (решение 78), но при записи за ~1 с отвечает
+ * раньше, чем Windows покажет экран со списком программ (~5 с).
+ */
 const QUERY_LIMIT_MS = 5_000;
 
 function powershell(command: string): string {
@@ -34,10 +39,11 @@ function powershell(command: string): string {
 
 /**
  * Помощник: печатает `READY`, ждёт строку на входе и шлёт окнам процесса
- * `$App` конец сеанса. Печатает `QUERY <мс> <ответы через запятую> WINDOWS <n>`.
+ * `$App` конец сеанса (`-Reverse` — `WM_ENDSESSION` в обратном порядке окон).
+ * Печатает `QUERY <мс> <ответы через запятую> WINDOWS <n>`.
  */
 const SESSION_END = `
-param([int]$App)
+param([int]$App, [switch]$Reverse)
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -50,7 +56,7 @@ public static class RhizomindSessionEnd {
   [DllImport("user32.dll")] static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
   const uint WM_QUERYENDSESSION = 0x11;
   const uint WM_ENDSESSION = 0x16;
-  public static string Run(uint app) {
+  public static string Run(uint app, bool reverse) {
     var windows = new List<IntPtr>();
     EnumProc collect = (h, l) => { uint pid; GetWindowThreadProcessId(h, out pid); if (pid == app) windows.Add(h); return true; };
     EnumWindows(collect, IntPtr.Zero);
@@ -63,6 +69,7 @@ public static class RhizomindSessionEnd {
       answers.Add(sent == IntPtr.Zero ? "fail" : r.ToString());
     }
     var ms = watch.ElapsedMilliseconds;
+    if (reverse) windows.Reverse();
     foreach (var h in windows) {
       IntPtr r;
       SendMessageTimeoutW(h, WM_ENDSESSION, new IntPtr(1), logoff, 0, 30000, out r);
@@ -74,7 +81,7 @@ public static class RhizomindSessionEnd {
 'READY'
 [Console]::Out.Flush()
 $null = [Console]::In.ReadLine()
-[RhizomindSessionEnd]::Run([uint32]$App)
+[RhizomindSessionEnd]::Run([uint32]$App, [bool]$Reverse)
 `;
 
 interface Helper {
@@ -84,14 +91,12 @@ interface Helper {
 }
 
 /** Запускает помощника для процесса `pid` и ждёт, пока он скомпилируется. */
-async function startHelper(dir: string, pid: number): Promise<Helper> {
+async function startHelper(dir: string, pid: number, reverse = false): Promise<Helper> {
   const script = path.join(dir, 'session-end.ps1');
   writeFileSync(script, SESSION_END);
-  const child = spawn(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-App', String(pid)],
-    { stdio: ['pipe', 'pipe', 'inherit'] },
-  );
+  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-App', String(pid)];
+  if (reverse) args.push('-Reverse');
+  const child = spawn('powershell', args, { stdio: ['pipe', 'pipe', 'inherit'] });
   let output = '';
   child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
   await waitFor('помощник готов', 60_000, () => (output.includes('READY') ? true : undefined));
@@ -188,8 +193,13 @@ describe.skipIf(!isWindows)('выход из системы Windows: ввод н
     expect(readFileSync(path.join(vault, `${NOTE}.md`), 'utf8')).toContain(TYPED);
   }, 180_000);
 
-  it('браузер завершается без oneauth.dll, временная папка движка удалена', async () => {
-    const root = path.join(scratch, 'direct');
+  it.each([
+    { order: 'прямой', reverse: false },
+    { order: 'обратный', reverse: true },
+  ])('браузер завершается без oneauth.dll, временная папка движка удалена ($order порядок WM_ENDSESSION)', async ({
+    reverse,
+  }) => {
+    const root = path.join(scratch, reverse ? 'direct-reverse' : 'direct');
     vault = createTestVault('Конец сеанса без драйвера', { [`${NOTE}.md`]: 'текст\n' });
     const profile = path.join(root, 'profile');
     const temp = path.join(root, 'temp');
@@ -211,7 +221,7 @@ describe.skipIf(!isWindows)('выход из системы Windows: ввод н
         return handle !== '' && handle !== '0' ? handle : undefined;
       });
       await new Promise((resolve) => setTimeout(resolve, 3000));
-      helper = await startHelper(root, pid);
+      helper = await startHelper(root, pid, reverse);
 
       // Наблюдатель модулей браузера — тот же, что в browser-exit.test.ts.
       const watcherScript = path.join(root, 'watch.ps1');

@@ -74,13 +74,26 @@ fn vault_window(app: &App<MockRuntime>, parent: &Path, name: &str) -> WebviewWin
     window
 }
 
-/// Считает события `window:close-requested`, пришедшие окну.
+/// Считает события `window:close-requested` конца сеанса, пришедшие окну.
 fn close_events(window: &WebviewWindow<MockRuntime>) -> Arc<AtomicUsize> {
+    close_events_with(window, r#"{"sessionEnd":true}"#)
+}
+
+/// Считает события `window:close-requested` с данными `payload`.
+fn close_events_with(
+    window: &WebviewWindow<MockRuntime>,
+    payload: &'static str,
+) -> Arc<AtomicUsize> {
     let count = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&count);
-    window.listen(crate::commands::event::WINDOW_CLOSE_REQUESTED, move |_| {
-        counter.fetch_add(1, Ordering::SeqCst);
-    });
+    window.listen(
+        crate::commands::event::WINDOW_CLOSE_REQUESTED,
+        move |event| {
+            // Интерфейс отличает конец сеанса от закрытия окна (решение 79).
+            assert_eq!(event.payload(), payload);
+            counter.fetch_add(1, Ordering::SeqCst);
+        },
+    );
     count
 }
 
@@ -90,14 +103,22 @@ fn answer_later(
     label: &str,
     delay: Duration,
 ) -> std::thread::JoinHandle<()> {
+    answer_later_with(app, label, delay, closing::Answer::Ready)
+}
+
+/// Ответ `answer` интерфейса окна `label` из другого потока через `delay`.
+fn answer_later_with(
+    app: &App<MockRuntime>,
+    label: &str,
+    delay: Duration,
+    answer: closing::Answer,
+) -> std::thread::JoinHandle<()> {
     let handle = app.handle().clone();
     let label = label.to_owned();
     std::thread::spawn(move || {
         std::thread::sleep(delay);
         assert!(
-            handle
-                .state::<Closing>()
-                .answer(&label, closing::Answer::Ready),
+            handle.state::<Closing>().answer(&label, answer),
             "окно {label} ждёт ответа"
         );
     })
@@ -130,7 +151,8 @@ fn every_vault_window_is_asked_and_awaited() {
         outcome,
         Outcome {
             asked: 2,
-            answered: 2,
+            ready: 2,
+            refused: 0,
             timed_out: false
         }
     );
@@ -169,7 +191,8 @@ fn waiting_ends_at_the_limit_without_answers() {
         outcome,
         Outcome {
             asked: 1,
-            answered: 0,
+            ready: 0,
+            refused: 0,
             timed_out: true
         }
     );
@@ -195,7 +218,8 @@ fn waiting_ends_at_the_limit_without_answers() {
 fn window_already_closing_is_not_asked_again_but_awaited() {
     let (app, temp) = app();
     let first = vault_window(&app, temp.path(), "А");
-    let events = close_events(&first);
+    // Закрытие пользователем: событие без признака конца сеанса.
+    let events = close_events_with(&first, r#"{"sessionEnd":false}"#);
     assert!(closing::on_close_requested(&first.as_ref().window()));
     let deadline = Instant::now() + Duration::from_secs(5);
     while events.load(Ordering::SeqCst) == 0 {
@@ -244,7 +268,7 @@ fn nested_request_while_saving_returns_at_once() {
     });
 
     assert_eq!(nested.expect("вложенный вызов").asked, 0);
-    assert_eq!(outcome.answered, 1);
+    assert_eq!(outcome.ready, 1);
     assert_eq!(events.load(Ordering::SeqCst), 1);
 }
 
@@ -269,5 +293,101 @@ fn session_end_marks_exit_and_browser_is_ended_once() {
 #[test]
 fn block_reason_is_a_constant_without_user_data() {
     assert_eq!(BLOCK_REASON, "Rhizomind сохраняет заметки…");
-    assert!(SESSION_END_TIMEOUT < Duration::from_secs(5));
+    // Решение 78: как предел закрытия окна (решение 67).
+    assert_eq!(SESSION_END_TIMEOUT, closing::CLOSE_TIMEOUT);
+}
+
+/// Ревью 0.11, п. 3: отказ записи («не записано») отличается от «готово» —
+/// для журнала нужен счёт отказов.
+#[test]
+fn refused_answers_are_counted_apart_from_ready() {
+    let (app, temp) = app();
+    let first = vault_window(&app, temp.path(), "А");
+    let second = vault_window(&app, temp.path(), "Б");
+    let answers = [
+        answer_later_with(
+            &app,
+            first.label(),
+            Duration::from_millis(20),
+            closing::Answer::Ready,
+        ),
+        answer_later_with(
+            &app,
+            second.label(),
+            Duration::from_millis(40),
+            closing::Answer::Cancel,
+        ),
+    ];
+
+    let outcome = save_all(app.handle(), Duration::from_secs(3), || {});
+    for answer in answers {
+        answer.join().expect("ответ");
+    }
+
+    assert_eq!(
+        outcome,
+        Outcome {
+            asked: 2,
+            ready: 1,
+            refused: 1,
+            timed_out: false
+        }
+    );
+    // Окно с отказом не закрыто и не ждёт: выход могут отменить.
+    assert!(app.get_webview_window(second.label()).is_some());
+    assert!(app.state::<Closing>().is_idle());
+}
+
+/// Ревью 0.11, п. 2: Windows известила окно tao раньше окна конца сеанса —
+/// процесс браузера завершает `RunEvent::Exit`, и только один раз.
+#[test]
+fn run_event_exit_ends_browser_when_session_is_ending() {
+    let (app, _temp) = app();
+    let _ = save_all(app.handle(), Duration::from_millis(10), || {});
+
+    crate::handle_run_event(app.handle(), &tauri::RunEvent::Exit);
+
+    let session = app.state::<SessionEnd>();
+    assert!(
+        !session.claim_browser_end(),
+        "браузер завершён в RunEvent::Exit"
+    );
+    // Наше окно получило WM_ENDSESSION позже: второго завершения нет.
+    on_end_session(app.handle(), true);
+}
+
+/// Обычный выход (сеанс не завершается): `RunEvent::Exit` право завершить
+/// браузер концом сеанса не забирает.
+#[test]
+fn run_event_exit_without_session_end_leaves_browser_claim() {
+    let (app, _temp) = app();
+
+    crate::handle_run_event(app.handle(), &tauri::RunEvent::Exit);
+
+    assert!(app.state::<SessionEnd>().claim_browser_end());
+}
+
+/// Журнал — только счёт окон: без имён хранилищ и заметок (инвариант 3).
+#[test]
+fn log_line_counts_refusals_without_names() {
+    let all_saved = Outcome {
+        asked: 2,
+        ready: 2,
+        refused: 0,
+        timed_out: false,
+    };
+    assert_eq!(all_saved.log_line(SESSION_END_TIMEOUT), None);
+
+    let partial = Outcome {
+        asked: 3,
+        ready: 1,
+        refused: 1,
+        timed_out: true,
+    };
+    assert_eq!(
+        partial.log_line(SESSION_END_TIMEOUT).as_deref(),
+        Some(
+            "Rhizomind: конец сеанса Windows — окон хранилищ: 3, записали: 1, не записали: 1, без ответа за 10000 мс: 1"
+        )
+    );
 }

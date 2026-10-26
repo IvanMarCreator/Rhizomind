@@ -133,27 +133,62 @@ pub fn pump_messages() {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
+    use windows::Win32::System::Shutdown::ShutdownBlockReasonQuery;
     use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+    use windows::core::PWSTR;
 
     use super::*;
 
-    /// Окно получает оба сообщения в своём потоке и отвечает на запрос «да».
+    /// Причина задержки выхода окна `hwnd`; `None` — причины нет.
+    fn block_reason(hwnd: HWND) -> Option<String> {
+        let mut len = 0u32;
+        // SAFETY: сначала — только длина (буфера нет), потом буфер этой длины.
+        unsafe {
+            if ShutdownBlockReasonQuery(hwnd, None, &mut len).is_err() || len == 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; len as usize];
+            ShutdownBlockReasonQuery(hwnd, Some(PWSTR(buffer.as_mut_ptr())), &mut len).ok()?;
+            let text = String::from_utf16_lossy(&buffer);
+            Some(text.trim_end_matches('\0').to_owned())
+        }
+    }
+
+    /// Окно получает оба сообщения в своём потоке и отвечает на запрос «да»;
+    /// пока идёт запись, Windows видит причину задержки, после ответа — нет
+    /// (ревью 0.11, п. 1).
     #[test]
     fn hidden_window_answers_query_and_reports_both_messages() {
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let log = Rc::clone(&seen);
-        let hwnd = listen(Box::new(move |message| log.borrow_mut().push(message))).expect("окно");
+        let reason_while_saving = Rc::new(RefCell::new(None));
+        let window = Rc::new(Cell::new(HWND::default()));
+        let (log, reason, own) = (
+            Rc::clone(&seen),
+            Rc::clone(&reason_while_saving),
+            Rc::clone(&window),
+        );
+        let hwnd = listen(Box::new(move |message| {
+            if message == Message::QueryEndSession {
+                *reason.borrow_mut() = Some(block_reason(own.get()));
+            }
+            log.borrow_mut().push(message);
+        }))
+        .expect("окно");
+        window.set(hwnd);
         // SAFETY: окно этого потока; SendMessageW вызывает процедуру сразу.
-        let (query, _) = unsafe {
-            (
-                SendMessageW(hwnd, WM_QUERYENDSESSION, None, Some(LPARAM(0))),
-                SendMessageW(hwnd, WM_ENDSESSION, Some(WPARAM(1)), Some(LPARAM(0))),
-            )
-        };
+        let query = unsafe { SendMessageW(hwnd, WM_QUERYENDSESSION, None, Some(LPARAM(0))) };
         assert_eq!(query, LRESULT(1), "выход не блокируется");
+        assert_eq!(
+            *reason_while_saving.borrow(),
+            Some(Some(super::super::BLOCK_REASON.to_owned())),
+            "пока идёт запись, причина видна"
+        );
+        assert_eq!(block_reason(hwnd), None, "после ответа причина снята");
+        // SAFETY: как выше.
+        unsafe { SendMessageW(hwnd, WM_ENDSESSION, Some(WPARAM(1)), Some(LPARAM(0))) };
         assert_eq!(
             *seen.borrow(),
             vec![Message::QueryEndSession, Message::EndSession(true)]

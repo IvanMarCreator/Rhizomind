@@ -390,11 +390,18 @@ export interface VaultAvailabilityPayload {
 }
 
 /**
- * `window:close-requested`: пользователь закрыл окно хранилища (задача 0.7).
- * Окно уже скрыто; интерфейс записывает ввод и отвечает `window_close_ready`
- * или `window_close_cancel`. Данных нет.
+ * `window:close-requested`: пользователь закрыл окно хранилища (задача 0.7)
+ * или Windows завершает сеанс (задача 0.11). Интерфейс записывает ввод и
+ * отвечает `window_close_ready` или `window_close_cancel`.
  */
-export type WindowCloseRequestedPayload = Record<string, never>;
+export interface WindowCloseRequestedPayload {
+  /**
+   * `true` — выход из системы или выключение Windows (задача 0.11а, решение
+   * 79): окно не скрыто и не закрывается, ядро только ждёт записи; правило
+   * «повторное закрытие в течение минуты» не действует.
+   */
+  sessionEnd: boolean;
+}
 
 /**
  * Все события ядра → интерфейс и их данные. Ядро отправляет их только окну
