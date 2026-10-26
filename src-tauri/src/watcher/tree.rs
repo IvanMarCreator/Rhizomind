@@ -616,9 +616,9 @@ impl TreeModel {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
         let path = self.abs(dir);
-        let listed = match listed_at_once(&path) {
+        let listed = match listed_at_once(&path, dir.is_empty()) {
             Ok(Some(out)) => Ok(out),
-            Ok(None) => list_entry_by_entry(&path),
+            Ok(None) => not_a_link(&path, dir.is_empty()).and_then(|()| list_entry_by_entry(&path)),
             Err(err) => Err(err),
         };
         let out = match listed {
@@ -674,9 +674,10 @@ fn through(applied: &[(Key, Key)], mut key: Key) -> Key {
 /// открытый файл внутри держал бы её и дольше. `None` — так прочитать
 /// нельзя (другая ОС, файловая система без идентификаторов в списке).
 #[cfg(windows)]
-fn listed_at_once(path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
+fn listed_at_once(path: &Path, is_root: bool) -> io::Result<Option<HashMap<String, Node>>> {
     use super::listing_windows::{self, Kind};
-    let Some(entries) = listing_windows::list(path)? else {
+    // Корень хранилища — и по ссылке; папка внутри — только сама.
+    let Some(entries) = listing_windows::list(path, is_root)? else {
         return Ok(None);
     };
     let mut out = HashMap::new();
@@ -709,8 +710,19 @@ fn listed_at_once(path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
 }
 
 #[cfg(not(windows))]
-fn listed_at_once(_path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
+fn listed_at_once(_path: &Path, _is_root: bool) -> io::Result<Option<HashMap<String, Node>>> {
     Ok(None)
+}
+
+/// Папка внутри хранилища, ставшая символической ссылкой или точкой
+/// соединения, не читается (за ней — не хранилище); корень — читается.
+fn not_a_link(path: &Path, is_root: bool) -> io::Result<()> {
+    if !is_root && fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(io::Error::other(
+            "папка стала ссылкой: за контур не читается",
+        ));
+    }
+    Ok(())
 }
 
 /// Список папки по элементам: идентификатор каждого — отдельным открытием
@@ -1176,7 +1188,7 @@ mod windows_listing_tests {
     fn one_listing_gives_the_same_entries_as_reading_entry_by_entry() {
         let dir = sample();
         for folder in [dir.path().to_path_buf(), dir.path().join("Папка")] {
-            let at_once = listed_at_once(&folder)
+            let at_once = listed_at_once(&folder, folder == dir.path())
                 .expect("список")
                 .expect("NTFS отдаёт идентификаторы в списке");
             let by_entry = list_entry_by_entry(&folder).expect("список по элементам");

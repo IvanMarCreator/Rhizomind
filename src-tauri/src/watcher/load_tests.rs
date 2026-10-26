@@ -55,14 +55,18 @@ fn notes_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Сколько раз подряд перенос папки может получить «папка занята» (задача 0.10б).
+const MAX_BUSY_RETRIES: usize = 20;
+
 /// Перенос папки, как его делает пользователь в Проводнике с кнопкой
 /// «Повторить». На Windows папку нельзя перенести, пока открыто что-то внутри
 /// неё (`Access is denied`, os error 5) — в том числе пока наблюдатель читает
 /// список её вложенной папки (одно чтение на папку, задача 0.10:
 /// `listing_windows.rs`), а также индексатор поиска или антивирус. Повтор —
-/// только на эту ошибку, через 50 мс, не дольше 5 с. Возвращает число повторов.
+/// только на эту ошибку, через 50 мс, не больше [`MAX_BUSY_RETRIES`] раз: папка,
+/// занятая дольше секунды, — уже не мгновение чтения списка, а ошибка (например,
+/// наблюдатель снова держит открытыми файлы внутри). Возвращает число повторов.
 fn rename_like_explorer(from: &Path, to: &Path) -> usize {
-    let deadline = Instant::now() + Duration::from_secs(5);
     let mut retries = 0;
     loop {
         match fs::rename(from, to) {
@@ -70,7 +74,7 @@ fn rename_like_explorer(from: &Path, to: &Path) -> usize {
             Err(err)
                 if cfg!(windows)
                     && err.kind() == std::io::ErrorKind::PermissionDenied
-                    && Instant::now() < deadline =>
+                    && retries < MAX_BUSY_RETRIES =>
             {
                 retries += 1;
                 std::thread::sleep(Duration::from_millis(50));
