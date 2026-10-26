@@ -10,6 +10,8 @@ import { remote } from 'webdriverio';
 
 const ROOT = path.join(import.meta.dirname, '..', '..');
 const PORT = 4444;
+// Порт драйвера движка за tauri-driver (--native-port, по умолчанию 4445).
+const NATIVE_PORT = 4445;
 // Создание сессии в CI на Linux занимает ~30 с (холодный запуск WebKitGTK в
 // Xvfb): предел с запасом, но меньше hookTimeout (120 с).
 const SESSION_TIMEOUT_MS = 100_000;
@@ -60,6 +62,49 @@ function waitForPort(port: number, timeoutMs: number): Promise<void> {
   });
 }
 
+function portIsBusy(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(port, '127.0.0.1');
+    socket.once('connect', () => {
+      socket.end();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Ждёт, пока порты прошлой сессии освободятся: драйвер движка (WebKitWebDriver,
+ * msedgedriver) завершается после tauri-driver не сразу, и новая сессия сразу
+ * за прошлой падала с UND_ERR_SOCKET (сценарный тест дерева после теста оболочки).
+ */
+async function waitForPortsFree(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while ((await portIsBusy(PORT)) || (await portIsBusy(NATIVE_PORT))) {
+    if (Date.now() > deadline) throw new Error(`порты ${PORT}/${NATIVE_PORT} заняты прошлой сессией`);
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+/** Останавливает tauri-driver и ждёт его завершения. */
+function stopDriver(driver: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    if (driver.exitCode !== null || driver.signalCode !== null) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, 10_000);
+    driver.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    driver.kill();
+  });
+}
+
 export interface Session {
   browser: WebdriverIO.Browser;
   stop: () => Promise<void>;
@@ -83,6 +128,7 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   if (options.vault) env.RHIZOMIND_E2E_VAULT = options.vault;
   else delete env.RHIZOMIND_E2E_VAULT;
   const removeProfile = () => rmSync(profile, { recursive: true, force: true });
+  await waitForPortsFree(30_000);
   const args = ['--port', String(PORT)];
   if (process.env.MSEDGEDRIVER) args.push('--native-driver', process.env.MSEDGEDRIVER);
   // Журнал tauri-driver и драйвера движка — рядом со снимками (артефакт CI).
@@ -135,7 +181,8 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
       try {
         await browser.deleteSession();
       } finally {
-        driver.kill();
+        await stopDriver(driver);
+        await waitForPortsFree(15_000).catch(() => undefined);
         removeProfile();
       }
     },
