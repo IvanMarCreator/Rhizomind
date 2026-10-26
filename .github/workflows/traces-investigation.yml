@@ -28,7 +28,7 @@ name: traces-investigation
 
 on:
   push:
-    branches: ["task/0.6-traces-investigation"]
+    branches: ["task/0.6-traces-investigation", "task/0.6b-oneauth"]
     paths:
       - "tools/traces-investigation/**"
       - ".github/workflows/traces-investigation.yml"
