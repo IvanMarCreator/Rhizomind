@@ -77,8 +77,19 @@ describe('заметка больше 10 МБ (решение 77)', { timeout: 1
       const state = createEditorState(text, { mode });
       previewDecorations(state, [{ from: 0, to: state.doc.line(60).to }]);
     };
-    const source = median(open('source'), 1);
-    const live = median(open('live_preview'), 1);
+    // Попеременно и по лучшему из прогонов: один замер на CI шумит на ±20 %.
+    // Прежний разбор всего текста давал ×2,5 — предел его ловит.
+    let source = Infinity;
+    let live = Infinity;
+    const once = (fn: () => void) => {
+      const start = performance.now();
+      fn();
+      return performance.now() - start;
+    };
+    for (let k = 0; k < 5; k++) {
+      source = Math.min(source, once(open('source')));
+      live = Math.min(live, once(open('live_preview')));
+    }
     expect(live).toBeLessThan(source * 1.2 + 20);
   });
 });
