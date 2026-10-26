@@ -87,6 +87,12 @@ describe('дерево файлов на настоящем ядре', () => {
     vault = createVault();
     session = await startApp({ vault });
     await session.browser.$('[role="tree"]').waitForDisplayed({ timeout: 20_000 });
+    // Дерево появляется раньше строк: список приходит отдельной командой
+    // (на Windows в CI — заметно позже).
+    await session.browser.waitUntil(async () => (await rowNames(session.browser)).length > 0, {
+      timeout: 20_000,
+      timeoutMsg: 'строки дерева не появились',
+    });
   });
 
   afterAll(async () => {
