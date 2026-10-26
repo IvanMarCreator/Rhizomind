@@ -35,11 +35,32 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Пакеты apt кэшируются: зеркало Azure временами отдаёт их по десяткам
+      # КБ/с, и шаг шёл до 38 минут (задача 0.10, tools/ci-apt/install.sh).
+      # Ключ — образ раннера и скрипт со списком пакетов; сохраняется сразу после шага,
+      # даже если задание потом упадёт.
+      - name: Кэш пакетов apt (Linux)
+        id: apt-cache
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ env.ImageOS }}-${{ env.ImageVersion }}-${{ hashFiles('tools/ci-apt/install.sh') }}
+          restore-keys: apt-${{ env.ImageOS }}-
+
       - name: Системные библиотеки (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev webkit2gtk-driver xvfb
+        timeout-minutes: 20
+        env:
+          APT_CACHE_DIR: ${{ runner.temp }}/apt-archives
+        run: tools/ci-apt/install.sh
+
+      - name: Сохранить кэш пакетов apt (Linux)
+        if: runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ env.ImageOS }}-${{ env.ImageVersion }}-${{ hashFiles('tools/ci-apt/install.sh') }}
 
       # Версия Rust берётся из rust-toolchain.toml: rustup ставит её при первом вызове cargo.
       - name: Rust из rust-toolchain.toml
@@ -112,15 +133,6 @@ jobs:
         shell: bash
         run: cargo test -p rhizomind --locked --lib watcher::load_tests -- --ignored --nocapture --test-threads=1
 
-      # ВРЕМЕННО (0.10, диагностика): кто мешает переносу папки.
-      - name: ДИАГ 0.10 перенос папки
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          powershell -Command "Get-MpComputerStatus | Select RealTimeProtectionEnabled; Get-Service WSearch | Select Status"
-          cargo test -p rhizomind --locked --lib watcher::diag_t010 -- --ignored --nocapture --test-threads=1 2>&1 | grep -E "diag|test result|panicked"
-
       - name: Сборка приложения
         run: npm run build
 
@@ -174,6 +186,12 @@ jobs:
           # Тест следов подменяет vaults.json тестовым хранилищем (машина CI одноразовая).
           RHIZOMIND_TRACES_VAULT_SCENARIO: "1"
         run: npm run test:e2e
+
+      # ВРЕМЕННО (0.10, диагностика): «один экземпляр» 40 раз с замерами.
+      - name: ДИАГ 0.10 один экземпляр
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        timeout-minutes: 15
+        run: node tools/diag-t010/single-instance-loop.mjs src-tauri/target-e2e/release/rhizomind.exe 40
 
       - name: Снимки экрана сценарных тестов
         if: always()

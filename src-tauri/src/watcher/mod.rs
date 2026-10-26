@@ -44,10 +44,10 @@ use std::time::{Duration, Instant};
 use notify::{EventKindMask, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
 
+#[cfg(windows)]
+mod listing_windows;
 mod tree;
 
-#[cfg(all(test, windows))]
-mod diag_t010;
 #[cfg(test)]
 mod load_tests;
 #[cfg(test)]
