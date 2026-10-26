@@ -651,6 +651,14 @@ fn event_vault_availability() {
     );
 }
 
+/// Данные без поля `sessionEnd` (как до задачи 0.11а) — закрытие окна.
+#[test]
+fn event_window_close_requested_without_session_end_is_window_close() {
+    let payload: WindowCloseRequestedPayload =
+        serde_json::from_str("{}").expect("пустые данные события");
+    assert_eq!(payload, WindowCloseRequestedPayload { session_end: false });
+}
+
 #[test]
 fn event_window_close_requested() {
     event(
