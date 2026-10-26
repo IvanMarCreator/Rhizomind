@@ -8,7 +8,7 @@
 # 1. Скачанные .deb кэшируются между прогонами (папка $APT_CACHE_DIR, её
 #    восстанавливает и сохраняет actions/cache в ci.yml).
 # 2. Недостающие .deb качаются параллельно (curl, 16 соединений) по адресам,
-#    которые называет сам apt (`--print-uris`), и проверяются по SHA512 из
+#    которые называет сам apt (`--print-uris`), и проверяются по SHA256/512 из
 #    подписанных списков apt; не прошедшие проверку удаляются.
 # 3. Что не скачалось — докачивает apt обычным способом; установка — только
 #    из скачанного (`--no-download`), apt ещё раз сверяет каждый пакет.
@@ -45,8 +45,17 @@ if [[ -r /etc/apt/apt-mirrors.txt ]]; then
 fi
 
 fetch_one() {
-  # $1 — адрес apt, $2 — имя файла в папке apt, $3 — «SHA512:<хэш>».
-  local uri="$1" file="$2" hash="${3#SHA512:}" url
+  # $1 — адрес apt, $2 — имя файла в папке apt, $3 — «<алгоритм>:<хэш>»
+  # (SHA512, SHA256 — как в подписанных списках apt).
+  local uri="$1" file="$2" hash="${3#*:}" sum url
+  case "${3%%:*}" in
+    SHA512) sum=sha512sum ;;
+    SHA256) sum=sha256sum ;;
+    *)
+      echo "нет хэша SHA256/SHA512: $file" >&2
+      return 0
+      ;;
+  esac
   local -a urls=()
   if [[ "$uri" == mirror+file:* ]]; then
     local rest="${uri#mirror+file:/etc/apt/apt-mirrors.txt/}"
@@ -56,7 +65,7 @@ fetch_one() {
   fi
   for url in "${urls[@]}"; do
     if curl -fsS --retry 3 --connect-timeout 20 --max-time 600 -o "$work/$file" "$url" \
-      && echo "$hash  $work/$file" | sha512sum -c --status; then
+      && echo "$hash  $work/$file" | "$sum" -c --status; then
       sudo mv "$work/$file" "$archives/$file"
       return 0
     fi
