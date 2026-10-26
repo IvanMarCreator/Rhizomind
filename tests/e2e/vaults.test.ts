@@ -6,11 +6,12 @@
 // Системное окно выбора папки тестовая сборка заменяет ответом из переменной
 // RHIZOMIND_E2E_PICK_FOLDER (driver.ts, pickFolder; только функция webdriver).
 // Снимки экрана — для QA: сравнение с кадрами Э10б, Э11а–Э11в в двух темах.
+import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
+import { applicationPath, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const MANAGER = '[data-testid="vault-manager"]';
@@ -70,6 +71,8 @@ async function switchToWindowWith(
   return found;
 }
 
+const isWindows = process.platform === 'win32';
+
 const switcherLabel = (name: string) => `button[aria-label="Хранилище «${name}»"]`;
 
 /** Пункты открытого меню переключателя: текст без лишних пробелов и отметка. */
@@ -118,12 +121,34 @@ describe('первый запуск и создание хранилища', () 
     }
   });
 
-  it('создание (Э11в): имя → «Создать» → хранилище в новом окне, окно управления закрыто', async () => {
+  it('защищённое окно: переход на чужой адрес запрещён, Tauri знает только свою метку manager-*', async () => {
+    const { browser } = session;
+    await browser.execute(() => {
+      window.location.href = 'https://example.com/';
+    });
+    await browser.pause(1500);
+    expect(await browser.getUrl()).toMatch(/^(http:\/\/tauri\.localhost|tauri:\/\/localhost)(\/|$)/);
+    expect(await browser.$(MANAGER).isDisplayed()).toBe(true);
+
+    const metadata = await browser.execute(() => {
+      const internals = (window as unknown as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__;
+      return JSON.stringify(internals?.metadata ?? null);
+    });
+    const labels = [...metadata.matchAll(/"label":"([^"]+)"/g)].map((match) => match[1]);
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) expect(label).toMatch(/^manager-[0-9a-f]{16}$/);
+  });
+
+  it('создание (Э11в): имя → «Обзор…» → «Создать» → хранилище в новом окне, окно управления закрыто', async () => {
     const { browser } = session;
     await browser.$('button=Создать').click();
-    const field = browser.$('input[type="text"]');
+    const field = browser.$('input:not([readonly])');
     await field.waitForDisplayed();
     await field.setValue('Проекты отдела');
+    await browser.$('button=Обзор…').click();
+    const where = browser.$('input[readonly]');
+    await browser.waitUntil(async () => (await where.getValue()) !== '', { timeout: 10_000 });
+    expect(await browser.$('p*=Будет создана папка').isDisplayed()).toBe(true);
     await screenshotThemes(browser, 'vaults-create-form');
 
     await browser.$('button=Создать').click();
@@ -226,5 +251,38 @@ describe('«Открыть папку как хранилище» и перек�
     await switchToWindowWith(browser, switcherLabel('Архив 2025'), 3);
     expect(existsSync(path.join(archive, '.rhizomind'))).toBe(true);
     await shot(browser, 'vaults-opened-folder');
+  });
+});
+
+// Решение 58 (задача 2.8б): повторный запуск программы открывает окно
+// «Управление хранилищами» в работающем экземпляре. Сигнал второго
+// экземпляра первому есть только на Windows (src-tauri/src/single_instance/:
+// на Linux связи нет — второй запуск пишет «уже запущен» и выходит).
+describe.skipIf(!isWindows)('повторный запуск', () => {
+  let session: Session;
+  let work: string;
+
+  beforeAll(async () => {
+    work = createTestVault('Рабочая база', { 'Встреча.md': '' });
+    session = await startApp({ vault: work });
+    await session.browser.$(switcherLabel('Рабочая база')).waitForDisplayed({ timeout: 20_000 });
+  });
+
+  afterAll(async () => {
+    await session?.stop();
+    if (work) removeTestVault(work);
+  });
+
+  it('второй запуск завершается, а в первом открывается окно управления', async () => {
+    const { browser } = session;
+    const env: NodeJS.ProcessEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith('WEBVIEW2_') && !name.startsWith('RHIZOMIND_E2E_')),
+    );
+    const second = spawn(applicationPath(), [], { stdio: 'ignore', env });
+    const code = await new Promise<number | null>((resolve) => second.once('exit', resolve));
+    expect(code).toBe(0);
+
+    await switchToWindowWith(browser, MANAGER, 2);
+    await shot(browser, 'vaults-second-instance');
   });
 });

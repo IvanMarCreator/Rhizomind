@@ -162,18 +162,34 @@ fn installer_does_not_download_webview2_and_nsis_is_per_user() {
 }
 
 #[test]
-fn only_main_capability_is_enabled() {
+fn only_main_and_manager_capabilities_are_enabled() {
     assert_eq!(
         config()["app"]["security"]["capabilities"],
-        serde_json::json!(["main"])
+        serde_json::json!(["main", "manager"])
     );
 }
 
 #[test]
 fn vault_windows_have_no_file_network_shell_or_dialog_permissions() {
-    let capability = read_json("capabilities/main.json");
-    // Каждое окно хранилища — метка vault-<16 шестнадцатеричных цифр> (задача 1.3).
-    assert_eq!(capability["windows"], serde_json::json!(["vault-*"]));
+    // Окно хранилища — метка vault-<16 шестнадцатеричных цифр> (задача 1.3).
+    no_forbidden_permissions("capabilities/main.json", "vault-*", true);
+}
+
+#[test]
+fn manager_window_has_no_file_network_shell_dialog_or_event_permissions() {
+    // Окно «Управление хранилищами» — метка manager-<16 шестнадцатеричных
+    // цифр> (задача 2.8б); подписки на события у него нет.
+    no_forbidden_permissions("capabilities/manager.json", "manager-*", false);
+}
+
+fn no_forbidden_permissions(file: &str, windows: &str, events: bool) {
+    let capability = read_json(file);
+    assert_eq!(capability["windows"], serde_json::json!([windows]));
+    let allowed_tauri: &[&str] = if events {
+        &["core:event:allow-listen", "core:event:allow-unlisten"]
+    } else {
+        &[]
+    };
     let permissions = capability["permissions"].as_array().expect("permissions");
     let forbidden = [
         "fs:",
@@ -200,8 +216,7 @@ fn vault_windows_have_no_file_network_shell_or_dialog_permissions() {
     for permission in permissions {
         let id = permission.as_str().unwrap_or_default();
         assert!(
-            !id.contains(':')
-                || ["core:event:allow-listen", "core:event:allow-unlisten"].contains(&id),
+            !id.contains(':') || allowed_tauri.contains(&id),
             "окну выдано лишнее право Tauri {id}"
         );
     }

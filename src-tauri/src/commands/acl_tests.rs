@@ -48,6 +48,51 @@ fn app() -> App<MockRuntime> {
 /// Окно хранилища: метка по шаблону `vault-*` из `capabilities/main.json`.
 const MAIN: &str = "vault-0123456789abcdef";
 
+/// Окно «Управление хранилищами»: метка по шаблону `manager-*` из
+/// `capabilities/manager.json` (задача 2.8б).
+const MANAGER: &str = "manager-0123456789abcdef";
+
+/// Окно управления: метка `manager-*` и запись в ядре (второй рубеж прав).
+fn manager_window(app: &App<MockRuntime>) -> WebviewWindow<MockRuntime> {
+    use tauri::Manager;
+    assert_eq!(
+        app.state::<Core>().reserve_manager(MANAGER),
+        ManagerSlot::New(MANAGER.into())
+    );
+    window(app, MANAGER)
+}
+
+/// Команды окон хранилищ: все, кроме команд только окна управления.
+fn vault_window_commands() -> Vec<&'static str> {
+    COMMAND_NAMES
+        .iter()
+        .copied()
+        .filter(|name| !MANAGER_ONLY_COMMANDS.contains(name))
+        .collect()
+}
+
+/// Права capability `file`: отсортированный список.
+fn granted(file: &str) -> Vec<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let capability: Value = serde_json::from_str(&text).expect("capability");
+    let mut granted: Vec<String> = capability["permissions"]
+        .as_array()
+        .expect("permissions")
+        .iter()
+        .map(|p| p.as_str().expect("право строкой").to_owned())
+        .collect();
+    granted.sort();
+    granted
+}
+
+fn allow(commands: &[&str]) -> Vec<String> {
+    commands
+        .iter()
+        .map(|c| format!("allow-{}", c.replace('_', "-")))
+        .collect()
+}
+
 fn window(app: &App<MockRuntime>, label: &str) -> WebviewWindow<MockRuntime> {
     WebviewWindowBuilder::new(app, label, Default::default())
         .build()
@@ -168,8 +213,8 @@ fn commands_are_denied_for_window_without_capability() {
         error,
         json!(
             "vault_current not allowed on window \"other\", webview \"other\", URL: local\n\n\
-             allowed on: [windows: \"vault-*\", URL: local]\n\n\
-             referenced by: capability: main, permission: allow-vault-current"
+             allowed on: [windows: \"vault-*\", URL: local], [windows: \"manager-*\", URL: local]\n\n\
+             referenced by: capability: main, permission: allow-vault-current || capability: manager, permission: allow-vault-current"
         )
     );
 }
@@ -188,8 +233,8 @@ fn commands_are_denied_from_remote_origin() {
         error,
         json!(
             "vault_current not allowed on window \"vault-0123456789abcdef\", webview \"vault-0123456789abcdef\", URL: https://evil.example/\n\n\
-             allowed on: [windows: \"vault-*\", URL: local]\n\n\
-             referenced by: capability: main, permission: allow-vault-current"
+             allowed on: [windows: \"vault-*\", URL: local], [windows: \"manager-*\", URL: local]\n\n\
+             referenced by: capability: main, permission: allow-vault-current || capability: manager, permission: allow-vault-current"
         )
     );
 }
@@ -273,9 +318,15 @@ fn every_listed_command_reaches_core_modules() {
     let app = app();
     let main = window(&app, MAIN);
     let _vault_dir = bind_stub_vault(&app, MAIN);
+    let manager = manager_window(&app);
 
-    for name in COMMAND_NAMES {
+    for name in vault_window_commands() {
         if let Err(error) = invoke(&main, name, example_args(name)) {
+            core_error(name, error);
+        }
+    }
+    for name in MANAGER_COMMANDS {
+        if let Err(error) = invoke(&manager, name, example_args(name)) {
             core_error(name, error);
         }
     }
@@ -372,16 +423,16 @@ fn settings_out_of_range_are_rejected() {
     );
 }
 
-/// Плохое имя хранилища — `invalid_name` с причиной, до диалога выбора папки.
+/// Плохое имя хранилища — `invalid_name` с причиной, до проверки папки.
 #[test]
 fn vault_create_rejects_bad_name_with_reason() {
     let app = app();
-    let main = window(&app, MAIN);
+    let manager = manager_window(&app);
 
     let error = invoke(
-        &main,
+        &manager,
         "vault_create",
-        json!({ "request": { "name": "CON" } }),
+        json!({ "request": { "name": "CON", "parent": "C:\\Заметки" } }),
     )
     .expect_err("зарезервированное имя");
 
@@ -573,28 +624,93 @@ fn app_manifest_commands_match_handler() {
     }
 }
 
-/// Окну выданы права ровно на команды из списка и на подписку на события.
+/// Окнам хранилищ выданы права ровно на команды из списка без команд окна
+/// управления и на подписку на события (задача 2.8б).
 #[test]
-fn main_capability_allows_exactly_listed_commands_and_event_listening() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities/main.json");
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let capability: Value = serde_json::from_str(&text).expect("main.json");
-    let mut granted: Vec<String> = capability["permissions"]
-        .as_array()
-        .expect("permissions")
-        .iter()
-        .map(|p| p.as_str().expect("право строкой").to_owned())
-        .collect();
-    granted.sort();
-
-    let mut expected: Vec<String> = COMMAND_NAMES
-        .iter()
-        .map(|c| format!("allow-{}", c.replace('_', "-")))
+fn main_capability_allows_exactly_vault_window_commands_and_event_listening() {
+    let mut expected: Vec<String> = allow(&vault_window_commands())
+        .into_iter()
         .chain([
             "core:event:allow-listen".into(),
             "core:event:allow-unlisten".into(),
         ])
         .collect();
     expected.sort();
-    assert_eq!(granted, expected);
+    assert_eq!(granted("capabilities/main.json"), expected);
+}
+
+/// Окну управления выданы права ровно на команды группы «Хранилища» из
+/// [`MANAGER_COMMANDS`]; подписки на события нет (задача 2.8б).
+#[test]
+fn manager_capability_allows_exactly_manager_commands() {
+    let mut expected = allow(MANAGER_COMMANDS);
+    expected.sort();
+    assert_eq!(granted("capabilities/manager.json"), expected);
+    // Каждая команда окна управления есть в общем списке.
+    for name in MANAGER_COMMANDS {
+        assert!(COMMAND_NAMES.contains(name), "{name}");
+    }
+}
+
+/// Первый рубеж: окну хранилища команды окна управления не разрешены
+/// правами Tauri, окну управления — команды файлов, заметок и подписка на
+/// события.
+#[test]
+fn each_window_kind_is_denied_the_other_kinds_commands() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
+    let manager = manager_window(&app);
+
+    for name in MANAGER_ONLY_COMMANDS {
+        let error = invoke(&main, name, example_args(name)).expect_err(name);
+        assert!(
+            error
+                .as_str()
+                .is_some_and(|text| text.contains("not allowed")),
+            "{name}: {error}"
+        );
+    }
+    for name in COMMAND_NAMES
+        .iter()
+        .filter(|name| !MANAGER_COMMANDS.contains(name))
+    {
+        let error = invoke(&manager, name, example_args(name)).expect_err(name);
+        assert!(
+            error
+                .as_str()
+                .is_some_and(|text| text.contains("not allowed")),
+            "{name}: {error}"
+        );
+    }
+    let error = invoke(
+        &manager,
+        "plugin:event|listen",
+        json!({ "event": "vault:changed", "target": { "kind": "Any" }, "handler": 0 }),
+    )
+    .expect_err("подписка");
+    assert!(
+        error
+            .as_str()
+            .is_some_and(|text| text.contains("not allowed")),
+        "{error}"
+    );
+}
+
+/// Второй рубеж: окно с правами на все команды, но не окно управления
+/// (права выданы по ошибке), получает отказ ядра — `invalid_argument`
+/// с полем `window`.
+#[test]
+fn core_refuses_manager_commands_from_other_windows() {
+    let app = app();
+    let label = "manager-fedcba9876543210";
+    let stranger = window(&app, label);
+    for name in MANAGER_ONLY_COMMANDS {
+        let error = core_error(
+            name,
+            invoke(&stranger, name, example_args(name)).expect_err(name),
+        );
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{name}");
+        assert_eq!(error.field.as_deref(), Some("window"), "{name}");
+    }
 }

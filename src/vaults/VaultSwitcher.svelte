@@ -19,6 +19,8 @@
   const label = $derived(vault ? t('vaults.switcher.current', { name: vault.name }) : t('vaults.switcher.none'));
 
   let open = $state(false);
+  /** Номер запроса списка: ответ на прежнее открытие меню свежий список не подменяет. */
+  let request = 0;
   let vaults = $state<VaultListItem[]>([]);
   let button: HTMLButtonElement | undefined = $state();
   let menu: HTMLDivElement | undefined = $state();
@@ -42,14 +44,18 @@
     }
     vaults = [];
     open = true;
+    const current = ++request;
     try {
-      vaults = (await core.vaultList()).vaults;
+      const list = (await core.vaultList()).vaults;
+      if (current !== request || !open) return;
+      vaults = list;
     } catch (error) {
+      if (current !== request) return;
       notify(error);
     }
     // Фокус — на текущее хранилище (или первый пункт) после отрисовки списка.
     await tick();
-    if (!open) return;
+    if (!open || current !== request) return;
     const index = vaults.findIndex((item) => item.id === vault?.id);
     focusMenuItem(menu, Math.max(index, 0));
   }

@@ -5,6 +5,7 @@
 mod contour;
 mod hardening;
 mod ops;
+mod parent;
 mod read;
 mod service;
 mod write;

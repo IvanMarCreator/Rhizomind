@@ -45,11 +45,14 @@ pub enum ErrorCode {
     SchemeNotAllowed,
     /// Ошибка ввода-вывода ОС. Подробности — только в журнале ошибок ядра.
     IoFailed,
+    /// Папка лежит внутри другого хранилища или его служебной папки: новое
+    /// хранилище там создать нельзя (задача 2.8б).
+    NestedVault,
 }
 
 impl ErrorCode {
     /// Все коды — для тестов полноты словаря.
-    pub const ALL: [ErrorCode; 14] = [
+    pub const ALL: [ErrorCode; 15] = [
         Self::NotImplemented,
         Self::InvalidArgument,
         Self::NoVaultOpen,
@@ -64,6 +67,7 @@ impl ErrorCode {
         Self::ReadOnly,
         Self::SchemeNotAllowed,
         Self::IoFailed,
+        Self::NestedVault,
     ];
 
     /// Ключ словаря интерфейса: `errors.<код>`.
@@ -88,6 +92,7 @@ impl ErrorCode {
             Self::ReadOnly => "read_only",
             Self::SchemeNotAllowed => "scheme_not_allowed",
             Self::IoFailed => "io_failed",
+            Self::NestedVault => "nested_vault",
         }
     }
 }
