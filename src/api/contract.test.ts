@@ -287,6 +287,10 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
     event: 'note:conflict-saved',
     payload: { path: ['Проекты', 'Встреча.md'], copy_path: conflictCopy },
   },
+  'vault:availability': {
+    event: 'vault:availability',
+    payload: { available: false },
+  },
 };
 
 /** Имя файла снимка события: двоеточие на Windows в имени файла недопустимо. */

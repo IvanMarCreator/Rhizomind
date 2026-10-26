@@ -15,8 +15,6 @@ use tauri::webview::InvokeRequest;
 use tauri::{App, WebviewWindow, WebviewWindowBuilder};
 
 use super::*;
-use crate::links::Links;
-use crate::switcher::Switcher;
 use crate::vault::Vault;
 
 /// Команда, которой нет в `AppManifest::commands`, но которая есть в
@@ -112,16 +110,15 @@ fn bind_stub_vault(app: &App<MockRuntime>, label: &str) -> tempfile::TempDir {
     let core = app.state::<Core>();
     core.bind_window(
         label,
-        OpenVault {
-            summary: VaultSummary {
+        OpenVault::new(
+            VaultSummary {
                 id: VaultId("test".into()),
                 name: "Тест".into(),
                 path: dir.path().display().to_string(),
             },
-            vault: Vault::open(dir.path()).expect("заглушка хранилища"),
-            links: Links::default().into(),
-            switcher: Switcher::default().into(),
-        },
+            Vault::open(dir.path()).expect("заглушка хранилища"),
+        )
+        .expect("список заметок"),
     );
     dir
 }

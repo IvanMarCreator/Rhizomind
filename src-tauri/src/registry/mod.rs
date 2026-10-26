@@ -1,14 +1,15 @@
 //! Список хранилищ (`vaults.json`) — интерфейс модуля, реализация в задаче 1.3.
 //!
 //! Единственный файл приложения в профиле ОС:
-//! `dirs::config_dir()/Rhizomind/vaults.json` (спецификация 0.1, С4). В нём
+//! `dirs::data_local_dir()/Rhizomind/vaults.json` (спецификация 0.1, С4; решение 46). В нём
 //! только идентификаторы, имена и пути хранилищ, последнее открытое
 //! хранилище и состояние окон — ни имён, ни содержимого заметок (инвариант 2).
 //!
 //! Открытие хранилища в окне и фокус на уже открытое — модуль окон
 //! (`src-tauri/src/windows/`, задача 1.3); этот модуль только помнит.
-//! Выбор папки — системный диалог ядра ([`pick_folder`]), а не интерфейса:
-//! интерфейс не получает прав `dialog:*` (ADR 0009).
+//! Выбор папки — системный диалог ядра (`crate::dialogs::pick_folder`, общий
+//! замок диалогов ядра, задача 1.7), а не интерфейса: интерфейс не получает
+//! прав `dialog:*` (ADR 0009).
 
 use std::path::{Path, PathBuf};
 
@@ -66,22 +67,4 @@ impl Registry {
     pub fn mark_opened(&self, _id: &VaultId) -> CoreResult<()> {
         Err(CoreError::not_implemented())
     }
-}
-
-/// Цель системного диалога выбора папки.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FolderPurpose {
-    /// Родительская папка для нового хранилища.
-    NewVaultParent,
-    /// Существующая папка, которая станет хранилищем.
-    ExistingVault,
-}
-
-/// Системный диалог выбора папки, показанный ядром (`tauri-plugin-dialog`
-/// только из Rust). `Ok(None)` — пользователь отменил выбор.
-pub fn pick_folder<R: tauri::Runtime>(
-    _app: &tauri::AppHandle<R>,
-    _purpose: FolderPurpose,
-) -> CoreResult<Option<PathBuf>> {
-    Err(CoreError::not_implemented())
 }

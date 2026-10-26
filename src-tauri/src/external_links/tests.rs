@@ -329,6 +329,25 @@ fn only_one_core_dialog_per_window() {
     );
 }
 
+/// Замок общий для всех диалогов ядра: пока в окне открыт выбор папки или
+/// подтверждение удаления, окно ссылки не показывается (задача 1.7).
+#[test]
+fn link_dialog_waits_for_no_other_core_dialog_in_the_window() {
+    let other_dialog = crate::dialogs::DialogSlot::take("w-other-kind").expect("свободно");
+    let seam = Seam::default();
+    assert_eq!(
+        seam.run("w-other-kind", "https://example.org/", true),
+        Ok(OpenExternalOutcome::Cancelled)
+    );
+    assert!(seam.asked.borrow().is_empty(), "окно ссылки не показано");
+    assert!(seam.launched.borrow().is_empty(), "адрес не ушёл в ОС");
+    drop(other_dialog);
+    assert_eq!(
+        seam.run("w-other-kind", "https://example.org/", true),
+        Ok(OpenExternalOutcome::Opened)
+    );
+}
+
 #[test]
 fn dialog_slot_is_released_after_panic_in_dialog() {
     let result = std::panic::catch_unwind(|| {
@@ -529,4 +548,31 @@ fn scheme_for_protocol_class_is_taken_from_target() {
     assert_eq!(os::scheme_of("https://example.org/").ok(), Some("https"));
     assert_eq!(os::scheme_of("mailto:a@example.org").ok(), Some("mailto"));
     assert!(os::scheme_of("no-colon").is_err());
+}
+
+/// Повторное ревью 1.5, п. 2 и п. 4: `%` — только как `%HH`; в `body` у
+/// `mailto` допустимы из управляющих только `\r`, `\n`, `\t`.
+#[test]
+fn lone_percent_and_control_characters_in_mail_body_are_rejected() {
+    for url in [
+        "https://example.org/100%",
+        "https://example.org/?q=%zz",
+        "https://example.org/%4",
+        "mailto:a@example.org?body=50%",
+        "mailto:a@example.org?body=a%00b",
+        "mailto:a@example.org?body=a%1Bb",
+        "mailto:a@example.org?body=a%7Fb",
+    ] {
+        assert_eq!(
+            check_url(url),
+            Err(CoreError::invalid_argument("url")),
+            "{url}"
+        );
+    }
+    for url in [
+        "https://example.org/100%25",
+        "mailto:a@example.org?body=a%09b%0D%0Ac",
+    ] {
+        assert_eq!(check_url(url), Ok(()), "{url}");
+    }
 }

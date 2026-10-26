@@ -8,9 +8,12 @@ use tauri::{AppHandle, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 
 // Модули ядра (спецификация 0.1, С5.2) и команды API v1 (С5.5) — задача 0.4.
 pub mod commands;
+pub mod dialogs;
+pub mod events;
 pub mod external_links;
 pub mod links;
 pub mod names;
+pub mod own_writes;
 pub mod registry;
 pub mod switcher;
 pub mod vault;
@@ -67,6 +70,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Core::new(registry::Registry::from_profile()))
         .invoke_handler(commands::handler())
+        // Закрытое окно отвязывается от хранилища: наблюдатель останавливается.
+        .on_window_event(commands::on_window_event)
         .setup(|app| {
             create_main_window(app.handle())?;
             Ok(())

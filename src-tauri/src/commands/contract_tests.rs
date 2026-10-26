@@ -596,6 +596,14 @@ fn event_note_conflict_saved() {
     );
 }
 
+#[test]
+fn event_vault_availability() {
+    event(
+        event::VAULT_AVAILABILITY,
+        &VaultAvailabilityPayload { available: false },
+    );
+}
+
 /// В папке снимков ровно по файлу на каждую команду и событие: ни одна
 /// команда не осталась без снимка, ни один снимок не устарел.
 #[test]
@@ -813,7 +821,7 @@ fn enums() {
     settings().bind(|| insta::assert_json_snapshot!("enums", enums));
 }
 
-/// Пределы параметров — те же числа читает `src/api/limits.test.ts`.
+/// Пределы параметров — те же числа читает `src/api/contract.test.ts` (константы — `src/api/limits.ts`).
 #[test]
 fn limits() {
     settings().bind(|| insta::assert_json_snapshot!("limits", super::limits::LIMITS));
