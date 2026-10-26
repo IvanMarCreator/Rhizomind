@@ -192,13 +192,6 @@ jobs:
           RHIZOMIND_TRACES_VAULT_SCENARIO: "1"
         run: npm run test:e2e
 
-      # ВРЕМЕННО (0.10, проверка исправления): тест «один экземпляр» 15 раз подряд.
-      - name: ДИАГ 0.10 один экземпляр ×15
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        timeout-minutes: 15
-        shell: bash
-        run: for i in $(seq 1 15); do echo "== прогон $i"; npx vitest run --config vitest.e2e.config.ts tests/e2e/single-instance.test.ts || exit 1; done
-
       # Сбой сценарного теста: хвосты журналов драйверов — прямо в журнал CI
       # (артефакты без входа в GitHub не скачать; задача 0.10).
       - name: Журналы драйверов при сбое
