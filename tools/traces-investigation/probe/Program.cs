@@ -333,6 +333,10 @@ internal static class MiniWebView
         };
         var nav = Array.IndexOf(parts, "nav") > 0;
         var lang = Array.IndexOf(parts, "lang") > 0;
+        // +abrupt — выход процесса без Close контроллера; +destroy — окно закрывается
+        // раньше контроллера (контроллер не закрывается явно).
+        var abrupt = Array.IndexOf(parts, "abrupt") > 0;
+        var destroy = Array.IndexOf(parts, "destroy") > 0;
         var dataDir = Path.Combine(Path.GetTempPath(), "t06-webview-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dataDir);
         var info = new Dictionary<string, object> { ["mode"] = mode, ["dataDir"] = dataDir };
@@ -383,7 +387,24 @@ internal static class MiniWebView
                     core.NavigateToString("<!doctype html><title>t06</title><h1>t06 mini webview</h1>");
                 }
                 var timer = new System.Windows.Forms.Timer { Interval = seconds * 1000 };
-                timer.Tick += (_, _) => { timer.Stop(); controller.Close(); form.Close(); };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    if (abrupt)
+                    {
+                        info["closeMode"] = "abrupt";
+                        Out.Json(info);
+                        Environment.Exit(0);
+                    }
+                    if (destroy)
+                    {
+                        info["closeMode"] = "destroy";
+                        form.Close();
+                        return;
+                    }
+                    controller.Close();
+                    form.Close();
+                };
                 timer.Start();
             }
             catch (Exception e)

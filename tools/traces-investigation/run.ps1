@@ -270,6 +270,21 @@ try {
       Phase 'app-long#1' { Scenario-Exe 'app-long#1' $AppExe @() 40 }
       Phase 'mini-flags-long#2' { Scenario-Exe 'mini-flags-long#2' $Probe @('webview', 'rhizomind-flags', '40') 42 }
     }
+    '^oneauth-close$' {
+      # OneAuth загружается при закрытии (≈ в момент выхода). Как закрывается окно?
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'mini-graceful#1' { Scenario-Exe 'mini-graceful#1' $Probe @('webview', 'rhizomind-flags', '8') 12 }
+      Phase 'mini-abrupt#1' { Scenario-Exe 'mini-abrupt#1' $Probe @('webview', 'rhizomind-flags+abrupt', '8') 12 }
+      Phase 'mini-destroy#1' { Scenario-Exe 'mini-destroy#1' $Probe @('webview', 'rhizomind-flags+destroy', '8') 12 }
+      Phase 'wry-exit#1' { Scenario-Exe 'wry-exit#1' $WryProbe @('datadir', 'incognito', 'flags', 'secs=8') 14 }
+      Phase 'wry-drop#1' { Scenario-Exe 'wry-drop#1' $WryProbe @('datadir', 'incognito', 'flags', 'drop', 'secs=8') 14 }
+      Phase 'wry-destroy#1' { Scenario-Exe 'wry-destroy#1' $WryProbe @('datadir', 'incognito', 'flags', 'destroy', 'secs=8') 14 }
+      Phase 'app#1' { Scenario-Exe 'app#1' $AppExe @() 8 }
+      Phase 'mini-abrupt#2' { Scenario-Exe 'mini-abrupt#2' $Probe @('webview', 'rhizomind-flags+abrupt', '8') 12 }
+      Phase 'wry-drop#2' { Scenario-Exe 'wry-drop#2' $WryProbe @('datadir', 'incognito', 'flags', 'drop', 'secs=8') 14 }
+      Phase 'mini-graceful#2' { Scenario-Exe 'mini-graceful#2' $Probe @('webview', 'rhizomind-flags', '8') 12 }
+      Phase 'wry-exit#2' { Scenario-Exe 'wry-exit#2' $WryProbe @('datadir', 'incognito', 'flags', 'secs=8') 14 }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')

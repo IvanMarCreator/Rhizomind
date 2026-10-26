@@ -3,7 +3,10 @@
 //! InPrivate; `flags` — флаги Rhizomind; `protocol` — страница своей схемы
 //! `tauri://localhost` (на Windows — http://tauri.localhost); `ipc`, `init`,
 //! `bg`, `noext` — обработчик IPC, скрипт инициализации, фоновый цвет,
-//! расширения выключены; `secs=N` — сколько держать окно.
+//! расширения выключены; `secs=N` — сколько держать окно. Как закрыть:
+//! по умолчанию — выход из цикла событий без освобождения WebView (как tao при
+//! выходе); `drop` — сначала освободить WebView (Close контроллера), 3 с, выход;
+//! `destroy` — сначала уничтожить окно (WebView ещё жив), 3 с, выход.
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
@@ -62,17 +65,31 @@ fn main() -> wry::Result<()> {
     } else {
         builder.with_html("<!doctype html><h1>t06 wry</h1>")
     };
-    let webview = builder.build(&window)?;
+    let mut webview = Some(builder.build(&window)?);
+    let mut window = Some(window);
+    let drop_first = has("drop");
+    let destroy_first = has("destroy");
 
     let start = Instant::now();
+    let mut closing_since: Option<Instant> = None;
     event_loop.run(move |event, _, control_flow| {
-        let _keep = &webview;
         *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(200));
-        if start.elapsed() >= Duration::from_secs(secs) {
-            *control_flow = ControlFlow::Exit;
+        let close_now = start.elapsed() >= Duration::from_secs(secs)
+            || matches!(event, Event::WindowEvent { event: WindowEvent::CloseRequested, .. });
+        if close_now && closing_since.is_none() {
+            if drop_first {
+                webview.take();
+            }
+            if destroy_first {
+                window.take();
+            }
+            closing_since = Some(Instant::now());
         }
-        if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
-            *control_flow = ControlFlow::Exit;
+        if let Some(since) = closing_since {
+            let wait = if drop_first || destroy_first { 3 } else { 0 };
+            if since.elapsed() >= Duration::from_secs(wait) {
+                *control_flow = ControlFlow::Exit;
+            }
         }
     });
 }
