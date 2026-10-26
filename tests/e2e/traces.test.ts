@@ -238,20 +238,26 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   //   запись Windows `virtualapp/didlogical` (служба wlidsvc), не Rhizomind:
   //   на машинах CI Windows иногда создаёт её позже обычного. Допускается
   //   ровно этот новый файл, любой другой файл в папке валит тест.
-  // - %LOCALAPPDATA%\Microsoft\TokenBroker\Cache\*.tbres — кэш брокера токенов
-  //   Windows: фон Windows (плановое задание GAEvents) и OneAuth движка WebView2
-  //   при первом запуске; решение 60 в работе. Новые, изменённые и удалённые файлы.
+  // - %LOCALAPPDATA%\Microsoft\TokenBroker\Cache\01c5cb21ab1d4fd56e65159d6c36cd5db1f647e1.tbres —
+  //   кэш брокера токенов, который в любой момент создаёт или переписывает
+  //   плановое задание Windows GAEvents (taskhostw.exe) и без приложения
+  //   (задача 0.6). Допускается только новый или изменённый этот файл.
+  //   Всё остальное в TokenBroker\Cache валит тест: OneAuth движка WebView2
+  //   пишет другие файлы (e8ddd4cb…, 5a2a7058…, 8ae9f0c3…) и удаляет этот —
+  //   с решением 64 (ядро завершает процесс браузера при выходе) их быть не должно.
   // - %LOCALAPPDATA%\Rhizomind\vaults.json — список хранилищ (решение 46);
   //   тест кладёт его до запуска и восстанавливает после.
   const localAppData = isWindows ? real(env('LOCALAPPDATA')) : '';
   const credentialsFile = isWindows ? path.join(localAppData, 'Microsoft', 'Credentials', 'DFBE70A7E5CC19A398EBF1B96859CE5D') : '';
-  const tokenBrokerCache = isWindows ? path.join(localAppData, 'Microsoft', 'TokenBroker', 'Cache') + path.sep : '';
+  const backgroundTokenFile = isWindows
+    ? path.join(localAppData, 'Microsoft', 'TokenBroker', 'Cache', '01c5cb21ab1d4fd56e65159d6c36cd5db1f647e1.tbres')
+    : '';
   const profileDir = isWindows ? path.join(localAppData, 'Rhizomind') : '';
   const vaultsFile = path.join(profileDir, 'vaults.json');
   const isKnownTrace = (p: string) =>
     isWindows &&
     ((p === credentialsFile && !before.has(p)) ||
-      (p.startsWith(tokenBrokerCache) && !p.slice(tokenBrokerCache.length).includes(path.sep) && p.endsWith('.tbres')) ||
+      p === backgroundTokenFile ||
       p === vaultsFile);
   const unexpected = (p: string) => !isHarnessNoise(p) && !isKnownTrace(p);
 
@@ -437,12 +443,13 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     // подложенный тестом и оставшиеся от сценарных тестов WebDriver, чьи
     // процессы драйвер завершил без выхода (уборка остатков при запуске, ADR 0007).
     // Имя папки — точно `rhizomind-webview-<номер процесса>-<16 шестнадцатеричных>`
-    // (src-tauri/src/webview_traces/), и учтённые записи (кэш TokenBroker).
+    // (src-tauri/src/webview_traces/). Удаление файла кэша TokenBroker (так
+    // делает OneAuth движка) — нарушение.
     const tempReal = real(temp) + path.sep;
     const LEFTOVER_NAME = /^rhizomind-webview-\d+-[0-9a-f]{16}$/;
     const isLeftover = (p: string) =>
       p.startsWith(tempReal) && LEFTOVER_NAME.test(p.slice(tempReal.length).split(path.sep)[0] ?? '');
-    expect(removed.filter((p) => !isLeftover(p) && !isKnownTrace(p))).toEqual([]);
+    expect(removed.filter((p) => !isLeftover(p))).toEqual([]);
     expect(existsSync(leftover)).toBe(false);
     // Сценарий дошёл до конца: введённый текст записан в заметку до выхода.
     if (vaultScenario) {
