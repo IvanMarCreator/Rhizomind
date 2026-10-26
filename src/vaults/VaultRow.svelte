@@ -47,7 +47,7 @@
 
 <li class="row" class:menu-open={menuOpen}>
   <button type="button" class="main" {disabled} onclick={onOpen}>
-    <span class="letter" class:open={vault.is_open} aria-hidden="true">{vaultLetter(vault.name)}</span>
+    <span class="letter" class:is-open={vault.is_open} aria-hidden="true">{vaultLetter(vault.name)}</span>
     <span class="text">
       <span class="line">
         <span class="name">{vault.name}</span>
@@ -61,7 +61,7 @@
   <span class="tools">
     <button
       type="button"
-      class="open"
+      class="open-button"
       {disabled}
       aria-label={t('vaults.manager.openNamed', { name: vault.name })}
       onclick={onOpen}
@@ -106,9 +106,7 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
     height: 56px;
-    padding-right: 8px;
     border-radius: 6px;
   }
 
@@ -125,7 +123,7 @@
     flex: 1;
     min-width: 0;
     height: 100%;
-    padding-left: 10px;
+    padding: 0 8px 0 10px;
     border-radius: 6px;
     text-align: left;
   }
@@ -147,7 +145,7 @@
     font-weight: 600;
   }
 
-  .letter.open {
+  .letter.is-open {
     background: var(--accent-subtle);
     color: var(--accent-text);
   }
@@ -197,21 +195,30 @@
     font-size: 12px;
   }
 
+  /* «Открыть» и «…» поверх правого края строки при наведении и фокусе:
+     в покое имя и путь занимают всю ширину. */
   .tools {
+    position: absolute;
+    top: 0;
+    right: 8px;
+    bottom: 0;
     display: flex;
     align-items: center;
     gap: 8px;
-    flex: none;
+    padding-left: 8px;
+    background: var(--bg-hover);
     opacity: 0;
+    pointer-events: none;
   }
 
   .row:hover .tools,
   .row:focus-within .tools,
   .row.menu-open .tools {
     opacity: 1;
+    pointer-events: auto;
   }
 
-  .open {
+  .open-button {
     height: 28px;
     padding: 0 10px;
     border: 1px solid var(--border-strong);
@@ -222,7 +229,7 @@
     font-weight: 500;
   }
 
-  .open:hover {
+  .open-button:hover {
     background: var(--bg-hover);
   }
 
@@ -293,5 +300,6 @@
   .item-hint {
     color: var(--text-muted);
     font-size: 12px;
+    white-space: nowrap;
   }
 </style>

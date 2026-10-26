@@ -16,8 +16,19 @@ import { saveScreenshot } from './screenshot.ts';
 const MANAGER = '[data-testid="vault-manager"]';
 const SHELL = '[data-testid="shell"]';
 
+/** Снимок после загрузки шрифтов (новое окно рисует текст не сразу). */
+async function shot(browser: WebdriverIO.Browser, name: string): Promise<void> {
+  await browser.execute(async () => {
+    await document.fonts.ready;
+  });
+  await saveScreenshot(browser, name);
+}
+
 /** Снимки в светлой и тёмной теме (тема — атрибутом data-theme, как в src/theme/theme.ts). */
 async function screenshotThemes(browser: WebdriverIO.Browser, name: string): Promise<void> {
+  await browser.execute(async () => {
+    await document.fonts.ready;
+  });
   for (const theme of ['light', 'dark'] as const) {
     await browser.execute((value) => {
       document.documentElement.dataset.theme = value;
@@ -61,6 +72,24 @@ async function switchToWindowWith(
 
 const switcherLabel = (name: string) => `button[aria-label="Хранилище «${name}»"]`;
 
+/** Пункты открытого меню переключателя: текст без лишних пробелов и отметка. */
+function menuItems(browser: WebdriverIO.Browser): Promise<{ text: string; checked: string | null }[]> {
+  return browser.execute(() =>
+    [...document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]')].map((item) => ({
+      text: (item.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      checked: item.getAttribute('aria-checked'),
+    })),
+  );
+}
+
+/** Нажимает пункт открытого меню, текст которого содержит `text`. */
+async function clickMenuItem(browser: WebdriverIO.Browser, text: string): Promise<void> {
+  const index = (await menuItems(browser)).findIndex((item) => item.text.includes(text));
+  if (index < 0) throw new Error(`нет пункта меню «${text}»`);
+  const items = await browser.$$('[role="menuitemradio"], [role="menuitem"]');
+  await items[index]?.click();
+}
+
 describe('первый запуск и создание хранилища', () => {
   let session: Session;
   let parent: string;
@@ -103,7 +132,7 @@ describe('первый запуск и создание хранилища', () 
     await browser.$(switcherLabel('Проекты отдела')).waitForDisplayed({ timeout: 20_000 });
     const root = path.join(parent, 'Проекты отдела');
     expect(existsSync(path.join(root, '.rhizomind'))).toBe(true);
-    await saveScreenshot(browser, 'vaults-created');
+    await shot(browser, 'vaults-created');
   });
 });
 
@@ -132,32 +161,28 @@ describe('«Открыть папку как хранилище» и перек�
     await browser.$(switcherLabel('Рабочая база')).click();
     const menu = browser.$('[role="menu"]');
     await menu.waitForDisplayed();
-    const items = await browser.$$('[role="menuitemradio"]').map(async (item) => ({
-      text: (await item.getText()).replace(/\s+/g, ' ').trim(),
-      checked: await item.getAttribute('aria-checked'),
-    }));
-    expect(items).toEqual([
+    expect(await menuItems(browser)).toEqual([
       { text: 'Р Регламенты отдела', checked: 'false' },
       { text: 'Р Рабочая база', checked: 'true' },
+      { text: 'Управление хранилищами…', checked: null },
     ]);
-    expect(await browser.$('[role="menuitem"]').getText()).toContain('Управление хранилищами…');
     await screenshotThemes(browser, 'vaults-switcher');
   });
 
   it('другое хранилище из переключателя — в новом окне', async () => {
     const { browser } = session;
-    await browser.$('[role="menuitemradio"]').click(); // «Регламенты отдела»
+    await clickMenuItem(browser, 'Регламенты отдела');
 
     await switchToWindowWith(browser, switcherLabel('Регламенты отдела'), 2);
     await browser.$('[role="treeitem"][aria-label="Регламент доступа"]').waitForDisplayed({ timeout: 20_000 });
-    await saveScreenshot(browser, 'vaults-switched');
+    await shot(browser, 'vaults-switched');
   });
 
   it('уже открытое хранилище — фокус на его окно, второго окна нет', async () => {
     const { browser } = session;
     await browser.$(switcherLabel('Регламенты отдела')).click();
     await browser.$('[role="menu"]').waitForDisplayed();
-    await browser.$('[role="menuitemradio"][aria-checked="false"]').click(); // «Рабочая база»
+    await clickMenuItem(browser, 'Рабочая база');
 
     await browser.pause(1500);
     expect(await browser.getWindowHandles()).toHaveLength(2);
@@ -166,14 +191,31 @@ describe('«Открыть папку как хранилище» и перек�
   it('«Управление хранилищами…» — окно управления со списком (Э11а)', async () => {
     const { browser } = session;
     await browser.$(switcherLabel('Регламенты отдела')).click();
-    await browser.$('[role="menuitem"]').click();
+    await browser.$('[role="menu"]').waitForDisplayed();
+    await clickMenuItem(browser, 'Управление хранилищами…');
 
     await switchToWindowWith(browser, MANAGER, 3);
-    const rows = await browser.$$('li').map((row) => row.getText());
-    expect(rows).toHaveLength(2);
+    // Новое окно: список приходит отдельной командой, шрифт — файлом.
+    await browser.waitUntil(async () => (await browser.$$('li').length) === 2, { timeout: 20_000 });
+    const rows = await browser.execute(async () => {
+      await document.fonts.ready;
+      return [...document.querySelectorAll('li')].map((row) => (row.textContent ?? '').replace(/\s+/g, ' '));
+    });
     expect(rows.join('\n')).toContain('Регламенты отдела');
     expect(rows.join('\n')).toContain('открыто');
     await screenshotThemes(browser, 'vaults-manager-list');
+
+    // Меню «…» строки (Э11а): кнопки видны при наведении; «Убрать из списка» с пояснением.
+    const more = browser.$('button[aria-label="Действия с хранилищем «Рабочая база»"]');
+    await (await browser.$$('li'))[1]?.moveTo();
+    await more.waitForClickable();
+    await more.click();
+    const menu = browser.$('[role="menu"]');
+    await menu.waitForDisplayed();
+    expect(await menu.getText()).toContain('Файлы и папка на диске не удаляются');
+    await screenshotThemes(browser, 'vaults-manager-menu');
+    await browser.keys('Escape');
+    await menu.waitForDisplayed({ reverse: true });
   });
 
   it('«Открыть папку как хранилище» — хранилище в новом окне, окно управления закрыто', async () => {
@@ -183,6 +225,6 @@ describe('«Открыть папку как хранилище» и перек�
     // Окно управления закрылось, появилось окно «Архив 2025»: окон снова три.
     await switchToWindowWith(browser, switcherLabel('Архив 2025'), 3);
     expect(existsSync(path.join(archive, '.rhizomind'))).toBe(true);
-    await saveScreenshot(browser, 'vaults-opened-folder');
+    await shot(browser, 'vaults-opened-folder');
   });
 });
