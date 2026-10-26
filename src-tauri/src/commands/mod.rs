@@ -159,6 +159,15 @@ pub struct Core {
     pending: Arc<Mutex<HashMap<VaultId, String>>>,
 }
 
+/// Почему хранилище нельзя занять для открытия в окне.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimRefused {
+    /// Хранилище уже открыто или открывается в окне с этой меткой.
+    OpenIn(String),
+    /// В окне уже есть хранилище или идёт открытие.
+    WindowBusy,
+}
+
 /// Хранилище занято открытием в окне; снимается при выходе из области
 /// видимости (открытие закончилось успехом или ошибкой).
 #[derive(Debug)]
@@ -373,23 +382,37 @@ impl Core {
             .contains(window_label)
     }
 
-    /// Занимает хранилище `id` для открытия в окне `window_label`. Хранилище
-    /// уже открыто или открывается в каком-то окне — `Err(метка того окна)`:
-    /// повторное открытие даёт фокус, а не второе окно.
-    pub fn claim_vault(&self, id: &VaultId, window_label: &str) -> Result<VaultClaim, String> {
+    /// Занимает хранилище `id` для открытия в окне `window_label`.
+    /// - Хранилище уже открыто или открывается в каком-то окне —
+    ///   [`ClaimRefused::OpenIn`] с меткой того окна: повторное открытие даёт
+    ///   фокус, а не второе окно.
+    /// - Окно `window_label` занято — в нём уже есть хранилище или идёт
+    ///   открытие (ревью безопасности 1.3) — [`ClaimRefused::WindowBusy`]:
+    ///   второе открытие не должно заменить первое.
+    pub fn claim_vault(
+        &self,
+        id: &VaultId,
+        window_label: &str,
+    ) -> Result<VaultClaim, ClaimRefused> {
         let windows = self.windows();
         if let Some((label, _)) = windows
             .iter()
             .find(|(_, entry)| entry.open.summary.id == *id)
         {
-            return Err(label.clone());
+            return Err(ClaimRefused::OpenIn(label.clone()));
         }
         let mut pending = self
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(label) = pending.get(id) {
-            return Err(label.clone());
+            return Err(ClaimRefused::OpenIn(label.clone()));
+        }
+        if windows.contains_key(window_label)
+            || pending.values().any(|label| label == window_label)
+            || self.opening_map().contains_key(window_label)
+        {
+            return Err(ClaimRefused::WindowBusy);
         }
         pending.insert(id.clone(), window_label.to_owned());
         Ok(VaultClaim {

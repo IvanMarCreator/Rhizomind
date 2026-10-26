@@ -156,9 +156,12 @@ mod windows_only {
                                     "окно {label} не показано после проверки InPrivate"
                                 ));
                             }
-                            let pid = security::windows::browser_process_id(&webview.controller())
-                                .unwrap_or(0);
-                            failures.push(format!("pid:{pid}"));
+                            match security::windows::browser_process_id(&webview.controller()) {
+                                Ok(pid) if pid != 0 => failures.push(format!("pid:{pid}")),
+                                other => failures.push(format!(
+                                    "окно {label}: нет номера процесса браузера ({other:?})"
+                                )),
+                            }
                             results.lock().unwrap().push(failures);
                             let _ = done_tx.send(());
                         });

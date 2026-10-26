@@ -187,6 +187,31 @@ fn concurrent_opens_of_one_vault_create_one_window() {
     assert_eq!(window_count(&app), 2);
 }
 
+/// Ревью безопасности 1.3: пока в пустом окне идёт открытие, окно занято —
+/// второе открытие в нём не заменяет первое, а идёт в новое окно.
+#[test]
+fn empty_window_being_opened_is_busy_and_second_vault_gets_new_window() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let b = vault(&app, temp.path(), "Б");
+    let first = window(&app);
+    let core = app.state::<Core>();
+
+    // Открытие А в первом окне уже идёт (хранилище ещё не привязано).
+    let opening = core.claim_vault(&a, first.label()).expect("занято под А");
+
+    assert_eq!(open(&first, &b), json!({ "outcome": "opened" }));
+    assert_eq!(window_count(&app), 2);
+    let label_b = core.window_of_vault(&b).expect("Б открыто");
+    assert_ne!(
+        label_b,
+        first.label(),
+        "Б не должно занять окно, где открывается А"
+    );
+    assert!(core.window_vault(first.label()).is_none());
+    drop(opening);
+}
+
 /// Хранилище, которого нет в списке, и недоступная папка — ошибка, окно не
 /// создаётся.
 #[test]

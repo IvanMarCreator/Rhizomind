@@ -45,6 +45,30 @@ function ownCommandsInFilter(): string[] {
   return [...literal.matchAll(/'([^']*)'/g)].map((m) => m[1] as string);
 }
 
+/** Имена событий ядра из `src-tauri/src/commands/events.rs` (модуль `event`). */
+function coreEvents(): string[] {
+  const code = readFileSync(path.join(import.meta.dirname, '..', 'src-tauri', 'src', 'commands', 'events.rs'), 'utf8');
+  const module = /pub mod event \{([\s\S]*?)\n\}/.exec(code)?.[1];
+  if (module === undefined) throw new Error('в events.rs не найден модуль event');
+  return [...module.matchAll(/pub const \w+: &str = "([^"]+)";/g)].map((m) => m[1] as string);
+}
+
+/** Литерал CORE_EVENTS из кода фильтра. */
+function eventsInFilter(): string[] {
+  const code = readFileSync(path.join(import.meta.dirname, 'index.js'), 'utf8');
+  const literal = /var CORE_EVENTS = Object\.freeze\(\[([\s\S]*?)\]\)/.exec(code)?.[1];
+  if (literal === undefined) throw new Error('в index.js не найден CORE_EVENTS');
+  return [...literal.matchAll(/'([^']*)'/g)].map((m) => m[1] as string);
+}
+
+const OWN_TARGET = { kind: 'WebviewWindow', label: 'vault-0123456789abcdef' };
+const listenTo = (event: unknown, target: unknown = OWN_TARGET): IpcMessage => ({
+  cmd: 'plugin:event|listen',
+  callback: 1,
+  error: 2,
+  payload: { event, target, handler: 3 },
+});
+
 const message = (cmd: string): IpcMessage => ({ cmd, callback: 1, error: 2, payload: { path: 'x.md' } });
 
 describe('фильтр изолированного iframe', () => {
@@ -59,6 +83,45 @@ describe('фильтр изолированного iframe', () => {
     expect(hook(listen)).toEqual(listen);
     const unlisten = { cmd: 'plugin:event|unlisten', callback: 1, error: 2, payload: { event: 'vault:changed', eventId: 3 } };
     expect(hook(unlisten)).toEqual(unlisten);
+  });
+
+  // Ревью безопасности 1.3: Tauri рассылает всем окнам свои события
+  // (tauri://window-created с меткой нового окна) — по ним окно узнало бы
+  // метку чужого окна. Подписка — только на события ядра.
+  it('пропускает подписку ровно на события ядра из events.rs', () => {
+    const events = coreEvents();
+    expect(events).toHaveLength(6);
+    expect([...eventsInFilter()].sort()).toEqual([...events].sort());
+    const hook = loadHook();
+    for (const event of events) expect(hook(listenTo(event)), event).toEqual(listenTo(event));
+  });
+
+  it('не пропускает подписку на события Tauri и любые другие', () => {
+    const hook = loadHook();
+    for (const event of [
+      'tauri://window-created',
+      'tauri://webview-created',
+      'tauri://created',
+      'tauri://close-requested',
+      'tauri://destroyed',
+      'tauri://focus',
+      'tauri://resize',
+      'tauri://move',
+      'tauri://drag-drop',
+      'tauri://theme-changed',
+      'tauri://scale-change',
+      'VAULT:CHANGED',
+      'vault:changed ',
+      'vault:',
+      '',
+      42,
+      null,
+      undefined,
+    ]) {
+      const out = hook(listenTo(event));
+      expect(out.cmd, String(event)).toBe('__rhizomind_isolation_rejected__');
+      expect(out.payload).toEqual({});
+    }
   });
 
   // Задача 1.3: слушатель с целью Any получал бы события чужих окон (Tauri

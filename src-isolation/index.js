@@ -41,6 +41,20 @@
     'open_external',
   ]);
 
+  // События ядра API v1 — ровно модуль `event` в src-tauri/src/commands/events.rs
+  // (EVENT_NAMES). Подписка на другие события, в том числе встроенные события
+  // Tauri (`tauri://window-created`, `tauri://webview-created` и др.), запрещена:
+  // Tauri рассылает их всем окнам, и в них — метки других окон (ревью
+  // безопасности 1.3). Расхождение со списком ядра ловит тест filter.test.ts.
+  var CORE_EVENTS = Object.freeze([
+    'vault:changed',
+    'note:changed',
+    'note:renamed',
+    'note:deleted',
+    'note:conflict-saved',
+    'vault:availability',
+  ]);
+
   // Служебные команды Tauri, без которых не работают события ядра (`listen`).
   var INTERNAL_COMMANDS = Object.freeze(['plugin:event|listen', 'plugin:event|unlisten']);
 
@@ -59,6 +73,7 @@
   // интерфейс не знает: метки окон случайные (src-tauri/src/windows/mod.rs).
   function isAllowedListen(payload) {
     if (payload === null || typeof payload !== 'object') return false;
+    if (typeof payload.event !== 'string' || CORE_EVENTS.indexOf(payload.event) === -1) return false;
     var target = payload.target;
     return (
       target !== null &&

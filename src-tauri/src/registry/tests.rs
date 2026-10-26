@@ -271,7 +271,6 @@ fn write_replaces_file_and_leaves_no_temp_files() {
 fn corrupt_file_is_copied_aside_and_list_starts_empty() {
     for broken in [
         "{ не JSON".to_owned(),
-        json!({ "format_version": 99, "vaults": [], "last_opened": null }).to_string(),
         json!({ "format_version": 1, "vaults": [], "last_opened": null, "notes": ["x"] })
             .to_string(),
         json!({ "format_version": 1, "vaults": [{ "id": "", "name": "a", "path": "b" }], "last_opened": null })
@@ -346,4 +345,89 @@ fn corrupt_file_that_cannot_be_copied_is_not_overwritten() {
         .expect("в памяти");
     assert_eq!(std::fs::read_to_string(&file).expect("файл"), "{ не JSON");
     assert_eq!(registry.entries().expect("список").vaults.len(), 1);
+}
+
+// ---- Ревью безопасности 1.3 -------------------------------------------------
+
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("папка")
+        .map(|e| {
+            e.expect("элемент")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Временные файлы записи, оставшиеся после падения посреди записи,
+/// убираются при загрузке списка; чужие файлы рядом не трогаются.
+#[test]
+fn leftover_temp_files_are_removed_on_load() {
+    let dir = temp();
+    let file = dir.path().join("vaults.json");
+    std::fs::write(dir.path().join(".vaults-abc123.tmp"), "{").expect("остаток");
+    std::fs::write(dir.path().join(".vaults-.tmp"), "").expect("остаток");
+    std::fs::write(dir.path().join("другое.tmp"), "").expect("чужой");
+    std::fs::write(dir.path().join(".vaults-abc.txt"), "").expect("чужой");
+
+    Registry::at(file).entries().expect("список");
+
+    assert_eq!(names_in(dir.path()), [".vaults-abc.txt", "другое.tmp"]);
+}
+
+/// Копии испорченного файла не копятся: после копии сразу пишется пустой
+/// корректный список, следующий запуск новой копии не делает.
+#[test]
+fn broken_copy_is_made_once_and_file_is_rewritten_valid() {
+    let dir = temp();
+    let file = dir.path().join("vaults.json");
+    std::fs::write(&file, "{ не JSON").expect("файл");
+
+    Registry::at(file.clone()).entries().expect("список");
+    let json = read_json(&file);
+    assert_eq!(json["format_version"], json!(FORMAT_VERSION));
+    assert_eq!(json["vaults"], json!([]));
+
+    for _ in 0..3 {
+        Registry::at(file.clone()).entries().expect("список");
+    }
+    let copies: Vec<String> = names_in(dir.path())
+        .into_iter()
+        .filter(|n| n.starts_with(BROKEN_PREFIX))
+        .collect();
+    assert_eq!(copies.len(), 1, "{copies:?}");
+}
+
+/// Файл будущей версии формата (записан более новой программой) не
+/// затирается молча: побайтная копия `vaults.newer-v<версия>-<мс>.json`.
+#[test]
+fn newer_format_is_copied_aside_before_reset() {
+    let dir = temp();
+    let file = dir.path().join("vaults.json");
+    let newer = json!({ "format_version": 2, "vaults": [{ "id": "a", "name": "А", "path": "/а", "pinned": true }], "last_opened": "a" })
+        .to_string();
+    std::fs::write(&file, &newer).expect("файл");
+
+    let entries = Registry::at(file.clone()).entries().expect("список");
+
+    assert!(entries.vaults.is_empty());
+    let copies: Vec<String> = names_in(dir.path())
+        .into_iter()
+        .filter(|n| n.starts_with("vaults.newer-v2-") && n.ends_with(".json"))
+        .collect();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(&copies[0])).expect("копия"),
+        newer
+    );
+    assert!(
+        !names_in(dir.path())
+            .iter()
+            .any(|n| n.starts_with(BROKEN_PREFIX)),
+        "будущая версия — не «испорчен»"
+    );
 }

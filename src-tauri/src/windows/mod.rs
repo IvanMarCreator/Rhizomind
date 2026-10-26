@@ -3,10 +3,16 @@
 //! - Каждое окно приложения — окно хранилища с меткой `vault-<16
 //!   шестнадцатеричных цифр>` ([`new_label`]). Права окна выдаются по
 //!   шаблону `vault-*` (`capabilities/main.json`), одни и те же у каждого
-//!   окна. Случайная часть метки нужна для изоляции событий: интерфейс одного
-//!   окна не знает метку другого и не может подписаться на его события
-//!   (подписка без цели — `Any` — запрещена фильтром изолированного iframe,
-//!   `src-isolation/index.js`).
+//!   окна. Изоляция событий между окнами держится на фильтре изолированного
+//!   iframe (`src-isolation/index.js`): подписка — только на 6 событий ядра
+//!   (`commands::EVENT_NAMES`) и только с целью «окно с меткой». Встроенные
+//!   события Tauri (`tauri://window-created`, `tauri://webview-created`)
+//!   рассылаются всем окнам и несут метку нового окна — подписка на них
+//!   запрещена (ревью безопасности 1.3). Других путей узнать чужую метку у
+//!   интерфейса нет: в ответах команд и событиях ядра меток нет, команды
+//!   окон и WebView (`plugin:window|*`, `plugin:webview|*`) не выданы правами
+//!   и не проходят фильтр, `__TAURI_INTERNALS__.metadata` содержит только
+//!   свою метку. Случайная часть метки — второй рубеж: угадать 64 бита нельзя.
 //! - Другое хранилище открывается в новом окне; уже открытое хранилище
 //!   получает фокус, второе окно не создаётся ([`open_vault`]). Окно без
 //!   хранилища (первый запуск) открывает хранилище в себе.
@@ -24,7 +30,9 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
-use crate::commands::{Core, CoreError, CoreResult, ErrorCode, VaultOpenOutcome, VaultSummary};
+use crate::commands::{
+    ClaimRefused, Core, CoreError, CoreResult, ErrorCode, VaultOpenOutcome, VaultSummary,
+};
 use crate::events::WindowEmitter;
 use crate::registry::WindowState;
 
@@ -142,21 +150,27 @@ pub async fn open_vault<R: Runtime>(
     vault: VaultSummary,
 ) -> CoreResult<VaultOpenOutcome> {
     let core = app.state::<Core>();
-    let caller_is_empty = core.window_vault(caller).is_none();
-    let label = if caller_is_empty {
-        caller.to_owned()
-    } else {
-        new_label()
+    let focus_on = |label: &str| {
+        if let Some(window) = app.get_webview_window(label) {
+            focus(&window);
+        }
+        Ok(VaultOpenOutcome::Focused)
     };
-    let claim = match core.claim_vault(&vault.id, &label) {
-        Ok(claim) => claim,
-        Err(open_in) => {
-            if let Some(window) = app.get_webview_window(&open_in) {
-                focus(&window);
+    // Сначала — окно вызова; занято (своё хранилище или идёт открытие) —
+    // новое окно.
+    let (label, claim) = match core.claim_vault(&vault.id, caller) {
+        Ok(claim) => (caller.to_owned(), claim),
+        Err(ClaimRefused::OpenIn(open_in)) => return focus_on(&open_in),
+        Err(ClaimRefused::WindowBusy) => {
+            let label = new_label();
+            match core.claim_vault(&vault.id, &label) {
+                Ok(claim) => (label, claim),
+                Err(ClaimRefused::OpenIn(open_in)) => return focus_on(&open_in),
+                Err(ClaimRefused::WindowBusy) => return Err(CoreError::new(ErrorCode::IoFailed)),
             }
-            return Ok(VaultOpenOutcome::Focused);
         }
     };
+    let caller_is_empty = label == caller;
     let opening_app = app.clone();
     let opening_label = label.clone();
     let opening_vault = vault.clone();

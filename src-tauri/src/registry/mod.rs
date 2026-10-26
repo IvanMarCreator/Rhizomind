@@ -12,9 +12,13 @@
 //!   диск, замена `vaults.json`.
 //! - Испорченный файл (не JSON, другая версия формата, лишние поля, пустые
 //!   или повторяющиеся идентификаторы) не роняет приложение и не теряется:
-//!   он копируется рядом как `vaults.broken-<мс от 1970>.json`, список
-//!   начинается пустым. Не удалось скопировать — испорченный файл не
-//!   перезаписывается, список живёт только в памяти до выхода.
+//!   он копируется рядом как `vaults.broken-<мс от 1970>.json`, и сразу
+//!   пишется пустой корректный список (копии не копятся). Файл более новой
+//!   версии формата копируется как `vaults.newer-v<версия>-<мс>.json`. Не
+//!   удалось скопировать — файл не перезаписывается, список живёт только в
+//!   памяти до выхода.
+//! - Временные файлы записи, оставшиеся после падения, убираются при
+//!   загрузке списка.
 //!
 //! Открытие хранилища в окне и фокус на уже открытое — модуль окон
 //! (`src-tauri/src/windows/`); этот модуль только помнит. Выбор папки —
@@ -22,7 +26,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +46,14 @@ pub const FILE_NAME: &str = "vaults.json";
 
 /// Начало имени копии испорченного файла: `vaults.broken-<мс>.json`.
 pub const BROKEN_PREFIX: &str = "vaults.broken-";
+
+/// Начало имени копии файла более новой версии формата:
+/// `vaults.newer-v<версия>-<мс>.json`.
+pub const NEWER_PREFIX: &str = "vaults.newer-v";
+
+/// Временный файл атомарной записи: `.vaults-<случайное>.tmp`.
+const TEMP_PREFIX: &str = ".vaults-";
+const TEMP_SUFFIX: &str = ".tmp";
 
 /// Путь к `vaults.json` в профиле текущего пользователя:
 /// `dirs::data_local_dir()/Rhizomind/vaults.json` (решение 46).
@@ -197,34 +209,28 @@ impl Registry {
 
     /// Все хранилища и последнее открытое.
     pub fn entries(&self) -> CoreResult<RegistryEntries> {
-        let state = self.loaded();
-        let file = &state.as_ref().expect("загружено").file;
-        Ok(RegistryEntries {
+        Ok(self.read(|file| RegistryEntries {
             vaults: file.vaults.iter().map(StoredVault::summary).collect(),
             last_opened: file.last_opened.clone(),
-        })
+        }))
     }
 
     /// Хранилище по идентификатору; нет в списке — `vault_not_found`.
     pub fn find(&self, id: &VaultId) -> CoreResult<VaultSummary> {
-        let state = self.loaded();
-        let file = &state.as_ref().expect("загружено").file;
-        file.position(id).map(|i| file.vaults[i].summary())
+        self.read(|file| file.position(id).map(|i| file.vaults[i].summary()))
     }
 
     /// Последнее открытое хранилище.
     pub fn last_opened(&self) -> Option<VaultSummary> {
-        let state = self.loaded();
-        let file = &state.as_ref().expect("загружено").file;
-        let id = file.last_opened.as_ref()?;
-        file.position(id).ok().map(|i| file.vaults[i].summary())
+        self.read(|file| {
+            let id = file.last_opened.as_ref()?;
+            file.position(id).ok().map(|i| file.vaults[i].summary())
+        })
     }
 
     /// Запомненные размер и положение окна хранилища.
     pub fn window(&self, id: &VaultId) -> Option<WindowState> {
-        let state = self.loaded();
-        let file = &state.as_ref().expect("загружено").file;
-        file.position(id).ok().and_then(|i| file.vaults[i].window)
+        self.read(|file| file.position(id).ok().and_then(|i| file.vaults[i].window))
     }
 
     /// Добавляет папку как хранилище (или возвращает уже известное с тем же
@@ -299,8 +305,8 @@ impl Registry {
     /// Изменение списка: на копии, запись на диск, затем в памяти. Ошибка
     /// записи — `io_failed`, список в памяти не меняется.
     fn change<T>(&self, edit: impl FnOnce(&mut RegistryFile) -> CoreResult<T>) -> CoreResult<T> {
-        let mut state = self.loaded();
-        let loaded = state.as_mut().expect("загружено");
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let loaded = state.get_or_insert_with(|| self.load());
         let mut next = loaded.file.clone();
         let result = edit(&mut next)?;
         if next != loaded.file {
@@ -314,13 +320,10 @@ impl Registry {
         Ok(result)
     }
 
-    /// Список, загруженный при первом обращении.
-    fn loaded(&self) -> MutexGuard<'_, Option<Loaded>> {
+    /// Чтение списка, загруженного при первом обращении.
+    fn read<T>(&self, look: impl FnOnce(&RegistryFile) -> T) -> T {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.is_none() {
-            *state = Some(self.load());
-        }
-        state
+        look(&state.get_or_insert_with(|| self.load()).file)
     }
 
     fn load(&self) -> Loaded {
@@ -331,27 +334,38 @@ impl Registry {
         let Some(path) = &self.file else {
             return fresh(true);
         };
+        remove_leftover_temp_files(path);
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return fresh(true),
             // Файл есть, но не читается: не перезаписываем его.
             Err(_) => return fresh(false),
         };
-        if let Some(file) = std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(RegistryFile::parse)
-        {
+        let text = std::str::from_utf8(&bytes).ok();
+        if let Some(file) = text.and_then(RegistryFile::parse) {
             return Loaded {
                 file,
                 writable: true,
             };
         }
-        // Испорчен: копия рядом, список с нуля.
-        let copied = self.copy_aside(path, &bytes).is_ok();
-        fresh(copied)
+        // Файл более новой программы — не испорчен, но и не наш: копия
+        // `vaults.newer-v<версия>-<мс>.json`; иначе — `vaults.broken-<мс>.json`.
+        let prefix = match text.and_then(newer_format_version) {
+            Some(version) => format!("{NEWER_PREFIX}{version}-"),
+            None => BROKEN_PREFIX.to_owned(),
+        };
+        if self.copy_aside(path, &prefix, &bytes).is_err() {
+            // Копии нет — испорченный файл не перезаписываем.
+            return fresh(false);
+        }
+        // Копия есть: сразу пустой корректный список — следующий запуск не
+        // сделает ещё одну копию того же файла.
+        let loaded = fresh(true);
+        let _ = write_atomically(path, &loaded.file);
+        loaded
     }
 
-    fn copy_aside(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    fn copy_aside(&self, path: &Path, prefix: &str, bytes: &[u8]) -> std::io::Result<()> {
         #[cfg(test)]
         if self.fail_backup.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(std::io::Error::other("тест: копия не удалась"));
@@ -364,9 +378,38 @@ impl Registry {
         let mut copy = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(dir.join(format!("{BROKEN_PREFIX}{millis}.json")))?;
+            .open(dir.join(format!("{prefix}{millis}.json")))?;
         copy.write_all(bytes)?;
         copy.sync_all()
+    }
+}
+
+/// Версия формата больше нашей — файл записан более новой программой.
+fn newer_format_version(text: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let version = value.get("format_version")?.as_u64()?;
+    (version > u64::from(FORMAT_VERSION)).then_some(version)
+}
+
+/// Убирает временные файлы записи (`.vaults-*.tmp`), оставшиеся после
+/// падения посреди записи. Только обычные файлы с точным началом и концом
+/// имени в папке `vaults.json`; ссылки и папки не трогаются.
+fn remove_leftover_temp_files(path: &Path) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let is_temp = name.starts_with(TEMP_PREFIX) && name.ends_with(TEMP_SUFFIX);
+        if is_temp && entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -377,8 +420,8 @@ fn write_atomically(path: &Path, file: &RegistryFile) -> std::io::Result<()> {
     let mut text = serde_json::to_vec_pretty(file).map_err(std::io::Error::other)?;
     text.push(b'\n');
     let mut temp = tempfile::Builder::new()
-        .prefix(".vaults-")
-        .suffix(".tmp")
+        .prefix(TEMP_PREFIX)
+        .suffix(TEMP_SUFFIX)
         .tempfile_in(dir)?;
     temp.write_all(&text)?;
     temp.as_file().sync_all()?;
