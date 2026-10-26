@@ -22,6 +22,13 @@
   text-decoration: none;
 }
 
+/* Список подсказок стоит в редакторе (`position: absolute`, autocomplete.ts):
+   редактор — его опора. Это правило есть в базовых стилях CodeMirror, но они
+   не применяются (Н7). */
+.cm-editor {
+  position: relative;
+}
+
 .cm-tooltip.cm-rz-suggest {
   z-index: 50;
   min-width: 240px;

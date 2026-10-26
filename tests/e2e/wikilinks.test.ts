@@ -2,7 +2,7 @@
 // неразрешённой ссылки, щелчок по неразрешённой создаёт заметку в папке
 // текущей и открывает её, переход по ссылке на заголовок, автодополнение
 // после `[[`. Снимки — в светлой и тёмной теме.
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
@@ -70,11 +70,14 @@ describe('вики-ссылки', () => {
   let profile = '';
 
   beforeAll(async () => {
-    vault = createTestVault('Ссылки', {
-      'Дневник/Сегодня.md': HOME,
-      'Проекты/Альфа/Встреча.md': MEETING,
-      'План.md': '# План\n',
-    });
+    vault = createTestVault('Ссылки', { 'План.md': '# План\n' });
+    for (const [file, text] of [
+      ['Дневник/Сегодня.md', HOME],
+      ['Проекты/Альфа/Встреча.md', MEETING],
+    ] as const) {
+      mkdirSync(path.dirname(path.join(vault, file)), { recursive: true });
+      writeFileSync(path.join(vault, file), text);
+    }
     profile = createTestProfile();
     session = await startApp({ vault, profile });
     const { browser } = session;
@@ -109,7 +112,11 @@ describe('вики-ссылки', () => {
     const unresolved = await b.execute((s) => document.querySelector(`${s} .cm-rz-wikilink-unresolved`)?.textContent ?? '', TEXT);
     expect(unresolved).toBe('Новая идея');
     await shotThemes(b, 'links');
-    await cursorTo(b, 'Сегодня:');
+    // Щелчок по строке попал бы в ссылку и открыл её: курсор — клавишами снизу.
+    // Одинаковые клавиши подряд в одном вызове WebKitWebDriver склеивает: по одной.
+    await b.keys('ArrowUp');
+    await b.keys('ArrowUp');
+    await b.keys('End');
     expect(await lineText(b, 'Сегодня:')).toBe('Сегодня: [[Альфа/Встреча#Итоги|итоги встречи]], [[Новая идея]] и [[План]].');
     await shotThemes(b, 'links-cursor');
   });
@@ -149,8 +156,19 @@ describe('вики-ссылки', () => {
     const b = browser();
     await cursorTo(b, 'Решили начать');
     await b.keys(['Enter']);
-    await b.keys([...'См. [[пла']);
-    await b.$('[role="listbox"] [role="option"]').waitForDisplayed({ timeout: 5_000 });
+    await b.keys([...'См. [']);
+    await b.keys('[');
+    await b.keys([...'пла']);
+    await b.waitUntil(
+      () => b.execute(() => document.querySelectorAll('[role="listbox"] [role="option"]').length).then((n) => n > 0),
+      {
+        timeout: 5_000,
+        timeoutMsg: 'нет списка подсказок',
+      },
+    ).catch(async (error: unknown) => {
+      console.log(await b.execute(() => document.querySelector('.cm-tooltip')?.outerHTML ?? 'нет .cm-tooltip'));
+      throw error;
+    });
     await shotThemes(b, 'suggest');
     await b.keys(['Enter']);
     expect(await lineText(b, 'См.')).toBe('См. [[План]]');

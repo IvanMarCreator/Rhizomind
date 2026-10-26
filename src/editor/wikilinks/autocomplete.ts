@@ -13,6 +13,7 @@ import {
   ViewPlugin,
   keymap,
   showTooltip,
+  tooltips,
   type Tooltip,
   type TooltipView,
   type ViewUpdate,
@@ -290,5 +291,8 @@ const requestPlugin = ViewPlugin.fromClass(
 
 /** Автодополнение вики-ссылок (в обоих режимах редактора). */
 export function wikilinkCompletion(): Extension {
-  return [completionField, listKeymap, requestPlugin];
+  // Список — относительно редактора (`.cm-editor { position: relative }` в
+  // wikilinks.css): базовые стили CodeMirror в окне не действуют (Н7), и
+  // без этого список оказывался у левого края окна.
+  return [tooltips({ position: 'absolute' }), completionField, listKeymap, requestPlugin];
 }
