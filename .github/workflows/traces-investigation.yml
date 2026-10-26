@@ -1,0 +1,125 @@
+# Расследование следов вне хранилища под Process Monitor (задача 0.6,
+# решения владельца 54 и 56). Не часть основной проверки: запускается только
+# пушем в ветку расследования и только при изменении самого расследования
+# (workflow_dispatch без авторизации gh недоступен).
+#
+# Задания (каждое — на чистой машине windows-latest):
+#   app      — B: 3 паузы без приложения, затем A: 5 запусков выпускной сборки
+#              (портативный архив из последнего успешного CI на main);
+#   minimal  — B ×3, затем C: минимальное окно WebView2 без ядра Rhizomind
+#              с флагами Rhizomind ×3 и с флагами по умолчанию ×3;
+#   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
+#              rfd (как в приложении), rfd-cancel, dontaddtorecent,
+#              clientguid, clientguid-clear, all.
+# Итог каждого задания — summary.md в журнале шага «Разбор» и в сводке
+# запуска; полная запись (PML, снимки) — в артефакте traces-<задание>.
+name: traces-investigation
+
+on:
+  push:
+    branches: ["task/0.6-traces-investigation"]
+    paths:
+      - "tools/traces-investigation/**"
+      - ".github/workflows/traces-investigation.yml"
+
+permissions:
+  contents: read
+  actions: read # скачать портативную сборку из запуска CI на main
+
+jobs:
+  investigate:
+    name: traces (${{ matrix.job }})
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [app, minimal, dialog-rfd, dialog-rfd-cancel, dialog-dontaddtorecent, dialog-clientguid, dialog-clientguid-clear, dialog-all]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Сведения о машине
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Host "ОС: $($os.Caption) $($os.Version) сборка $($os.BuildNumber)"
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          Write-Host "WebView2 Runtime: $((Get-ItemProperty -Path $key).pv)"
+          Write-Host "Пользователь: $env:USERNAME; LOCALAPPDATA=$env:LOCALAPPDATA; APPDATA=$env:APPDATA"
+          Get-Service TokenBroker, VaultSvc -ErrorAction SilentlyContinue | Format-Table -AutoSize Name, Status, StartType | Out-String | Write-Host
+          Write-Host "Перемещаемый профиль: $((Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -eq $env:USERPROFILE }).RoamingConfigured)"
+
+      - name: Process Monitor (Sysinternals, проверка подписи)
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'procmon'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir 'ProcessMonitor.zip'
+          Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/ProcessMonitor.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $exe = Join-Path $dir 'Procmon64.exe'
+          $sig = Get-AuthenticodeSignature -FilePath $exe
+          Write-Host "Подпись: $($sig.Status); $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'подпись Procmon64.exe не Microsoft' }
+          Write-Host "Версия: $((Get-Item $exe).VersionInfo.FileVersion); SHA256: $((Get-FileHash $exe -Algorithm SHA256).Hash)"
+          "PROCMON=$exe" >> $env:GITHUB_ENV
+
+      - name: Разборщик PML и фильтр Process Monitor
+        run: |
+          python --version
+          python -m pip install --disable-pip-version-check procmon-parser==0.4.0
+          $out = Join-Path $env:RUNNER_TEMP 't06'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $bin = Join-Path $out 'filter-rules.bin'
+          python tools/traces-investigation/make_pmc.py (Join-Path $out 't06.pmc') $bin
+          # Те же правила в настройках Procmon — на случай, если частичный .pmc не применится.
+          $key = 'HKCU:\Software\Sysinternals\Process Monitor'
+          New-Item -Path $key -Force | Out-Null
+          Set-ItemProperty -Path $key -Name FilterRules -Type Binary -Value ([IO.File]::ReadAllBytes($bin))
+          Set-ItemProperty -Path $key -Name DestructiveFilter -Type DWord -Value 1
+          Set-ItemProperty -Path $key -Name EulaAccepted -Type DWord -Value 1
+
+      - name: Зонд (окно выбора папки, минимальный WebView2, учётные данные)
+        run: |
+          dotnet --version
+          dotnet publish tools/traces-investigation/probe/t06probe.csproj -c Release -o "$env:RUNNER_TEMP\t06probe" --nologo
+          "PROBE=$env:RUNNER_TEMP\t06probe\t06probe.exe" >> $env:GITHUB_ENV
+
+      - name: Выпускная сборка из CI на main
+        if: matrix.job == 'app'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = gh run list -R $env:GITHUB_REPOSITORY --workflow ci.yml --branch main --status success --limit 1 --json databaseId,headSha,createdAt | ConvertFrom-Json
+          Write-Host "Сборка из запуска CI $($run.databaseId) (main $($run.headSha), $($run.createdAt))"
+          $dir = Join-Path $env:RUNNER_TEMP 'app'
+          gh run download $run.databaseId -R $env:GITHUB_REPOSITORY -n rhizomind-portable-windows -D $dir
+          Get-ChildItem $dir -Filter *.zip | ForEach-Object { Expand-Archive -Path $_.FullName -DestinationPath $dir -Force }
+          $exe = Join-Path $dir 'rhizomind.exe'
+          Write-Host "rhizomind.exe SHA256: $((Get-FileHash $exe -Algorithm SHA256).Hash)"
+          "APP_EXE=$exe" >> $env:GITHUB_ENV
+
+      - name: Сценарии под Process Monitor
+        timeout-minutes: 25
+        run: |
+          ./tools/traces-investigation/run.ps1 -Job '${{ matrix.job }}' -Probe $env:PROBE -Procmon $env:PROCMON -AppExe "$env:APP_EXE"
+
+      - name: Разбор
+        if: always()
+        env:
+          T06_JOB: ${{ matrix.job }}
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 't06'
+          python tools/traces-investigation/analyze.py $out $env:LOCALAPPDATA $env:APPDATA
+          Get-Content -Raw (Join-Path $out 'summary.md') >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Запись и снимки
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: traces-${{ matrix.job }}
+          path: ${{ runner.temp }}/t06/
+          retention-days: 14
+          if-no-files-found: warn
