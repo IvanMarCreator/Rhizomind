@@ -7,6 +7,11 @@ source: src/commands/contract_tests.rs
     {
       "code": "vault_not_found",
       "message_key": "errors.vault_not_found"
+    },
+    {
+      "code": "invalid_argument",
+      "field": "window",
+      "message_key": "errors.invalid_argument"
     }
   ],
   "request": {
