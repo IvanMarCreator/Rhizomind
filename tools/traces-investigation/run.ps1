@@ -132,6 +132,13 @@ try {
       foreach ($i in 1..3) { Phase "app#$i" { Scenario-App "app#$i" } }
       foreach ($i in 1..3) { Phase "mini-rhizomind-flags#$i" { Scenario-Mini "mini-rhizomind-flags#$i" 'rhizomind-flags' } }
     }
+    '^mini(-nav|-lang|-nav-lang)$' {
+      $tag = $Matches[1]
+      $mode = 'rhizomind-flags' + ($tag -replace '-', '+')
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      foreach ($i in 1..2) { Phase "mini$tag#$i" { Scenario-Mini "mini$tag#$i" $mode } }
+      Phase 'app#1' { Scenario-App 'app#1' }
+    }
     '^dialog-(.+)$' {
       $variant = $Matches[1]
       Phase 'idle#1' { Scenario-Idle 'idle#1' }

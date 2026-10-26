@@ -321,12 +321,18 @@ internal static class MiniWebView
 
     public static int Run(string mode, int seconds)
     {
-        var flags = mode switch
+        // mode: <rhizomind-flags|default>[+nav][+lang]
+        //   +nav  — страница с http://tauri.localhost/ через WebResourceRequested (как Tauri на Windows);
+        //   +lang — Language = en-US и AreBrowserExtensionsEnabled = false (как wry).
+        var parts = mode.Split('+');
+        var flags = parts[0] switch
         {
             "rhizomind-flags" => RhizomindFlags,
             "default" => null,
             _ => throw new ArgumentException("unknown mode " + mode),
         };
+        var nav = Array.IndexOf(parts, "nav") > 0;
+        var lang = Array.IndexOf(parts, "lang") > 0;
         var dataDir = Path.Combine(Path.GetTempPath(), "t06-webview-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dataDir);
         var info = new Dictionary<string, object> { ["mode"] = mode, ["dataDir"] = dataDir };
@@ -344,6 +350,11 @@ internal static class MiniWebView
                     AllowSingleSignOnUsingOSPrimaryAccount = false,
                     IsCustomCrashReportingEnabled = true,
                 };
+                if (lang)
+                {
+                    options.Language = "en-US";
+                    options.AreBrowserExtensionsEnabled = false;
+                }
                 var env = await CoreWebView2Environment.CreateAsync(null, dataDir, options);
                 env.BrowserProcessExited += (_, _) => browserExited.Set();
                 var controllerOptions = env.CreateCoreWebView2ControllerOptions();
@@ -357,7 +368,20 @@ internal static class MiniWebView
                 info["browserPid"] = browserPid;
                 info["runtime"] = env.BrowserVersionString;
                 info["inPrivate"] = core.Profile.IsInPrivateModeEnabled;
-                core.NavigateToString("<!doctype html><title>t06</title><h1>t06 mini webview</h1>");
+                if (nav)
+                {
+                    core.AddWebResourceRequestedFilter("http://tauri.localhost/*", CoreWebView2WebResourceContext.All);
+                    core.WebResourceRequested += (_, e) =>
+                    {
+                        var html = Encoding.UTF8.GetBytes("<!doctype html><title>t06</title><h1>t06 mini webview (nav)</h1>");
+                        e.Response = env.CreateWebResourceResponse(new MemoryStream(html), 200, "OK", "Content-Type: text/html; charset=utf-8");
+                    };
+                    core.Navigate("http://tauri.localhost/");
+                }
+                else
+                {
+                    core.NavigateToString("<!doctype html><title>t06</title><h1>t06 mini webview</h1>");
+                }
                 var timer = new System.Windows.Forms.Timer { Interval = seconds * 1000 };
                 timer.Tick += (_, _) => { timer.Stop(); controller.Close(); form.Close(); };
                 timer.Start();

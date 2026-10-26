@@ -39,6 +39,11 @@ PATH_CONTAINS = [
     "rhizomind",
     "t06-",
     "t06probe",
+    # загрузка клиентских библиотек WAM/учётных записей (Load Image со стеком вызова)
+    "UserMgrProxy",
+    "Windows.Security.Authentication.Web.Core",
+    "MicrosoftAccountTokenProvider",
+    "Windows.System.UserProfile",
     # вся сеть: у сетевых событий Path имеет вид "адрес:порт -> адрес:порт"
     " -> ",
 ]

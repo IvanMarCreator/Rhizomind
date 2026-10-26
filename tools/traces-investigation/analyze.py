@@ -40,6 +40,7 @@ CATEGORIES = [
     ("ShellBags", re.compile(r"bagmru|\\shell\\bags|shellnoroam", re.I)),
     ("Recent/JumpLists", re.compile(r"\\recent\\|automaticdestinations|customdestinations|recentdocs|typedpaths", re.I)),
     ("WebView2 temp (expected)", re.compile(r"rhizomind-webview-|t06-webview-", re.I)),
+    ("WAM client load (Load Image)", re.compile(r"usermgrproxy|authentication\.web\.core|microsoftaccounttokenprovider|userprofile", re.I)),
     ("Rhizomind profile", re.compile(r"\\rhizomind\\vaults|\\rhizomind\\\.vaults", re.I)),
 ]
 
@@ -247,7 +248,7 @@ proc_info = {}
 total_events = 0
 outside_filter = 0
 filter_rx = re.compile(
-    r"credentials|protect|vault|tokenbroker|identitycrl|identitycache|oneauth|aad\.brokerplugin|identitystore|comdlg32|bagmru|shell\\bags|shellnoroam|\\recent\\|destinations|recentdocs|typedpaths|rhizomind|t06-|t06probe| -> ",
+    r"credentials|protect|vault|tokenbroker|identitycrl|identitycache|oneauth|aad\.brokerplugin|identitystore|usermgrproxy|authentication\.web\.core|microsoftaccounttokenprovider|userprofile|comdlg32|bagmru|shell\\bags|shellnoroam|\\recent\\|destinations|recentdocs|typedpaths|rhizomind|t06-|t06probe| -> ",
     re.I,
 )
 
@@ -299,6 +300,13 @@ if pml_files:
                     detail = event._get_compatible_csv_detail_column()
                 except Exception:  # noqa: BLE001 — разбор деталей не критичен
                     detail = ""
+                if op == "Load Image" and re.search(r"usermgrproxy|authentication\.web\.core|microsoftaccounttokenprovider|userprofile", path, re.I):
+                    key = (phase, proc, event.process.pid, op, path)
+                    w = writes[key]
+                    w["count"] += 1
+                    if not w["stacks"]:
+                        w["stacks"].append(stack_summary(event))
+                    continue
                 is_write = op in WRITE_OPS or (op == "CreateFile" and "OpenResult: Created" in detail) or (
                     op == "RegCreateKey" and "REG_CREATED_NEW_KEY" in detail
                 )
