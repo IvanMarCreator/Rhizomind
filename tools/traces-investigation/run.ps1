@@ -9,7 +9,8 @@ param(
   [Parameter(Mandatory)] [string] $Job,
   [Parameter(Mandatory)] [string] $Probe,
   [Parameter(Mandatory)] [string] $Procmon,
-  [string] $AppExe = ''
+  [string] $AppExe = '',
+  [string] $WryProbe = ''
 )
 $ErrorActionPreference = 'Stop'
 $out = Join-Path $env:RUNNER_TEMP 't06'
@@ -76,6 +77,36 @@ function Scenario-App([string] $phase) {
   Start-Sleep -Seconds 10 # отложенные записи после выхода (Credentials появлялся «после закрытия»)
   $info = @{ phase = $phase; pid = $p.Id; browserPid = $browser.ProcessId; browserCmd = $browser.CommandLine; closeMainWindow = $closed; exit = $code }
   Add-Content -LiteralPath $results -Value ($info | ConvertTo-Json -Compress) -Encoding utf8
+}
+
+# Любой исполняемый файл с окном WebView2: запуск, ожидание процесса браузера,
+# 6 с работы, закрытие окна (зонд wry выходит сам по secs=), пауза.
+function Scenario-Exe([string] $phase, [string] $exe, [string[]] $arguments) {
+  $p = if ($arguments) { Start-Process -FilePath $exe -ArgumentList $arguments -PassThru } else { Start-Process -FilePath $exe -PassThru }
+  $null = $p.Handle
+  $browser = $null
+  for ($i = 0; $i -lt 60 -and -not $browser; $i++) {
+    Start-Sleep -Milliseconds 500
+    $browser = Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue |
+      Where-Object { $_.ParentProcessId -eq $p.Id } | Select-Object -First 1
+  }
+  Start-Sleep -Seconds 6
+  $closed = $false
+  if (-not $p.HasExited) { $closed = $p.CloseMainWindow() }
+  if (-not $p.WaitForExit(20000)) { $p.Kill() }
+  Start-Sleep -Seconds 4
+  $info = @{ phase = $phase; exe = $exe; args = ($arguments -join ' '); browserCmd = $browser.CommandLine; closeMainWindow = $closed }
+  Add-Content -LiteralPath $results -Value ($info | ConvertTo-Json -Compress) -Encoding utf8
+}
+
+function Set-AppPolicy([string] $exeName, [string] $value) {
+  $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+  if ($value) {
+    New-Item -Path $key -Force | Out-Null
+    Set-ItemProperty -Path $key -Name $exeName -Value $value
+  } elseif (Test-Path $key) {
+    Remove-ItemProperty -Path $key -Name $exeName -ErrorAction SilentlyContinue
+  }
 }
 
 function Scenario-Mini([string] $phase, [string] $mode) {
@@ -149,6 +180,55 @@ try {
       Add-Content -LiteralPath $results -Value (@{ phase = 'policy'; key = $key; value = $value } | ConvertTo-Json -Compress) -Encoding utf8
       Phase 'idle#1' { Scenario-Idle 'idle#1' }
       foreach ($i in 1..3) { Phase "app#$i" { Scenario-App "app#$i" } }
+    }
+    '^oneauth-sweep$' {
+      # Поиск, что включает OneAuth (задача 0.6б). Признак — загрузка oneauth.dll
+      # и клиента WAM процессом msedgewebview2.exe; он виден при КАЖДОМ запуске,
+      # поэтому варианты идут подряд на одной машине.
+      $base = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection'
+      $dir = Split-Path $AppExe
+      $renamed = Join-Path $dir 'notes-t06.exe'
+      Copy-Item $AppExe $renamed -Force
+      $probeDir = Split-Path $Probe
+      $probeAsApp = Join-Path $probeDir 'rhizomind.exe'
+      Copy-Item $Probe $probeAsApp -Force
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'app#1' { Scenario-Exe 'app#1' $AppExe @() }
+      Phase 'app-renamed#1' { Scenario-Exe 'app-renamed#1' $renamed @() }
+      Phase 'mini-as-rhizomind#1' { Scenario-Exe 'mini-as-rhizomind#1' $probeAsApp @('webview', 'rhizomind-flags', '6') }
+      $wryVariants = [ordered]@{
+        'wry-min'       = @()
+        'wry-all'       = @('datadir', 'incognito', 'flags', 'noext', 'bg', 'ipc', 'init', 'protocol')
+        'wry-incognito' = @('incognito')
+        'wry-datadir'   = @('datadir')
+        'wry-flags'     = @('flags')
+        'wry-protocol'  = @('protocol')
+        'wry-ipc-init'  = @('ipc', 'init')
+        'wry-bg-noext'  = @('bg', 'noext')
+      }
+      foreach ($name in $wryVariants.Keys) {
+        $a = @($wryVariants[$name]) + 'secs=8'
+        Phase "$name#1" { Scenario-Exe "$name#1" $WryProbe $a }
+      }
+      $policies = [ordered]@{
+        'pol-enable-lazyload'   = '--enable-features=msLazyLoadOneAuthInWebView'
+        'pol-no-forcewam'       = "$base,msForceOneAuthWAM"
+        'pol-no-pinwam'         = "$base,msPinWAMDLLsOnWin10"
+        'pol-no-wcos'           = "$base,msOneAuthWAMOnWCOS"
+        'pol-no-profileaad'     = "$base,msEnableProfileAADAccountSSO"
+        'pol-no-prt'            = "$base,msAllowMSAPrtSSOForNonMSAProfile,msAutoToggleMSAPrtSSOForNonMSAProfile,msAutoToggleAADPrtSSOForNonAADProfile,msShowUXForAADPrtSSOForNonAADProfile"
+        'pol-no-primary'        = "$base,msEmxPrimaryAccount,msStrictPrimaryAccountCheck,msSingleSignOnOSForPrimaryAccountIsShared"
+        'pol-no-ssodiag'        = "$base,msSendSSODiagnostics"
+        'pol-no-all'            = "$base,msOneAuthWAM,msLoadOneAuthInBackground,msForceOneAuthWAM,msPinWAMDLLsOnWin10,msOneAuthWAMOnWCOS,msEnableProfileAADAccountSSO,msAllowMSAPrtSSOForNonMSAProfile,msAutoToggleMSAPrtSSOForNonMSAProfile,msAutoToggleAADPrtSSOForNonAADProfile,msEmxPrimaryAccount,msStrictPrimaryAccountCheck,msSendSSODiagnostics,msM365LinksImplicitSignin"
+        'pol-enable-osprimaryonly' = '--enable-features=msSingleSignOnForOSPrimaryAccountOnly'
+      }
+      foreach ($name in $policies.Keys) {
+        Set-AppPolicy 'rhizomind.exe' $policies[$name]
+        Add-Content -LiteralPath $results -Value (@{ phase = "$name#1"; policy = $policies[$name] } | ConvertTo-Json -Compress) -Encoding utf8
+        Phase "$name#1" { Scenario-Exe "$name#1" $AppExe @() }
+      }
+      Set-AppPolicy 'rhizomind.exe' ''
+      Phase 'app#2' { Scenario-Exe 'app#2' $AppExe @() }
     }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]

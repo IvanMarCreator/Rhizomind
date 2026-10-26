@@ -1,0 +1,20 @@
+# Зонд расследования OneAuth (задача 0.6б): минимальное окно wry 0.57.1 (своя
+# копия vendor/wry, как в приложении) с переключаемыми параметрами — поиск,
+# что включает загрузку oneauth.dll движком WebView2. Не часть приложения:
+# собирается только в workflow traces-investigation на Windows.
+[package]
+name = "t06-wry-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+
+[workspace]
+
+[dependencies]
+wry = "=0.57.1"
+tao = "0.37"
+http = "1"
+
+[patch.crates-io]
+wry = { path = "../../../vendor/wry" }
