@@ -106,7 +106,9 @@ impl Closing {
     }
 
     /// Начинает цикл закрытия окна `label`; окно уже закрывается — `None`.
-    fn begin(&self, label: &str) -> Option<Receiver<Answer>> {
+    /// Конец сеанса Windows (`crate::session_end`) ждёт ответа так же, но
+    /// окно не уничтожает: из ожидания его выводит [`Self::finished`].
+    pub(crate) fn begin(&self, label: &str) -> Option<Receiver<Answer>> {
         let mut windows = self.windows();
         if windows.contains_key(label) {
             return None;
@@ -380,7 +382,7 @@ pub fn is_last_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> boo
 }
 
 /// Завершает процесс браузера WebView2 (решение 64), если он известен.
-fn end_browser<R: Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) fn end_browser<R: Runtime>(app: &tauri::AppHandle<R>) {
     // Тестовая сборка: контрольный прогон сценарного теста — штатное закрытие.
     #[cfg(feature = "webdriver")]
     if crate::windows::e2e::keep_browser() {
@@ -404,6 +406,14 @@ fn lost_storage<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> Option<St
 pub fn answer<R: Runtime>(window: &tauri::Window<R>, answer: Answer) {
     if let Some(closing) = window.try_state::<Closing>() {
         closing.answer(window.label(), answer);
+    }
+}
+
+/// Выход начат (конец сеанса Windows, `crate::session_end`): новых окон не
+/// создавать.
+pub(crate) fn begin_exit<R: Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(closing) = app.try_state::<Closing>() {
+        closing.begin_exit();
     }
 }
 
