@@ -21,7 +21,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "check:network": "npm run build:ui && node tools/check-no-network/cli.ts src src-isolation dist",
+    "check:network": "npm run build:ui && vite build --sourcemap hidden --outDir ../.network-check/dist --emptyOutDir --logLevel warn && node tools/check-no-network/cli.ts src src-isolation dist --maps dist=.network-check/dist",
     "check:licenses": "node tools/check-licenses/cli.ts",
     "check:cargo-tree": "node tools/check-cargo-tree/cli.ts",
     "check:rust": "cargo fmt -p rhizomind -p gen-vault --check && cargo clippy -p rhizomind -p gen-vault --locked --all-targets -- -D warnings && cargo test -p rhizomind -p gen-vault --locked",

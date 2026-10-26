@@ -11,6 +11,8 @@ desktop.ini
 # Dependencies and builds
 node_modules/
 dist/
+# Копия сборки с картами исходников — только для проверки сети
+.network-check/
 build/
 target/
 __pycache__/

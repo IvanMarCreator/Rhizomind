@@ -5,7 +5,7 @@ import globals from 'globals';
 import ts from 'typescript-eslint';
 
 export default defineConfig(
-  { ignores: ['dist/', 'release/', 'coverage/', 'test-results/', 'prototype/', 'src-tauri/', 'vendor/'] },
+  { ignores: ['dist/', '.network-check/', 'release/', 'coverage/', 'test-results/', 'prototype/', 'src-tauri/', 'vendor/'] },
   js.configs.recommended,
   ts.configs.strict,
   svelte.configs.recommended,
