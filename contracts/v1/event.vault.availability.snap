@@ -1,0 +1,9 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "vault:availability",
+  "payload": {
+    "available": false
+  }
+}

@@ -3,7 +3,7 @@
 //! Спецификация 0.1, С3.7 и ADR 0009: только схемы `http`, `https`,
 //! `mailto`; окно подтверждения с полным адресом показывает ядро
 //! (`tauri-plugin-dialog` только из Rust), по умолчанию выбрана кнопка
-//! «Открыть в браузере»; после согласия адрес передаётся ОС (`os.rs`:
+//! «Открыть в браузере» (для `mailto` — «Открыть в почте»); после согласия адрес передаётся ОС (`os.rs`:
 //! `ShellExecuteExW` с классом протокола на Windows, крейт `open` на macOS и Linux).
 //! У интерфейса нет ни прав `opener:*`, ни другой команды открытия, поэтому
 //! обойти подтверждение он не может.
@@ -14,13 +14,12 @@
 mod address;
 mod os;
 
-use std::collections::BTreeSet;
 use std::io;
-use std::sync::{Mutex, PoisonError};
 
 pub use address::ExternalAddress;
 
 use crate::commands::{CoreError, CoreResult, ErrorCode, OpenExternalOutcome};
+use crate::dialogs::DialogSlot;
 
 /// Схемы, которые можно открыть.
 pub const ALLOWED_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
@@ -32,7 +31,8 @@ pub struct Confirmation {
     pub title: String,
     /// Текст окна; полный адрес — отдельной строкой, ровно как уйдёт в ОС.
     pub message: String,
-    /// Кнопка согласия — первая, выбрана по умолчанию.
+    /// Кнопка согласия — первая, выбрана по умолчанию: «Открыть в
+    /// браузере» для `http(s)`, «Открыть в почте» для `mailto`.
     pub open_label: String,
     /// Кнопка отказа.
     pub cancel_label: String,
@@ -81,38 +81,12 @@ pub fn check_url(url: &str) -> CoreResult<()> {
     ExternalAddress::parse(url).map(|_| ())
 }
 
-/// Окна, в которых сейчас открыто окно подтверждения ядра.
-static DIALOG_WINDOWS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-
-/// Занятость окна диалогом ядра; снимается при выходе из области видимости.
-struct DialogSlot(String);
-
-impl DialogSlot {
-    /// `None`, если в окне уже открыт диалог ядра.
-    fn take(window: &str) -> Option<Self> {
-        let mut busy = DIALOG_WINDOWS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        busy.insert(window.to_owned())
-            .then(|| Self(window.to_owned()))
-    }
-}
-
-impl Drop for DialogSlot {
-    fn drop(&mut self) {
-        DIALOG_WINDOWS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.0);
-    }
-}
-
 /// Проверяет адрес, спрашивает пользователя через `ask` и только после
 /// согласия передаёт ОС через `launch` ровно ту строку, что была в окне.
 ///
-/// В одном окне — не больше одного окна подтверждения: пока первое открыто,
-/// второй вызов сразу получает `cancelled` (окно не показывается, адрес в ОС
-/// не уходит).
+/// В одном окне — не больше одного диалога ядра любого вида (общий замок
+/// [`crate::dialogs::DialogSlot`]): пока первый открыт, второй вызов сразу
+/// получает `cancelled` (окно не показывается, адрес в ОС не уходит).
 pub(crate) fn open_checked(
     window: &str,
     url: &str,
