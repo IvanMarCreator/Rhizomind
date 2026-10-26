@@ -2,7 +2,7 @@
 // ADR 0007). Без WebDriver: msedgedriver подменил бы папку данных.
 //
 // Снимки %LOCALAPPDATA%, %APPDATA%, %TEMP% до запуска, во время работы и после
-// выхода. Во время работы вне хранилища появляется только временная папка
+// выхода; экспорт реестра HKCU до запуска и после выхода (tools/traces/registry.ts). Во время работы вне хранилища появляется только временная папка
 // WebView2 `rhizomind-webview-<pid>-<случайное>` (vaults.json — с задачи 1.3,
 // пока его нет); после выхода её нет. Заодно: остатки прошлых запусков
 // убираются, переменные WEBVIEW2_* не доходят до движка, процесс браузера
@@ -12,6 +12,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { connect } from 'node:net';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { checkRegistryChanges, diffRegistry, parseRegExport, summarize, type RegExport } from '../../tools/traces/registry.ts';
 import { applicationPath } from './driver.ts';
 
 const isWindows = process.platform === 'win32';
@@ -86,6 +87,18 @@ function calibrateHarnessNoise(roots: string[]): string[] {
   return changed;
 }
 
+// --- реестр HKCU ------------------------------------------------------------
+
+// Файлы экспорта — в test-results/ рабочей копии, не в проверяемых папках профиля.
+const REG_DIR = path.join(import.meta.dirname, '..', '..', 'test-results', 'traces');
+
+function registrySnapshot(label: string): RegExport {
+  mkdirSync(REG_DIR, { recursive: true });
+  const file = path.join(REG_DIR, `hkcu-${label}.reg`);
+  execFileSync('reg', ['export', 'HKCU', file, '/y'], { stdio: 'ignore' });
+  return parseRegExport(readFileSync(file).toString('utf16le'));
+}
+
 // --- процессы --------------------------------------------------------------
 
 interface ProcessInfo {
@@ -156,14 +169,21 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   const temp = isWindows ? env('TEMP') : '';
   const real = (p: string) => realpathSync.native(p);
   const roots = isWindows ? [env('LOCALAPPDATA'), env('APPDATA'), temp].map(real) : [];
-  // Учтённая запись вне хранилища (docs/SECURITY.md, «Записи вне хранилища»):
-  // при закрытии окна появляется новый файл диспетчера учётных данных Windows
-  // прямо в %LOCALAPPDATA%\Microsoft\Credentials\. Создатель не установлен
-  // (движок WebView2 или код ядра) — расследование в бэклоге (docs/reviews/
-  // 2026-10-25-task-0.3.md). Разрешены только НОВЫЕ файлы ровно в этой папке;
-  // изменение существующих и любой другой след по-прежнему валят тест.
-  const credentialsDir = isWindows ? path.join(real(env('LOCALAPPDATA')), 'Microsoft', 'Credentials') : '';
-  const isKnownTrace = (p: string) => isWindows && path.dirname(p) === credentialsDir && !before.has(p);
+  // Учтённые записи вне хранилища (docs/SECURITY.md, «Записи вне хранилища»;
+  // задача 0.6, docs/research/2026-10-26-traces-investigation.md):
+  // - %LOCALAPPDATA%\Microsoft\Credentials\DFBE70A7E5CC19A398EBF1B96859CE5D —
+  //   запись Windows `virtualapp/didlogical` (служба wlidsvc), не Rhizomind:
+  //   на машинах CI Windows иногда создаёт её позже обычного. Допускается
+  //   ровно этот новый файл, любой другой файл в папке валит тест.
+  // - %LOCALAPPDATA%\Microsoft\TokenBroker\ — кэш брокера токенов Windows:
+  //   фон Windows (плановое задание GAEvents) и OneAuth движка WebView2 при
+  //   первом запуске; решение 60 в работе. Новые, изменённые и удалённые файлы.
+  const credentialsFile = isWindows
+    ? path.join(real(env('LOCALAPPDATA')), 'Microsoft', 'Credentials', 'DFBE70A7E5CC19A398EBF1B96859CE5D')
+    : '';
+  const tokenBrokerDir = isWindows ? path.join(real(env('LOCALAPPDATA')), 'Microsoft', 'TokenBroker') + path.sep : '';
+  const isKnownTrace = (p: string) =>
+    isWindows && ((p === credentialsFile && !before.has(p)) || p.startsWith(tokenBrokerDir));
   const unexpected = (p: string) => !isHarnessNoise(p) && !isKnownTrace(p);
   // Остаток «аварийного» запуска: процесс 4000000000 не существует.
   const leftover = path.join(temp, 'rhizomind-webview-4000000000-0123456789abcdef');
@@ -173,6 +193,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   let app: ChildProcess;
   let exitCode: Promise<number | null>;
   let before: Snapshot;
+  let registryBefore: RegExport;
   let during: Snapshot;
   let dataDir = '';
   let browser: ProcessInfo | undefined;
@@ -188,6 +209,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     processes(); // прогрев PowerShell до первого снимка
     const harness = calibrateHarnessNoise(roots);
     console.log(`калибровка: вызовы PowerShell теста без приложения меняют ${harness.length} путей: ${harness.join(', ')}`);
+    registryBefore = registrySnapshot('before');
     before = snapshot(roots);
 
     app = spawn(exe, [], {
@@ -289,6 +311,16 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     if (known.length > 0) console.log(`учтённая запись после выхода (SECURITY.md, «Записи вне хранилища»): ${known.join(', ')}`);
     expect(changed.filter(unexpected)).toEqual([]);
     const leftoverReal = path.join(real(temp), path.basename(leftover));
-    expect(removed.filter((p) => !p.startsWith(leftoverReal))).toEqual([]);
+    expect(removed.filter((p) => !p.startsWith(leftoverReal) && !isKnownTrace(p))).toEqual([]);
+  }, 60_000);
+
+  it('реестр HKCU: нет путей и упоминаний приложения вне учтённых записей', () => {
+    const changes = diffRegistry(registryBefore, registrySnapshot('after'));
+    const markers = ['rhizomind', path.basename(dataDir), path.basename(evilUserData)];
+    const { violations, known, background } = checkRegistryChanges(changes, markers);
+    console.log(`реестр HKCU: ${changes.length} изменений; учтённые: ${known.length}; фон ОС: ${background.length}`);
+    if (known.length > 0) console.log(`учтённые записи: ${[...new Set(known.map((k) => `${k.why}: ${k.key}`))].join('; ')}`);
+    if (background.length > 0) console.log(`фон ОС по ключам: ${summarize(background)}`);
+    expect(violations.map((v) => `${v.kind} ${v.key} ${v.name ?? ''} ${(v.data ?? '').slice(0, 120)}`)).toEqual([]);
   }, 60_000);
 });
