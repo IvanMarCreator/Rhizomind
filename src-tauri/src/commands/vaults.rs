@@ -101,17 +101,58 @@ pub enum VaultOpenOutcome {
     Focused,
 }
 
+/// Предел времени на проверку всех папок списка (`vault_list.available`).
+pub const AVAILABILITY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Есть ли папки `paths` (задача 2.8в): каждая проверяется `probe` в своём
+/// потоке, все — параллельно; не ответившая за `timeout` (отключённая
+/// сетевая папка ждёт ответа ОС десятки секунд) считается недоступной.
+/// Зависший поток не держит ответ: он завершится сам, когда ответит ОС.
+/// Поток не создался — папка тоже «недоступно».
+pub fn availability<F>(
+    paths: Vec<std::path::PathBuf>,
+    timeout: std::time::Duration,
+    probe: F,
+) -> Vec<bool>
+where
+    F: Fn(&std::path::Path) -> bool + Clone + Send + 'static,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    let (sender, results) = std::sync::mpsc::channel();
+    let count = paths.len();
+    for (index, path) in paths.into_iter().enumerate() {
+        let sender = sender.clone();
+        let probe = probe.clone();
+        let _ = std::thread::Builder::new().spawn(move || {
+            let _ = sender.send((index, probe(&path)));
+        });
+    }
+    drop(sender);
+    let mut available = vec![false; count];
+    for _ in 0..count {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match results.recv_timeout(left) {
+            Ok((index, found)) => available[index] = found,
+            Err(_) => break,
+        }
+    }
+    available
+}
+
 /// Список хранилищ и последнее открытое.
 #[tauri::command]
 pub async fn vault_list(core: State<'_, Core>) -> CoreResult<VaultListResponse> {
     let registry = core.shared_registry();
     let (entries, available) = blocking(move || {
         let entries = registry.entries()?;
-        let available: Vec<bool> = entries
+        let paths = entries
             .vaults
             .iter()
-            .map(|vault| std::path::Path::new(&vault.path).is_dir())
+            .map(|vault| std::path::PathBuf::from(&vault.path))
             .collect();
+        let available = availability(paths, AVAILABILITY_TIMEOUT, |path: &std::path::Path| {
+            path.is_dir()
+        });
         Ok((entries, available))
     })
     .await?;
@@ -254,6 +295,8 @@ pub async fn vault_open_folder<R: Runtime>(
         let Some(root) = dialogs::pick_folder(&picker, FolderPurpose::ExistingVault)? else {
             return Ok(None);
         };
+        // Служебную папку хранилища открыть как хранилище нельзя (задача 2.8в).
+        let root = crate::vault::Vault::check_open_root(&root)?;
         registry.add(&root).map(Some)
     })
     .await?;
@@ -308,4 +351,50 @@ pub async fn open_in_window<R: Runtime>(
     vault: VaultSummary,
 ) -> CoreResult<VaultOpenOutcome> {
     crate::windows::open_vault(&app, window.label(), vault).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use super::availability;
+
+    /// Задача 2.8в: папки проверяются параллельно и с общим пределом
+    /// времени; зависшая проверка (отключённая сетевая папка) не задерживает
+    /// список и считается «недоступно».
+    #[test]
+    fn availability_is_parallel_and_bounded_by_timeout() {
+        let paths: Vec<PathBuf> = ["быстрая", "зависла", "нет", "тоже быстрая"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        let probe = |path: &Path| match path.to_str() {
+            Some("зависла") => {
+                std::thread::sleep(Duration::from_secs(5));
+                true
+            }
+            Some("нет") => false,
+            _ => {
+                std::thread::sleep(Duration::from_millis(100));
+                true
+            }
+        };
+        let start = Instant::now();
+        let result = availability(paths, Duration::from_millis(600), probe);
+        let elapsed = start.elapsed();
+        assert_eq!(result, vec![true, false, false, true]);
+        assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    }
+
+    #[test]
+    fn real_folders_are_checked_on_disk() {
+        let dir = tempfile::tempdir().expect("папка");
+        let result = availability(
+            vec![dir.path().to_path_buf(), dir.path().join("нет")],
+            super::AVAILABILITY_TIMEOUT,
+            |path: &Path| path.is_dir(),
+        );
+        assert_eq!(result, vec![true, false]);
+    }
 }
