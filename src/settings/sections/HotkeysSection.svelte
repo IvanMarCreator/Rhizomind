@@ -428,19 +428,20 @@
     background: var(--bg-hover);
   }
 
+  /* «×» занимает место всегда и только проявляется при наведении: строка не сдвигается под указателем. */
   .remove {
     display: grid;
-    width: 0;
+    width: 18px;
     height: 18px;
-    overflow: hidden;
     place-items: center;
     border-radius: 4px;
     color: var(--icon-muted);
+    opacity: 0;
   }
 
   .chip:hover .remove,
   .remove:focus-visible {
-    width: 18px;
+    opacity: 1;
   }
 
   .remove:hover {

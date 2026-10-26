@@ -40,7 +40,7 @@ describe('окно «Настройки хранилища»', () => {
       await browser.$('[role="toolbar"] button[aria-label="Настройки"]').click();
       await dialog.waitForDisplayed();
     }
-    await dialog.$(`nav button=${section}`).click();
+    await dialog.$('nav').$(`button=${section}`).click();
     return dialog;
   }
 
@@ -77,7 +77,7 @@ describe('окно «Настройки хранилища»', () => {
   it('тема «Тёмная» — сразу и в settings.json хранилища', async () => {
     const { browser } = session;
     const dialog = await openSettings('Оформление');
-    await dialog.$('[role="radio"]*=Тёмная').click();
+    await dialog.$('[role="radiogroup"]').$('button*=Тёмная').click();
     expect(await browser.execute(() => document.documentElement.dataset.theme)).toBe('dark');
     await waitSaved((settings) => settings.theme === 'dark' && settings.format_version === 1);
     await closeSettings();
@@ -85,11 +85,11 @@ describe('окно «Настройки хранилища»', () => {
 
   it('ширина текста и размер шрифта применяются к открытой заметке сразу', async () => {
     const { browser } = session;
-    await browser.$('[role="treeitem"]*=Встреча').click();
+    await browser.$('[role="treeitem"][aria-label="Встреча"]').click();
     await browser.$('.cm-editor').waitForDisplayed();
 
     const dialog = await openSettings('Редактор');
-    await dialog.$('[role="radio"]=Во всю ширину').click();
+    await dialog.$('button=Во всю ширину').click();
     const field = dialog.$('input[aria-label="Размер шрифта текста"]');
     await field.setValue('20');
     await browser.keys('Enter');
