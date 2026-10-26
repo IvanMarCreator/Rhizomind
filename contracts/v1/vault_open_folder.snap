@@ -7,6 +7,15 @@ source: src/commands/contract_tests.rs
     {
       "code": "vault_unavailable",
       "message_key": "errors.vault_unavailable"
+    },
+    {
+      "code": "nested_vault",
+      "message_key": "errors.nested_vault"
+    },
+    {
+      "code": "invalid_argument",
+      "field": "window",
+      "message_key": "errors.invalid_argument"
     }
   ],
   "request": null,

@@ -947,6 +947,38 @@ fn vault_is_created_in_folder_picked_by_core_dialog() {
     assert_eq!(error.code, ErrorCode::NestedVault);
 }
 
+/// Задача 2.8в: служебную папку хранилища и папку внутри неё нельзя открыть
+/// как хранилище — `nested_vault`, список хранилищ не меняется.
+#[test]
+fn service_folder_is_not_opened_as_vault() {
+    let app = app();
+    let label = "manager-b0b0000000000003";
+    let w = manager_window(&app, label);
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("Хранилище");
+    put(&root, "Заметка.md", b"1");
+    crate::vault::Vault::open(&root).expect("хранилище");
+    for folder in [root.join(".rhizomind"), root.join(".rhizomind").join("tmp")] {
+        test_answers::set(
+            label,
+            Answers {
+                folder: Some(folder.clone()),
+                ..Answers::default()
+            },
+        );
+        let error = core_error(
+            "vault_open_folder",
+            invoke(&w, "vault_open_folder", json!({})).expect_err("служебная папка"),
+        );
+        assert_eq!(error.code, ErrorCode::NestedVault, "{}", folder.display());
+    }
+    let list: VaultListResponse = typed(
+        "vault_list",
+        invoke(&w, "vault_list", json!({})).expect("vault_list"),
+    );
+    assert!(list.vaults.is_empty());
+}
+
 // ---- Скорость ---------------------------------------------------------------
 
 /// Индекс быстрого перехода живёт в состоянии окна: строится при открытии
