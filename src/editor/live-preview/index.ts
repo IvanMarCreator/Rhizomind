@@ -92,18 +92,21 @@ const blocksField = StateField.define<BlockState>({
       code: blocks.code.map(tr.changes),
       unclosed: blocks.unclosed === null ? null : tr.changes.mapPos(blocks.unclosed, -1),
     };
-    // Ограды разбираются после блока свойств: правки внутри него их не меняют.
+    // Ограды разбираются после блока свойств: правки целиком внутри него (и в
+    // старом тексте, и в новом) их не меняют. Правка, начатая в нём и
+    // задевшая строки ниже, учитывается с первой строки после него.
     const fencesFrom = properties ? properties.to + 1 : 0;
+    const fencesFromBefore = blocks.properties ? blocks.properties.to + 1 : 0;
     let from = -1;
     let to = -1;
     tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
-      if (toB < fencesFrom) return;
+      if (toB < fencesFrom && toA < fencesFromBefore) return;
       if (anyLine(before, fromA, toA, isFenceLike) || anyLine(doc, fromB, toB, isFenceLike)) {
         if (from < 0) from = Math.max(fromB, fencesFrom);
-        to = toB;
+        to = Math.max(toB, fencesFrom);
       }
     });
-    return from < 0 ? mapped : rescanFences(doc, mapped, from, to);
+    return from < 0 ? mapped : rescanFences(doc, mapped, Math.min(from, doc.length), Math.min(to, doc.length), fencesFrom);
   },
 });
 
@@ -132,11 +135,15 @@ function updateProperties(old: Span | null, changes: ChangeSet, before: Text, do
   return next && next.to === changes.mapPos(old.to, 1) ? next : RESCAN;
 }
 
-/** Начало закрытого блока, внутри которого (не на первой строке) лежит строка с началом `pos`. */
-function enclosingBlock(code: RangeSet<RangeValue>, pos: number): number | null {
+/**
+ * Начало закрытого блока, внутри которого (не на первой строке) лежит строка
+ * с началом `pos`. Блоки с началом до `floor` (сдвинутые правкой в блок
+ * свойств — их ограда удалена) не в счёт.
+ */
+function enclosingBlock(code: RangeSet<RangeValue>, pos: number, floor: number): number | null {
   let found: number | null = null;
   code.between(pos, pos, (from, to) => {
-    if (from < pos && to >= pos) {
+    if (from >= floor && from < pos && to >= pos) {
       found = from;
       return false;
     }
@@ -153,13 +160,16 @@ function enclosingBlock(code: RangeSet<RangeValue>, pos: number): number | null 
  * берутся из прежнего, сдвинутые. Если ограду открыли или закрыли, а дальше
  * блоки без названия языка, разбор может дойти до конца текста.
  */
-function rescanFences(doc: Text, mapped: BlockState, changeFrom: number, changeTo: number): BlockState {
+function rescanFences(doc: Text, mapped: BlockState, changeFrom: number, changeTo: number, floor: number): BlockState {
   const first = doc.lineAt(changeFrom);
   const regionEnd = doc.lineAt(changeTo).to;
+  // Незакрытый блок, сдвинутый правкой в блок свойств, — остаток удалённой ограды.
+  const unclosed = mapped.unclosed !== null && mapped.unclosed >= floor ? mapped.unclosed : null;
   // Прежний разбор ниже правки: курсор идёт вперёд вместе с разбором,
   // без поиска по набору блоков на каждой проверке.
   const old = mapped.code.iter(regionEnd);
   const insideOld = (pos: number): boolean => {
+    // Здесь — и блоки, чья ограда ушла правкой в блок свойств: это прежнее состояние.
     if (mapped.unclosed !== null && mapped.unclosed < pos) return true;
     while (old.value && old.to < pos) old.next();
     return old.value !== null && old.from < pos;
@@ -170,8 +180,7 @@ function rescanFences(doc: Text, mapped: BlockState, changeFrom: number, changeT
   let start = first.from;
   let pos = first.from;
   let open: OpenFence | null = null;
-  const enclosing =
-    mapped.unclosed !== null && mapped.unclosed < start ? mapped.unclosed : enclosingBlock(mapped.code, start);
+  const enclosing = unclosed !== null && unclosed < start ? unclosed : enclosingBlock(mapped.code, start, floor);
   if (enclosing !== null) {
     start = enclosing;
     open = openFenceAt(doc.lineAt(enclosing).text, enclosing);
@@ -201,12 +210,12 @@ function rescanFences(doc: Text, mapped: BlockState, changeFrom: number, changeT
   return {
     properties: mapped.properties,
     code: mapped.code.update({
-      filter: (from) => from < start || from >= end,
-      filterFrom: start,
+      filter: (from) => from >= floor && (from < start || from >= end),
+      filterFrom: Math.min(start, floor),
       filterTo: end,
       add: closed.map((block) => CODE_BLOCK.range(block.from, block.to)),
     }),
-    unclosed: resync < 0 ? (open?.from ?? null) : mapped.unclosed !== null && mapped.unclosed >= end ? mapped.unclosed : null,
+    unclosed: resync < 0 ? (open?.from ?? null) : unclosed !== null && unclosed >= end ? unclosed : null,
   };
 }
 
