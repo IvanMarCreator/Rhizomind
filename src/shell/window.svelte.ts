@@ -59,7 +59,8 @@ export class WindowModel implements TreeHost {
   #settingsWrite: Promise<void> = Promise.resolve();
   /** Номер последней правки настроек и правка, последней менявшая каждое поле. */
   #patchSeq = 0;
-  readonly #latestPatch = new Map<keyof Settings, number>();
+  /** Не реактивно: служебный учёт очереди, на экран не выводится. */
+  #latestPatch: Partial<Record<keyof Settings, number>> = {};
 
   /** Режим заметки выбран в этом окне (кнопкой или Ctrl+E): чтение настроек его не перебивает. */
   #modeChosen = false;
@@ -170,7 +171,7 @@ export class WindowModel implements TreeHost {
   updateSettings(patch: Partial<Settings>): Promise<void> {
     const id = ++this.#patchSeq;
     const keys = Object.keys(patch) as (keyof Settings)[];
-    for (const key of keys) this.#latestPatch.set(key, id);
+    for (const key of keys) this.#latestPatch[key] = id;
     this.#showSettings({ ...this.settings, ...patch }, false);
     this.#settingsWrite = this.#settingsWrite.then(async () => {
       try {
@@ -196,8 +197,7 @@ export class WindowModel implements TreeHost {
   #settle(id: number, keys: readonly (keyof Settings)[], source: Settings): void {
     const update: Partial<Settings> = {};
     for (const key of keys) {
-      if (this.#latestPatch.get(key) !== id) continue;
-      this.#latestPatch.delete(key);
+      if (this.#latestPatch[key] !== id) continue;
       Object.assign(update, { [key]: source[key] });
     }
     this.#showSettings({ ...this.settings, ...update }, false);
