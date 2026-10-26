@@ -19,7 +19,7 @@ const USER32 =
   '[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, System.IntPtr l);\'';
 const windowsOf = (pid) =>
   ps(
-    `${USER32}; $o = New-Object System.Collections.ArrayList; [Rhz.U]::EnumWindows({ param($h, $l) $p = 0; [void][Rhz.U]::GetWindowThreadProcessId($h, [ref]$p); if ($p -eq ${pid}) { $c = New-Object System.Text.StringBuilder 256; $t = New-Object System.Text.StringBuilder 256; [void][Rhz.U]::GetClassName($h, $c, 256); [void][Rhz.U]::GetWindowText($h, $t, 256); [void]$o.Add(\"$h $c '$t' vis=$([Rhz.U]::IsWindowVisible($h)) icon=$([Rhz.U]::IsIconic($h))\") }; $true }, [System.IntPtr]::Zero) | Out-Null; $o -join ' | '`,
+    `${USER32}; $o = New-Object System.Collections.ArrayList; [Rhz.U]::EnumWindows({ param($h, $l) $p = 0; [void][Rhz.U]::GetWindowThreadProcessId($h, [ref]$p); if ($p -eq ${pid}) { $c = New-Object System.Text.StringBuilder 256; $t = New-Object System.Text.StringBuilder 256; [void][Rhz.U]::GetClassName($h, $c, 256); [void][Rhz.U]::GetWindowText($h, $t, 256); [void]$o.Add("$h $c '$t' vis=$([Rhz.U]::IsWindowVisible($h)) icon=$([Rhz.U]::IsIconic($h))") }; $true }, [System.IntPtr]::Zero) | Out-Null; $o -join ' | '`,
   );
 const ps = (c) => execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', c], { encoding: 'utf8' }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

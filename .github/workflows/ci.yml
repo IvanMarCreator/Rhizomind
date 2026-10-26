@@ -198,6 +198,19 @@ jobs:
         timeout-minutes: 15
         run: node tools/diag-t010/single-instance-loop.mjs src-tauri/target-e2e/release/rhizomind.exe 20
 
+      # Сбой сценарного теста: хвосты журналов драйверов — прямо в журнал CI
+      # (артефакты без входа в GitHub не скачать; задача 0.10).
+      - name: Журналы драйверов при сбое
+        if: failure()
+        shell: bash
+        run: |
+          for log in test-results/tauri-driver-*.log "$RUNNER_TEMP/msedgedriver/msedgedriver.log"; do
+            [ -f "$log" ] || continue
+            echo "::group::$log (последние 200 строк)"
+            tail -n 200 "$log"
+            echo "::endgroup::"
+          done
+
       - name: Снимки экрана сценарных тестов
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
