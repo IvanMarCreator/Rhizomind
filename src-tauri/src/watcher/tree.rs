@@ -1022,3 +1022,29 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn note(id: Option<u64>) -> Node {
+        Node {
+            kind: EntryKind::Note,
+            size: 5,
+            modified: Some(UNIX_EPOCH + Duration::from_secs(1)),
+            id: id.map(|n| FileId::new_inode(1, n)),
+        }
+    }
+
+    #[test]
+    fn unknown_file_id_on_disk_is_not_a_change() {
+        // Файл перенесли между чтением списка папки и открытием для
+        // идентификатора (Windows): идентификатор неизвестен, а размер и
+        // дата из списка — прежние. Это не правка файла.
+        let key: Key = vec!["a.md".into()];
+        let model = BTreeMap::from([(key.clone(), note(Some(7)))]);
+        let disk = BTreeMap::from([(key, note(None))]);
+        assert!(diff(&disk, &model).changed.is_empty());
+    }
+}
