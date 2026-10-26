@@ -330,10 +330,16 @@ fn finish<R: Runtime>(
 /// Microsoft; завершённый браузер этого не делает. Из цикла закрытия окно
 /// выводит событие `Destroyed`.
 fn destroy<R: Runtime, W: WindowLike>(app: &tauri::AppHandle<R>, label: &str, window: &W) {
+    // Признак выхода — раньше, чем окно видно уничтожаемым: кто увидел окно
+    // «уничтожается», видит и начатый выход (ревью 0.7, W6).
+    let last = is_last_window(app, label);
     if let Some(closing) = app.try_state::<Closing>() {
+        if last {
+            closing.begin_exit();
+        }
         closing.mark_destroying(label);
     }
-    if is_last_window(app, label) {
+    if last {
         end_browser(app);
     }
     if window.destroy_window().is_err()
@@ -375,11 +381,6 @@ pub fn is_last_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> boo
 
 /// Завершает процесс браузера WebView2 (решение 64), если он известен.
 fn end_browser<R: Runtime>(app: &tauri::AppHandle<R>) {
-    // Сначала — признак выхода: окно, созданное после завершения браузера,
-    // открылось бы в мёртвом окружении движка (ревью 0.7, W6).
-    if let Some(closing) = app.try_state::<Closing>() {
-        closing.begin_exit();
-    }
     // Тестовая сборка: контрольный прогон сценарного теста — штатное закрытие.
     #[cfg(feature = "webdriver")]
     if crate::windows::e2e::keep_browser() {
