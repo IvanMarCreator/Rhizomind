@@ -4,8 +4,13 @@
 // 1) это не сетевой вызов (severity «подозрительно»);
 // 2) карта исходников копии сборки точно (та же строка и позиция) ведёт к файлу
 //    пакета в node_modules — по настоящему пути, без ссылок в наш код;
-// 3) в списке есть запись, у которой совпадают все поля: пакет, версия из
-//    package-lock.json, файл в пакете, номер строки, SHA-256 строки и вид находки.
+//    пакета верхнего уровня (`node_modules/<имя>`, в package-lock.json с
+//    `integrity` и без `inBundle`/`link`), и в исходнике на этом месте — та же
+//    находка (исходник разбирается заново);
+// 3) вид находки — из закрытого списка ALLOWED_KINDS;
+// 4) в списке есть запись, у которой совпадают все поля: пакет, версия из
+//    package-lock.json, файл в пакете, SHA-256 всего файла, номер строки,
+//    SHA-256 строки и вид находки, — и запись покрывает ровно `count` находок.
 // Находки в src/ и src-isolation/ и в сборке из них исключениями не разрешаются.
 // Неиспользованная запись — тоже ошибка: список не копит мусор.
 //
@@ -16,15 +21,31 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile, realpath } from 'node:fs/promises';
 import { SourceMap, type SourceMapPayload } from 'node:module';
 import path from 'node:path';
-import { scanPaths, type FileFinding } from './scan.ts';
+import { scanPaths, scanSourceLocated, type FileFinding, type LocatedFinding } from './scan.ts';
+
+/**
+ * Виды находок, которые можно разрешить исключением. Всё остальное (сеть,
+ * `eval`/`Function` вне `instanceof`, `import()`/`require()` с вычисляемым
+ * именем, `Image`/`Audio`, таймеры со строкой, `createElement` опасных
+ * элементов, обращения по вычисляемому имени к window/navigator и т. д.) — нет.
+ */
+export const ALLOWED_KINDS: ReadonlySet<string> = new Set([
+  'глобальный объект window без свойства',
+  'глобальный объект globalThis без свойства',
+  'Function справа от instanceof',
+]);
 
 export interface Exception {
   package: string;
   version: string;
   /** Путь файла внутри пакета, через «/». */
   file: string;
+  /** SHA-256 всего файла пакета: правка в любом месте файла делает запись недействительной. */
+  fileSha256: string;
   line: number;
   kind: string;
+  /** Сколько находок этого вида в этой строке покрывает запись. */
+  count: number;
   /** Текст исходной строки, который разобран (для чтения человеком). */
   code: string;
   /** SHA-256 строки без перевода строки, шестнадцатеричный. */
@@ -45,6 +66,7 @@ export interface Origin {
   package: string;
   version: string;
   file: string;
+  fileSha256: string;
   line: number;
   lineSha256: string;
 }
@@ -58,12 +80,18 @@ export function lineSha256(code: string): string {
   return createHash('sha256').update(code, 'utf8').digest('hex');
 }
 
+export function fileSha256(bytes: Buffer | string): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
 const FIELDS: Record<keyof Exception, 'string' | 'number'> = {
   package: 'string',
   version: 'string',
   file: 'string',
+  fileSha256: 'string',
   line: 'number',
   kind: 'string',
+  count: 'number',
   code: 'string',
   lineSha256: 'string',
   reason: 'string',
@@ -95,6 +123,11 @@ export function parseAllowlist(json: unknown): Exception[] {
       throw new Error(`${where}: путь файла должен быть внутри пакета, через «/»: "${e.file}"`);
     }
     if (!Number.isInteger(e.line) || e.line < 1) throw new Error(`${where}: неправильный номер строки`);
+    if (!Number.isInteger(e.count) || e.count < 1) throw new Error(`${where}: count — целое число от 1`);
+    if (!ALLOWED_KINDS.has(e.kind)) {
+      throw new Error(`${where}: вид «${e.kind}» исключением не разрешается (допустимы: ${[...ALLOWED_KINDS].join('; ')})`);
+    }
+    if (!/^[0-9a-f]{64}$/.test(e.fileSha256)) throw new Error(`${where}: fileSha256 — SHA-256 файла, 64 шестнадцатеричных знака`);
     if (!/^[0-9a-f]{64}$/.test(e.lineSha256) || e.lineSha256 !== lineSha256(e.code)) {
       throw new Error(`${where}: lineSha256 не совпадает с SHA-256 поля code`);
     }
@@ -143,14 +176,14 @@ async function compareBuilds(pair: MapPair, base: string): Promise<string[]> {
 }
 
 interface Lock {
-  packages?: Record<string, { version?: string }>;
+  packages?: Record<string, { version?: string; integrity?: unknown; inBundle?: unknown; link?: unknown }>;
 }
 
 type Located = { origin: Origin } | { ours: string } | { problem: string };
 
 class OriginFinder {
   private readonly maps = new Map<string, SourceMap | null>();
-  private readonly lines = new Map<string, string[]>();
+  private readonly sources = new Map<string, { bytes: Buffer; lines: string[]; findings: LocatedFinding[] | null }>();
   private readonly nodeModules: string;
   private readonly base: string;
   private readonly realBase: string;
@@ -178,13 +211,22 @@ class OriginFinder {
     return this.maps.get(file) ?? null;
   }
 
-  private async fileLines(file: string): Promise<string[]> {
-    let lines = this.lines.get(file);
-    if (!lines) {
-      lines = (await readFile(file, 'utf8')).split('\n').map((l) => l.replace(/\r$/, ''));
-      this.lines.set(file, lines);
+  /** Исходный файл пакета: байты, строки и находки повторного разбора. */
+  private async source(file: string) {
+    let source = this.sources.get(file);
+    if (!source) {
+      const bytes = await readFile(file);
+      const text = bytes.toString('utf8');
+      let findings: LocatedFinding[] | null;
+      try {
+        findings = scanSourceLocated(text, file);
+      } catch {
+        findings = null;
+      }
+      source = { bytes, lines: text.split('\n').map((l) => l.replace(/\r$/, '')), findings };
+      this.sources.set(file, source);
     }
-    return lines;
+    return source;
   }
 
   async locate(finding: FileFinding): Promise<Located> {
@@ -199,12 +241,14 @@ class OriginFinder {
       generatedColumn: number;
       originalSource: string;
       originalLine: number;
+      originalColumn: number;
     }>;
     if (
       entry.generatedLine !== finding.line - 1 ||
       entry.generatedColumn !== finding.column - 1 ||
       typeof entry.originalSource !== 'string' ||
-      typeof entry.originalLine !== 'number'
+      typeof entry.originalLine !== 'number' ||
+      typeof entry.originalColumn !== 'number'
     ) {
       return { problem: 'источник не найден по карте исходников (нет точного соответствия позиции)' };
     }
@@ -229,8 +273,20 @@ class OriginFinder {
     const name = relative.slice(last + 1, last + 1 + nameLength).join('/');
     const lockKey = packageParts.join('/');
     const fileInPackage = relative.slice(last + 1 + nameLength).join('/');
-    const version = this.lock.packages?.[lockKey]?.version;
-    if (version === undefined) return { problem: `пакета ${lockKey} нет в package-lock.json` };
+    // Только пакет верхнего уровня: вложенная копия (node_modules/a/node_modules/b)
+    // могла бы выдать себя за разрешённый пакет той же версии.
+    if (last !== 0) {
+      return { problem: `вложенная копия пакета (${lockKey}): исключения действуют только для node_modules/${name}` };
+    }
+    const lockEntry = this.lock.packages?.[lockKey];
+    const version = lockEntry?.version;
+    if (lockEntry === undefined || version === undefined) return { problem: `пакета ${lockKey} нет в package-lock.json` };
+    if (typeof lockEntry.integrity !== 'string' || !lockEntry.integrity.startsWith('sha512-')) {
+      return { problem: `у ${lockKey} в package-lock.json нет integrity (sha512): исключения не действуют` };
+    }
+    if (lockEntry.inBundle !== undefined || lockEntry.link !== undefined) {
+      return { problem: `${lockKey} в package-lock.json — inBundle или link: исключения не действуют` };
+    }
     let installed: unknown;
     try {
       installed = (JSON.parse(await readFile(path.join(this.realBase, ...packageParts, 'package.json'), 'utf8')) as {
@@ -245,8 +301,29 @@ class OriginFinder {
       };
     }
     const line = entry.originalLine + 1;
-    const text = (await this.fileLines(real))[line - 1] ?? '';
-    return { origin: { package: name, version, file: fileInPackage, line, lineSha256: lineSha256(text) } };
+    const column = entry.originalColumn + 1;
+    const original = await this.source(real);
+    // В исходнике на этом месте должна быть та же находка: карта не может
+    // приписать находку чужой строке.
+    const same = original.findings?.some(
+      (f) => f.line === line && f.column === column && f.what === finding.what && f.severity === finding.severity,
+    );
+    if (!same) {
+      return {
+        problem: `по карте — ${name}@${version} ${fileInPackage}:${line}:${column}, но в исходнике на этом месте нет такой находки`,
+      };
+    }
+    const text = original.lines[line - 1] ?? '';
+    return {
+      origin: {
+        package: name,
+        version,
+        file: fileInPackage,
+        fileSha256: fileSha256(original.bytes),
+        line,
+        lineSha256: lineSha256(text),
+      },
+    };
   }
 }
 
@@ -257,6 +334,7 @@ function sameRecord(e: Exception, o: Origin, kind: string): boolean {
     e.package === o.package &&
     e.version === o.version &&
     e.file === o.file &&
+    e.fileSha256 === o.fileSha256 &&
     e.line === o.line &&
     e.lineSha256 === o.lineSha256 &&
     e.kind === kind
@@ -288,7 +366,7 @@ export async function checkNetwork(options: {
     lock = {};
   }
   const finder = new OriginFinder(base, realBase, lock, pairs);
-  const used = new Set<Exception>();
+  const used = new Map<Exception, number>();
   const allowed: CheckResult['allowed'] = [];
 
   for (const finding of findings) {
@@ -308,9 +386,13 @@ export async function checkNetwork(options: {
       problems.push(`${head} — ${from} — сетевой вызов: исключения для него не допускаются`);
       continue;
     }
+    if (!ALLOWED_KINDS.has(finding.what)) {
+      problems.push(`${head} — ${from} — этот вид находки исключением не разрешается: уберите или замените зависимость`);
+      continue;
+    }
     const exception = allowlist.find((e) => sameRecord(e, o, finding.what));
     if (exception) {
-      used.add(exception);
+      used.set(exception, (used.get(exception) ?? 0) + 1);
       allowed.push({ finding, origin: o, exception });
       continue;
     }
@@ -323,9 +405,11 @@ export async function checkNetwork(options: {
         (e.line === o.line || (e.lineSha256 === o.lineSha256 && e.version !== o.version)),
     );
     if (stale.length > 0) {
-      const was = stale.map((e) => `версия ${e.version}, строка ${e.line}, хэш ${e.lineSha256.slice(0, 12)}…`).join('; ');
+      const was = stale
+        .map((e) => `версия ${e.version}, строка ${e.line}, хэш строки ${e.lineSha256.slice(0, 12)}…, хэш файла ${e.fileSha256.slice(0, 12)}…`)
+        .join('; ');
       problems.push(
-        `${head} — ${from} (хэш строки ${o.lineSha256.slice(0, 12)}…) — исключение недействительно (в списке: ${was}): изменилась версия пакета или текст строки, разберите заново`,
+        `${head} — ${from} (хэш строки ${o.lineSha256.slice(0, 12)}…, хэш файла ${o.fileSha256.slice(0, 12)}…) — исключение недействительно (в списке: ${was}): изменилась версия пакета, текст строки или файл, разберите заново`,
       );
     } else {
       problems.push(`${head} — ${from} — исключения нет: разберите находку и добавьте запись в tools/check-no-network/allowlist.json`);
@@ -333,8 +417,11 @@ export async function checkNetwork(options: {
   }
 
   for (const e of allowlist) {
-    if (!used.has(e)) {
+    const n = used.get(e) ?? 0;
+    if (n === 0) {
       problems.push(`Неиспользованное исключение: ${describeRecord(e)} — такой находки в сборке нет; удалите запись или разберите заново`);
+    } else if (n !== e.count) {
+      problems.push(`Исключение ${describeRecord(e)} покрывает находок: ${n}, а разобрано (count): ${e.count} — разберите заново`);
     }
   }
   return { problems, allowed };

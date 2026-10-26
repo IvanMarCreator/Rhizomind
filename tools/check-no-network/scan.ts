@@ -184,6 +184,26 @@ function isDefaultView(node: unknown): boolean {
   );
 }
 
+// Свойства, в которых обычно лежит окно: `el.ownerDocument.defaultView`, `view.win` (CodeMirror).
+const WINDOW_PROPERTIES = new Set(['defaultView', 'win']);
+
+/** `X.defaultView` или `X.win` — выражение, которое, скорее всего, окно. */
+function isWindowProperty(node: Node): boolean {
+  const name = memberName(node);
+  return name !== undefined && WINDOW_PROPERTIES.has(name);
+}
+
+/** Текст цепочки свойств для сообщения: `this.view.win`, `el.ownerDocument.defaultView`. */
+function memberPath(node: Node): string {
+  if (node.type === 'Identifier') return node.name as string;
+  if (node.type === 'ThisExpression') return 'this';
+  if (node.type === 'MemberExpression') {
+    const name = memberName(node);
+    return `${memberPath(node.object as Node)}.${name ?? '[<вычисляемое>]'}`;
+  }
+  return '(…)';
+}
+
 /** Имя глобального объекта для выражения: идентификатор или `document.defaultView`. */
 function globalName(node: unknown): string | undefined {
   if (!isNode(node)) return undefined;
@@ -298,7 +318,14 @@ class Scanner {
     if (LOADING_CONSTRUCTORS.has(name)) {
       this.report(node, name, 'suspicious');
     } else if (CODE_FROM_STRING.has(name)) {
-      this.report(node, name, 'suspicious');
+      // `x instanceof Function` — только проверка типа: Function не вызывается.
+      // Отдельный вид, чтобы исключение для него не разрешало другие обращения.
+      const typeCheck =
+        name === 'Function' &&
+        parent?.type === 'BinaryExpression' &&
+        parent.operator === 'instanceof' &&
+        parent.right === node;
+      this.report(node, typeCheck ? 'Function справа от instanceof' : name, 'suspicious');
     } else if (this.globals.has(name) && !isHarmlessGlobalUse(node, parent)) {
       this.report(node, `глобальный объект ${name} без свойства`, 'suspicious');
     }
@@ -313,9 +340,24 @@ class Scanner {
       return;
     }
     const objectName = globalName(object);
+    if (objectName === undefined && isWindowProperty(object)) {
+      this.checkWindowMember(node, memberPath(object), name);
+      return;
+    }
     if (objectName === undefined || !this.globals.has(objectName)) return;
     if (name === undefined) {
       this.report(node, `${objectName}[<вычисляемое>]`, 'suspicious');
+    } else if (name === 'open') {
+      this.report(node, 'window.open', 'network');
+    } else if (node.computed && NETWORK_GLOBALS.has(name)) {
+      this.report(node, name, 'network');
+    }
+  }
+
+  /** Обращение к окну через `X.defaultView` или `X.win` (окно документа, окно редактора). */
+  private checkWindowMember(node: Node, objectText: string, name: string | undefined): void {
+    if (name === undefined) {
+      this.report(node, `${objectText}[<вычисляемое>]`, 'suspicious');
     } else if (name === 'open') {
       this.report(node, 'window.open', 'network');
     } else if (node.computed && NETWORK_GLOBALS.has(name)) {

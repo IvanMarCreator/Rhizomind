@@ -56,6 +56,29 @@ export default defineConfig(
     },
   },
   {
+    // Окно через свойство (`el.ownerDocument.defaultView`, `view.win` у CodeMirror)
+    // — тот же глобальный объект, что и window: через него доступно любое API по
+    // имени. В своём коде не используем; если понадобится — узкое исключение
+    // `// eslint-disable-next-line no-restricted-syntax -- <почему>` с разбором
+    // в ревью безопасности (ревью 2.4, В1; docs/SECURITY.md).
+    files: ['src/**', 'src-isolation/**'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...['defaultView', 'win'].flatMap((name) => [
+          {
+            selector: `MemberExpression[property.name='${name}'][computed=false]`,
+            message: `Окно через .${name} запрещено: используйте нужное API напрямую (docs/SECURITY.md, проверка сети).`,
+          },
+          {
+            selector: `MemberExpression[computed=true][property.value='${name}']`,
+            message: `Окно через ['${name}'] запрещено: используйте нужное API напрямую (docs/SECURITY.md, проверка сети).`,
+          },
+        ]),
+      ],
+    },
+  },
+  {
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
