@@ -272,28 +272,6 @@ fn roaming_hits(name: &str) -> Vec<String> {
     hits
 }
 
-/// Как «пользователь» задаёт папку: `SetFolder` не вызывается — иначе окну
-/// нечего запоминать в `LastVisitedPidlMRU`.
-#[derive(Debug, Clone, Copy)]
-enum Preset {
-    /// Полный путь в поле имени.
-    FullPathInName,
-    /// Родитель — папкой по умолчанию (`SetDefaultFolder`), имя — в поле имени.
-    DefaultFolder,
-    /// Путь с `\` в конце: первая кнопка — переход в папку, вторая — выбор.
-    Navigate,
-}
-
-impl Preset {
-    fn from_env() -> Self {
-        match std::env::var("RHIZOMIND_T08_PRESET").as_deref() {
-            Ok("default-folder") => Self::DefaultFolder,
-            Ok("full-path") => Self::FullPathInName,
-            _ => Self::Navigate,
-        }
-    }
-}
-
 /// Настройки окна по имени прогона.
 fn settings_for(kind: &str) -> Settings {
     match kind {
@@ -330,29 +308,17 @@ fn dialog_in_child_process() {
     let folder = PathBuf::from(folder);
     let title = unique("Rhizomind проверка окна");
     let user = press_select(title.clone());
-    let preset = Preset::from_env();
     let target = folder.clone();
-    let chosen = show(None, &title, settings_for(&kind), move |dialog| unsafe {
+    // Как пользователь: путь с `\` в конце в поле имени — первая кнопка
+    // переходит в папку, вторая выбирает её. `SetFolder` не вызывается.
+    let chosen = show(None, &title, settings_for(&kind), move |dialog| {
+        let mut text = target.into_os_string();
+        text.push("\\");
         // SAFETY: вызов из потока окна с инициализированным COM.
-        match preset {
-            Preset::FullPathInName => dialog.SetFileName(&HSTRING::from(target.as_os_str())),
-            Preset::Navigate => {
-                let mut text = target.as_os_str().to_owned();
-                text.push("\\");
-                dialog.SetFileName(&HSTRING::from(text))
-            }
-            Preset::DefaultFolder => {
-                let parent: IShellItem = windows::Win32::UI::Shell::SHCreateItemFromParsingName(
-                    &HSTRING::from(target.parent().expect("родитель").as_os_str()),
-                    None,
-                )?;
-                dialog.SetDefaultFolder(&parent)?;
-                dialog.SetFileName(&HSTRING::from(target.file_name().expect("имя")))
-            }
-        }
+        unsafe { dialog.SetFileName(&HSTRING::from(text)) }
     });
     let log = user.join().expect("поток пользователя");
-    eprintln!("[{kind}, {preset:?}] окно: {log:?}; ответ: {chosen:?}");
+    eprintln!("[{kind}] окно: {log:?}; ответ: {chosen:?}");
     let expected = std::fs::canonicalize(&folder).expect("канонический путь");
     let chosen = chosen.map(|p| std::fs::canonicalize(p).expect("канонический ответ"));
     assert_eq!(
@@ -395,9 +361,16 @@ const LAST_VISITED: &str = r"ComDlg32\LastVisitedPidlMRU";
 
 /// Настоящее окно на настоящем рабочем столе: в обычный прогон не входит.
 /// CI на Windows: `cargo test -p rhizomind --lib dialogs::folder_windows -- --ignored`.
-/// С `RHIZOMIND_T08_CONTROL=1` — ещё и контроль, что поиск видит запись
-/// `LastVisitedPidlMRU`: наши опции без `ClearClientData` и опции rfd пишут
-/// путь в перемещаемый профиль (на рабочей машине не включать).
+/// Каждое окно — в своём процессе, поиск — после его выхода.
+/// С `RHIZOMIND_T08_CONTROL=1` — ещё и контроль поиска: окно с опциями rfd
+/// (как было) пишет путь в перемещаемый профиль, и поиск его находит; окно с
+/// нашими опциями без `ClearClientData` — в журнал (на рабочей машине не включать).
+///
+/// Ограничение: в этой среде (тестовый процесс Rust на раннере) Windows не
+/// пишет `ComDlg32\LastVisitedPidlMRU` вообще — даже с опциями rfd, при
+/// переходе в папку в самом окне. Действие `ClearClientData` на эту запись
+/// подтверждено только опытом 0.6 (зонд на C#, Process Monitor), этим тестом
+/// не покрыто (`docs/SECURITY.md`).
 #[test]
 #[ignore = "показывает окно ОС; отдельный шаг CI на Windows"]
 fn chosen_folder_path_does_not_reach_roaming_profile() {
@@ -413,21 +386,23 @@ fn chosen_folder_path_does_not_reach_roaming_profile() {
     // любых опциях — только в журнал: допустимая локальная запись (инвариант 2).
     eprintln!("Local (Classes\\Local Settings, ShellBags): {local:#?}");
 
-    let control = std::env::var_os("RHIZOMIND_T08_CONTROL").is_some_and(|v| v == "1");
     let mut failures = Vec::new();
     if !roaming.is_empty() {
         failures.push(format!("наше окно: путь в Roaming: {roaming:#?}"));
     }
-    if control {
-        for label in ["no-clear", "rfd"] {
-            let (_dir, control_name) = pick_temp_folder(label);
-            let hits = roaming_hits(&control_name);
-            eprintln!("контроль {label}, Roaming: {hits:#?}");
-            if !hits.iter().any(|h| h.contains(LAST_VISITED)) {
-                failures.push(format!(
-                    "контроль {label}: поиск не увидел путь в {LAST_VISITED}: {hits:#?}"
-                ));
-            }
+    if std::env::var_os("RHIZOMIND_T08_CONTROL").is_some_and(|v| v == "1") {
+        let (_no_clear, no_clear_name) = pick_temp_folder("no-clear");
+        let no_clear = roaming_hits(&no_clear_name);
+        eprintln!("контроль no-clear, Roaming: {no_clear:#?}");
+        eprintln!(
+            "контроль no-clear: запись {LAST_VISITED} есть: {}",
+            no_clear.iter().any(|h| h.contains(LAST_VISITED))
+        );
+        let (_rfd, rfd_name) = pick_temp_folder("rfd");
+        let rfd = roaming_hits(&rfd_name);
+        eprintln!("контроль rfd, Roaming: {rfd:#?}");
+        if rfd.is_empty() {
+            failures.push("контроль rfd: поиск не увидел путь в Roaming".to_owned());
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
