@@ -655,7 +655,7 @@ fn event_vault_availability() {
 fn event_window_close_requested() {
     event(
         event::WINDOW_CLOSE_REQUESTED,
-        &WindowCloseRequestedPayload {},
+        &WindowCloseRequestedPayload { session_end: true },
     );
 }
 

@@ -8,7 +8,15 @@
 //   отключённой флешке нельзя было бы закрыть вовсе.
 // Ядро ждёт ответа не дольше 10 с (CLOSE_TIMEOUT в
 // src-tauri/src/windows/closing.rs), потом закрывает окно само.
+//
+// Конец сеанса Windows (выход из системы, выключение; задача 0.11, решение
+// 79): то же событие с `sessionEnd: true`. Окно не скрыто и не закрывается —
+// ядро только ждёт записи (не дольше 10 с, решение 78). Здесь — только запись
+// и ответ; правило «повторное закрытие в течение минуты» не действует и его
+// отсчёт не трогается: если выход отменят, следующее «×» не закроет окно
+// молча. Не удалось записать — своё уведомление.
 import { core } from '../api/index.ts';
+import type { WindowCloseRequestedPayload } from '../api/types.ts';
 import type { UnsavedNote } from '../editor/sessions.ts';
 import { SaveTooSlow, noteName } from '../editor/sessions.ts';
 import { userMessage } from '../i18n/errors.ts';
@@ -51,9 +59,28 @@ export class WindowClosing {
   }
 
   /** Сигнал ядра `window:close-requested`. */
-  closeRequested(): Promise<void> {
-    this.#busy ??= this.#close().finally(() => (this.#busy = null));
+  closeRequested(payload?: Partial<WindowCloseRequestedPayload>): Promise<void> {
+    const sessionEnd = payload?.sessionEnd === true;
+    this.#busy ??= (sessionEnd ? this.#saveBeforeSessionEnd() : this.#close()).finally(
+      () => (this.#busy = null),
+    );
     return this.#busy;
+  }
+
+  /** Конец сеанса Windows: записать ввод и ответить; окно не закрывается. */
+  async #saveBeforeSessionEnd(): Promise<void> {
+    let saved: boolean;
+    try {
+      saved = (await this.#host.flush()).length === 0;
+    } catch {
+      saved = false;
+    }
+    if (saved) {
+      await this.#host.ready().catch(() => undefined);
+      return;
+    }
+    this.#host.notify(t('window.sessionEndUnsaved'));
+    await this.#host.cancel().catch(() => undefined);
   }
 
   async #close(): Promise<void> {
