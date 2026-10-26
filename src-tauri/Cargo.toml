@@ -92,6 +92,9 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_ErrorReporting",
   "Win32_System_LibraryLoader",
+  # Причина задержки выхода из системы (ShutdownBlockReasonCreate/Destroy,
+  # src/session_end/windows.rs, задача 0.11).
+  "Win32_System_Shutdown",
   "Win32_System_Threading",
   # Своё окно выбора папки (IFileOpenDialog, dialogs/folder_windows.rs, задача 0.8).
   "Win32_UI_Shell",

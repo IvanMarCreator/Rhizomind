@@ -116,8 +116,8 @@
         createNote();
         return;
       case 'editor.toggle-mode':
-        // Режим показывают кнопки над заметкой; запоминание — задача 2.5.
-        model.editorMode = model.editorMode === 'source' ? 'live_preview' : 'source';
+        // Режим — у открытой заметки; запоминается в настройках хранилища.
+        if (model.currentPath) model.toggleEditorMode();
         return;
       case 'history.back':
         model.back();
@@ -182,7 +182,10 @@
         path={model.currentPath}
         canGoBack={model.canGoBack}
         canGoForward={model.canGoForward}
-        bind:mode={model.editorMode}
+        mode={model.editorMode}
+        onMode={(mode) => model.setEditorMode(mode)}
+        modeShortcut={bindingsOf(model.hotkeys, 'editor.toggle-mode')[0] ?? null}
+        readOnly={saveStatus?.kind === 'read_only' || saveStatus?.kind === 'deleted'}
         onBack={() => model.back()}
         onForward={() => model.forward()}
       >
@@ -202,6 +205,7 @@
         <Editor
           bind:this={editor}
           path={model.currentPath}
+          mode={model.editorMode}
           showTitle={false}
           notify={(text) => model.notify(text)}
           onStatus={(status) => (saveStatus = status)}
@@ -259,13 +263,6 @@
     max-width: var(--note-column-width);
     margin: 0 auto;
     padding: 28px 32px 0;
-  }
-
-  /* Размер шрифта текста заметки (настройка хранилища, src/settings/apply.ts):
-     двойной класс — сильнее правила редактора (src/editor/NoteText.svelte). */
-  .body :global(.cm-editor.cm-editor) {
-    font-size: var(--note-font-size, 16px);
-    line-height: 1.625;
   }
 
   .loading {

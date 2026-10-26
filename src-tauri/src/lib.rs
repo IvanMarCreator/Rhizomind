@@ -38,6 +38,7 @@ pub mod links;
 pub mod names;
 pub mod own_writes;
 pub mod registry;
+pub mod session_end;
 pub mod single_instance;
 pub mod switcher;
 pub mod vault;
@@ -319,6 +320,10 @@ pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
     if let Some(instance) = app.try_state::<single_instance::Instance>() {
         instance.release();
     }
+    // Конец сеанса Windows (задача 0.11): tao завершает процесс сразу после
+    // этого события — процесс браузера завершается здесь, если `WM_ENDSESSION`
+    // дошло до окна tao раньше, чем до окна конца сеанса (решение 64).
+    session_end::end_browser_if_ending(app);
     if let Some(shell) = app.try_state::<Shell>() {
         // Не удалось — папку уберёт следующий запуск (уборка остатков).
         let _ = shell.clean_up();
@@ -352,6 +357,8 @@ pub fn run() {
         .manage(single_instance::Recent::default())
         // Окна, которые записывают ввод перед закрытием (задача 0.7).
         .manage(windows::closing::Closing::default())
+        // Выход из системы и выключение Windows: запись ввода (задача 0.11).
+        .manage(session_end::SessionEnd::default())
         // Диалоги ядра — только из Rust: прав dialog:* у окна нет (ADR 0009).
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Core::new(windows::startup_registry()))
@@ -381,6 +388,9 @@ pub fn run() {
                         });
                     });
                 }));
+            // Windows: скрытое окно для WM_QUERYENDSESSION/WM_ENDSESSION —
+            // ввод записывается до того, как tao завершит процесс (задача 0.11).
+            session_end::listen(app.handle());
             // Последнее хранилище — в окне с его размером и положением (С3.1).
             windows::open_at_startup(app.handle());
             Ok(())

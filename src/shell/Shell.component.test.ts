@@ -155,12 +155,12 @@ describe('оболочка окна', () => {
     expect(path.textContent?.replace(/\s*\/\s*/g, '/').trim()).toBe('Проекты/Альфа/Встреча по запуску');
     expect(screen.queryByText('Нет открытой заметки')).toBeNull();
 
-    const preview = screen.getByRole('button', { name: 'Живой предпросмотр' });
-    const source = screen.getByRole('button', { name: 'Исходный текст (Ctrl+E)' });
-    expect(preview.getAttribute('aria-pressed')).toBe('true');
+    const preview = screen.getByRole('radio', { name: 'Живой предпросмотр' });
+    const source = screen.getByRole('radio', { name: 'Исходный текст' });
+    expect(preview.getAttribute('aria-checked')).toBe('true');
     await fireEvent.click(source);
-    expect(source.getAttribute('aria-pressed')).toBe('true');
-    expect(preview.getAttribute('aria-pressed')).toBe('false');
+    expect(source.getAttribute('aria-checked')).toBe('true');
+    expect(preview.getAttribute('aria-checked')).toBe('false');
   });
 
   it('повреждённая раскладка: окно открывается, внизу уведомление, его можно закрыть', async () => {

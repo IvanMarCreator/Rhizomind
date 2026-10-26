@@ -58,6 +58,9 @@ export class WindowModel implements TreeHost {
   /** Записи настроек идут по очереди: последняя не обгоняет предыдущую. */
   #settingsWrite: Promise<void> = Promise.resolve();
 
+  /** Режим заметки выбран в этом окне (кнопкой или Ctrl+E): чтение настроек его не перебивает. */
+  #modeChosen = false;
+
   /** Назначения горячих клавиш хранилища (src/settings/hotkeys.ts). */
   get hotkeys(): HotkeyOverrides {
     return this.settings.hotkeys;
@@ -127,6 +130,22 @@ export class WindowModel implements TreeHost {
     this.#syncHistory();
   }
 
+  /**
+   * Режим редактора (решение 72): кнопки «книга / карандаш» и Ctrl+E. Выбор
+   * сразу действует в окне и запоминается в настройках хранилища — через
+   * `updateSettings`: пишется только `editor_mode` поверх файла.
+   */
+  setEditorMode(mode: EditorMode): void {
+    this.#modeChosen = true;
+    if (this.editorMode === mode) return;
+    this.editorMode = mode;
+    if (this.vault) void this.updateSettings({ editor_mode: mode });
+  }
+
+  toggleEditorMode(): void {
+    this.setEditorMode(this.editorMode === 'live_preview' ? 'source' : 'live_preview');
+  }
+
   toggleSidebar(): void {
     this.sidebarOpen = !this.sidebarOpen;
   }
@@ -174,7 +193,13 @@ export class WindowModel implements TreeHost {
     try {
       const { settings } = await core.settingsRead();
       this.#savedSettings = settings;
-      this.#showSettings(settings);
+      // Режим выбрали, пока настройки читались: он не откатывается к прочитанному.
+      if (this.#modeChosen) {
+        this.#showSettings({ ...settings, editor_mode: this.editorMode });
+        if (settings.editor_mode !== this.editorMode) void this.updateSettings({ editor_mode: this.editorMode });
+      } else {
+        this.#showSettings(settings);
+      }
     } catch (error) {
       this.notify(userMessage(error));
     }

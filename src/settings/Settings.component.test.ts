@@ -318,12 +318,47 @@ describe('горячие клавиши в окне', () => {
     expect(screen.getByRole('menuitem', { name: /Переименовать/ }).textContent).toContain('F3');
   });
 
-  it('Ctrl+E переключает режим заметки', async () => {
-    const { model } = setup();
+  it('режим заметки — по сочетанию из реестра (переназначенному) и запоминается в хранилище; без заметки не переключается', async () => {
+    const { calls, model } = setup({ hotkeys: { 'editor.toggle-mode': ['Ctrl+Shift+KeyM'] } });
     await screen.findByText('Нет открытой заметки');
-    await fireEvent.keyDown(window, { key: 'у', code: 'KeyE', ctrlKey: true });
-    expect(model.editorMode).toBe('source');
-    await fireEvent.keyDown(window, { key: 'e', code: 'KeyE', ctrlKey: true });
+    await fireEvent.keyDown(window, { key: 'Ь', code: 'KeyM', ctrlKey: true, shiftKey: true });
     expect(model.editorMode).toBe('live_preview');
+
+    model.open(['План.md']);
+    // Прежнее Ctrl+E больше не команда режима.
+    await fireEvent.keyDown(window, { key: 'у', code: 'KeyE', ctrlKey: true });
+    expect(model.editorMode).toBe('live_preview');
+    await fireEvent.keyDown(window, { key: 'Ь', code: 'KeyM', ctrlKey: true, shiftKey: true });
+    expect(model.editorMode).toBe('source');
+    await waitFor(() => expect(lastWrite(calls)?.editor_mode).toBe('source'));
+    // Пишется только режим, назначения клавиш на месте.
+    expect(lastWrite(calls)?.hotkeys).toEqual({ 'editor.toggle-mode': ['Ctrl+Shift+KeyM'] });
+  });
+
+  it('гонка старта: режим, выбранный до чтения настроек, не откатывается к прочитанному и записывается', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const mocks: CoreMocks = {
+      vault_current: () => ({ api_version: 1, vault: { id: 'v1', name: 'Рабочая база' } }),
+      settings_read: async () => {
+        await gate;
+        return { settings: { ...DEFAULT_SETTINGS } };
+      },
+      settings_write: () => null,
+      workspace_read: () => ({ workspace: null }),
+      workspace_write: () => null,
+    };
+    const calls = mockCore(mocks);
+    const model = new WindowModel();
+    const started = model.start();
+    await waitFor(() => expect(model.vault).not.toBeNull());
+
+    model.setEditorMode('source');
+    release();
+    await started;
+
+    expect(model.editorMode).toBe('source');
+    expect(model.settings.editor_mode).toBe('source');
+    await waitFor(() => expect(lastWrite(calls)?.editor_mode).toBe('source'));
   });
 });
