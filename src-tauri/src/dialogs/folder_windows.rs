@@ -56,9 +56,11 @@ pub(super) struct Settings {
 
 /// Окно Rhizomind: путь к выбранной папке не попадает в перемещаемый профиль.
 pub(super) const PRIVATE: Settings = Settings {
-    options: FILEOPENDIALOGOPTIONS(FOS_PICKFOLDERS.0),
-    client_guid: None,
-    clear_client_data: false,
+    options: FILEOPENDIALOGOPTIONS(
+        FOS_PICKFOLDERS.0 | FOS_DONTADDTORECENT.0 | FOS_FORCEFILESYSTEM.0 | FOS_PATHMUSTEXIST.0,
+    ),
+    client_guid: Some(CLIENT_GUID),
+    clear_client_data: true,
 };
 
 /// Окно выбора папки, модальное к окну `owner` (HWND как число: `HWND` не
