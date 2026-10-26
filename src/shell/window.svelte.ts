@@ -57,6 +57,9 @@ export class WindowModel implements TreeHost {
   #savedSettings: Settings = DEFAULT_SETTINGS;
   /** Записи настроек идут по очереди: последняя не обгоняет предыдущую. */
   #settingsWrite: Promise<void> = Promise.resolve();
+  /** Номер последней правки настроек и правка, последней менявшая каждое поле. */
+  #patchSeq = 0;
+  readonly #latestPatch = new Map<keyof Settings, number>();
 
   /** Режим заметки выбран в этом окне (кнопкой или Ctrl+E): чтение настроек его не перебивает. */
   #modeChosen = false;
@@ -165,34 +168,39 @@ export class WindowModel implements TreeHost {
    * 2.5), не затираются. Не записалось — уведомление и откат к записанным.
    */
   updateSettings(patch: Partial<Settings>): Promise<void> {
-    const shown: Settings = { ...this.settings, ...patch };
-    this.#showSettings(shown, false);
+    const id = ++this.#patchSeq;
+    const keys = Object.keys(patch) as (keyof Settings)[];
+    for (const key of keys) this.#latestPatch.set(key, id);
+    this.#showSettings({ ...this.settings, ...patch }, false);
     this.#settingsWrite = this.#settingsWrite.then(async () => {
       try {
         const { settings: disk } = await core.settingsRead();
         const next: Settings = { ...disk, ...patch };
         await core.settingsWrite({ settings: next });
         this.#savedSettings = next;
+        this.#settle(id, keys, next);
       } catch (error) {
         this.notify(userMessage(error));
-        this.#revert(patch);
+        this.#settle(id, keys, this.#savedSettings);
       }
     });
     return this.#settingsWrite;
   }
 
   /**
-   * Запись `patch` не удалась: его поля возвращаются к записанным значениям —
-   * кроме тех, что с тех пор поменяла следующая правка (её запись в очереди).
+   * Запись правки `id` закончилась: её поля показывают то, что на диске
+   * (`source` — записанное или, при ошибке, последнее удачно записанное) —
+   * кроме полей, которые с тех пор поменяла следующая правка: она ещё в
+   * очереди и решит их сама.
    */
-  #revert(patch: Partial<Settings>): void {
-    const back: Partial<Settings> = {};
-    for (const key of Object.keys(patch) as (keyof Settings)[]) {
-      if (JSON.stringify(this.settings[key]) === JSON.stringify(patch[key])) {
-        Object.assign(back, { [key]: this.#savedSettings[key] });
-      }
+  #settle(id: number, keys: readonly (keyof Settings)[], source: Settings): void {
+    const update: Partial<Settings> = {};
+    for (const key of keys) {
+      if (this.#latestPatch.get(key) !== id) continue;
+      this.#latestPatch.delete(key);
+      Object.assign(update, { [key]: source[key] });
     }
-    this.#showSettings({ ...this.settings, ...back }, false);
+    this.#showSettings({ ...this.settings, ...update }, false);
   }
 
   /** Показывает настройки; режим заметки — только при чтении (его меняет заметка, а не окно настроек). */

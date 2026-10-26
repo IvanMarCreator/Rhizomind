@@ -422,6 +422,31 @@ describe('горячие клавиши в окне', () => {
   });
 });
 
+describe('поле переименования и команды окна', () => {
+  it.each([
+    ['Ctrl+N', { key: 'т', code: 'KeyN', ctrlKey: true }],
+    ['Ctrl+O', { key: 'щ', code: 'KeyO', ctrlKey: true }],
+    ['Ctrl+E', { key: 'у', code: 'KeyE', ctrlKey: true }],
+    ['Alt+←', { key: 'ArrowLeft', code: 'ArrowLeft', altKey: true }],
+  ] as const)('%s в поле имени не выполняет команду окна', async (_name, init) => {
+    const { calls, model } = setup();
+    await screen.findByText('Нет открытой заметки');
+    model.open(['А.md']);
+    model.open(['План.md']);
+    await fireEvent.click(await screen.findByRole('treeitem', { name: 'План' }));
+    await fireEvent.keyDown(screen.getByRole('tree'), { key: 'F2', code: 'F2' });
+    const field = screen.getByRole('textbox', { name: 'Новое имя' });
+
+    await fireEvent.keyDown(field, init);
+
+    expect(calls.some(([command]) => command === 'note_create')).toBe(false);
+    expect(screen.queryByRole('dialog', { name: 'Быстрый переход' })).toBeNull();
+    expect(model.editorMode).toBe('live_preview');
+    expect(model.currentPath).toEqual(['План.md']);
+    expect(screen.getByRole('textbox', { name: 'Новое имя' })).toBe(field);
+  });
+});
+
 describe('очередь записей настроек', () => {
   /** Ядро с файлом настроек в памяти и ручным управлением записью. */
   function slowDisk(failFirst = false) {
@@ -481,5 +506,37 @@ describe('очередь записей настроек', () => {
     expect(root().dataset.theme).toBe('light');
     expect(model.settings.confirm_delete).toBe(false);
     expect(fake.disk()).toEqual({ ...DEFAULT_SETTINGS, confirm_delete: false });
+  });
+
+  it('одно значение дважды подряд, первая запись упала — на экране то же, что на диске', async () => {
+    const fake = slowDisk(true);
+    const { model } = setup({}, fake.mocks);
+    await screen.findByText('Нет открытой заметки');
+    void model.updateSettings({ theme: 'dark' });
+    void model.updateSettings({ theme: 'dark' });
+
+    await flush(fake.pending);
+    await flush(fake.pending);
+
+    await waitFor(() => expect(fake.disk().theme).toBe('dark'));
+    await waitFor(() => expect(model.settings.theme).toBe('dark'));
+    expect(root().dataset.theme).toBe('dark');
+  });
+
+  it('первая запись упала, а поле уже поменяла вторая (ещё в очереди) — на экране значение второй', async () => {
+    const fake = slowDisk(true);
+    const { model } = setup({}, fake.mocks);
+    await screen.findByText('Нет открытой заметки');
+    void model.updateSettings({ theme: 'dark' });
+    void model.updateSettings({ theme: 'light' });
+
+    await flush(fake.pending);
+    await screen.findByText('Не удалось прочитать или записать файл.');
+    // Откат первой не трогает поле, которое уже поменяла вторая.
+    expect(model.settings.theme).toBe('light');
+
+    await flush(fake.pending);
+    await waitFor(() => expect(fake.disk().theme).toBe('light'));
+    expect(model.settings.theme).toBe('light');
   });
 });

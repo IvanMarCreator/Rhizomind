@@ -140,9 +140,11 @@
     // проверка сети (tools/check-no-network) не может доказать безопасность.
     // Фаза перехвата: команды реестра важнее сочетаний редактора и полей
     // (решение 80), кроме клавиш правки текста в полях (решение 81).
-    window.addEventListener('keydown', onKeydown, true);
+    window.addEventListener('keydown', onKeydownCapture, true);
+    window.addEventListener('keydown', onKeydownBubble);
     return () => {
-      window.removeEventListener('keydown', onKeydown, true);
+      window.removeEventListener('keydown', onKeydownCapture, true);
+      window.removeEventListener('keydown', onKeydownBubble);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
     };
   });
@@ -150,21 +152,42 @@
   $effect(() => applyTheme(model.theme));
   $effect(() => applyTextSettings(model.settings));
 
-  /** Поле ввода или текст заметки (CodeMirror — contenteditable). */
-  function isTextField(target: EventTarget | null): boolean {
-    return (
-      target instanceof Element &&
-      target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null
-    );
+  /** Поле формы: поиск, быстрый переход, переименование, числа в настройках. */
+  function isFormField(target: EventTarget | null): boolean {
+    return target instanceof Element && target.closest('input, textarea, select') !== null;
   }
 
-  /** Горячие клавиши окна — по реестру и назначениям хранилища (src/settings/hotkeys.ts). */
-  function onKeydown(event: KeyboardEvent) {
-    if (model.status.kind !== 'ready' || !model.vault) return;
-    const command = isTextField(event.target)
+  /** Текст заметки (CodeMirror — contenteditable). */
+  function isEditableText(target: EventTarget | null): boolean {
+    return target instanceof Element && target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
+  }
+
+  /**
+   * Горячие клавиши окна — по реестру и назначениям хранилища
+   * (src/settings/hotkeys.ts). Вне полей формы — в фазе перехвата: команды
+   * важнее сочетаний редактора (решение 80), кроме клавиш правки текста в
+   * тексте заметки (решение 81).
+   */
+  function onKeydownCapture(event: KeyboardEvent) {
+    if (isFormField(event.target)) return;
+    const command = isEditableText(event.target)
       ? windowCommandInText(model.hotkeys, event)
       : matchCommand(model.hotkeys, event, 'window');
-    if (!command) return;
+    runCommand(event, command);
+  }
+
+  /**
+   * Поля формы — после самого поля, на всплытии: поле переименования
+   * останавливает нажатие у себя, и команды окна в нём не выполняются;
+   * клавиши правки текста остаются полю (решение 81).
+   */
+  function onKeydownBubble(event: KeyboardEvent) {
+    if (!isFormField(event.target) || event.defaultPrevented) return;
+    runCommand(event, windowCommandInText(model.hotkeys, event));
+  }
+
+  function runCommand(event: KeyboardEvent, command: CommandId | null) {
+    if (model.status.kind !== 'ready' || !model.vault || !command) return;
     event.preventDefault();
     // Под модальным окном команды окна не действуют.
     if (modalOpen) return;
