@@ -20,6 +20,8 @@ macro_rules! with_core_commands {
             vault_open_folder,
             vault_open,
             vault_remove_from_list,
+            vault_manager_open,
+            folder_pick,
             // Файлы
             tree_list,
             note_create,

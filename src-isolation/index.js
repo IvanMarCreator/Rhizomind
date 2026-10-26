@@ -22,6 +22,8 @@
     'vault_open_folder',
     'vault_open',
     'vault_remove_from_list',
+    'vault_manager_open',
+    'folder_pick',
     'tree_list',
     'note_create',
     'folder_create',

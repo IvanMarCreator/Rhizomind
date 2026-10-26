@@ -19,6 +19,8 @@ export const LIMITS = {
   max_workspace_bytes: MIB,
   /** Адрес `open_external`, байт UTF-8; управляющие символы запрещены. */
   max_url_bytes: 8 * 1024,
+  /** Полный путь к папке на диске (`vault_create.parent`), единиц UTF-16. */
+  max_folder_path_utf16: 32_767,
   /** Настройка «максимальный размер файла для редактирования», байт. */
   edit_size_range: [MIB, 100 * MIB],
   /** Размер шрифта текста, пиксели. */

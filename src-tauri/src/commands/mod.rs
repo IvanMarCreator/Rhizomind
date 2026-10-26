@@ -73,6 +73,28 @@ use crate::watcher::VaultWatcher;
 /// Имена всех команд ядра — тот же список, что в `AppManifest::commands`.
 pub const COMMAND_NAMES: &[&str] = with_core_commands!(core_command_names);
 
+/// Команды только окна «Управление хранилищами» (задача 2.8б): у окон
+/// хранилищ прав на них нет (`capabilities/main.json`), а ядро отказывает
+/// любому другому окну (`vaults::require_manager`).
+pub const MANAGER_ONLY_COMMANDS: &[&str] = &[
+    "vault_create",
+    "vault_open_folder",
+    "vault_remove_from_list",
+    "folder_pick",
+];
+
+/// Все права окна «Управление хранилищами» (`capabilities/manager.json`):
+/// команды только для него и общие — список, своё окно, открытие хранилища.
+pub const MANAGER_COMMANDS: &[&str] = &[
+    "vault_list",
+    "vault_current",
+    "vault_open",
+    "vault_create",
+    "vault_open_folder",
+    "vault_remove_from_list",
+    "folder_pick",
+];
+
 macro_rules! core_handler {
     ($($command:ident),* $(,)?) => {
         tauri::generate_handler![$($command),*]
@@ -157,6 +179,22 @@ pub struct Core {
     /// Хранилища, которые сейчас открываются: идентификатор → метка окна
     /// ([`Core::claim_vault`]).
     pending: Arc<Mutex<HashMap<VaultId, String>>>,
+    /// Метка окна «Управление хранилищами» (задача 2.8а), если оно открыто
+    /// или создаётся. Окно управления одно; хранилище к нему не привязывается
+    /// ([`Core::claim_vault`]).
+    manager: Mutex<Option<String>>,
+    /// Родительская папка, выбранная `folder_pick` в окне (метка → путь):
+    /// `vault_create` принимает только её (задача 2.8б).
+    picked_parents: Mutex<HashMap<String, std::path::PathBuf>>,
+}
+
+/// Окно «Управление хранилищами» для [`Core::reserve_manager`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagerSlot {
+    /// Окно управления уже есть (или создаётся) с этой меткой.
+    Existing(String),
+    /// Окна нет: метка занята за новым окном, его нужно создать.
+    New(String),
 }
 
 /// Почему хранилище нельзя занять для открытия в окне.
@@ -373,6 +411,62 @@ impl Core {
         }
         drop(windows);
         drop(removed);
+        let mut manager = self.manager();
+        if manager.as_deref() == Some(window_label) {
+            *manager = None;
+        }
+        drop(manager);
+        self.picked_parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(window_label);
+    }
+
+    fn manager(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.manager
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Метка окна «Управление хранилищами», если оно открыто.
+    pub fn manager_label(&self) -> Option<String> {
+        self.manager().clone()
+    }
+
+    /// Запоминает папку, выбранную `folder_pick` в окне `window_label`.
+    pub fn remember_picked_parent(&self, window_label: &str, parent: std::path::PathBuf) {
+        self.picked_parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(window_label.to_owned(), parent);
+    }
+
+    /// Папка, выбранная `folder_pick` в окне `window_label`.
+    pub fn picked_parent(&self, window_label: &str) -> Option<std::path::PathBuf> {
+        self.picked_parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(window_label)
+            .cloned()
+    }
+
+    /// Окно `window_label` — окно «Управление хранилищами».
+    pub fn is_manager(&self, window_label: &str) -> bool {
+        self.manager().as_deref() == Some(window_label)
+    }
+
+    /// Окно управления уже есть — его метка; нет — метка `label` занимается
+    /// за новым окном (одно окно управления даже при одновременных вызовах).
+    /// Окно не создалось — [`Core::unbind_window`] снимает занятость.
+    pub fn reserve_manager(&self, label: &str) -> ManagerSlot {
+        let mut manager = self.manager();
+        match manager.as_ref() {
+            Some(existing) => ManagerSlot::Existing(existing.clone()),
+            None => {
+                *manager = Some(label.to_owned());
+                ManagerSlot::New(label.to_owned())
+            }
+        }
     }
 
     fn is_closed(&self, window_label: &str) -> bool {
@@ -388,7 +482,8 @@ impl Core {
     ///   фокус, а не второе окно.
     /// - Окно `window_label` занято — в нём уже есть хранилище или идёт
     ///   открытие (ревью безопасности 1.3) — [`ClaimRefused::WindowBusy`]:
-    ///   второе открытие не должно заменить первое.
+    ///   второе открытие не должно заменить первое. Окно «Управление
+    ///   хранилищами» тоже всегда занято: хранилище открывается в новом окне.
     pub fn claim_vault(
         &self,
         id: &VaultId,
@@ -409,6 +504,7 @@ impl Core {
             return Err(ClaimRefused::OpenIn(label.clone()));
         }
         if windows.contains_key(window_label)
+            || self.is_manager(window_label)
             || pending.values().any(|label| label == window_label)
             || self.opening_map().contains_key(window_label)
         {

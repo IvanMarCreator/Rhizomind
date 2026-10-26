@@ -15,7 +15,13 @@
     | 'chevrons-up-down'
     | 'x'
     | 'file-text'
-    | 'triangle-alert';
+    | 'triangle-alert'
+    | 'check'
+    | 'library'
+    | 'ellipsis'
+    | 'lock'
+    | 'waypoints'
+    | 'circle-minus';
 </script>
 
 <script lang="ts">
@@ -82,6 +88,31 @@
     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
     <path d="M12 9v4" />
     <path d="M12 17h.01" />
+  {:else if name === 'check'}
+    <path d="M20 6 9 17l-5-5" />
+  {:else if name === 'library'}
+    <path d="m16 6 4 14" />
+    <path d="M12 6v14" />
+    <path d="M8 8v12" />
+    <path d="M4 4v16" />
+  {:else if name === 'ellipsis'}
+    <circle cx="12" cy="12" r="1" />
+    <circle cx="19" cy="12" r="1" />
+    <circle cx="5" cy="12" r="1" />
+  {:else if name === 'lock'}
+    <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  {:else if name === 'waypoints'}
+    <circle cx="12" cy="4.5" r="2.5" />
+    <path d="m10.2 6.3-3.9 3.9" />
+    <circle cx="4.5" cy="12" r="2.5" />
+    <path d="M7 12h10" />
+    <circle cx="19.5" cy="12" r="2.5" />
+    <path d="m13.8 17.7 3.9-3.9" />
+    <circle cx="12" cy="19.5" r="2.5" />
+  {:else if name === 'circle-minus'}
+    <circle cx="12" cy="12" r="10" />
+    <path d="M8 12h8" />
   {/if}
 </svg>
 

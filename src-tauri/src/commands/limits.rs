@@ -26,6 +26,9 @@ pub const MAX_NOTE_BYTES: u64 = 100 * MIB;
 pub const MAX_WORKSPACE_BYTES: usize = MIB as usize;
 /// Адрес `open_external`, байт UTF-8.
 pub const MAX_URL_BYTES: usize = 8 * 1024;
+/// Полный путь к папке на диске (`vault_create.parent`), единиц UTF-16
+/// (длинный путь Windows).
+pub const MAX_FOLDER_PATH_UTF16: usize = 32_767;
 /// Диапазон настройки «максимальный размер файла для редактирования», байт.
 pub const EDIT_SIZE_RANGE: (u64, u64) = (MIB, MAX_NOTE_BYTES);
 /// Диапазон размера шрифта текста, пиксели.
@@ -41,6 +44,7 @@ pub struct Limits {
     pub max_note_bytes: u64,
     pub max_workspace_bytes: usize,
     pub max_url_bytes: usize,
+    pub max_folder_path_utf16: usize,
     pub edit_size_range: (u64, u64),
     pub font_size_range: (u16, u16),
 }
@@ -54,6 +58,7 @@ pub const LIMITS: Limits = Limits {
     max_note_bytes: MAX_NOTE_BYTES,
     max_workspace_bytes: MAX_WORKSPACE_BYTES,
     max_url_bytes: MAX_URL_BYTES,
+    max_folder_path_utf16: MAX_FOLDER_PATH_UTF16,
     edit_size_range: EDIT_SIZE_RANGE,
     font_size_range: FONT_SIZE_RANGE,
 };
@@ -85,6 +90,16 @@ pub fn path(path: &VaultPath, field: &str) -> CoreResult<()> {
 /// Имя элемента (одно имя, не путь).
 pub fn name(name: &str, field: &str) -> CoreResult<()> {
     ensure(component_fits(name), field)
+}
+
+/// Полный путь к папке на диске: длина и без управляющих символов.
+pub fn folder_path(path: &str, field: &str) -> CoreResult<()> {
+    ensure(
+        !path.is_empty()
+            && path.encode_utf16().count() <= MAX_FOLDER_PATH_UTF16
+            && !path.chars().any(char::is_control),
+        field,
+    )
 }
 
 /// Строка поиска.

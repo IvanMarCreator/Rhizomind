@@ -67,6 +67,9 @@
 |---|---|---|---|---|
 | `svelte` | 5.57.2 | MIT | Фреймворк интерфейса (ADR 0002) | Нет; собранный интерфейс проверяется `check-no-network` |
 | `@tauri-apps/api` | 2.12.4 | Apache-2.0 OR MIT | `invoke` для команд ядра (только через `src/api/`) и подмена ядра в тестах | Нет: вызовы идут по IPC Tauri внутри процесса |
+| `@codemirror/state` | 6.7.6 | MIT | Редактор (ADR 0001, задача 2.4): документ, транзакции, `EditorState.lineSeparator` («байт в байт»). Приносит `@marijn/find-cluster-break` 1.0.4 (MIT; в его пакете лежит скрипт сборки `bin/build-extenders.js` с `fetch` таблиц Unicode с unicode.org — он запускается только автором пакета при подготовке выпуска, в `exports` не входит и в сборку интерфейса не попадает, это подтверждает `check-no-network` по `dist/`) | Нет: в коде пакета нет `fetch`, `XMLHttpRequest`, `WebSocket`, `window.open`; адреса — только в комментариях |
+| `@codemirror/view` | 6.43.14 | MIT | Редактор: отображение и ввод в WebView, атрибуты поля (`spellcheck="false"`). Приносит `style-mod` 4.1.4, `w3c-keyname` 2.2.8, `crelt` 1.0.7 (MIT). Выпуск 6.43.15 (19.10.2026) моложе двух недель — взят предыдущий | Нет сетевых вызовов. `check-no-network` помечает в сборке как подозрительные шесть мест: `x instanceof Function` (проверка типа), `doc.defaultView \|\| window` (запасной объект окна) и в `style-mod` `typeof globalThis < "u" ? globalThis : window` со счётчиком по `Symbol.for` — решение по проверке за владельцем (отчёт задачи 2.4) |
+| `@codemirror/commands` | 6.11.1 | MIT | Редактор: стандартные клавиши и отмена (`history`). Приносит `@codemirror/language` 6.13.1, `@codemirror/streamparser` 6.0.0, `@lezer/common` 1.5.3, `@lezer/highlight` 1.2.5, `@lezer/lr` 1.4.11 (MIT; нужны и задаче 2.5 для разбора Markdown) | Нет |
 
 ## Встроенные ресурсы интерфейса — попадают в программу
 

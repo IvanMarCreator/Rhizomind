@@ -30,6 +30,10 @@ export const core = {
   vaultOpenFolder: withoutRequest('vault_open_folder'),
   vaultOpen: withRequest('vault_open'),
   vaultRemoveFromList: withRequest('vault_remove_from_list'),
+  /** Окно «Управление хранилищами»: новое или фокус на открытое. */
+  vaultManagerOpen: withoutRequest('vault_manager_open'),
+  /** Родительская папка нового хранилища: системное окно ядра (только окно управления). */
+  folderPick: withoutRequest('folder_pick'),
   // Файлы
   treeList: withoutRequest('tree_list'),
   noteCreate: withRequest('note_create'),

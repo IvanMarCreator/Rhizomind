@@ -14,6 +14,8 @@
 //!
 //! В тестах крейта (подменный runtime) системные окна не показываются:
 //! ответ берётся из [`test_answers`] по метке окна, по умолчанию — отмена.
+//! В тестовой сборке (функция `webdriver`) окно выбора папки можно
+//! заменить ответом из переменной окружения (`windows::e2e::PICK_FOLDER_ENV`).
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -136,6 +138,12 @@ fn ask_folder<R: tauri::Runtime>(
     purpose: FolderPurpose,
 ) -> Option<PathBuf> {
     use tauri_plugin_dialog::DialogExt;
+    // Тестовая сборка: ответ окна выбора папки — из переменной окружения
+    // сценарного теста (в выпуске этой ветки нет: release-binary.test.ts).
+    #[cfg(feature = "webdriver")]
+    if let Some(folder) = crate::windows::e2e::picked_folder() {
+        return Some(folder);
+    }
     window
         .dialog()
         .file()

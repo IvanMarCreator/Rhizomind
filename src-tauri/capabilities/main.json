@@ -1,17 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Каждое окно хранилища (метка vault-<16 шестнадцатеричных цифр>, src/windows/mod.rs): только свои команды ядра API v1 (список — src/commands/list.rs, он же AppManifest::commands в build.rs) и подписка на события ядра (listen/unlisten). Отправка событий из интерфейса (emit) не выдаётся. Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009). Состав проверяет тест src/commands/acl_tests.rs.",
+  "description": "Окна хранилищ (метка vault-<16 шестнадцатеричных цифр>, src/windows/mod.rs): свои команды ядра API v1 (список — src/commands/list.rs, он же AppManifest::commands в build.rs) без команд только окна управления (vault_create, vault_open_folder, vault_remove_from_list, folder_pick — capabilities/manager.json, задача 2.8б) и подписка на события ядра (listen/unlisten). Отправка событий из интерфейса (emit) не выдаётся. Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009). Состав проверяет тест src/commands/acl_tests.rs.",
   "windows": [
     "vault-*"
   ],
   "permissions": [
     "allow-vault-list",
     "allow-vault-current",
-    "allow-vault-create",
-    "allow-vault-open-folder",
     "allow-vault-open",
-    "allow-vault-remove-from-list",
+    "allow-vault-manager-open",
     "allow-tree-list",
     "allow-note-create",
     "allow-folder-create",
