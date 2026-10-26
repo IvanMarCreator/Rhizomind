@@ -280,36 +280,67 @@ enum Preset {
     FullPathInName,
     /// Родитель — папкой по умолчанию (`SetDefaultFolder`), имя — в поле имени.
     DefaultFolder,
+    /// Путь с `\` в конце: первая кнопка — переход в папку, вторая — выбор.
+    Navigate,
 }
 
 impl Preset {
     fn from_env() -> Self {
         match std::env::var("RHIZOMIND_T08_PRESET").as_deref() {
             Ok("default-folder") => Self::DefaultFolder,
-            _ => Self::FullPathInName,
+            Ok("full-path") => Self::FullPathInName,
+            _ => Self::Navigate,
         }
     }
 }
 
-/// Показывает окно с настройками `settings`, «выбирает» новую временную папку
-/// и возвращает метку, которая есть в имени и самой папки, и её родителя.
-fn pick_temp_folder(settings: Settings, label: &str) -> (tempfile::TempDir, String) {
-    let name = unique(&format!("rhz-t08-{label}"));
-    let parent = tempfile::Builder::new()
-        .prefix(&format!("{name}-parent"))
-        .rand_bytes(0)
-        .tempdir()
-        .expect("временная папка");
-    let folder = parent.path().join(format!("{name}-vault"));
-    std::fs::create_dir(&folder).expect("папка хранилища");
+/// Настройки окна по имени прогона.
+fn settings_for(kind: &str) -> Settings {
+    match kind {
+        "private" => PRIVATE,
+        // Наши опции без ClearClientData: запись LastVisitedPidlMRU остаётся.
+        "no-clear" => Settings {
+            clear_client_data: false,
+            ..PRIVATE
+        },
+        // Как rfd 0.16.1 (было до задачи 0.8).
+        "rfd" => Settings {
+            options: FOS_PICKFOLDERS,
+            client_guid: None,
+            clear_client_data: false,
+        },
+        other => panic!("неизвестный прогон {other}"),
+    }
+}
+
+const CHILD_KIND: &str = "RHIZOMIND_T08_CHILD";
+const CHILD_FOLDER: &str = "RHIZOMIND_T08_FOLDER";
+
+/// Окно в отдельном процессе (как приложение, которое потом закрыли):
+/// часть записей оболочка делает только при выходе процесса. Запускается
+/// из [`pick_temp_folder`]; без переменных окружения ничего не делает.
+#[test]
+#[ignore = "показывает окно ОС; запускается из chosen_folder_path_does_not_reach_roaming_profile"]
+fn dialog_in_child_process() {
+    let (Some(kind), Some(folder)) = (std::env::var_os(CHILD_KIND), std::env::var_os(CHILD_FOLDER))
+    else {
+        return;
+    };
+    let kind = kind.to_string_lossy().into_owned();
+    let folder = PathBuf::from(folder);
     let title = unique("Rhizomind проверка окна");
     let user = press_select(title.clone());
     let preset = Preset::from_env();
     let target = folder.clone();
-    let chosen = show(None, &title, settings, move |dialog| unsafe {
+    let chosen = show(None, &title, settings_for(&kind), move |dialog| unsafe {
         // SAFETY: вызов из потока окна с инициализированным COM.
         match preset {
             Preset::FullPathInName => dialog.SetFileName(&HSTRING::from(target.as_os_str())),
+            Preset::Navigate => {
+                let mut text = target.as_os_str().to_owned();
+                text.push("\\");
+                dialog.SetFileName(&HSTRING::from(text))
+            }
             Preset::DefaultFolder => {
                 let parent: IShellItem = windows::Win32::UI::Shell::SHCreateItemFromParsingName(
                     &HSTRING::from(target.parent().expect("родитель").as_os_str()),
@@ -321,7 +352,7 @@ fn pick_temp_folder(settings: Settings, label: &str) -> (tempfile::TempDir, Stri
         }
     });
     let log = user.join().expect("поток пользователя");
-    eprintln!("[{label}, {preset:?}] окно: {log:?}; ответ: {chosen:?}");
+    eprintln!("[{kind}, {preset:?}] окно: {log:?}; ответ: {chosen:?}");
     let expected = std::fs::canonicalize(&folder).expect("канонический путь");
     let chosen = chosen.map(|p| std::fs::canonicalize(p).expect("канонический ответ"));
     assert_eq!(
@@ -329,6 +360,32 @@ fn pick_temp_folder(settings: Settings, label: &str) -> (tempfile::TempDir, Stri
         Some(expected.as_path()),
         "окно вернуло выбранную папку"
     );
+}
+
+/// Создаёт временную папку `<метка>-parent\<метка>-vault`, выбирает её в окне
+/// с настройками `kind` в отдельном процессе и возвращает метку, которая есть
+/// в имени и самой папки, и её родителя.
+fn pick_temp_folder(kind: &str) -> (tempfile::TempDir, String) {
+    let name = unique(&format!("rhz-t08-{kind}"));
+    let parent = tempfile::Builder::new()
+        .prefix(&format!("{name}-parent"))
+        .rand_bytes(0)
+        .tempdir()
+        .expect("временная папка");
+    let folder = parent.path().join(format!("{name}-vault"));
+    std::fs::create_dir(&folder).expect("папка хранилища");
+    let status = std::process::Command::new(std::env::current_exe().expect("файл теста"))
+        .args([
+            "--ignored",
+            "--exact",
+            "dialogs::folder_windows::tests::dialog_in_child_process",
+            "--nocapture",
+        ])
+        .env(CHILD_KIND, kind)
+        .env(CHILD_FOLDER, &folder)
+        .status()
+        .expect("процесс окна");
+    assert!(status.success(), "процесс окна {kind}: {status}");
     // Недавние документы пишет Explorer.EXE по вызову окна — не сразу.
     std::thread::sleep(Duration::from_secs(5));
     (parent, name)
@@ -344,7 +401,7 @@ const LAST_VISITED: &str = r"ComDlg32\LastVisitedPidlMRU";
 #[test]
 #[ignore = "показывает окно ОС; отдельный шаг CI на Windows"]
 fn chosen_folder_path_does_not_reach_roaming_profile() {
-    let (_folder, name) = pick_temp_folder(PRIVATE, "private");
+    let (_folder, name) = pick_temp_folder("private");
     let roaming = roaming_hits(&name);
     eprintln!("Roaming (всё HKCU, кроме Classes\\Local Settings; %APPDATA%): {roaming:#?}");
     let local = registry_hits(
@@ -362,17 +419,8 @@ fn chosen_folder_path_does_not_reach_roaming_profile() {
         failures.push(format!("наше окно: путь в Roaming: {roaming:#?}"));
     }
     if control {
-        let no_clear = Settings {
-            clear_client_data: false,
-            ..PRIVATE
-        };
-        let rfd = Settings {
-            options: FOS_PICKFOLDERS,
-            client_guid: None,
-            clear_client_data: false,
-        };
-        for (settings, label) in [(no_clear, "no-clear"), (rfd, "rfd")] {
-            let (_dir, control_name) = pick_temp_folder(settings, label);
+        for label in ["no-clear", "rfd"] {
+            let (_dir, control_name) = pick_temp_folder(label);
             let hits = roaming_hits(&control_name);
             eprintln!("контроль {label}, Roaming: {hits:#?}");
             if !hits.iter().any(|h| h.contains(LAST_VISITED)) {
