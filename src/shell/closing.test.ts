@@ -164,7 +164,7 @@ describe('закрытие окна', () => {
 
 describe('конец сеанса Windows (задача 0.11а, решение 79)', () => {
   const sessionEnd = { sessionEnd: true } as const;
-  const SESSION_NOTICE = 'Перед выходом из системы не удалось сохранить заметку. Текст остаётся в редакторе.';
+  const SESSION_NOTICE = 'Перед выходом из системы не удалось сохранить заметки. Текст остаётся в редакторе.';
 
   it('ввод записан — ядру «готово», без уведомлений', async () => {
     const { closing, answers, notices } = setup([[]]);
