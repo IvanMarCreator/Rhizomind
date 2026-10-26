@@ -7,11 +7,15 @@
 // его к `\n` и восстанавливает при записи (src-tauri/src/vault/text.rs).
 //
 // Проверка орфографии выключена (С3.3): проверка браузерного движка может
-// обращаться к сети. Живой предпросмотр и вики-ссылки — задачи 2.5 и 2.6.
+// обращаться к сети. Режим (живой предпросмотр или исходный текст, задача 2.5)
+// переключается на ходу и только меняет оформление: документ тот же.
+// Вики-ссылки — задача 2.6.
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
+import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
+import { livePreview } from './live-preview/index.ts';
 
 /** Переносы из буфера обмена и перетаскивания — в `\n`, как в остальном тексте. */
 export function normalizePastedText(text: string): string {
@@ -39,16 +43,33 @@ export function setReadOnly(view: EditorView, readOnly: boolean): void {
   view.dispatch({ effects: lock.reconfigure(lockExtension(readOnly)) });
 }
 
+/** Режим редактора: оформление живого предпросмотра или исходный текст. */
+const modeSlot = new Compartment();
+
+function modeExtension(mode: EditorMode, onOpenLink: ((url: string) => void) | undefined): Extension {
+  return mode === 'live_preview' ? livePreview({ onOpenLink }) : [];
+}
+
+/** Переключить режим в открытом редакторе. Текст и выделение не меняются. */
+export function setMode(view: EditorView, mode: EditorMode, onOpenLink?: (url: string) => void): void {
+  view.dispatch({ effects: modeSlot.reconfigure(modeExtension(mode, onOpenLink)) });
+}
+
 export interface EditorOptions {
   readOnly?: boolean;
+  /** Режим редактора; по умолчанию — исходный текст. */
+  mode?: EditorMode;
+  /** Щелчок по внешней ссылке в живом предпросмотре: открыть через ядро. */
+  onOpenLink?: (url: string) => void;
   /** Документ изменился правкой пользователя. */
   onChange?: (text: string) => void;
 }
 
-export function editorExtensions({ readOnly = false, onChange }: EditorOptions = {}): Extension[] {
+export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink, onChange }: EditorOptions = {}): Extension[] {
   return [
     EditorState.lineSeparator.of('\n'),
     lock.of(lockExtension(readOnly)),
+    modeSlot.of(modeExtension(mode, onOpenLink)),
     history(),
     keymap.of(editorKeymap),
     // Одиночный `\r`, NUL и другие невидимые символы видны значком.

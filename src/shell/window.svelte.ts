@@ -51,6 +51,8 @@ export class WindowModel implements TreeHost {
 
   readonly #history = new NavigationHistory();
   #nextNotice = 1;
+  /** Записи режима редактора — по очереди, последняя побеждает. */
+  #modeWrite: Promise<void> = Promise.resolve();
 
   /** Путь заметки в активной вкладке; `null` — заметка не открыта. */
   get currentPath(): VaultPath | null {
@@ -114,6 +116,32 @@ export class WindowModel implements TreeHost {
       void this.#saveLayout();
     }
     this.#syncHistory();
+  }
+
+  /**
+   * Режим редактора (решение 72): кнопки «книга / карандаш» и Ctrl+E. Выбор
+   * сразу действует в окне и запоминается в настройках хранилища. Остальные
+   * настройки берутся с диска перед записью — их могло изменить окно настроек.
+   */
+  setEditorMode(mode: EditorMode): void {
+    if (this.editorMode === mode) return;
+    this.editorMode = mode;
+    if (!this.vault) return;
+    this.#modeWrite = this.#modeWrite.then(() => this.#saveEditorMode());
+  }
+
+  toggleEditorMode(): void {
+    this.setEditorMode(this.editorMode === 'live_preview' ? 'source' : 'live_preview');
+  }
+
+  async #saveEditorMode(): Promise<void> {
+    try {
+      const { settings } = await core.settingsRead();
+      if (settings.editor_mode === this.editorMode) return;
+      await core.settingsWrite({ settings: { ...settings, editor_mode: this.editorMode } });
+    } catch (error) {
+      this.notify(userMessage(error));
+    }
   }
 
   toggleSidebar(): void {
