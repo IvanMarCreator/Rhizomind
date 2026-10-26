@@ -7,15 +7,24 @@
     filesOpen,
     onToggleFiles,
     onQuickSwitcher,
+    quickSwitcherShortcut = null,
     onSettings,
   }: {
     filesOpen: boolean;
     onToggleFiles: () => void;
     /** Быстрый переход — задача 2.7. */
     onQuickSwitcher?: () => void;
-    /** Настройки хранилища — задача 2.8. */
-    onSettings?: () => void;
+    /** Сочетание быстрого перехода для подсказки (переназначается, решение 72); `null` — нет. */
+    quickSwitcherShortcut?: string | null;
+    /** Окно «Настройки хранилища» — задача 2.8б. */
+    onSettings: () => void;
   } = $props();
+
+  const quickSwitcherLabel = $derived(
+    quickSwitcherShortcut
+      ? t('shell.ribbon.quickSwitcherWith', { shortcut: quickSwitcherShortcut })
+      : t('shell.ribbon.quickSwitcher'),
+  );
 </script>
 
 <div class="ribbon" role="toolbar" aria-label={t('shell.ribbon.label')} aria-orientation="vertical">
@@ -34,24 +43,20 @@
     <button
       type="button"
       class="action"
-      aria-label={t('shell.ribbon.quickSwitcher')}
-      title={t('shell.ribbon.quickSwitcher')}
+      aria-label={quickSwitcherLabel}
+      title={quickSwitcherLabel}
       onclick={() => onQuickSwitcher?.()}
     >
       <Icon name="square-arrow-right" />
     </button>
   </div>
   <div class="group">
-    <!-- Окно настроек — после КТ1 (задача 2.8б): до него кнопка явно
-         неактивна, с подсказкой, чтобы не казалось, что программа сломана. -->
     <button
       type="button"
       class="action"
-      class:unavailable={!onSettings}
       aria-label={t('shell.ribbon.settings')}
-      aria-disabled={onSettings ? undefined : 'true'}
-      title={onSettings ? t('shell.ribbon.settings') : t('shell.ribbon.settingsLater')}
-      onclick={() => onSettings?.()}
+      title={t('shell.ribbon.settings')}
+      onclick={onSettings}
     >
       <Icon name="settings" />
     </button>
@@ -88,16 +93,6 @@
 
   .action:hover {
     background: var(--bg-hover);
-  }
-
-  .action.unavailable {
-    color: var(--icon-muted);
-    opacity: 0.55;
-    cursor: default;
-  }
-
-  .action.unavailable:hover {
-    background: none;
   }
 
   .action.active {

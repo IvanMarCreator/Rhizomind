@@ -88,20 +88,3 @@ export class NavigationHistory {
 }
 
 export type HistoryAction = 'back' | 'forward';
-
-/** Клавиши события, которые важны для истории. */
-export interface HistoryKey {
-  key: string;
-  altKey: boolean;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  shiftKey: boolean;
-}
-
-/** Alt+← — назад, Alt+→ — вперёд; другие сочетания — `null`. */
-export function historyKeyAction(event: HistoryKey): HistoryAction | null {
-  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return null;
-  if (event.key === 'ArrowLeft') return 'back';
-  if (event.key === 'ArrowRight') return 'forward';
-  return null;
-}

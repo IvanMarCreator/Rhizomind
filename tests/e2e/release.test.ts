@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applicationPath, createTestProfile, startApp, waitForAppExit, type Session } from './driver.ts';
+import { appWindowTitles } from './window-titles.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const MANAGER = '[data-testid="vault-manager"]';
@@ -223,6 +224,26 @@ async function nameMessage(browser: WebdriverIO.Browser): Promise<string> {
   );
 }
 
+// Заголовки окон ОС (находка Н2, задача 2.11): тестовая сборка добавляет к
+// «Rhizomind» пометку (WEBDRIVER_BUILD_MARKER).
+const TITLE_SUFFIX = ' — Rhizomind — ТЕСТОВАЯ СБОРКА (webdriver)';
+
+/** Ждёт `count` показанных окон программы и возвращает их заголовки ОС. */
+async function windowTitles(b: WebdriverIO.Browser, count: number, step: string): Promise<string[]> {
+  let titles: string[] = [];
+  await b.waitUntil(
+    async () => {
+      titles = appWindowTitles();
+      return titles.length >= count;
+    },
+    { timeout: 10_000, timeoutMsg: `${step}: окон программы меньше ${count}: ${JSON.stringify(titles)}` },
+  );
+  // В журнал теста: видно, что заголовки прочитаны у ОС (X11 или UI Automation).
+  // stderr: console.log успешных тестов vitest в журнал не выводит.
+  process.stderr.write(`заголовки окон ОС (${process.platform}, ${step}): ${JSON.stringify(titles)}\n`);
+  return titles;
+}
+
 describe('сценарий выпуска 0.1: от первого запуска до перезапуска', () => {
   let session: Session | undefined;
   let parent = '';
@@ -257,6 +278,7 @@ describe('сценарий выпуска 0.1: от первого запуск�
     expect(await b.$(MANAGER).getText()).toContain('Пока нет хранилищ');
     expect(await b.$$('li').length).toBe(0);
     await shotThemes(b, 'first-run');
+    expect(await windowTitles(b, 1, 'первый запуск')).toEqual([`Управление хранилищами${TITLE_SUFFIX}`]);
   });
 
   it('С3.1: «Создать хранилище» → имя → «Обзор…» → «Создать»: окно хранилища, папка .rhizomind, пустое дерево', async () => {
@@ -570,10 +592,9 @@ describe('сценарий выпуска 0.1: от первого запуск�
     await b.waitUntil(async () => (await headerPath(b)) === 'Новая идея', { timeout: 5_000 });
   });
 
-  // С3.5: «Ctrl+N: новая заметка». В интерфейсе сочетания нет (src/shell/Shell.svelte
-  // обрабатывает только Ctrl+O и Alt+←/→) — находка Н1 в docs/reviews/2026-10-26-task-3.1.md.
-  // it.fails: тест покраснеет, когда Ctrl+N появится, — тогда снять пометку.
-  it.fails('С3.5: Ctrl+N — новая заметка (находка Н1: не сделано)', async () => {
+  // С3.5: «Ctrl+N: новая заметка» — команда реестра горячих клавиш (задача 2.8б,
+  // находка Н1 закрыта); место — по настройке, по умолчанию корень хранилища.
+  it('С3.5: Ctrl+N — новая заметка', async () => {
     const b = browser();
     await row(b, 'Итоги').click();
     await b.keys(['Control', 'n']);
@@ -645,6 +666,13 @@ describe('сценарий выпуска 0.1: от первого запуск�
     await shot(b, 'archive-note');
   });
 
+  it('Н2, вопрос 82 (А): заголовки окон — «<хранилище> — Rhizomind», без имени открытой заметки', async () => {
+    const titles = await windowTitles(browser(), 2, 'два хранилища');
+    expect(titles).toEqual([`Архив${TITLE_SUFFIX}`, `Рабочая база${TITLE_SUFFIX}`]);
+    // Открытая заметка «Итоги года» в заголовок не попадает (инвариант 2).
+    expect(titles.some((title) => title.includes('Итоги года'))).toBe(false);
+  });
+
   // ---- С3.1: перезапуск ---------------------------------------------------------------
 
   it('С3.1: перезапуск — открыто последнее хранилище и последняя открытая в нём заметка', async () => {
@@ -670,6 +698,8 @@ describe('сценарий выпуска 0.1: от первого запуск�
     expect(menu).toContain('Рабочая база');
     expect(menu).toContain('Архив');
     await shotThemes(b, 'restarted');
+    // Заголовок окна, открытого при запуске (`open_at_startup`), — без заметки.
+    expect(await windowTitles(b, 1, 'перезапуск')).toEqual([`Архив${TITLE_SUFFIX}`]);
     await b.keys('Escape');
     await b.$('[role="menu"]').waitForDisplayed({ reverse: true, timeout: 5_000 });
   }, 150_000);

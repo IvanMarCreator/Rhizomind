@@ -13,6 +13,7 @@
   import NameField from './NameField.svelte';
   import TreeIcon from './TreeIcon.svelte';
   import TreeMenu, { type MenuItem } from './TreeMenu.svelte';
+  import { bindingsOf, chordText, matchCommand, type CommandId } from '../settings/hotkeys.ts';
   import { isUndo } from './keys.ts';
   import { canMove, displayName, parentOf, pathKey, samePath, splitName, typeLabel, type TreeRow } from './model.ts';
   import type { FileTreeState } from './tree.svelte.ts';
@@ -73,9 +74,17 @@
       void tree.undoRename();
       return;
     }
+    const row = selectedIndex >= 0 ? tree.rows[selectedIndex] : undefined;
+    // Переименование и удаление — по назначенным сочетаниям (реестр, решение 72).
+    const command = matchCommand(tree.host.hotkeys ?? {}, event, 'tree');
+    if (command) {
+      event.preventDefault();
+      if (row && command === 'tree.rename') tree.startRename(row.node.path);
+      if (row && command === 'tree.delete') tree.requestDelete(row.node.path);
+      return;
+    }
     // Alt+←/→ — история переходов окна, Ctrl+… — общие сочетания: не дерево.
     if (event.altKey || event.ctrlKey || event.metaKey) return;
-    const row = selectedIndex >= 0 ? tree.rows[selectedIndex] : undefined;
     const handled = handleKey(event, row);
     if (handled) event.preventDefault();
   }
@@ -107,12 +116,6 @@
         return true;
       case 'Enter':
         if (row) tree.activate(row.node.path);
-        return true;
-      case 'F2':
-        if (row) tree.startRename(row.node.path);
-        return true;
-      case 'Delete':
-        if (row) tree.requestDelete(row.node.path);
         return true;
       case 'ContextMenu':
         openMenuForSelected();
@@ -170,11 +173,17 @@
     if (entry) {
       const path = entry.path;
       items.push(
-        { id: 'rename', label: t('tree.rename'), shortcut: t('tree.key.rename'), run: () => tree.startRename(path) },
-        { id: 'delete', label: t('tree.delete'), shortcut: t('tree.key.delete'), run: () => tree.requestDelete(path) },
+        { id: 'rename', label: t('tree.rename'), shortcut: shortcutOf('tree.rename'), run: () => tree.startRename(path) },
+        { id: 'delete', label: t('tree.delete'), shortcut: shortcutOf('tree.delete'), run: () => tree.requestDelete(path) },
       );
     }
     menu = { x, y, items };
+  }
+
+  /** Первое сочетание команды для подсказки в меню (переназначаемое, решение 72). */
+  function shortcutOf(id: CommandId): string | undefined {
+    const chord = bindingsOf(tree.host.hotkeys ?? {}, id)[0];
+    return chord ? chordText(chord) : undefined;
   }
 
   function closeMenu() {

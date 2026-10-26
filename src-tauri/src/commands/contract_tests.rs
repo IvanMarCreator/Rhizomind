@@ -133,6 +133,15 @@ fn settings_example() -> Settings {
         },
         confirm_delete: true,
         max_edit_size_bytes: 10 * 1024 * 1024,
+        hotkeys: [
+            (
+                "quick_switcher.open".to_string(),
+                vec!["Ctrl+KeyO".to_string(), "Ctrl+KeyP".to_string()],
+            ),
+            ("tree.delete".to_string(), vec![]),
+        ]
+        .into_iter()
+        .collect(),
     }
 }
 
@@ -649,6 +658,14 @@ fn event_vault_availability() {
         event::VAULT_AVAILABILITY,
         &VaultAvailabilityPayload { available: false },
     );
+}
+
+/// Данные без поля `sessionEnd` (как до задачи 0.11а) — закрытие окна.
+#[test]
+fn event_window_close_requested_without_session_end_is_window_close() {
+    let payload: WindowCloseRequestedPayload =
+        serde_json::from_str("{}").expect("пустые данные события");
+    assert_eq!(payload, WindowCloseRequestedPayload { session_end: false });
 }
 
 #[test]

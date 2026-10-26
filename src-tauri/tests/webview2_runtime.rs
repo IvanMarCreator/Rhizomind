@@ -336,7 +336,12 @@ mod windows_only {
                 // — у каждого, процесс браузера и папка данных — общие.
                 let labels = [windows::new_label(), windows::new_label()];
                 for label in &labels {
-                    create_window(app.handle(), label, None)?;
+                    create_window(
+                        app.handle(),
+                        label,
+                        &rhizomind_lib::main_window_title(),
+                        None,
+                    )?;
                 }
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {

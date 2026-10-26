@@ -62,8 +62,9 @@
   .text :global(.cm-editor) {
     color: var(--text-primary);
     font-family: var(--font-ui);
-    font-size: 16px;
-    line-height: 26px;
+    /* Размер шрифта текста — настройка хранилища (src/settings/apply.ts). */
+    font-size: var(--note-font-size, 16px);
+    line-height: 1.625;
   }
 
   .text :global(.cm-editor.cm-focused) {
@@ -178,15 +179,22 @@
     color: var(--text-secondary);
   }
 
+  /* Маркер списка (tokens.md «Списки»): колонка 20 px, точка-круг 5 × 5. */
   .text :global(.cm-rz-bullet) {
     display: inline-block;
-    width: 1ch;
-    color: var(--text-secondary);
+    width: 20px;
     text-align: center;
+    vertical-align: middle;
+    line-height: 0;
   }
 
   .text :global(.cm-rz-bullet)::before {
-    content: '•';
+    content: '';
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--text-secondary);
   }
 
   .text :global(.cm-rz-checkbox) {

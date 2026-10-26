@@ -43,7 +43,13 @@ fn app_with(closing: closing::Closing) -> (App<MockRuntime>, tempfile::TempDir) 
 }
 
 fn window(app: &App<MockRuntime>) -> WebviewWindow<MockRuntime> {
-    crate::create_window(app.handle(), &new_label(), None).expect("окно")
+    crate::create_window(
+        app.handle(),
+        &new_label(),
+        &crate::main_window_title(),
+        None,
+    )
+    .expect("окно")
 }
 
 fn call(window: &WebviewWindow<MockRuntime>, command: &str, args: Value) -> Result<Value, Value> {
@@ -924,4 +930,82 @@ fn no_manager_window_after_exit_has_begun() {
 
     assert_eq!(window_count(&app), before, "новое окно не создано");
     assert!(app.state::<Core>().manager_label().is_none());
+}
+
+// Заголовок окна хранилища (задача 2.11, находка QA Н2, вопрос 82 вариант А):
+// «<имя хранилища> — Rhizomind», без имени заметки.
+
+#[test]
+fn vault_title_is_vault_name_then_app_title() {
+    assert_eq!(
+        vault_title("Работа"),
+        format!("Работа — {}", crate::main_window_title())
+    );
+}
+
+#[test]
+fn vault_title_drops_control_and_direction_characters() {
+    assert_eq!(
+        vault_title("  Ра\nбо\r\tта\u{0}\u{1b}[31m\u{202e}\u{2066}  "),
+        format!("Работа[31m — {}", crate::main_window_title())
+    );
+}
+
+#[test]
+fn vault_title_cuts_long_name_with_ellipsis() {
+    let title = vault_title(&"я".repeat(500));
+    let name = title
+        .strip_suffix(&format!(" — {}", crate::main_window_title()))
+        .expect("хвост заголовка");
+    assert_eq!(name.chars().count(), VAULT_TITLE_MAX_CHARS);
+    assert_eq!(name, format!("{}…", "я".repeat(VAULT_TITLE_MAX_CHARS - 1)));
+    // Ровно на пределе — без многоточия.
+    let exact = "ё".repeat(VAULT_TITLE_MAX_CHARS);
+    assert_eq!(
+        vault_title(&exact),
+        format!("{exact} — {}", crate::main_window_title())
+    );
+}
+
+#[test]
+fn vault_title_without_name_is_app_title() {
+    assert_eq!(vault_title(""), crate::main_window_title());
+    assert_eq!(vault_title(" \n\t\u{7f} "), crate::main_window_title());
+}
+
+#[test]
+fn vault_title_drops_format_characters_and_line_separators() {
+    // Категория Cf (невидимые: мягкий перенос, нулевой ширины, BOM, теги
+    // эмодзи, якоря аннотаций) и разделители строк/абзацев Zl/Zp.
+    // U+2028/U+2029 стоят внутри имени: на краях их убрал бы trim().
+    let name = "Р\u{2028}а\u{ad}бо\u{200b}\u{200c}\u{200d}т\u{2029}а\u{2060}\u{feff}\u{fff9}\u{fffb}\u{180e}\u{600}\u{e0001}\u{e0041}\u{1d173}";
+    assert_eq!(
+        vault_title(name),
+        format!("Работа — {}", crate::main_window_title())
+    );
+}
+
+/// Имя из 118 «а», затем `tail`: обрезка приходится на 119-й символ.
+fn cut_at_119(tail: &str) -> String {
+    let title = vault_title(&format!("{}{tail}{}", "а".repeat(118), "ж".repeat(10)));
+    title
+        .strip_suffix(&format!(" — {}", crate::main_window_title()))
+        .expect("хвост заголовка")
+        .to_owned()
+}
+
+#[test]
+fn vault_title_cut_keeps_combining_marks_with_their_letter() {
+    // NFD «ё» = «е» + U+0308: обрезка не отрывает метку от буквы.
+    assert_eq!(cut_at_119("е\u{308}"), format!("{}…", "а".repeat(118)));
+    // Эмодзи с оттенком кожи и с вариационным селектором — целиком или никак.
+    assert_eq!(cut_at_119("👍\u{1f3fd}"), format!("{}…", "а".repeat(118)));
+    assert_eq!(cut_at_119("❤\u{fe0f}"), format!("{}…", "а".repeat(118)));
+    // Составной эмодзи: ZWJ (Cf) убирается до обрезки, части остаются.
+    assert_eq!(
+        cut_at_119("👩\u{200d}💻"),
+        format!("{}👩…", "а".repeat(118))
+    );
+    // Пробел перед многоточием не остаётся.
+    assert_eq!(cut_at_119(" ж"), format!("{}…", "а".repeat(118)));
 }

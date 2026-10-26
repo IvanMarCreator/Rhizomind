@@ -28,6 +28,7 @@
 mod error;
 mod events;
 mod files;
+pub mod hotkeys;
 mod index;
 pub mod limits;
 mod links;
@@ -57,6 +58,7 @@ pub use events::{
     WindowCloseRequestedPayload, event,
 };
 pub use files::*;
+pub use hotkeys::HotkeyOverrides;
 pub use index::NoteIndex;
 pub use links::*;
 pub use note::*;

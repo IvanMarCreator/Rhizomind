@@ -7,7 +7,7 @@
     id: string;
     label: string;
     /** Клавиша-подсказка справа (F2, Delete). */
-    shortcut?: string;
+    shortcut?: string | undefined;
     run: () => void;
   }
 </script>

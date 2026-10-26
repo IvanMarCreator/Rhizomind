@@ -141,11 +141,19 @@ describe('быстрый переход на настоящей клавиату
     }
   });
 
-  it('шестерёнка на ленте явно неактивна, с подсказкой', async () => {
+  it('шестерёнка на ленте открывает окно «Настройки хранилища» (задача 2.8б)', async () => {
     const { browser } = session;
-    const gear = browser.$('[role="toolbar"] button[aria-label^="Настройки"]');
+    const gear = browser.$('[role="toolbar"] button[aria-label="Настройки"]');
     await gear.waitForDisplayed();
-    expect(await gear.getAttribute('aria-disabled')).toBe('true');
-    expect(await gear.getAttribute('title')).toBe('Настройки появятся в следующей версии');
+    expect(await gear.getAttribute('aria-disabled')).toBeNull();
+    await gear.click();
+    const dialog = browser.$('[role="dialog"][aria-label^="Настройки хранилища"]');
+    await dialog.waitForDisplayed();
+    try {
+      await saveScreenshot(browser, 'settings-general');
+    } finally {
+      await browser.keys('Escape');
+    }
+    await dialog.waitForDisplayed({ reverse: true });
   });
 });

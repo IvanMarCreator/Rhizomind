@@ -15,6 +15,13 @@ source: src/commands/contract_tests.rs
       "confirm_delete": true,
       "editor_mode": "source",
       "font_size": 16,
+      "hotkeys": {
+        "quick_switcher.open": [
+          "Ctrl+KeyO",
+          "Ctrl+KeyP"
+        ],
+        "tree.delete": []
+      },
       "max_edit_size_bytes": 10485760,
       "new_note_location": {
         "kind": "current_folder"

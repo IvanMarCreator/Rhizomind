@@ -4,9 +4,11 @@
 // оформлены.
 import { EditorSelection, EditorState } from '@codemirror/state';
 import { Decoration } from '@codemirror/view';
+import { redo, undo } from '@codemirror/commands';
 import { describe, expect, it } from 'vitest';
 import { createEditorState } from '../codemirror.ts';
-import { previewDecorations } from './index.ts';
+import { codeBlocks, previewDecorations, taskToggle } from './index.ts';
+import { scanBlocks } from './markdown.ts';
 
 /** Курсор — после символа `|` (сам символ из текста убирается). */
 function stateWithCursor(marked: string): EditorState {
@@ -249,5 +251,88 @@ describe('незакрытый блок кода после правок', () =>
       '4: cm-rz-codeblock',
       '5: cm-rz-codeblock',
     ]);
+  });
+});
+
+describe('блоки после правок совпадают с разбором всего текста заново', () => {
+  // Пересчёт идёт с места правки до совпадения с прежним разбором (2.5а).
+  // Случайные правки строк из оград, свойств и текста: результат обязан
+  // совпасть с полным разбором.
+  const LINES = ['```', '```js', '~~~', '````', '``` a`b', '   ```', '    ```', '---', '...', 'текст', '', '# з', '`код`'];
+  const PIECES = ['`', '``', '```', '~', '-', '.', 'js', ' ', '\n', '\n```\n', '\n---\n', 'а'];
+
+  function random(seed: number): () => number {
+    let x = seed;
+    return () => {
+      x = (x * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return x / 2_147_483_648;
+    };
+  }
+
+  /** Отмена или повтор (Ctrl+Z / Ctrl+Y) через историю CodeMirror. */
+  function historyStep(state: EditorState, command: typeof undo): EditorState {
+    let next = state;
+    command({ state, dispatch: (tr) => (next = tr.state) });
+    return next;
+  }
+
+  it('правка у конца блока свойств задевает ограду под ним', () => {
+    const cases: [string, number, number, string?][] = [
+      ['---\na\n---\n```\ncode\n', 9, 13],
+      ['---\na\n---\n```\ncode\n```\n# h', 9, 13],
+      ['---\na\n---\n```\ncode\n```\n# h', 8, 14],
+      ['---\nk\n...\n````\n```js\n```\n``` a`b', 9, 16, '\n---\n'],
+    ];
+    for (const [text, from, to, insert = ''] of cases) {
+      let state = createEditorState(text, { mode: 'live_preview' });
+      state = state.update({ changes: { from, to, insert } }).state;
+      expect(codeBlocks(state), JSON.stringify(state.doc.toString())).toEqual(scanBlocks(state.doc));
+      state = historyStep(state, undo);
+      expect(state.doc.toString()).toBe(text);
+      expect(codeBlocks(state), 'после отмены').toEqual(scanBlocks(state.doc));
+      state = historyStep(state, redo);
+      expect(codeBlocks(state), 'после повтора').toEqual(scanBlocks(state.doc));
+    }
+  });
+
+  it('2000 случайных правок, отмен и повторов, в том числе с блоком свойств в начале', () => {
+    const next = random(7);
+    const pick = <T>(list: readonly T[]): T => list[Math.floor(next() * list.length)] as T;
+    for (let doc = 0; doc < 40; doc++) {
+      const lines = Array.from({ length: 4 + Math.floor(next() * 20) }, () => pick(LINES));
+      if (doc % 2 === 0) lines.unshift('---', 'ключ: значение', pick(['---', '...']));
+      let state = createEditorState(lines.join('\n'), { mode: 'live_preview' });
+      for (let k = 0; k < 50; k++) {
+        const roll = next();
+        if (roll < 0.1) {
+          state = historyStep(state, undo);
+        } else if (roll < 0.15) {
+          state = historyStep(state, redo);
+        } else {
+          const length = state.doc.length;
+          const from = Math.floor(next() * (length + 1));
+          const to = Math.min(length, from + (next() < 0.5 ? 0 : Math.floor(next() * 6)));
+          const insert = next() < 0.3 ? '' : pick(PIECES);
+          // Иногда вторая правка в той же транзакции (несколько курсоров).
+          const second = Math.floor(next() * (length + 1));
+          const extra = next() < 0.3 && (second < from || second > to) ? [{ from: second, insert: pick(PIECES) }] : [];
+          state = state.update({ changes: [{ from, to, insert }, ...extra] }).state;
+        }
+        expect(codeBlocks(state), `текст: ${JSON.stringify(state.doc.toString())}`).toEqual(scanBlocks(state.doc));
+      }
+    }
+  });
+});
+
+describe('чекбокс', () => {
+  it('переключение меняет ровно один символ: `[ ]` ↔ `[x]`', () => {
+    const state = createEditorState('- [ ] задача\n- [X] сделано', { mode: 'live_preview' });
+    for (const [pos, from, insert] of [[2, 3, 'x'], [15, 16, ' ']] as const) {
+      const spec = taskToggle(state, pos);
+      const changes = state.update(spec ?? {}).changes;
+      const touched: [number, number, string][] = [];
+      changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => touched.push([fromA, toA, inserted.toString()]));
+      expect(touched).toEqual([[from, from + 1, insert]]);
+    }
   });
 });

@@ -20,6 +20,7 @@ const SETTINGS: Settings = {
   new_note_location: { kind: 'vault_root' },
   confirm_delete: false,
   max_edit_size_bytes: 10 * 1024 * 1024,
+  hotkeys: {},
 };
 
 const VERSION: FileVersion = { hash: 'a'.repeat(64), size: 9, modified_ms: 1 };
