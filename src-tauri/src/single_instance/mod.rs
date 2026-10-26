@@ -61,6 +61,10 @@ pub const CLAIM_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const UNIX_CLAIM_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Сообщение второму запуску, когда первый экземпляр не ответил (Windows —
+/// системным окном) или когда связи с ним нет (Linux, macOS — в stderr).
+pub const ALREADY_RUNNING: &str = "Rhizomind уже запущен";
+
 /// Пауза между попытками.
 const RETRY_STEP: Duration = Duration::from_millis(100);
 
@@ -195,7 +199,11 @@ pub fn claim() -> Option<Instance> {
         }
         Outcome::Notified => None,
         Outcome::GaveUp => {
-            eprintln!("Rhizomind уже запущен");
+            eprintln!("{ALREADY_RUNNING}");
+            // Окно не нашлось или не ответило: без сообщения пользователь не
+            // понял бы, почему ничего не открылось. Системное окно ничего не пишет.
+            #[cfg(windows)]
+            crate::security::windows::show_error(ALREADY_RUNNING);
             None
         }
     }

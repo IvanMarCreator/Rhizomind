@@ -1,6 +1,10 @@
-// Один экземпляр программы на ВЫПУСКНОЙ сборке (задача 0.5, решения 57 и 58;
-// src-tauri/src/single_instance/). Без WebDriver: второй процесс запускается
-// напрямую, как двойной щелчок по ярлыку.
+// Один экземпляр программы (задача 0.5, решения 57 и 58;
+// src-tauri/src/single_instance/). Без WebDriver: оба процесса запускаются
+// напрямую, как двойной щелчок по ярлыку. Сборка — тестовая (`npm run
+// build:e2e`): у неё своё имя мьютекса и замка (`…webdriver`) и список
+// хранилищ во временной папке (RHIZOMIND_E2E_PROFILE_DIR) — запущенный у
+// разработчика Rhizomind и его профиль тесту не мешают. Код проверки тот же,
+// что в выпуске; различаются только имена (тест `names_are_constant_…`).
 //
 // Второй запуск завершается сам (код 0), ничего не записав: его временная
 // папка (TEMP/TMPDIR) остаётся пустой — проверка экземпляра идёт раньше
@@ -92,23 +96,27 @@ function programProcesses(exe: string): number[] {
   return out === '' ? [] : out.split(',').map(Number);
 }
 
-describe.skipIf(!isWindows && !isLinux)('один экземпляр программы (выпускная сборка)', () => {
-  const exe = applicationPath('release');
+describe.skipIf(!isWindows && !isLinux)('один экземпляр программы', () => {
+  const exe = applicationPath('webdriver');
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-single-'));
-  // Linux: список хранилищ и замок — в своей папке профиля (XDG_DATA_HOME),
-  // а не в профиле машины; у каждого процесса своя временная папка.
-  const dataHome = path.join(scratch, 'data');
+  // Профиль тестовой сборки: список хранилищ, на Linux и macOS — замок.
+  // У каждого процесса своя временная папка (TEMP/TMPDIR).
+  const profileDir = path.join(scratch, 'profile');
   const firstTemp = path.join(scratch, 'temp-first');
   const secondTemp = path.join(scratch, 'temp-second');
-  // Windows: список хранилищ в профиле ОС (dirs::data_local_dir — известная
-  // папка, переменной окружения не подменяется).
-  const profileDir = isWindows
-    ? path.join(process.env.LOCALAPPDATA ?? '', 'Rhizomind')
-    : path.join(dataHome, 'Rhizomind');
-  const envFor = (temp: string): NodeJS.ProcessEnv =>
-    isWindows
-      ? { ...process.env, TEMP: temp, TMP: temp }
-      : { ...process.env, TMPDIR: temp, XDG_DATA_HOME: dataHome };
+  const envFor = (temp: string): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith('WEBVIEW2_') && name !== 'RHIZOMIND_E2E_VAULT'),
+    );
+    env.RHIZOMIND_E2E_PROFILE_DIR = profileDir;
+    if (isWindows) {
+      env.TEMP = temp;
+      env.TMP = temp;
+    } else {
+      env.TMPDIR = temp;
+    }
+    return env;
+  };
 
   let first: ChildProcess;
   let firstWindow = '';
@@ -118,8 +126,8 @@ describe.skipIf(!isWindows && !isLinux)('один экземпляр прогр�
   let profileAfter: string[] = [];
 
   beforeAll(async () => {
-    expect(existsSync(exe), `${exe}: нужна выпускная сборка (npm run build)`).toBe(true);
-    for (const dir of [dataHome, firstTemp, secondTemp]) mkdirSync(dir, { recursive: true });
+    expect(existsSync(exe), `${exe}: нужна тестовая сборка (npm run build:e2e)`).toBe(true);
+    for (const dir of [profileDir, firstTemp, secondTemp]) mkdirSync(dir, { recursive: true });
 
     first = spawn(exe, [], { stdio: 'ignore', env: envFor(firstTemp) });
     const pid = first.pid ?? 0;
@@ -138,6 +146,9 @@ describe.skipIf(!isWindows && !isLinux)('один экземпляр прогр�
       await new Promise((r) => setTimeout(r, 3000));
     }
 
+    // Отпечаток — только на время жизни второго процесса: первый без
+    // хранилища в это время профиль не пишет (размер окна — только при
+    // закрытии), так что разница была бы записью второго.
     profileBefore = fingerprint(profileDir);
     second = spawn(exe, [], { stdio: 'ignore', env: envFor(secondTemp) });
     secondExit = await exitOf(second, 20_000);

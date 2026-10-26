@@ -298,14 +298,23 @@ pub fn run() {
         // хранилища: наблюдатель останавливается.
         .on_window_event(on_window_event)
         .setup(|app| {
-            // Сигнал второго экземпляра → точка «повторный запуск» в главном
-            // потоке (решение 58; задача 2.8 откроет там «Управление хранилищами»).
+            // Сигнал второго экземпляра → точка «повторный запуск» (решение 58;
+            // задача 2.8 откроет там «Управление хранилищами»). Сигнал приходит
+            // в `window_proc` в главном потоке, а `run_on_main_thread` из
+            // главного потока выполнил бы замыкание сразу, внутри обработки
+            // `WM_COPYDATA` (второй процесс ждал бы ответа). Поэтому вызов
+            // ставится в очередь цикла событий из другого потока: `window_proc`
+            // отвечает сразу, `on_second_instance` идёт потом в главном потоке.
             let handle = app.handle().clone();
             app.state::<single_instance::Instance>()
                 .listen(Box::new(move || {
-                    let target = handle.clone();
-                    let _ = handle
-                        .run_on_main_thread(move || single_instance::on_second_instance(&target));
+                    let handle = handle.clone();
+                    std::thread::spawn(move || {
+                        let target = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            single_instance::on_second_instance(&target)
+                        });
+                    });
                 }));
             // Последнее хранилище — в окне с его размером и положением (С3.1).
             windows::open_at_startup(app.handle());

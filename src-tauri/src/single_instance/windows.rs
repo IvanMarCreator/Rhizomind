@@ -183,7 +183,14 @@ unsafe extern "system" fn window_proc(
             WM_COPYDATA => {
                 let data = lparam.0 as *const COPYDATASTRUCT;
                 let callback = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Callback;
-                if data.is_null() || callback.is_null() || (*data).dwData != PROTOCOL {
+                // Версия 1 протокола — без данных: сообщение с данными
+                // отвергается, пока формат данных не утверждён.
+                if data.is_null()
+                    || callback.is_null()
+                    || (*data).dwData != PROTOCOL
+                    || (*data).cbData != 0
+                    || !(*data).lpData.is_null()
+                {
                     return LRESULT(0);
                 }
                 (*callback)();
