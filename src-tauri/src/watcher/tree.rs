@@ -70,6 +70,8 @@ pub(crate) struct Reconciled {
     /// Корня хранилища нет или он недоступен: изменений нет, модель не
     /// тронута.
     pub(crate) unavailable: bool,
+    /// Исчезнувшие файлы, отложенные до окончательной проверки.
+    pub(crate) held: Vec<VaultPath>,
 }
 
 /// Путь, который не удалось прочитать.
@@ -169,6 +171,15 @@ impl TreeModel {
         self.failing.clear();
     }
 
+    /// Заглушка: сверка с отложенными исчезновениями.
+    pub(crate) fn reconcile_holding(
+        &mut self,
+        paths: impl IntoIterator<Item = VaultPath>,
+        own: &OwnWrites,
+    ) -> Reconciled {
+        self.reconcile(paths, own)
+    }
+
     pub(crate) fn rescan(&mut self, own: &OwnWrites) -> Reconciled {
         self.reconcile([VaultPath::root()], own)
     }
@@ -242,6 +253,7 @@ impl TreeModel {
             changes,
             retry,
             unavailable: false,
+            held: Vec::new(),
         }
     }
 
