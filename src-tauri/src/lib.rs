@@ -38,6 +38,7 @@ pub mod links;
 pub mod names;
 pub mod own_writes;
 pub mod registry;
+pub mod single_instance;
 pub mod switcher;
 pub mod vault;
 pub mod watcher;
@@ -250,12 +251,25 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
 /// занята и останется до уборки остатков при следующем запуске. Будущая команда
 /// «Выход» должна закрывать окна (проверка — `tests/webview2_runtime.rs`).
 pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
-    if let RunEvent::Exit = event
-        && let Some(shell) = app.try_state::<Shell>()
-    {
+    if !matches!(event, RunEvent::Exit) {
+        return;
+    }
+    // Имя экземпляра — первым, до ожидания процесса браузера: новый запуск
+    // сразу после закрытия окна не попадает на завершающийся экземпляр.
+    if let Some(instance) = app.try_state::<single_instance::Instance>() {
+        instance.release();
+    }
+    if let Some(shell) = app.try_state::<Shell>() {
         // Не удалось — папку уберёт следующий запуск (уборка остатков).
         let _ = shell.clean_up();
     }
+}
+
+/// События окон: учёт активного окна (один экземпляр) и привязки окна к
+/// хранилищу.
+fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &tauri::WindowEvent) {
+    single_instance::on_window_event(window, event);
+    commands::on_window_event(window, event);
 }
 
 /// Конфигурация и встроенный интерфейс приложения.
@@ -265,16 +279,43 @@ pub fn context() -> tauri::Context<tauri::Wry> {
 
 /// Запуск приложения.
 pub fn run() {
+    // Один экземпляр (задача 0.5) — до всего остального: второй процесс
+    // будит первый и выходит, не создав временной папки движка, не прочитав
+    // список хранилищ и не запустив WebView2.
+    let Some(instance) = single_instance::claim() else {
+        return;
+    };
     let shell = Shell::prepare().expect("Rhizomind: не удалось подготовить временную папку движка");
     tauri::Builder::default()
         .manage(shell)
+        .manage(instance)
+        .manage(single_instance::Recent::default())
         // Диалоги ядра — только из Rust: прав dialog:* у окна нет (ADR 0009).
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Core::new(windows::startup_registry()))
         .invoke_handler(commands::handler())
-        // Закрытое окно отвязывается от хранилища: наблюдатель останавливается.
-        .on_window_event(commands::on_window_event)
+        // Учёт активного окна (один экземпляр); закрытое окно отвязывается от
+        // хранилища: наблюдатель останавливается.
+        .on_window_event(on_window_event)
         .setup(|app| {
+            // Сигнал второго экземпляра → точка «повторный запуск» (решение 58;
+            // задача 2.8 откроет там «Управление хранилищами»). Сигнал приходит
+            // в `window_proc` в главном потоке, а `run_on_main_thread` из
+            // главного потока выполнил бы замыкание сразу, внутри обработки
+            // `WM_COPYDATA` (второй процесс ждал бы ответа). Поэтому вызов
+            // ставится в очередь цикла событий из другого потока: `window_proc`
+            // отвечает сразу, `on_second_instance` идёт потом в главном потоке.
+            let handle = app.handle().clone();
+            app.state::<single_instance::Instance>()
+                .listen(Box::new(move || {
+                    let handle = handle.clone();
+                    std::thread::spawn(move || {
+                        let target = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            single_instance::on_second_instance(&target)
+                        });
+                    });
+                }));
             // Последнее хранилище — в окне с его размером и положением (С3.1).
             windows::open_at_startup(app.handle());
             Ok(())
