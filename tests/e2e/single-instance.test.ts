@@ -70,14 +70,30 @@ function fingerprint(root: string): string[] {
 const USER32 =
   'Add-Type -Namespace Rhz -Name U -MemberDefinition \'' +
   '[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c);' +
-  '[DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr h);\'';
+  '[DllImport("user32.dll")] public static extern bool IsIconic(System.IntPtr h);' +
+  '[DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);' +
+  '[DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(System.IntPtr h, out int p);' +
+  '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(System.IntPtr h, System.Text.StringBuilder s, int n);' +
+  'public delegate bool EnumProc(System.IntPtr h, System.IntPtr l);' +
+  '[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, System.IntPtr l);\'';
 
 function powershell(command: string): string {
   return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' }).trim();
 }
 
-function mainWindow(pid: number): string {
-  return powershell(`(Get-Process -Id ${pid}).MainWindowHandle`);
+/**
+ * Окно программы процесса `pid` — видимое окно верхнего уровня класса
+ * «Tauri Window». Не `Process.MainWindowHandle`: у процесса есть и служебное
+ * окно tao («Tao Thread Event Target»), тоже видимое для Windows, и
+ * `MainWindowHandle` иногда отдаёт его — тест сворачивал не то окно и ждал
+ * разворота, которого не могло быть (задача 0.10).
+ */
+function appWindow(pid: number): string {
+  return powershell(
+    `${USER32}; $found = New-Object System.Collections.ArrayList; [Rhz.U]::EnumWindows({ param($h, $l) $p = 0; [void][Rhz.U]::GetWindowThreadProcessId($h, [ref]$p); ` +
+      `if ($p -eq ${pid} -and [Rhz.U]::IsWindowVisible($h)) { $c = New-Object System.Text.StringBuilder 64; [void][Rhz.U]::GetClassName($h, $c, 64); ` +
+      `if ($c.ToString() -eq 'Tauri Window') { [void]$found.Add([int64]$h) } }; $true }, [System.IntPtr]::Zero) | Out-Null; $found -join ','`,
+  );
 }
 
 function isMinimized(handle: string): boolean {
@@ -137,8 +153,9 @@ describe.skipIf(!isWindows && !isLinux)('один экземпляр прогр�
     );
     if (isWindows) {
       firstWindow = await waitFor('окно первого экземпляра', 30_000, () => {
-        const handle = mainWindow(pid);
-        return handle !== '' && handle !== '0' ? handle : undefined;
+        const handles = appWindow(pid);
+        // Одно окно программы — окно «Управление хранилищами».
+        return handles !== '' && !handles.includes(',') ? handles : undefined;
       });
       minimize(firstWindow);
       await waitFor('окно свёрнуто', 10_000, () => (isMinimized(firstWindow) ? true : undefined));
@@ -188,6 +205,6 @@ describe.skipIf(!isWindows && !isLinux)('один экземпляр прогр�
 
   it.skipIf(!isWindows)('окно первого экземпляра выведено вперёд: свёрнутое развернулось', async () => {
     await waitFor('окно развёрнуто', 10_000, () => (isMinimized(firstWindow) ? undefined : true));
-    expect(mainWindow(first.pid ?? 0)).toBe(firstWindow);
+    expect(appWindow(first.pid ?? 0)).toBe(firstWindow);
   });
 });
