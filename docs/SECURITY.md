@@ -165,3 +165,4 @@ WebView2 — компонент Windows (движок Microsoft Edge), на ко
 |---|---|---|---|---|
 | `%LOCALAPPDATA%\Rhizomind\vaults.json` (Linux: `~/.local/share/Rhizomind/`, macOS: `~/Library/Application Support/Rhizomind/`) | имена и пути хранилищ, последнее открытое, размер окна | ядро, `src-tauri/src/registry/` | при удалении приложения вручную | задача 1.3 |
 | Временная папка данных WebView2 | служебные файлы движка на время сессии | WebView2 | при выходе | ADR 0007, задача 0.3 |
+| `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU` и ShellBags (предположительно) | путь последней папки, выбранной в системном окне выбора папки (путь к хранилищу, без имён заметок) | системное окно Windows, вызванное `src-tauri/src/dialogs.rs` (`ask_folder`) | не удаляется приложением | **не проверено; открытый вопрос владельцу 56**: `HKCU` входит в перемещаемый профиль, что противоречит решению 46 — проверка в CI вместе с вопросом 54 |
