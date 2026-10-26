@@ -121,6 +121,37 @@ impl Collector {
         done(&self.payloads())
     }
 
+    /// Ждёт, пока каждый путь из `paths` не придёт как `Modified` в пачках,
+    /// начиная с номера `since`. Правки содержимого дерево не меняют, поэтому
+    /// затихание по зеркалу их не дожидается.
+    pub(crate) fn wait_modified(
+        &self,
+        paths: &std::collections::HashSet<Vec<String>>,
+        since: usize,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let modified =
+            |payloads: &[VaultChangedPayload]| -> std::collections::HashSet<Vec<String>> {
+                payloads[since.min(payloads.len())..]
+                    .iter()
+                    .flat_map(|p| p.changes.iter())
+                    .filter_map(|c| match c {
+                        TreeChange::Modified { path } => Some(path.components().to_vec()),
+                        _ => None,
+                    })
+                    .collect()
+            };
+        if self.wait_for(timeout, |p| paths.is_subset(&modified(p))) {
+            return Ok(());
+        }
+        let got = modified(&self.payloads());
+        let missing: Vec<_> = paths.difference(&got).take(3).collect();
+        Err(format!(
+            "за {timeout:?} не пришли изменения {} путей, например {missing:?}",
+            paths.difference(&got).count()
+        ))
+    }
+
     /// Ждёт затихания: зеркало из событий совпало с диском и новых пачек нет
     /// `quiet`. Возвращает зеркало и время до совпадения.
     pub(crate) fn settle(

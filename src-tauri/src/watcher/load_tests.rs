@@ -25,6 +25,15 @@ fn generate(root: &Path, notes: usize) -> PathBuf {
     out
 }
 
+/// Путь файла внутри хранилища — компонентами, как в событиях.
+fn rel(root: &Path, path: &Path) -> Vec<String> {
+    path.strip_prefix(root)
+        .expect("внутри")
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect()
+}
+
 fn notes_under(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -96,6 +105,11 @@ fn ten_thousand_files_created_then_modified_in_one_go() {
         text.extend_from_slice("\nдописано\n".as_bytes());
         fs::write(note, text).expect("запись");
     }
+    let expected: std::collections::HashSet<Vec<String>> =
+        notes.iter().map(|p| rel(dir.path(), p)).collect();
+    collector
+        .wait_modified(&expected, before, TIMEOUT)
+        .expect("правка каждой заметки дошла");
     let settled = collector
         .settle(&mut mirror, dir.path(), QUIET, TIMEOUT)
         .expect("после изменения всех заметок дерево совпадает с диском");
@@ -106,16 +120,6 @@ fn ten_thousand_files_created_then_modified_in_one_go() {
         .filter_map(|c| match c {
             TreeChange::Modified { path } => Some(path.components().to_vec()),
             _ => None,
-        })
-        .collect();
-    let expected: std::collections::HashSet<Vec<String>> = notes
-        .iter()
-        .map(|p| {
-            p.strip_prefix(dir.path())
-                .expect("внутри")
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect()
         })
         .collect();
     let missing: Vec<_> = expected.difference(&modified).take(3).collect();
@@ -291,6 +295,11 @@ fn own_writes_during_external_storm_are_not_external() {
         fs::write(path, "внешняя правка").expect("запись");
     }
     writer.join().expect("поток своих записей");
+    let external_paths: std::collections::HashSet<Vec<String>> =
+        external.iter().map(|p| rel(dir.path(), p)).collect();
+    collector
+        .wait_modified(&external_paths, 0, TIMEOUT)
+        .expect("внешние правки дошли");
 
     let settled = collector
         .settle(&mut mirror, dir.path(), QUIET, TIMEOUT)

@@ -171,15 +171,25 @@ impl TreeModel {
         self.failing.clear();
     }
 
-    /// Заглушка: сверка с отложенными исчезновениями.
+    /// Сверка, в которой исчезнувший файл с идентификатором (его папка на
+    /// месте) не выдаётся сразу: он остаётся в модели и возвращается в
+    /// [`Reconciled::held`]. Если в следующей пачке он появится по новому
+    /// пути, это будет перенос; окончательная проверка — обычной сверкой
+    /// этих путей ([`TreeModel::reconcile`]).
     pub(crate) fn reconcile_holding(
         &mut self,
         paths: impl IntoIterator<Item = VaultPath>,
         own: &OwnWrites,
     ) -> Reconciled {
-        self.reconcile(paths, own)
+        self.reconcile_inner(paths, own, true)
     }
 
+    /// Полная сверка с отложенными исчезновениями.
+    pub(crate) fn rescan_holding(&mut self, own: &OwnWrites) -> Reconciled {
+        self.reconcile_inner([VaultPath::root()], own, true)
+    }
+
+    #[cfg(test)]
     pub(crate) fn rescan(&mut self, own: &OwnWrites) -> Reconciled {
         self.reconcile([VaultPath::root()], own)
     }
@@ -193,6 +203,15 @@ impl TreeModel {
         &mut self,
         paths: impl IntoIterator<Item = VaultPath>,
         own: &OwnWrites,
+    ) -> Reconciled {
+        self.reconcile_inner(paths, own, false)
+    }
+
+    fn reconcile_inner(
+        &mut self,
+        paths: impl IntoIterator<Item = VaultPath>,
+        own: &OwnWrites,
+        hold: bool,
     ) -> Reconciled {
         // Нет корня (флешку вынули, папку переименовали) или нет доступа к
         // нему — это не «удалено всё»: изменений нет, модель как была.
@@ -239,7 +258,13 @@ impl TreeModel {
             retry.push(VaultPath::from_components(u.key.clone()));
         }
         let diff = diff(&disk, &model);
-        let changes = self.resolve(diff, &disk, own);
+        let (changes, held) = self.resolve(diff, &disk, own, hold);
+        // Отложенные остаются в модели как были.
+        for key in &held {
+            if let Some(node) = self.nodes.get(key) {
+                disk.insert(key.clone(), node.clone());
+            }
+        }
 
         // Модель на этих путях становится равной диску.
         for target in &targets {
@@ -253,7 +278,7 @@ impl TreeModel {
             changes,
             retry,
             unavailable: false,
-            held: Vec::new(),
+            held: held.into_iter().map(VaultPath::from_components).collect(),
         }
     }
 
@@ -423,7 +448,13 @@ impl TreeModel {
     }
 
     /// Изменения из разницы диска и модели: свои записи, переименования.
-    fn resolve(&self, diff: Diff, disk: &BTreeMap<Key, Node>, own: &OwnWrites) -> Vec<TreeChange> {
+    fn resolve(
+        &self,
+        diff: Diff,
+        disk: &BTreeMap<Key, Node>,
+        own: &OwnWrites,
+        hold: bool,
+    ) -> (Vec<TreeChange>, Vec<Key>) {
         let Diff {
             mut removed,
             mut created,
@@ -482,6 +513,28 @@ impl TreeModel {
         }
         modified.extend(displaced.into_keys());
 
+        // Исчезнувший без пары файл с идентификатором, чья папка не исчезла, —
+        // возможно, перенос, о новом пути которого событие ещё не пришло.
+        let mut held = Vec::new();
+        if hold {
+            held = removed
+                .iter()
+                .filter(|(key, node)| {
+                    !node.is_folder()
+                        && node.id.is_some()
+                        && key
+                            .split_last()
+                            .is_some_and(|(_, parent)| !removed.contains_key(parent))
+                        // Папка не уехала: иначе путь в модели повис бы.
+                        && !renamed.iter().any(|(from, _)| key.starts_with(from))
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in &held {
+                removed.remove(key);
+            }
+        }
+
         for key in removed.keys() {
             own.forget(&VaultPath::from_components(key.clone()));
         }
@@ -528,7 +581,7 @@ impl TreeModel {
                 .into_iter()
                 .map(|key| TreeChange::Modified { path: path(key) }),
         );
-        changes
+        (changes, held)
     }
 
     /// Элементы модели: путь и всё под ним.
@@ -864,7 +917,7 @@ mod tests {
             changed: Vec::new(),
         };
         let disk = created.iter().map(|(k, n)| (key(k), n.clone())).collect();
-        model().resolve(diff, &disk, &OwnWrites::new())
+        model().resolve(diff, &disk, &OwnWrites::new(), false).0
     }
 
     fn vp(path: &str) -> VaultPath {
