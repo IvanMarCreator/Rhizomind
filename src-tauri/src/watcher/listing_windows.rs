@@ -51,7 +51,8 @@ pub(super) struct Entry {
     pub kind: Kind,
     pub size: u64,
     pub modified: Option<SystemTime>,
-    pub id: FileId,
+    /// Идентификатор файла; 0 у файловой системы без идентификаторов — `None`.
+    pub id: Option<FileId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,30 +108,41 @@ pub(super) fn list(dir: &Path) -> io::Result<Option<Vec<Entry>>> {
             return Err(error);
         }
         class = FileIdExtdDirectoryInfo;
-        let base = buffer.as_ptr().cast::<u8>();
-        let mut offset = 0usize;
-        loop {
-            // SAFETY: ОС записала в буфер цепочку записей; `offset` — от
-            // `NextEntryOffset` предыдущей записи, внутри записанного.
-            let info = unsafe { &*base.add(offset).cast::<FILE_ID_EXTD_DIR_INFO>() };
-            // SAFETY: имя лежит сразу в записи, длина — `FileNameLength` байт.
-            let name = unsafe {
-                std::slice::from_raw_parts(
-                    std::ptr::addr_of!(info.FileName).cast::<u16>(),
-                    info.FileNameLength as usize / 2,
-                )
-            };
-            if let Some(entry) = entry(name, info, volume.VolumeSerialNumber) {
-                entries.push(entry);
-            }
-            if info.NextEntryOffset == 0 {
-                break;
-            }
-            offset += info.NextEntryOffset as usize;
-        }
+        // SAFETY: буфер — наш `Vec<u64>`, байтов в нём `buffer_bytes`.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer_bytes as usize)
+        };
+        entries.extend(parse(bytes, volume.VolumeSerialNumber)?);
     }
     drop(folder);
     Ok(Some(entries))
+}
+
+/// Записи одного ответа `FileIdExtdDirectoryInfo` в `buffer`.
+fn parse(buffer: &[u8], volume: u64) -> io::Result<Vec<Entry>> {
+    let mut entries = Vec::new();
+    let base = buffer.as_ptr();
+    let mut offset = 0usize;
+    loop {
+        // SAFETY: ОС записала в буфер цепочку записей; `offset` — от
+        // `NextEntryOffset` предыдущей записи, внутри записанного.
+        let info = unsafe { &*base.add(offset).cast::<FILE_ID_EXTD_DIR_INFO>() };
+        // SAFETY: имя лежит сразу в записи, длина — `FileNameLength` байт.
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::addr_of!(info.FileName).cast::<u16>(),
+                info.FileNameLength as usize / 2,
+            )
+        };
+        if let Some(entry) = entry(name, info, volume) {
+            entries.push(entry);
+        }
+        if info.NextEntryOffset == 0 {
+            break;
+        }
+        offset += info.NextEntryOffset as usize;
+    }
+    Ok(entries)
 }
 
 fn entry(name: &[u16], info: &FILE_ID_EXTD_DIR_INFO, volume: u64) -> Option<Entry> {
@@ -153,7 +165,10 @@ fn entry(name: &[u16], info: &FILE_ID_EXTD_DIR_INFO, volume: u64) -> Option<Entr
         kind,
         size: u64::try_from(info.EndOfFile).unwrap_or(0),
         modified: filetime(info.LastWriteTime),
-        id: FileId::new_high_res(volume, u128::from_le_bytes(info.FileId.Identifier)),
+        id: Some(FileId::new_high_res(
+            volume,
+            u128::from_le_bytes(info.FileId.Identifier),
+        )),
     })
 }
 
@@ -178,5 +193,120 @@ fn unsupported_or<T>(error: io::Error) -> io::Result<Option<T>> {
     match error.raw_os_error().map(|code| code as u32) {
         Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION) => Ok(None),
         _ => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Задача 0.10б: разбор ответа ОС и выбор запасного пути — без ОС.
+
+    use super::*;
+    use std::mem::offset_of;
+
+    const NAME_AT: usize = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+
+    /// Запись с именем `name` в `buffer` по смещению `at`; длина имени в
+    /// байтах — `name_bytes` (по умолчанию — настоящая).
+    fn put(buffer: &mut [u8], at: usize, name: &str, next: u32, name_bytes: Option<u32>, id: u128) {
+        let wide: Vec<u16> = name.encode_utf16().collect();
+        let mut info: FILE_ID_EXTD_DIR_INFO = unsafe { std::mem::zeroed() };
+        info.NextEntryOffset = next;
+        info.FileNameLength = name_bytes.unwrap_or((wide.len() * 2) as u32);
+        info.EndOfFile = 5;
+        info.LastWriteTime = UNIX_EPOCH_FILETIME;
+        info.FileId.Identifier = id.to_le_bytes();
+        // SAFETY: запись помещается в буфер теста (проверено ниже срезом).
+        unsafe {
+            std::ptr::write_unaligned(
+                buffer[at..].as_mut_ptr().cast::<FILE_ID_EXTD_DIR_INFO>(),
+                info,
+            );
+        }
+        for (n, unit) in wide.iter().enumerate() {
+            let place = at + NAME_AT + n * 2;
+            buffer[place..place + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+    }
+
+    /// Буфер теста и больший запас за ним: чтение за срез без проверок не
+    /// падало бы, а вернуло мусор — тест ловит именно отсутствие проверки.
+    fn spare(len: usize) -> Vec<u8> {
+        vec![0u8; len + 4096]
+    }
+
+    #[test]
+    fn well_formed_answer_gives_entries() {
+        let mut buffer = spare(256);
+        put(&mut buffer, 0, "а.md", 128, None, 7);
+        put(&mut buffer, 128, "б", 0, None, 8);
+        let entries = parse(&buffer[..256], 1).expect("разбор");
+        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["а.md", "б"]);
+        assert_eq!(entries[0].id, Some(FileId::new_high_res(1, 7)));
+        assert_eq!(entries[0].size, 5);
+        assert_eq!(entries[0].modified, Some(UNIX_EPOCH));
+    }
+
+    #[test]
+    fn name_past_the_answer_is_an_error_not_a_read_beyond() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 0, Some(1000), 7);
+        let error = parse(&buffer[..128], 1).expect_err("имя за пределами ответа");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn next_entry_past_the_answer_is_an_error() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 4096, None, 7);
+        let error = parse(&buffer[..128], 1).expect_err("следующая запись за пределами");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn entry_header_past_the_answer_is_an_error() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 120, None, 7);
+        let error = parse(&buffer[..128], 1).expect_err("заголовок записи за пределами");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn zero_file_id_is_unknown() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 0, None, 0);
+        let entries = parse(&buffer[..128], 1).expect("разбор");
+        assert_eq!(
+            entries[0].id, None,
+            "0 — файловая система без идентификаторов"
+        );
+    }
+
+    #[test]
+    fn first_request_falls_back_on_any_error_but_missing_or_denied() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_LEVEL, ERROR_PATH_NOT_FOUND,
+        };
+        for code in [
+            ERROR_INVALID_LEVEL,
+            ERROR_INVALID_PARAMETER,
+            ERROR_NOT_SUPPORTED,
+            ERROR_INVALID_FUNCTION,
+            1784, // ERROR_INVALID_USER_BUFFER — что угодно ещё
+        ] {
+            let answer = unsupported_or::<()>(io::Error::from_raw_os_error(code as i32));
+            assert!(
+                matches!(answer, Ok(None)),
+                "код {code}: запасной путь, а не ошибка"
+            );
+        }
+        for code in [
+            ERROR_FILE_NOT_FOUND,
+            ERROR_PATH_NOT_FOUND,
+            ERROR_ACCESS_DENIED,
+        ] {
+            let answer = unsupported_or::<()>(io::Error::from_raw_os_error(code as i32));
+            assert!(answer.is_err(), "код {code}: ошибка чтения папки");
+        }
     }
 }

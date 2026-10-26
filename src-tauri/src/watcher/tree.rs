@@ -690,7 +690,7 @@ fn listed_at_once(path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
                 kind: EntryKind::Folder,
                 size: 0,
                 modified: None,
-                id: Some(entry.id),
+                id: entry.id,
             },
             Kind::File => Node {
                 kind: if names::is_note(&entry.name) {
@@ -700,7 +700,7 @@ fn listed_at_once(path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
                 },
                 size: entry.size,
                 modified: entry.modified,
-                id: Some(entry.id),
+                id: entry.id,
             },
         };
         out.insert(entry.name, node);
@@ -1182,6 +1182,31 @@ mod windows_listing_tests {
             let by_entry = list_entry_by_entry(&folder).expect("список по элементам");
             assert_eq!(at_once, by_entry, "{}", folder.display());
         }
+    }
+
+    /// Задача 0.10б: папку подменили точкой соединения между чтением
+    /// родителя и её самой — чтение не уходит за контур хранилища.
+    #[test]
+    fn folder_replaced_by_a_junction_is_not_followed() {
+        let dir = sample();
+        let outside = tempfile::tempdir().expect("папка вне хранилища");
+        fs::write(outside.path().join("чужой.md"), "секрет").expect("запись");
+        let model = TreeModel::scan(dir.path()).expect("обход");
+        let folder = dir.path().join("Папка");
+        fs::remove_dir_all(&folder).expect("убрать папку");
+        junction::create(outside.path(), &folder).expect("точка соединения");
+        let listed = model.list(&["Папка".to_owned()]);
+        assert!(
+            !listed
+                .as_ref()
+                .is_ok_and(|names| names.contains_key("чужой.md")),
+            "содержимое за точкой соединения не читается: {listed:?}"
+        );
+        // Корень хранилища по ссылке (пользователь открыл ссылку) читается.
+        let link_root = outside.path().join("ссылка-на-хранилище");
+        junction::create(dir.path(), &link_root).expect("точка соединения на хранилище");
+        let model = TreeModel::scan(&link_root).expect("хранилище по ссылке читается");
+        assert!(!model.entries().is_empty());
     }
 
     #[test]
