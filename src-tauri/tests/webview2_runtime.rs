@@ -214,7 +214,11 @@ mod windows_only {
               e.dataTransfer.effectAllowed = 'move';
               window.__rzDrag.push('dragstart');
             });
-            target.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+            let overs = 0;
+            target.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (overs++ === 0) window.__rzDrag.push('dragover'); });
+            for (const t of ['dragenter', 'dragleave']) target.addEventListener(t, () => window.__rzDrag.push(t));
+            source.addEventListener('dragend', (e) => window.__rzDrag.push('dragend:' + e.dataTransfer.dropEffect));
+            document.addEventListener('dragover', () => { if (!window.__rzDocOver) { window.__rzDocOver = 1; window.__rzDrag.push('doc-dragover'); } });
             target.addEventListener('drop', (e) => { e.preventDefault(); window.__rzDrag.push('drop'); });
             const center = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
             const [sx, sy] = center(source);
@@ -292,13 +296,21 @@ mod windows_only {
             sent += send(x, y, MOUSE_EVENT_FLAGS(0));
             pause(40);
         }
-        pause(400);
+        // Несколько мелких движений над целью: цикл перетаскивания Windows
+        // опрашивает цель (DragOver) по движению мыши.
+        const WIGGLE: i32 = 6;
+        for step in 0..WIGGLE {
+            let dx = if step % 2 == 0 { 2 } else { -2 };
+            sent += send(to.x + dx, to.y, MOUSE_EVENT_FLAGS(0));
+            pause(60);
+        }
+        pause(300);
         sent += send(to.x, to.y, MOUSEEVENTF_LEFTUP);
         pause(1000);
-        if sent != STEPS as u32 + 3 {
+        if sent != (STEPS + WIGGLE) as u32 + 3 {
             return vec![format!(
                 "перетаскивание: SendInput принял {sent} событий из {}",
-                STEPS + 3
+                STEPS + WIGGLE + 3
             )];
         }
         match run_script(window, "(window.__rzDrag || []).join(',')") {
@@ -398,7 +410,23 @@ mod windows_only {
                         .last()
                         .and_then(|label| handle.get_webview_window(label))
                     {
-                        Some(window) => failures.extend(check_real_drag(&window)),
+                        Some(window) => {
+                            let first = check_real_drag(&window);
+                            println!("ПРОБА A (AllowExternalDrop=false): {first:?}");
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let _ = window.with_webview(move |webview| {
+                                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller4;
+                                use ::windows::core::Interface;
+                                let c: ICoreWebView2Controller4 = webview.controller().cast().unwrap();
+                                unsafe { c.SetAllowExternalDrop(true).unwrap() };
+                                let _ = tx.send(());
+                            });
+                            let _ = rx.recv_timeout(Duration::from_secs(5));
+                            let _ = run_script(&window, "document.getElementById('rz-drag-source').remove(); document.getElementById('rz-drag-target').remove(); 1");
+                            let second = check_real_drag(&window);
+                            println!("ПРОБА B (AllowExternalDrop=true): {second:?}");
+                            failures.extend(first);
+                        }
                         None => failures.push("нет окна для перетаскивания".into()),
                     }
                     *outcome_for_check.lock().unwrap() = failures;
