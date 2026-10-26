@@ -52,7 +52,7 @@ fn unique(prefix: &str) -> String {
 /// кнопкой переходит в папку, второй — выбирает её.
 ///
 /// Каждый шаг ждёт видимого признака в окне, а не паузы (задача 0.10): окно
-/// готово — в адресной строке путь; переход сделан — в адресной строке имя
+/// готово — есть адресная строка; переход сделан — в адресной строке имя
 /// `folder`. Прежние паузы 2 с и 3 с иногда не дожидались перехода, и
 /// вторая кнопка выбирала папку по умолчанию («Документы»).
 fn press_select(title: String, folder: String) -> std::thread::JoinHandle<Vec<String>> {
@@ -63,9 +63,8 @@ fn press_select(title: String, folder: String) -> std::thread::JoinHandle<Vec<St
             return log;
         };
         log.push("окно найдено".to_owned());
-        let ready = wait_for(Duration::from_secs(20), || {
-            address(window).filter(|text| text.contains(":\\"))
-        });
+        // Папка по умолчанию — «Документы»: в адресе имя, а не путь.
+        let ready = wait_for(Duration::from_secs(20), || address(window));
         log.push(format!("адрес до перехода: {ready:?}"));
         // SAFETY: сообщения окну диалога, которое живёт в другом потоке.
         unsafe {
@@ -137,7 +136,7 @@ fn wait_for<T>(limit: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<
 }
 
 /// Текст адресной строки окна выбора (панель `ToolbarWindow32` вида
-/// «Address: C:\…»), если она уже есть.
+/// «Address: Documents», «Address: C:\…»), если она уже есть.
 fn address(window: HWND) -> Option<String> {
     unsafe extern "system" fn visit(child: HWND, found: LPARAM) -> BOOL {
         // SAFETY: `found` — указатель на `Vec<String>` вызывающего, живой на
@@ -149,7 +148,7 @@ fn address(window: HWND) -> Option<String> {
                 let mut text = [0u16; 1024];
                 let len = GetWindowTextW(child, &mut text);
                 let text = String::from_utf16_lossy(&text[..len.max(0) as usize]);
-                if text.contains(":\\") {
+                if text.contains(':') {
                     (*(found.0 as *mut Vec<String>)).push(text);
                 }
             }
