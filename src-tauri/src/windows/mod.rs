@@ -365,10 +365,7 @@ pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
             }
             Ok(())
         }
-        ManagerSlot::New(label) => match {
-            eprintln!("[diag-si-app] New {label}"); // ВРЕМЕННО (0.10)
-            crate::create_manager_window(app, &label)
-        } {
+        ManagerSlot::New(label) => match crate::create_manager_window(app, &label) {
             Ok(_) => Ok(()),
             Err(error) => {
                 eprintln!("Rhizomind: не удалось создать окно управления хранилищами: {error}");
