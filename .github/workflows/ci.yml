@@ -173,8 +173,9 @@ jobs:
       - name: Сборка для сценарного теста
         run: npm run build:e2e
 
+      # ~9,5 мин после сценариев выпуска (задача 3.1) — запас до 15 мин.
       - name: Сценарный тест (Linux)
-        timeout-minutes: 10
+        timeout-minutes: 15
         if: runner.os == 'Linux'
         env:
           # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
