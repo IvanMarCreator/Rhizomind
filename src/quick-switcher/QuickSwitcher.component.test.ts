@@ -272,6 +272,49 @@ describe('быстрый переход: Tab дополняет имя (реше
     expect(document.activeElement).toBe(input);
   });
 
+  // Исправление КТ1: на настоящей клавиатуре WebView2 Tab уводил фокус на
+  // ленту и в панель файлов. Окно держит Tab само (на window, в фазе перехвата),
+  // где бы ни был фокус и что бы ни прислал движок в `key`.
+  it('Tab при фокусе вне поля: фокус возвращается в поле, имя подставляется', async () => {
+    const { input } = setup();
+    await waitFor(() => expect(options()).toHaveLength(4));
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    try {
+      // Фокус вне окна возвращается в поле сразу.
+      outside.focus();
+      expect(document.activeElement).toBe(input);
+
+      // Даже если фокус всё же оказался не в поле (body), Tab его не уводит.
+      input.blur();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true, cancelable: true });
+      document.body.dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(input);
+      // Стрелками ничего не выбрано — подставляется первый пункт.
+      expect(input.value).toBe('Встреча');
+    } finally {
+      outside.remove();
+    }
+  });
+
+  it('Tab при вводе через службу текста Windows (key = Process, code = Tab) подставляет имя', async () => {
+    const { input } = setup();
+    await type(input, 'итог');
+    await waitFor(() => expect(selected()?.textContent).toContain('Итоги'));
+    const tab = new KeyboardEvent('keydown', {
+      key: 'Process',
+      code: 'Tab',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(input.value).toBe('Итоги');
+    expect(document.activeElement).toBe(input);
+  });
+
   it('клик по пустому месту окна не забирает фокус у поля', async () => {
     setup();
     const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });

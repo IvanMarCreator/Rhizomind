@@ -15,6 +15,7 @@
   import Icon from '../shell/Icon.svelte';
   import { createOffer, hasFolderSeparator, newNoteDir, noteFileName } from './create.ts';
   import { highlightItem } from './highlight.ts';
+  import { isTabKey } from './keys.ts';
   import { LatestOnly } from './latest.ts';
   import SwitcherIcon from './SwitcherIcon.svelte';
 
@@ -38,6 +39,7 @@
   const LISTBOX_ID = 'quick-switcher-list';
 
   let input: HTMLInputElement | undefined = $state();
+  let dialog: HTMLDivElement | undefined = $state();
   let query = $state('');
   /** Ответ ядра и запрос, на который он дан. */
   let result = $state.raw<{ query: string; items: SwitcherItem[] } | null>(null);
@@ -90,9 +92,16 @@
     const previous = document.activeElement;
     input?.focus();
     searcher.request('');
+    // Tab и фокус держит окно, а не только поле (исправление КТ1): обработчик
+    // на окне в фазе перехвата срабатывает раньше любого другого и где бы ни
+    // был фокус, а фокус, ушедший из окна, возвращается в поле.
+    window.addEventListener('keydown', onWindowKeydown, true);
+    document.addEventListener('focusin', onFocusIn, true);
     return () => {
       closed = true;
       searcher.dispose();
+      window.removeEventListener('keydown', onWindowKeydown, true);
+      document.removeEventListener('focusin', onFocusIn, true);
       if (previous instanceof HTMLElement) previous.focus();
     };
   });
@@ -142,6 +151,27 @@
     document.getElementById(optionId(selected))?.scrollIntoView?.({ block: 'nearest' });
   }
 
+  /**
+   * Tab и Shift+Tab, пока окно открыто (решение 51): фокус не уходит; Tab без
+   * модификаторов подставляет имя выбранного пункта (первого, если стрелками
+   * ничего не выбрано). Клавиша узнаётся и по `code`: при вводе через службу
+   * текста Windows (подсказки, IME) `key` приходит как «Process».
+   */
+  function onWindowKeydown(event: KeyboardEvent) {
+    if (!isTabKey(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (document.activeElement !== input) input?.focus();
+    if (!event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) complete();
+  }
+
+  /** Фокус ушёл из окна (мышью, программой) — вернуть в поле. */
+  function onFocusIn(event: FocusEvent) {
+    if (!dialog || !input) return;
+    if (event.target instanceof Node && dialog.contains(event.target)) return;
+    input.focus();
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (event.isComposing) return;
     switch (event.key) {
@@ -160,11 +190,6 @@
       case 'Escape':
         event.preventDefault();
         close();
-        break;
-      case 'Tab':
-        // Окно модальное: фокус остаётся в поле (и при Shift+Tab).
-        event.preventDefault();
-        if (!event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) complete();
         break;
     }
   }
@@ -224,6 +249,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="scrim" data-testid="quick-switcher-scrim" onmousedown={onScrimMouseDown}>
   <div
+    bind:this={dialog}
     class="switcher"
     role="dialog"
     tabindex="-1"
@@ -285,10 +311,13 @@
             {/if}
           {:else}
             <span class="icon"><SwitcherIcon name="plus" /></span>
-            <span class="name">{t('quickSwitcher.create', { name: option.title })}</span>
-            {#if option.blocked}
-              <span class="reason" title={t('quickSwitcher.createSeparator')}>{t('quickSwitcher.createSeparator')}</span>
-            {/if}
+            <!-- Пояснение неактивного пункта — второй строкой, целиком (исправление КТ1). -->
+            <span class="create-text">
+              <span class="name">{t('quickSwitcher.create', { name: option.title })}</span>
+              {#if option.blocked}
+                <span class="reason">{t('quickSwitcher.createSeparator')}</span>
+              {/if}
+            </span>
           {/if}
           {#if index === selected && !(option.kind === 'create' && option.blocked)}
             <span class="enter"><SwitcherIcon name="corner-down-left" size={14} /></span>
@@ -422,15 +451,23 @@
   }
 
   li.blocked {
+    height: auto;
+    min-height: 40px;
+    padding-top: 6px;
+    padding-bottom: 6px;
     color: var(--text-muted);
   }
 
+  .create-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
   .reason {
-    flex: 0 1 auto;
-    max-width: 55%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
     color: var(--status-error);
     font-size: var(--font-size-caption);
   }

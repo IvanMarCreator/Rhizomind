@@ -42,11 +42,15 @@
     </button>
   </div>
   <div class="group">
+    <!-- Окно настроек — после КТ1 (задача 2.8б): до него кнопка явно
+         неактивна, с подсказкой, чтобы не казалось, что программа сломана. -->
     <button
       type="button"
       class="action"
+      class:unavailable={!onSettings}
       aria-label={t('shell.ribbon.settings')}
-      title={t('shell.ribbon.settings')}
+      aria-disabled={onSettings ? undefined : 'true'}
+      title={onSettings ? t('shell.ribbon.settings') : t('shell.ribbon.settingsLater')}
       onclick={() => onSettings?.()}
     >
       <Icon name="settings" />
@@ -84,6 +88,16 @@
 
   .action:hover {
     background: var(--bg-hover);
+  }
+
+  .action.unavailable {
+    color: var(--icon-muted);
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .action.unavailable:hover {
+    background: none;
   }
 
   .action.active {

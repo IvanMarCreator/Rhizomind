@@ -221,6 +221,12 @@ fn build_window<R: Runtime>(
         .on_new_window(|_url, _features| NewWindowResponse::Deny)
         // Загрузки файлов — запрет.
         .on_download(|_webview, _event| false)
+        // Свой перехватчик перетаскивания Tauri (события файлов ОС) — выключен:
+        // на Windows он подменяет обработчик WebView2, и перетаскивание
+        // внутри страницы (дерево файлов) не работает — курсор «запрещено»
+        // (исправление КТ1). Файлы и текст извне в окно не бросаются:
+        // AllowExternalDrop = false (harden_platform_webview).
+        .disable_drag_drop_handler()
         // Разрешения браузера: камера, микрофон, геолокация, уведомления,
         // буфер обмена, файловая система, MIDI и др. — всё отклоняется.
         .on_permission_request(|_webview, _kind| PermissionResponse::Deny)
@@ -234,9 +240,10 @@ fn build_window<R: Runtime>(
     Ok(window)
 }
 
-/// Настройки WebView2, которых нет в Tauri: SmartScreen выключается, номер
-/// процесса браузера запоминается для удаления папки данных после выхода;
-/// окно показывается, только если движок подтвердил InPrivate; развёрнутое
+/// Настройки WebView2, которых нет в Tauri: SmartScreen и броски извне
+/// (AllowExternalDrop) выключаются, номер процесса браузера запоминается для
+/// удаления папки данных после выхода; окно показывается, только если движок
+/// подтвердил InPrivate, и выходит на передний план с фокусом; развёрнутое
 /// окно разворачивается после показа (скрытое окно Windows при развороте
 /// показалось бы до проверки).
 fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool) {
@@ -249,6 +256,9 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
             if let Err(error) = security::windows::disable_smartscreen(&controller) {
                 eprintln!("Rhizomind: не удалось выключить SmartScreen WebView2: {error}");
             }
+            if let Err(error) = security::windows::disallow_external_drop(&controller) {
+                eprintln!("Rhizomind: не удалось запретить перетаскивание извне: {error}");
+            }
             if let Ok(pid) = security::windows::browser_process_id(&controller) {
                 app.state::<Shell>().data_dir.set_browser_pid(pid);
             }
@@ -259,6 +269,10 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
                     if maximize {
                         let _ = window_to_show.maximize();
                     }
+                    // Окно показывается позже запуска (после проверки
+                    // InPrivate), и Windows оставляет его позади Проводника:
+                    // передний план и фокус — явно (исправление КТ1).
+                    let _ = window_to_show.set_focus();
                 }
                 Err(message) => {
                     // Журнала ошибок ещё нет (выпуск 0.5): сообщение — в stderr и окном.

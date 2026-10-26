@@ -10,6 +10,7 @@ export const ru = {
   'shell.ribbon.files': 'Файлы',
   'shell.ribbon.quickSwitcher': 'Быстрый переход (Ctrl+O)',
   'shell.ribbon.settings': 'Настройки',
+  'shell.ribbon.settingsLater': 'Настройки появятся в следующей версии',
 
   // Боковая панель
   'shell.sidebar.label': 'Боковая панель',
