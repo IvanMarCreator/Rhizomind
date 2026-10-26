@@ -268,20 +268,24 @@ fn roaming_hits(name: &str) -> Vec<String> {
 }
 
 /// Показывает окно с настройками `settings`, «выбирает» новую временную папку
-/// и возвращает её имя и ответ окна.
+/// и возвращает метку, которая есть в имени и самой папки, и её родителя.
+/// Родитель тоже с меткой: окно открыто в нём, и список последних папок
+/// (`LastVisitedPidlMRU`) запомнил бы именно его.
 fn pick_temp_folder(settings: Settings, label: &str) -> (tempfile::TempDir, String) {
     let name = unique(&format!("rhz-t08-{label}"));
-    let folder = tempfile::Builder::new()
-        .prefix(&name)
+    let parent = tempfile::Builder::new()
+        .prefix(&format!("{name}-parent"))
         .rand_bytes(0)
         .tempdir()
         .expect("временная папка");
+    let folder = parent.path().join(format!("{name}-vault"));
+    std::fs::create_dir(&folder).expect("папка хранилища");
     let title = unique("Rhizomind проверка окна");
     let user = press_select(title.clone());
-    let chosen = show(None, &title, settings, Some(folder.path()));
+    let chosen = show(None, &title, settings, Some(&folder));
     let log = user.join().expect("поток пользователя");
     eprintln!("[{label}] окно: {log:?}; ответ: {chosen:?}");
-    let expected = std::fs::canonicalize(folder.path()).expect("канонический путь");
+    let expected = std::fs::canonicalize(&folder).expect("канонический путь");
     let chosen = chosen.map(|p| std::fs::canonicalize(p).expect("канонический ответ"));
     assert_eq!(
         chosen.as_deref(),
@@ -290,7 +294,7 @@ fn pick_temp_folder(settings: Settings, label: &str) -> (tempfile::TempDir, Stri
     );
     // Недавние документы пишет Explorer.EXE по вызову окна — не сразу.
     std::thread::sleep(Duration::from_secs(5));
-    (folder, name)
+    (parent, name)
 }
 
 /// Настоящее окно на настоящем рабочем столе: в обычный прогон не входит.
