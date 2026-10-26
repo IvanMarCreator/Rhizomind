@@ -80,6 +80,9 @@ const TEST_HARNESS_PATHS = [
   // приложения (пауза без приложения, задача 0.6); Rhizomind и WebView2 WinINet
   // не используют.
   path.join('Microsoft', 'Windows', 'WebCache') + path.sep,
+  // Файлы куста HKCU\Software\Classes (UsrClass.dat и его журналы): меняются
+  // при любой записи в эту ветку реестра; сами записи проверяет снимок реестра.
+  path.join('Microsoft', 'Windows', 'UsrClass.dat'),
 ];
 
 // Точные пути, которые меняет PowerShell без приложения (например, список
