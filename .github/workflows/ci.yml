@@ -196,7 +196,7 @@ jobs:
       - name: ДИАГ 0.10 один экземпляр
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         timeout-minutes: 15
-        run: node tools/diag-t010/single-instance-loop.mjs src-tauri/target-e2e/release/rhizomind.exe 40
+        run: node tools/diag-t010/single-instance-loop.mjs src-tauri/target-e2e/release/rhizomind.exe 20
 
       - name: Снимки экрана сценарных тестов
         if: always()

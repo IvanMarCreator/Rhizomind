@@ -340,6 +340,21 @@ pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
     let core = app.state::<Core>();
     match core.reserve_manager(&new_manager_label()) {
         ManagerSlot::Existing(label) => {
+            // ВРЕМЕННО (0.10, диагностика): состояние окна при повторном запуске.
+            if let Some(window) = app.get_webview_window(&label) {
+                eprintln!(
+                    "[diag-si-app] Existing {label}: visible {:?}, minimized {:?}",
+                    window.is_visible(),
+                    window.is_minimized(),
+                );
+                #[cfg(windows)]
+                eprintln!(
+                    "[diag-si-app] hwnd {:?}",
+                    window.hwnd().map(|h| h.0 as isize)
+                );
+            } else {
+                eprintln!("[diag-si-app] Existing {label}: окна нет");
+            }
             // Окно ещё создаётся или скрыто до проверки InPrivate (Windows) —
             // не трогаем: `unminimize` показал бы его раньше проверки;
             // фокус оно получит само при показе.
@@ -350,7 +365,10 @@ pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
             }
             Ok(())
         }
-        ManagerSlot::New(label) => match crate::create_manager_window(app, &label) {
+        ManagerSlot::New(label) => match {
+            eprintln!("[diag-si-app] New {label}"); // ВРЕМЕННО (0.10)
+            crate::create_manager_window(app, &label)
+        } {
             Ok(_) => Ok(()),
             Err(error) => {
                 eprintln!("Rhizomind: не удалось создать окно управления хранилищами: {error}");
