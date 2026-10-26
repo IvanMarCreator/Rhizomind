@@ -27,6 +27,16 @@ export function createOffer(query: string, items: readonly SwitcherItem[]): stri
   return items.some((item) => nameKey(item.name) === key) ? null : title;
 }
 
+/**
+ * В имени есть разделитель папок (`/` или `\`). Заметка с папкой одним
+ * действием не создаётся (решение 50): пункт создания показывается неактивным
+ * с пояснением, ядро не вызывается. Остальные недопустимые символы проверяет
+ * `name_check` после Enter.
+ */
+export function hasFolderSeparator(title: string): boolean {
+  return /[\\/]/.test(title);
+}
+
 /** Имя файла новой заметки. */
 export function noteFileName(title: string): string {
   return `${title}.md`;

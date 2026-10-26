@@ -204,6 +204,118 @@ describe('быстрый переход: клавиатура и мышь', () =
   });
 });
 
+describe('быстрый переход: Tab дополняет имя (решение 51)', () => {
+  it('Tab подставляет полное имя выбранного пункта, поиск идёт по нему, выбор остаётся на пункте', async () => {
+    const { input, calls, onOpen } = setup();
+    await type(input, 'встр');
+    await waitFor(() => expect(options()).toHaveLength(4));
+    await fireEvent.keyDown(input, { key: 'ArrowDown' });
+    await fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(selected()?.textContent).toContain('Встреча по запуску');
+
+    await fireEvent.keyDown(input, { key: 'Tab' });
+
+    expect(input.value).toBe('Встреча по запуску');
+    expect(document.activeElement).toBe(input);
+    expect(searches(calls).at(-1)).toBe('Встреча по запуску');
+    await waitFor(() => expect(options()).toHaveLength(1));
+    expect(selected()?.textContent).toContain('Встреча по запуску');
+    // Имя совпало с заметкой — создание не предлагается.
+    expect(screen.queryByText(/Создать заметку/)).toBeNull();
+
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledWith(['Проекты', 'Альфа', 'Встреча по запуску.md']);
+  });
+
+  it('одинаковые имена: после Tab выбрана та же заметка (по пути), Enter открывает её', async () => {
+    const { input, onOpen } = setup();
+    await waitFor(() => expect(options()).toHaveLength(4));
+    await fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(selected()?.querySelector('.folders')?.textContent).toBe('Проекты / Бета');
+
+    await fireEvent.keyDown(input, { key: 'Tab' });
+
+    expect(input.value).toBe('Встреча');
+    await waitFor(() => expect(options()).toHaveLength(3));
+    expect(selected()?.querySelector('.folders')?.textContent).toBe('Проекты / Бета');
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledWith(['Проекты', 'Бета', 'Встреча.md']);
+  });
+
+  it('Tab на пункте «Создать заметку» ничего не меняет', async () => {
+    const { input, calls } = setup();
+    await type(input, 'Новая мысль');
+    await waitFor(() => expect(selected()?.textContent).toContain('Создать заметку „Новая мысль“'));
+    const before = searches(calls).length;
+
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(input.value).toBe('Новая мысль');
+    expect(searches(calls)).toHaveLength(before);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('Tab и Shift+Tab не уводят фокус из поля; Shift+Tab ничего не подставляет', async () => {
+    const { input } = setup();
+    await waitFor(() => expect(options()).toHaveLength(4));
+
+    const shiftTab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    input.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(true);
+    expect(input.value).toBe('');
+
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    input.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('клик по пустому месту окна не забирает фокус у поля', async () => {
+    setup();
+    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    screen.getByRole('dialog').dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('подсказка внизу окна: «Tab дополнить»', () => {
+    setup();
+    expect(screen.getByText('дополнить').closest('span')?.textContent).toBe('Tabдополнить');
+  });
+});
+
+describe('быстрый переход: косая черта в запросе (решение 50)', () => {
+  it('пункт создания неактивен и сразу поясняет; Enter и клик ничего не создают', async () => {
+    const { input, calls, onOpen, onClose } = setup({
+      settings_read: () => ({ settings: SETTINGS }),
+      name_check: () => ({ status: 'ok', warning: null }),
+      note_create: ({ dir, name }) => ({ path: [...dir, name] }),
+    });
+    await type(input, 'Проекты/План');
+    await waitFor(() => expect(options()).toHaveLength(1));
+
+    const item = options()[0] as HTMLElement;
+    expect(item.getAttribute('aria-disabled')).toBe('true');
+    expect(item.textContent).toContain('Создать заметку „Проекты/План“');
+    expect(item.textContent).toContain('Косая черта в имени недопустима: сначала создайте папку');
+
+    await fireEvent.keyDown(input, { key: 'Enter' });
+    await fireEvent.click(item);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.some(([command]) => command === 'name_check' || command === 'note_create')).toBe(false);
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('обратная косая черта — так же', async () => {
+    const { input } = setup();
+    await type(input, 'А\\Б');
+    await waitFor(() => expect(options()[0]?.getAttribute('aria-disabled')).toBe('true'));
+  });
+});
+
 describe('быстрый переход: создание заметки', () => {
   const created: CoreMocks = {
     settings_read: () => ({ settings: SETTINGS }),

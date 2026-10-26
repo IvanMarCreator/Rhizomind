@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createOffer, newNoteDir, noteFileName } from './create.ts';
+import { createOffer, hasFolderSeparator, newNoteDir, noteFileName } from './create.ts';
 
 const items = [
   { name: 'Встреча', path: ['Проекты', 'Альфа', 'Встреча.md'] },
@@ -33,6 +33,14 @@ describe('пункт «Создать заметку»', () => {
 
   it('имя файла — с .md', () => {
     expect(noteFileName('встр')).toBe('встр.md');
+  });
+});
+
+describe('косая черта в имени (решение 50)', () => {
+  it('прямая и обратная косая черта — разделитель папок, имя с ней не создаётся', () => {
+    expect(hasFolderSeparator('Проекты/План')).toBe(true);
+    expect(hasFolderSeparator('А\\Б')).toBe(true);
+    expect(hasFolderSeparator('План')).toBe(false);
   });
 });
 
