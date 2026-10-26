@@ -13,6 +13,7 @@
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import Editor from '../editor/Editor.svelte';
+  import { isEditorModeKey } from '../editor/live-preview/keys.ts';
   import SaveIndicator from '../editor/SaveIndicator.svelte';
   import type { SaveStatus } from '../editor/session.ts';
   import NoteTitle from '../tree/NoteTitle.svelte';
@@ -106,6 +107,12 @@
       openSwitcher();
       return;
     }
+    if (isEditorModeKey(event)) {
+      event.preventDefault();
+      // Режим — у открытой заметки; под модальным окном не переключается.
+      if (!modalOpen && model.currentPath) model.toggleEditorMode();
+      return;
+    }
     const action = historyKeyAction(event);
     if (!action) return;
     event.preventDefault();
@@ -129,7 +136,9 @@
         path={model.currentPath}
         canGoBack={model.canGoBack}
         canGoForward={model.canGoForward}
-        bind:mode={model.editorMode}
+        mode={model.editorMode}
+        onMode={(mode) => model.setEditorMode(mode)}
+        readOnly={saveStatus?.kind === 'read_only' || saveStatus?.kind === 'deleted'}
         onBack={() => model.back()}
         onForward={() => model.forward()}
       >
@@ -149,6 +158,7 @@
         <Editor
           bind:this={editor}
           path={model.currentPath}
+          mode={model.editorMode}
           showTitle={false}
           notify={(text) => model.notify(text)}
           onStatus={(status) => (saveStatus = status)}

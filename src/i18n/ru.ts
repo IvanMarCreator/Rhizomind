@@ -91,10 +91,14 @@ export const ru = {
   'note.header.path': 'Путь к заметке',
   'note.mode.label': 'Режим редактора',
   'note.mode.livePreview': 'Живой предпросмотр',
-  'note.mode.source': 'Исходный текст (Ctrl+E)',
+  'note.mode.source': 'Исходный текст',
+  'note.mode.readOnly': '{mode} — только просмотр',
+  'note.mode.ctrl': 'Ctrl',
+  'note.mode.key': 'E',
 
   // Редактор: текст и сохранение
   'editor.label': 'Текст заметки',
+  'editor.task.toggle': 'Отметить задачу',
   'editor.loading': 'Открываем заметку…',
   'editor.openFailed': 'Не удалось открыть заметку. {message}',
   'editor.status.label': 'Состояние сохранения',
