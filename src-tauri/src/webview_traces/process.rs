@@ -10,6 +10,14 @@ pub fn is_process_alive(pid: u32) -> bool {
     imp::is_process_alive(pid)
 }
 
+/// Завершает процесс `pid` (`TerminateProcess`) и ждёт его завершения не
+/// дольше `timeout` (решение владельца 64: процесс браузера WebView2 при
+/// выходе программы). `false` — процесс не удалось открыть или завершить.
+/// На других ОС процесса браузера с номером нет — ничего не делает.
+pub fn terminate(pid: u32, timeout: Duration) -> bool {
+    imp::terminate(pid, timeout)
+}
+
 /// Ждёт, пока завершатся процесс `pid` и его дочерние (по списку на момент
 /// вызова), но не дольше `timeout`.
 pub fn wait_for_process_tree_exit(pid: u32, timeout: Duration) {
@@ -26,7 +34,7 @@ mod imp {
     };
     use windows::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        WaitForSingleObject,
+        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     };
 
     struct Handle(HANDLE);
@@ -100,6 +108,24 @@ mod imp {
         tree
     }
 
+    pub fn terminate(pid: u32, timeout: Duration) -> bool {
+        // SAFETY: вызов WinAPI без указателей; ошибка — процесса нет или нет прав.
+        let Ok(handle) =
+            (unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid) })
+        else {
+            return false;
+        };
+        let handle = Handle(handle);
+        // SAFETY: дескриптор открыт с правом PROCESS_TERMINATE.
+        if unsafe { TerminateProcess(handle.0, 1) }.is_err() {
+            return false;
+        }
+        let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: дескриптор открыт с правом SYNCHRONIZE.
+        let _ = unsafe { WaitForSingleObject(handle.0, ms) };
+        true
+    }
+
     pub fn wait_for_process_tree_exit(pid: u32, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         // Дескрипторы открываются до ожидания: номер завершившегося процесса
@@ -124,6 +150,10 @@ mod imp {
         std::path::Path::new(&format!("/proc/{pid}")).exists()
     }
 
+    pub fn terminate(_pid: u32, _timeout: Duration) -> bool {
+        false
+    }
+
     pub fn wait_for_process_tree_exit(pid: u32, timeout: Duration) {
         // На Linux своего процесса браузера с номером нет (WebKitGTK); ждём только `pid`.
         let deadline = Instant::now() + timeout;
@@ -139,6 +169,10 @@ mod imp {
 
     pub fn is_process_alive(_pid: u32) -> bool {
         true
+    }
+
+    pub fn terminate(_pid: u32, _timeout: Duration) -> bool {
+        false
     }
 
     pub fn wait_for_process_tree_exit(_pid: u32, _timeout: Duration) {

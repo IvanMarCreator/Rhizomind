@@ -702,15 +702,59 @@ fn answers_act_only_on_own_waiting_window() {
 /// Окну без хранилища (окно управления) записывать нечего — закрывается сразу.
 #[test]
 fn window_without_vault_closes_at_once() {
-    let (app, _temp) = app();
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
     let manager = manager(&app);
     let events = close_events(&manager);
     assert!(!on_close_requested(&manager.as_ref().window()));
     assert_eq!(phase(&app, &manager), None);
-    let empty = window(&app);
-    assert!(!on_close_requested(&empty.as_ref().window()));
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(events.load(Ordering::SeqCst), 0);
+}
+
+/// Решение 64: последнее окно программы — даже окно управления — уничтожается
+/// через путь «завершить браузер, потом окно», без записи и без события.
+#[test]
+fn last_window_without_vault_goes_through_browser_termination() {
+    let (app, _temp) = app();
+    let manager = manager(&app);
+    let events = close_events(&manager);
+    assert!(is_last_window_of(&app, &manager));
+    assert!(
+        on_close_requested(&manager.as_ref().window()),
+        "закрытие — ядром"
+    );
+    wait_for("уничтожение", || {
+        phase(&app, &manager) == Some(Phase::Destroying)
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(events.load(Ordering::SeqCst), 0);
+}
+
+/// Решение 64: «последнее окно» — других нет или они уже уничтожаются; окно,
+/// которое ещё ждёт записи, последним не считается.
+#[test]
+fn last_window_is_the_one_no_other_window_outlives() {
+    let (app, temp) = app();
+    let (a, b) = (vault(&app, temp.path(), "А"), vault(&app, temp.path(), "Б"));
+    let first = window(&app);
+    open(&first, &a);
+    let second = window(&app);
+    open(&second, &b);
+    assert!(!is_last_window_of(&app, &first));
+    assert!(on_close_requested(&second.as_ref().window()));
+    assert!(!is_last_window_of(&app, &first), "второе ещё ждёт записи");
+    call(&second, "window_close_ready", json!({})).expect("ответ");
+    wait_for("второе уничтожается", || {
+        phase(&app, &second) == Some(Phase::Destroying)
+    });
+    assert!(is_last_window_of(&app, &first));
+}
+
+fn is_last_window_of(app: &App<MockRuntime>, window: &WebviewWindow<MockRuntime>) -> bool {
+    closing::is_last_window(app.handle(), window.label())
 }
 
 /// Выход из программы ждёт окна, которые ещё записывают ввод.
@@ -809,7 +853,9 @@ fn failed_save_with_vault_in_place_returns_the_window() {
     open(&first, &a);
     assert!(on_close_requested(&first.as_ref().window()));
     call(&first, "window_close_cancel", json!({})).expect("ответ");
-    wait_for("окно вернулось", || phase(&app, &first).is_none());
+    wait_for("окно вернулось", || {
+        phase(&app, &first).is_none()
+    });
     assert!(crate::dialogs::test_answers::closed_unsaved(first.label()).is_none());
 }
 
@@ -852,6 +898,8 @@ fn ready_answer_closes_at_once() {
     assert!(on_close_requested(&first.as_ref().window()));
     let started = Instant::now();
     call(&first, "window_close_ready", json!({})).expect("ответ");
-    wait_for("уничтожение", || phase(&app, &first) == Some(Phase::Destroying));
+    wait_for("уничтожение", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
     assert!(started.elapsed() < Duration::from_secs(1));
 }

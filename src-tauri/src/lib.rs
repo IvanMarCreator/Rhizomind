@@ -113,6 +113,12 @@ impl Shell {
         &self.browser_args
     }
 
+    /// Завершить процесс браузера WebView2 (решение владельца 64): перед
+    /// закрытием последнего окна, после записи ввода.
+    pub fn terminate_browser(&self) -> bool {
+        self.data_dir.terminate_browser()
+    }
+
     /// После выхода: дождаться процесса браузера и удалить папку данных.
     pub fn clean_up(&self) -> std::io::Result<()> {
         self.data_dir

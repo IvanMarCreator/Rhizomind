@@ -132,6 +132,9 @@ pub struct WebviewDataDir {
     browser_pid: Mutex<Option<u32>>,
 }
 
+/// Сколько ждать завершения процесса браузера после `TerminateProcess`.
+const BROWSER_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Сколько ждать завершения процессов движка и удаления папки при выходе.
 pub const EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -160,6 +163,15 @@ impl WebviewDataDir {
         if let Ok(mut slot) = self.browser_pid.lock() {
             *slot = Some(pid);
         }
+    }
+
+    /// Выход программы (решение владельца 64): завершить процесс браузера
+    /// WebView2 до закрытия последнего окна — штатное закрытие загружает
+    /// модуль OneAuth движка, и ОС обращается к службе входа Microsoft.
+    /// `true` — процесс был и завершён.
+    pub fn terminate_browser(&self) -> bool {
+        let browser_pid = self.browser_pid.lock().ok().and_then(|slot| *slot);
+        browser_pid.is_some_and(|pid| process::terminate(pid, BROWSER_TERMINATE_TIMEOUT))
     }
 
     /// После закрытия окон: дождаться завершения процесса браузера и его

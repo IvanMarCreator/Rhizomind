@@ -31,6 +31,7 @@ describe('выпускной исполняемый файл', () => {
       'RHIZOMIND_E2E_PICK_FOLDER',
       'RHIZOMIND_E2E_SLOW_WRITE_MS',
       'RHIZOMIND_E2E_REMOVABLE',
+      'RHIZOMIND_E2E_KEEP_BROWSER',
     ]) {
       expect(binary.includes(Buffer.from(name, 'utf8')), name).toBe(false);
     }

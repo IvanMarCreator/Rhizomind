@@ -218,8 +218,29 @@ pub fn on_close_requested<R: Runtime>(window: &tauri::Window<R>) -> bool {
         .try_state::<Core>()
         .is_some_and(|core| core.window_vault(&label).is_some());
     if !has_vault {
-        // Окно управления, окно без хранилища: записывать нечего.
-        return false;
+        // Окно управления, окно без хранилища: записывать нечего. Последнее
+        // окно программы — тоже через завершение браузера (решение 64).
+        if !is_last_window(window.app_handle(), &label) {
+            return false;
+        }
+        if closing.begin(&label).is_none() {
+            return true;
+        }
+        closing.mark_destroying(&label);
+        let _ = window.hide();
+        let app = window.app_handle().clone();
+        let closer_label = label.clone();
+        let closer = std::thread::Builder::new()
+            .name("rhizomind-close".into())
+            .spawn(move || {
+                if let Some(window) = app.get_webview_window(&closer_label) {
+                    destroy(&app, &closer_label, &window);
+                }
+            });
+        if closer.is_err() {
+            destroy(window.app_handle(), &label, window);
+        }
+        return true;
     }
     // Размер и положение — до скрытия: скрытое окно их может не сообщить.
     super::remember_placement(window);
@@ -241,10 +262,7 @@ pub fn on_close_requested<R: Runtime>(window: &tauri::Window<R>) -> bool {
     if waiter.is_err() {
         // Поток не создать (нехватка ресурсов): ждать некому — закрыть сразу,
         // как раньше, а не держать скрытое окно вечно.
-        closing.mark_destroying(&label);
-        if window.destroy().is_err() {
-            closing.finished(&label);
-        }
+        destroy(window.app_handle(), &label, window);
     }
     true
 }
@@ -278,10 +296,7 @@ fn finish<R: Runtime>(
             // окно не возвращается (ввод записать некуда), а закрывается с
             // системным сообщением; сначала сообщение, потом закрытие.
             crate::dialogs::tell_closed_unsaved(app, label, &name);
-            closing.mark_destroying(label);
-            if window.destroy().is_err() {
-                closing.finished(label);
-            }
+            destroy(app, label, &window);
         }
         (Answer::Cancel, Some(window)) => {
             // Сначала — вне цикла закрытия: показанное окно сразу можно
@@ -290,14 +305,69 @@ fn finish<R: Runtime>(
             let _ = window.show();
             super::focus(&window);
         }
-        (_, Some(window)) => {
-            closing.mark_destroying(label);
-            // Из цикла закрытия окно выводит событие `Destroyed`.
-            if window.destroy().is_err() {
-                closing.finished(label);
-            }
-        }
+        (_, Some(window)) => destroy(app, label, &window),
         (_, None) => closing.finished(label),
+    }
+}
+
+/// Уничтожает окно после записи ввода. Последнее окно программы — после
+/// завершения процесса браузера WebView2 (решение владельца 64): штатное
+/// закрытие загружает модуль OneAuth движка, и ОС обращается к службе входа
+/// Microsoft; завершённый браузер этого не делает. Из цикла закрытия окно
+/// выводит событие `Destroyed`.
+fn destroy<R: Runtime, W: WindowLike>(app: &tauri::AppHandle<R>, label: &str, window: &W) {
+    if let Some(closing) = app.try_state::<Closing>() {
+        closing.mark_destroying(label);
+    }
+    if is_last_window(app, label) {
+        end_browser(app);
+    }
+    if window.destroy_window().is_err()
+        && let Some(closing) = app.try_state::<Closing>()
+    {
+        closing.finished(label);
+    }
+}
+
+/// Окно, которое можно уничтожить (`Window` и `WebviewWindow`).
+trait WindowLike {
+    fn destroy_window(&self) -> tauri::Result<()>;
+}
+
+impl<R: Runtime> WindowLike for tauri::Window<R> {
+    fn destroy_window(&self) -> tauri::Result<()> {
+        self.destroy()
+    }
+}
+
+impl<R: Runtime> WindowLike for tauri::WebviewWindow<R> {
+    fn destroy_window(&self) -> tauri::Result<()> {
+        self.destroy()
+    }
+}
+
+/// Окно `label` — последнее окно программы: все другие уже уничтожаются или
+/// уничтожены. Окно, которое ещё ждёт записи, — не уничтожаемое: последним
+/// будет оно.
+pub fn is_last_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
+    let closing = app.try_state::<Closing>();
+    app.webview_windows().keys().all(|other| {
+        other == label
+            || closing.as_ref().is_some_and(|closing| {
+                closing.is_gone(other) || closing.phase(other) == Some(Phase::Destroying)
+            })
+    })
+}
+
+/// Завершает процесс браузера WebView2 (решение 64), если он известен.
+fn end_browser<R: Runtime>(app: &tauri::AppHandle<R>) {
+    // Тестовая сборка: контрольный прогон сценарного теста — штатное закрытие.
+    #[cfg(feature = "webdriver")]
+    if crate::windows::e2e::keep_browser() {
+        return;
+    }
+    if let Some(shell) = app.try_state::<crate::Shell>() {
+        shell.terminate_browser();
     }
 }
 

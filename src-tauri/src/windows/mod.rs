@@ -443,6 +443,16 @@ pub mod e2e {
     /// сценарный тест решения владельца 66 (задача 0.7).
     pub const REMOVABLE_ENV: &str = "RHIZOMIND_E2E_REMOVABLE";
 
+    /// Не завершать процесс браузера при закрытии последнего окна (решение
+    /// 64): контрольный прогон сценарного теста — проверка, что тест видит
+    /// загрузку OneAuth при штатном закрытии.
+    pub const KEEP_BROWSER_ENV: &str = "RHIZOMIND_E2E_KEEP_BROWSER";
+
+    /// Задана ли [`KEEP_BROWSER_ENV`].
+    pub fn keep_browser() -> bool {
+        std::env::var_os(KEEP_BROWSER_ENV).is_some()
+    }
+
     /// Задана ли [`REMOVABLE_ENV`].
     pub fn removable_volume() -> bool {
         std::env::var_os(REMOVABLE_ENV).is_some()
