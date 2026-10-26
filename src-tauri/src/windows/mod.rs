@@ -86,21 +86,31 @@ pub const VAULT_TITLE_MAX_CHARS: usize = 120;
 /// **не** попадает: заголовок видит Windows (панель задач, Alt+Tab,
 /// журнал действий, специальные возможности), а имена заметок вне хранилища
 /// не уходят (инвариант 2, docs/SECURITY.md). Имя хранилища — то, что
-/// показывает интерфейс (`VaultSummary::name`, имя папки); из него убраны
-/// управляющие символы, переводы строк и знаки направления текста (подмена
-/// вида заголовка), длина ограничена [`VAULT_TITLE_MAX_CHARS`]. Пустое
-/// имя — просто «Rhizomind».
+/// показывает интерфейс (`VaultSummary::name`, имя папки). Из него убраны
+/// управляющие символы (Cc), невидимые знаки форматирования (Cf: направление
+/// текста, нулевая ширина, мягкий перенос, BOM, теги) и разделители строк и
+/// абзацев (U+2028, U+2029); длина ограничена [`VAULT_TITLE_MAX_CHARS`],
+/// обрезка не отрывает комбинирующие метки от буквы. Пустое имя — просто
+/// «Rhizomind».
 pub fn vault_title(name: &str) -> String {
-    let clean: String = name
-        .chars()
-        .filter(|c| !c.is_control() && !is_direction_mark(*c))
-        .collect();
+    let clean: String = name.chars().filter(|c| !is_hidden_in_title(*c)).collect();
     let clean = clean.trim();
     if clean.is_empty() {
         return crate::main_window_title();
     }
-    let shown = if clean.chars().count() > VAULT_TITLE_MAX_CHARS {
-        let mut cut: String = clean.chars().take(VAULT_TITLE_MAX_CHARS - 1).collect();
+    let chars: Vec<char> = clean.chars().collect();
+    let shown = if chars.len() > VAULT_TITLE_MAX_CHARS {
+        // Первый отброшенный символ продолжает предыдущий (метка, селектор,
+        // оттенок кожи) — отбросить и его основу.
+        let mut keep = VAULT_TITLE_MAX_CHARS - 1;
+        while keep > 0 && extends_previous(chars[keep]) {
+            keep -= 1;
+        }
+        let mut cut: String = chars[..keep]
+            .iter()
+            .collect::<String>()
+            .trim_end()
+            .to_owned();
         cut.push('…');
         cut
     } else {
@@ -109,10 +119,52 @@ pub fn vault_title(name: &str) -> String {
     format!("{shown} — {}", crate::main_window_title())
 }
 
-/// Невидимые знаки направления текста (LRM/RLM, встраивания, изоляции):
-/// переставляют части заголовка при показе.
-fn is_direction_mark(c: char) -> bool {
-    matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+/// Символ, которого не должно быть в заголовке: управляющий (Cc), невидимый
+/// знак форматирования (Cf, таблица Unicode 15.1) или разделитель строк и
+/// абзацев (Zl, Zp). Невидимые знаки меняют вид и порядок текста в
+/// заголовке (подмена), переводы строк ломают его в одну строку.
+fn is_hidden_in_title(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061c}'
+                | '\u{06dd}'
+                | '\u{070f}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08e2}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206f}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0001}'
+                | '\u{e0020}'..='\u{e007f}'
+        )
+}
+
+/// Символ, который рисуется вместе с предыдущим: комбинирующая метка
+/// (основные блоки Mn/Me), вариационный селектор, оттенок кожи эмодзи.
+fn extends_previous(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036f}'
+            | '\u{1ab0}'..='\u{1aff}'
+            | '\u{1dc0}'..='\u{1dff}'
+            | '\u{20d0}'..='\u{20ff}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{fe20}'..='\u{fe2f}'
+            | '\u{1f3fb}'..='\u{1f3ff}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
 }
 
 /// Как поставить окно управления: 920 × 600, положение выбирает ОС.
@@ -297,11 +349,6 @@ async fn open_vault_in_window<R: Runtime>(
     })
     .await?;
     if caller_is_empty {
-        // Окно уже есть: заголовок меняет ядро (у интерфейса права на
-        // заголовок нет).
-        if let Some(window) = app.get_webview_window(&label) {
-            let _ = window.set_title(&title);
-        }
         return Ok(VaultOpenOutcome::Opened);
     }
     let saved = core.registry().window(&vault.id);

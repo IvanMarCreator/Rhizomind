@@ -224,6 +224,26 @@ async function nameMessage(browser: WebdriverIO.Browser): Promise<string> {
   );
 }
 
+// Заголовки окон ОС (находка Н2, задача 2.11): тестовая сборка добавляет к
+// «Rhizomind» пометку (WEBDRIVER_BUILD_MARKER).
+const TITLE_SUFFIX = ' — Rhizomind — ТЕСТОВАЯ СБОРКА (webdriver)';
+
+/** Ждёт `count` показанных окон программы и возвращает их заголовки ОС. */
+async function windowTitles(b: WebdriverIO.Browser, count: number, step: string): Promise<string[]> {
+  let titles: string[] = [];
+  await b.waitUntil(
+    async () => {
+      titles = appWindowTitles();
+      return titles.length >= count;
+    },
+    { timeout: 10_000, timeoutMsg: `${step}: окон программы меньше ${count}: ${JSON.stringify(titles)}` },
+  );
+  // В журнал теста: видно, что заголовки прочитаны у ОС (X11 или UI Automation).
+  // stderr: console.log успешных тестов vitest в журнал не выводит.
+  process.stderr.write(`заголовки окон ОС (${process.platform}, ${step}): ${JSON.stringify(titles)}\n`);
+  return titles;
+}
+
 describe('сценарий выпуска 0.1: от первого запуска до перезапуска', () => {
   let session: Session | undefined;
   let parent = '';
@@ -258,6 +278,7 @@ describe('сценарий выпуска 0.1: от первого запуск�
     expect(await b.$(MANAGER).getText()).toContain('Пока нет хранилищ');
     expect(await b.$$('li').length).toBe(0);
     await shotThemes(b, 'first-run');
+    expect(await windowTitles(b, 1, 'первый запуск')).toEqual([`Управление хранилищами${TITLE_SUFFIX}`]);
   });
 
   it('С3.1: «Создать хранилище» → имя → «Обзор…» → «Создать»: окно хранилища, папка .rhizomind, пустое дерево', async () => {
@@ -647,17 +668,8 @@ describe('сценарий выпуска 0.1: от первого запуск�
   });
 
   it('Н2, вопрос 82 (А): заголовки окон — «<хранилище> — Rhizomind», без имени открытой заметки', async () => {
-    // Тестовая сборка добавляет к «Rhizomind» пометку (WEBDRIVER_BUILD_MARKER).
-    const suffix = ' — Rhizomind — ТЕСТОВАЯ СБОРКА (webdriver)';
-    let titles: string[] = [];
-    await browser().waitUntil(
-      async () => {
-        titles = appWindowTitles();
-        return titles.length >= 2;
-      },
-      { timeout: 10_000, timeoutMsg: 'нет двух окон программы' },
-    );
-    expect(titles).toEqual([`Архив${suffix}`, `Рабочая база${suffix}`]);
+    const titles = await windowTitles(browser(), 2, 'два хранилища');
+    expect(titles).toEqual([`Архив${TITLE_SUFFIX}`, `Рабочая база${TITLE_SUFFIX}`]);
     // Открытая заметка «Итоги года» в заголовок не попадает (инвариант 2).
     expect(titles.some((title) => title.includes('Итоги года'))).toBe(false);
   });
@@ -687,6 +699,8 @@ describe('сценарий выпуска 0.1: от первого запуск�
     expect(menu).toContain('Рабочая база');
     expect(menu).toContain('Архив');
     await shotThemes(b, 'restarted');
+    // Заголовок окна, открытого при запуске (`open_at_startup`), — без заметки.
+    expect(await windowTitles(b, 1, 'перезапуск')).toEqual([`Архив${TITLE_SUFFIX}`]);
     await b.keys('Escape');
     await b.$('[role="menu"]').waitForDisplayed({ reverse: true, timeout: 5_000 });
   }, 150_000);
