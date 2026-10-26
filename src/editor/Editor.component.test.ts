@@ -272,7 +272,7 @@ describe('закрытие окна (задача 0.7): сигнал ядра wi
     });
     type(view, 'ещё');
 
-    await emitCoreEvent('window:close-requested', {});
+    await emitCoreEvent('window:close-requested', { sessionEnd: false });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(writes(calls)).toHaveLength(1);
     expect(answers(calls)).toEqual([]);
@@ -288,7 +288,7 @@ describe('закрытие окна (задача 0.7): сигнал ядра wi
     render(Shell, { model });
     await waitFor(() => expect(model.status.kind).toBe('ready'));
 
-    await emitCoreEvent('window:close-requested', {});
+    await emitCoreEvent('window:close-requested', { sessionEnd: false });
     await waitFor(() => expect(answers(calls)).toEqual(['window_close_ready']));
   });
 
@@ -304,7 +304,7 @@ describe('закрытие окна (задача 0.7): сигнал ядра wi
     });
     type(view, 'ещё');
 
-    await emitCoreEvent('window:close-requested', {});
+    await emitCoreEvent('window:close-requested', { sessionEnd: false });
 
     await waitFor(() => expect(answers(calls)).toEqual(['window_close_cancel']));
     expect(await screen.findByText(/Окно не закрыто: не удалось сохранить заметку «LF без BOM»/)).toBeTruthy();

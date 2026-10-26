@@ -11,11 +11,14 @@
 //!    причина «Rhizomind сохраняет заметки…» ([`BLOCK_REASON`],
 //!    `ShutdownBlockReasonCreate`), затем [`save_all`]: каждому окну
 //!    хранилища — то же событие `window:close-requested`, что при закрытии
-//!    окна (задача 0.7); интерфейс записывает ввод всех заметок окна и
-//!    отвечает `window_close_ready`/`window_close_cancel`. Ответы ждутся не
-//!    дольше [`SESSION_END_TIMEOUT`] (Windows ждёт ответа ~5 с), очередь
-//!    сообщений главного потока при этом разбирается — иначе движок и вызовы
-//!    ядра из интерфейса стояли бы. Окна не скрываются и не закрываются:
+//!    окна (задача 0.7), с `sessionEnd: true` (решение 79); интерфейс
+//!    записывает ввод всех заметок окна и отвечает
+//!    `window_close_ready`/`window_close_cancel`. Ответы ждутся не дольше
+//!    [`SESSION_END_TIMEOUT`] — 10 с, как при закрытии окна (решение 78);
+//!    через ~5 с Windows может показать экран со списком программ и
+//!    причиной — пользователь сам решает, ждать ли. Очередь сообщений главного
+//!    потока при этом разбирается — иначе движок и вызовы ядра из интерфейса
+//!    стояли бы. Окна не скрываются и не закрываются:
 //!    выход могут отменить. Ответ Windows — всегда «можно» (TRUE): программа
 //!    выход пользователя не блокирует; причина снимается.
 //! 2. `WM_ENDSESSION` с `wParam = TRUE` (сеанс завершается): [`on_end_session`]
@@ -49,10 +52,11 @@ mod tests;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-/// Сколько программа ждёт записи ввода после `WM_QUERYENDSESSION`: меньше
-/// 5 с, которые Windows даёт программе до окна «Эти приложения мешают
-/// завершению».
-pub const SESSION_END_TIMEOUT: Duration = Duration::from_secs(4);
+/// Сколько программа ждёт записи ввода после `WM_QUERYENDSESSION` —
+/// столько же, сколько при закрытии окна (решение 78, решение 67). Через ~5 с
+/// Windows может показать экран «Эти приложения мешают завершению» с причиной
+/// [`BLOCK_REASON`]; ответ Windows всё равно «можно» — выход не блокируется.
+pub const SESSION_END_TIMEOUT: Duration = closing::CLOSE_TIMEOUT;
 
 /// Причина, которую Windows показывает, пока программа записывает ввод.
 /// Постоянная строка: без имён хранилищ и заметок.
@@ -84,8 +88,11 @@ impl SessionEnd {
 pub struct Outcome {
     /// Скольким окнам хранилищ ушёл запрос записи.
     pub asked: usize,
-    /// Сколько из них ответили.
-    pub answered: usize,
+    /// Сколько ответили «записано» (`window_close_ready`).
+    pub ready: usize,
+    /// Сколько ответили «не записано» (`window_close_cancel`): сбой записи,
+    /// текст остался в редакторе.
+    pub refused: usize,
     /// Предел вышел раньше, чем ответили все.
     pub timed_out: bool,
 }
@@ -122,12 +129,15 @@ pub fn save_all<R: Runtime>(
         .iter()
         .filter(|entry| matches!(entry, Pending::Asked(..)))
         .count();
-    let mut answered = 0;
+    let (mut ready, mut refused) = (0, 0);
     loop {
         pending.retain(|entry| match entry {
             Pending::Asked(label, answers) => match answers.try_recv() {
-                Ok(_) => {
-                    answered += 1;
+                Ok(answer) => {
+                    match answer {
+                        Answer::Ready => ready += 1,
+                        Answer::Cancel => refused += 1,
+                    }
                     closing.finished(label);
                     false
                 }
@@ -151,18 +161,35 @@ pub fn save_all<R: Runtime>(
             closing.finished(&label);
         }
     }
-    if timed_out {
-        // Без имён и текста заметок (инвариант 3).
-        eprintln!(
-            "Rhizomind: конец сеанса Windows — не все окна подтвердили запись ввода за {} мс",
-            limit.as_millis()
-        );
+    let outcome = Outcome {
+        asked,
+        ready,
+        refused,
+        timed_out,
+    };
+    if let Some(line) = outcome.log_line(limit) {
+        eprintln!("{line}");
     }
     session.saving.store(false, Ordering::SeqCst);
-    Outcome {
-        asked,
-        answered,
-        timed_out,
+    outcome
+}
+
+impl Outcome {
+    /// Строка журнала (stderr), если не всё записано: только счёт окон, без
+    /// имён хранилищ и заметок (инвариант 3). Всё записано — `None`.
+    pub fn log_line(&self, limit: Duration) -> Option<String> {
+        if self.refused == 0 && !self.timed_out {
+            return None;
+        }
+        let silent = self.asked.saturating_sub(self.ready + self.refused);
+        Some(format!(
+            "Rhizomind: конец сеанса Windows — окон хранилищ: {}, записали: {}, не записали: {}, без ответа за {} мс: {}",
+            self.asked,
+            self.ready,
+            self.refused,
+            limit.as_millis(),
+            silent
+        ))
     }
 }
 
@@ -188,7 +215,7 @@ fn ask_every_vault_window<R: Runtime>(app: &AppHandle<R>, closing: &Closing) -> 
                 let _ = app.emit_to(
                     EventTarget::webview_window(label.clone()),
                     event::WINDOW_CLOSE_REQUESTED,
-                    WindowCloseRequestedPayload {},
+                    WindowCloseRequestedPayload { session_end: true },
                 );
                 pending.push(Pending::Asked(label, answers));
             }

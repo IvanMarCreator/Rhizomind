@@ -161,3 +161,68 @@ describe('закрытие окна', () => {
     expect(notices[0]).toContain('«План». Запись не завершилась вовремя: диск не отвечает.');
   });
 });
+
+describe('конец сеанса Windows (задача 0.11а, решение 79)', () => {
+  const sessionEnd = { sessionEnd: true } as const;
+  const SESSION_NOTICE = 'Перед выходом из системы не удалось сохранить заметку. Текст остаётся в редакторе.';
+
+  it('ввод записан — ядру «готово», без уведомлений', async () => {
+    const { closing, answers, notices } = setup([[]]);
+    await closing.closeRequested(sessionEnd);
+    expect(answers).toEqual(['ready']);
+    expect(notices).toEqual([]);
+  });
+
+  it('запись не удалась — «отмена» и своё уведомление о выходе из системы', async () => {
+    const { closing, answers, notices } = setup([[{ path: ['План.md'], error: ioFailed }]]);
+    await closing.closeRequested(sessionEnd);
+    expect(answers).toEqual(['cancel']);
+    expect(notices).toEqual([SESSION_NOTICE]);
+  });
+
+  it('запись не успела к крайнему сроку — то же уведомление', async () => {
+    const { closing, answers, notices } = setup([[{ path: ['План.md'], error: new SaveTooSlow() }]]);
+    await closing.closeRequested(sessionEnd);
+    expect(answers).toEqual(['cancel']);
+    expect(notices).toEqual([SESSION_NOTICE]);
+  });
+
+  it('сбой самой записи (исключение) — то же уведомление', async () => {
+    const answers: string[] = [];
+    const notices: string[] = [];
+    const closing = new WindowClosing({
+      flush: () => Promise.reject(new Error('сбой')),
+      ready: () => Promise.resolve(answers.push('ready')),
+      cancel: () => Promise.resolve(answers.push('cancel')),
+      notify: (text) => notices.push(text),
+    });
+    await closing.closeRequested(sessionEnd);
+    expect(answers).toEqual(['cancel']);
+    expect(notices).toEqual([SESSION_NOTICE]);
+  });
+
+  it('сбой при выходе, выход отменён — следующее «×» не закрывает окно молча', async () => {
+    const failed = [{ path: ['План.md'], error: ioFailed }];
+    const { closing, answers, notices } = setup([failed, failed]);
+    await closing.closeRequested(sessionEnd);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await closing.closeRequested({ sessionEnd: false });
+    expect(answers).toEqual(['cancel', 'cancel']);
+    expect(notices).toHaveLength(2);
+    expect(notices[1]).toContain('Окно не закрыто: не удалось сохранить заметку «План».');
+  });
+
+  it('после отказа закрытия запрос выхода не закрывает окно без сохранения и не сбивает отсчёт минуты', async () => {
+    const failed = [{ path: ['План.md'], error: ioFailed }];
+    const { closing, answers, notices } = setup([failed, failed, failed]);
+    await closing.closeRequested();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await closing.closeRequested(sessionEnd);
+    expect(answers).toEqual(['cancel', 'cancel']);
+    expect(notices[1]).toBe(SESSION_NOTICE);
+    // Пользователь закрывает окно ещё раз в пределах минуты от своего отказа.
+    await vi.advanceTimersByTimeAsync(10_000);
+    await closing.closeRequested();
+    expect(answers).toEqual(['cancel', 'cancel', 'ready']);
+  });
+});

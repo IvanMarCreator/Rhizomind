@@ -561,7 +561,8 @@ fn close_events(window: &WebviewWindow<MockRuntime>) -> Arc<AtomicUsize> {
     window.listen(
         crate::commands::event::WINDOW_CLOSE_REQUESTED,
         move |event| {
-            assert_eq!(event.payload(), "{}");
+            // Закрытие окна пользователем — не конец сеанса (решение 79).
+            assert_eq!(event.payload(), r#"{"sessionEnd":false}"#);
             counter.fetch_add(1, Ordering::SeqCst);
         },
     );

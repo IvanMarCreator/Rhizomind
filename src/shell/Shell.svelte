@@ -134,7 +134,7 @@
 
   onMount(() => {
     // Подписка — первой: окно могут закрыть, пока оно загружается.
-    const unsubscribe = onCoreEvent('window:close-requested', () => void closing.closeRequested());
+    const unsubscribe = onCoreEvent('window:close-requested', (payload) => void closing.closeRequested(payload));
     void model.start();
     // Не <svelte:window>: Svelte передаёт тогда объект window значением, и
     // проверка сети (tools/check-no-network) не может доказать безопасность.
