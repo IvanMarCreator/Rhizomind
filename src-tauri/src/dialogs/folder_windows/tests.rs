@@ -375,6 +375,8 @@ fn chosen_folder_path_does_not_reach_roaming_profile() {
             let (_dir, control_name) = pick_temp_folder(settings, label);
             let hits = roaming_hits(&control_name);
             eprintln!("контроль {label}, Roaming: {hits:#?}");
+            dump(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU");
+            dump(r"Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\CIDSizeMRU");
             if !hits.iter().any(|h| h.contains(LAST_VISITED)) {
                 failures.push(format!(
                     "контроль {label}: поиск не увидел путь в {LAST_VISITED}: {hits:#?}"
@@ -423,4 +425,30 @@ fn closed_owner_window_gives_cancel_without_dialog() {
         vec!["окно не найдено".to_owned()],
         "окно не показывалось"
     );
+}
+
+/// Опыт: строки внутри значений ключа.
+fn dump(path: &str) {
+    let mut key: HKEY = std::ptr::null_mut();
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide(path).as_ptr(), 0, KEY_READ, &mut key) } != ERROR_SUCCESS {
+        eprintln!("DUMP {path}: нет ключа");
+        return;
+    }
+    let mut name = vec![0u16; 1024];
+    let mut data = vec![0u8; 1 << 16];
+    for index in 0.. {
+        let mut nl = name.len() as u32;
+        let mut dl = data.len() as u32;
+        let mut kind = 0;
+        let rc = unsafe { RegEnumValueW(key, index, name.as_mut_ptr(), &mut nl, std::ptr::null(), &mut kind, data.as_mut_ptr(), &mut dl) };
+        if rc != ERROR_SUCCESS { break; }
+        let d = &data[..dl as usize];
+        let words: Vec<u16> = d.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let mut strs = Vec::new();
+        let mut cur = String::new();
+        for w in words { if (0x20..0x7f).contains(&w) || (0x400..0x500).contains(&w) { cur.push(char::from_u32(w as u32).unwrap()); } else { if cur.len() >= 3 { strs.push(cur.clone()); } cur.clear(); } }
+        if cur.len() >= 3 { strs.push(cur); }
+        eprintln!("DUMP {path} : {} ({} байт): {strs:?}", String::from_utf16_lossy(&name[..nl as usize]), dl);
+    }
+    unsafe { RegCloseKey(key) };
 }
