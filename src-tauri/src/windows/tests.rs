@@ -977,7 +977,8 @@ fn vault_title_without_name_is_app_title() {
 fn vault_title_drops_format_characters_and_line_separators() {
     // Категория Cf (невидимые: мягкий перенос, нулевой ширины, BOM, теги
     // эмодзи, якоря аннотаций) и разделители строк/абзацев Zl/Zp.
-    let name = "Ра\u{ad}бо\u{200b}\u{200c}\u{200d}та\u{2060}\u{feff}\u{fff9}\u{fffb}\u{2028}\u{2029}\u{180e}\u{600}\u{e0001}\u{e0041}\u{1d173}";
+    // U+2028/U+2029 стоят внутри имени: на краях их убрал бы trim().
+    let name = "Р\u{2028}а\u{ad}бо\u{200b}\u{200c}\u{200d}т\u{2029}а\u{2060}\u{feff}\u{fff9}\u{fffb}\u{180e}\u{600}\u{e0001}\u{e0041}\u{1d173}";
     assert_eq!(
         vault_title(name),
         format!("Работа — {}", crate::main_window_title())
