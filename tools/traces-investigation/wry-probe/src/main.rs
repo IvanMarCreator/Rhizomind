@@ -6,14 +6,15 @@
 //! расширения выключены; `secs=N` — сколько держать окно. Как закрыть:
 //! по умолчанию — выход из цикла событий без освобождения WebView (как tao при
 //! выходе); `drop` — сначала освободить WebView (Close контроллера), 3 с, выход;
-//! `destroy` — сначала уничтожить окно (WebView ещё жив), 3 с, выход.
+//! `destroy` — сначала уничтожить окно (WebView ещё жив), 3 с, выход;
+//! `kill` — сначала завершить процесс браузера WebView2 (TerminateProcess), 3 с, выход.
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tao::window::WindowBuilder;
-use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows};
+use wry::{WebContext, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
 const RHIZOMIND_FLAGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
 --no-proxy-server --disable-background-networking --disable-component-update \
@@ -69,6 +70,18 @@ fn main() -> wry::Result<()> {
     let mut window = Some(window);
     let drop_first = has("drop");
     let destroy_first = has("destroy");
+    let kill_first = has("kill");
+    let browser_pid = {
+        let mut pid = 0u32;
+        let controller = webview.as_ref().expect("окно").controller();
+        // SAFETY: вызовы COM на потоке окна, контроллер жив.
+        unsafe {
+            if let Ok(core) = controller.CoreWebView2() {
+                let _ = core.BrowserProcessId(&mut pid);
+            }
+        }
+        pid
+    };
 
     let start = Instant::now();
     let mut closing_since: Option<Instant> = None;
@@ -83,10 +96,15 @@ fn main() -> wry::Result<()> {
             if destroy_first {
                 window.take();
             }
+            if kill_first && browser_pid != 0 {
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &browser_pid.to_string(), "/F"])
+                    .status();
+            }
             closing_since = Some(Instant::now());
         }
         if let Some(since) = closing_since {
-            let wait = if drop_first || destroy_first { 3 } else { 0 };
+            let wait = if drop_first || destroy_first || kill_first { 3 } else { 0 };
             if since.elapsed() >= Duration::from_secs(wait) {
                 *control_flow = ControlFlow::Exit;
             }

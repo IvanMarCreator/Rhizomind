@@ -15,6 +15,7 @@ license = "GPL-3.0-only"
 wry = "=0.57.1"
 tao = "0.37"
 http = "1"
+webview2-com = "=0.39.1"
 
 [patch.crates-io]
 wry = { path = "../../../vendor/wry" }

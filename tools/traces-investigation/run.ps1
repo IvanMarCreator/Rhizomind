@@ -323,6 +323,18 @@ try {
       Phase 'mini3800#2' { Scenario-Exe 'mini3800#2' $probe3800 @('webview', $m, '8') 12 }
       Phase 'mini-tcbv#2' { Scenario-Exe 'mini-tcbv#2' $Probe @('webview', "$m+tcbv", '8') 12 }
     }
+    '^oneauth-kill$' {
+      # OneAuth загружается в момент закрытия окна wry. Если процесс браузера
+      # завершить до закрытия, путь завершения движка не выполняется.
+      $w = @('datadir', 'incognito', 'flags', 'protocol')
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'wry-drop#1' { Scenario-Exe 'wry-drop#1' $WryProbe (@($w) + @('drop', 'secs=8')) 14 }
+      Phase 'wry-kill#1' { Scenario-Exe 'wry-kill#1' $WryProbe (@($w) + @('kill', 'secs=8')) 14 }
+      Phase 'wry-kill#2' { Scenario-Exe 'wry-kill#2' $WryProbe (@($w) + @('kill', 'secs=8')) 14 }
+      Phase 'wry-kill-long#1' { Scenario-Exe 'wry-kill-long#1' $WryProbe (@($w) + @('kill', 'secs=30')) 36 }
+      Phase 'wry-drop#2' { Scenario-Exe 'wry-drop#2' $WryProbe (@($w) + @('drop', 'secs=8')) 14 }
+      Phase 'wry-kill#3' { Scenario-Exe 'wry-kill#3' $WryProbe (@($w) + @('kill', 'secs=8')) 14 }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')

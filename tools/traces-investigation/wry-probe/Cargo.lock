@@ -1865,6 +1865,7 @@ version = "0.0.0"
 dependencies = [
  "http",
  "tao",
+ "webview2-com",
  "wry",
 ]
 

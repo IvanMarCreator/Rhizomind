@@ -25,6 +25,7 @@
 #   oneauth-dpi — минимальный WebView2 с учётом DPI и/или языком, как wry;
 #   oneauth-api — вызовы API окна, которые делает wry, по одному в минимальном WebView2;
 #   oneauth-sdk — версия SDK/загрузчика WebView2 и TargetCompatibleBrowserVersion как у wry;
+#   oneauth-kill — зонд wry завершает процесс браузера до закрытия окна;
 #   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
 #              rfd (как в приложении), rfd-cancel, dontaddtorecent,
 #              clientguid, clientguid-clear, proposal, all.
@@ -51,7 +52,7 @@ jobs:
       matrix:
         # Задания 0.6 (app, app-repeat, mini-*, app-policy-*, dialog-* …) остаются в run.ps1;
         # в матрице — только текущий опыт, чтобы не тратить машины CI.
-        job: [oneauth-sdk]
+        job: [oneauth-kill]
     runs-on: windows-latest
     timeout-minutes: 60
     env:
