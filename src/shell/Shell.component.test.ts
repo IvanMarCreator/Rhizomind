@@ -101,7 +101,7 @@ describe('оболочка окна', () => {
     await renderShell({
       ...WITH_VAULT,
       vault_list: () => ({
-        vaults: [{ id: 'v1', name: 'Рабочая база', path: 'D:\\Рабочая база', is_open: true }],
+        vaults: [{ id: 'v1', name: 'Рабочая база', path: 'D:\\Рабочая база', is_open: true, available: true }],
         last_opened: 'v1',
       }),
     });

@@ -7,9 +7,9 @@ import { mockCore, type CoreMocks } from '../api/testing.ts';
 import VaultSwitcher from './VaultSwitcher.svelte';
 
 const VAULTS: VaultListItem[] = [
-  { id: 'a1', name: 'Рабочая база', path: 'D:\\Заметки\\Рабочая база', is_open: true },
-  { id: 'b2', name: 'Регламенты отдела', path: 'D:\\Отдел\\Регламенты', is_open: false },
-  { id: 'c3', name: 'личные заметки', path: 'C:\\Заметки', is_open: false },
+  { id: 'a1', name: 'Рабочая база', path: 'D:\\Заметки\\Рабочая база', is_open: true, available: true },
+  { id: 'b2', name: 'Регламенты отдела', path: 'D:\\Отдел\\Регламенты', is_open: false, available: true },
+  { id: 'c3', name: 'личные заметки', path: 'C:\\Заметки', is_open: false, available: true },
 ];
 
 function renderSwitcher(mocks: CoreMocks) {
@@ -119,6 +119,29 @@ describe('переключатель хранилищ', () => {
     await fireEvent.keyDown(menu, { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Хранилище «Рабочая база»' }));
+  });
+
+  it('ответ на прежнее открытие меню не подменяет свежий список', async () => {
+    const answers: ((value: { vaults: VaultListItem[]; last_opened: string | null }) => void)[] = [];
+    renderSwitcher({
+      vault_list: () =>
+        new Promise((resolve) => {
+          answers.push(resolve);
+        }),
+    });
+    const button = screen.getByRole('button', { name: 'Хранилище «Рабочая база»' });
+    await fireEvent.click(button); // открыть (запрос 1)
+    await fireEvent.click(button); // закрыть
+    await fireEvent.click(button); // открыть (запрос 2)
+    await waitFor(() => expect(answers).toHaveLength(2));
+
+    answers[1]?.({ vaults: VAULTS.slice(0, 1), last_opened: 'a1' });
+    const menu = await screen.findByRole('menu');
+    await waitFor(() => expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(1));
+    answers[0]?.({ vaults: VAULTS, last_opened: 'a1' });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(1);
   });
 
   it('список не прочитался — в меню только «Управление хранилищами…», уведомление', async () => {

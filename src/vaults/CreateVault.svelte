@@ -1,9 +1,9 @@
 <!--
-  Форма «Создать хранилище» (Э11в): имя и кнопка «Создать». Родительскую
-  папку пользователь выбирает в системном окне ядра после нажатия «Создать»
-  (команда vault_create): поля «Где создать» с кнопкой «Обзор…» из макета в
-  0.1 нет — путь в интерфейс не передаётся (вопрос владельцу, обзор 2.8а).
-  Имя проверяет ядро теми же правилами, что имена файлов.
+  Форма «Создать хранилище» (Э11в, решение владельца 62): имя → «Обзор…»
+  (родительская папка в системном окне ядра, команда folder_pick; путь
+  показывается в поле только для чтения) → «Создать» (vault_create с именем и
+  этой папкой). Под полями — итоговый путь. Имя проверяет ядро теми же
+  правилами, что имена файлов; папку — что она есть и не внутри хранилища.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -15,8 +15,17 @@
 
   let name = $state('');
   let field: HTMLInputElement | undefined = $state();
-  const errorId = `vault-name-error-${Math.random().toString(36).slice(2)}`;
-  const canCreate = $derived(name.trim() !== '' && !model.busy);
+  const id = Math.random().toString(36).slice(2);
+  const nameErrorId = `vault-name-error-${id}`;
+  const parentErrorId = `vault-parent-error-${id}`;
+  const hintId = `vault-create-hint-${id}`;
+  const canCreate = $derived(name.trim() !== '' && model.parent !== null && !model.busy);
+  /** Итоговый путь нового хранилища — для подсказки; разделитель — как в пути папки. */
+  const target = $derived.by(() => {
+    if (model.parent === null || name.trim() === '') return null;
+    const separator = model.parent.includes('\\') ? '\\' : '/';
+    return model.parent.endsWith(separator) ? `${model.parent}${name}` : `${model.parent}${separator}${name}`;
+  });
 
   onMount(() => field?.focus());
 
@@ -32,6 +41,10 @@
       event.preventDefault();
       submit();
     }
+  }
+
+  function describedBy(...ids: (string | false)[]): string {
+    return ids.filter(Boolean).join(' ');
   }
 </script>
 
@@ -54,15 +67,41 @@
         spellcheck="false"
         autocomplete="off"
         aria-invalid={model.nameError !== null}
-        aria-describedby={model.nameError ? errorId : undefined}
+        aria-describedby={describedBy(hintId, model.nameError !== null && nameErrorId)}
         oninput={() => model.nameChanged()}
         {onkeydown}
       />
     </label>
     {#if model.nameError}
-      <p class="error" id={errorId} role="alert">{model.nameError}</p>
+      <p class="error" id={nameErrorId} role="alert">{model.nameError}</p>
     {/if}
-    <p class="hint">{t('vaults.manager.create.where')}</p>
+    <div class="field">
+      <label class="label" for={`vault-parent-${id}`}>{t('vaults.manager.where')}</label>
+      <div class="row">
+        <input
+          id={`vault-parent-${id}`}
+          class="input path"
+          class:invalid={model.parentError !== null}
+          type="text"
+          readonly
+          value={model.parent ?? ''}
+          title={model.parent ?? undefined}
+          aria-invalid={model.parentError !== null}
+          aria-describedby={describedBy(hintId, model.parentError !== null && parentErrorId)}
+        />
+        <button type="button" class="secondary" disabled={model.busy} onclick={() => void model.pickParent()}>
+          {t('vaults.manager.browse')}
+        </button>
+      </div>
+    </div>
+    {#if model.parentError}
+      <p class="error" id={parentErrorId} role="alert">{model.parentError}</p>
+    {/if}
+    <p class="hint" id={hintId}>
+      {#if target}{t('vaults.manager.create.resultBefore')}<strong class="target">{target}</strong>{t(
+          'vaults.manager.create.resultAfter',
+        )}{:else}{t('vaults.manager.create.where')}{/if}
+    </p>
     <div class="buttons">
       <button type="button" class="primary" disabled={!canCreate} onclick={submit}>
         {t('vaults.manager.create.button')}
@@ -145,6 +184,44 @@
   .input.invalid:focus {
     border-color: var(--status-error);
     box-shadow: 0 0 0 0.5px var(--status-error);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .path {
+    flex: 1;
+    min-width: 0;
+    text-overflow: ellipsis;
+    cursor: default;
+  }
+
+  .secondary {
+    flex: none;
+    height: 32px;
+    padding: 0 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .secondary:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .secondary:disabled {
+    opacity: 0.45;
+  }
+
+  .target {
+    font-weight: 600;
+    overflow-wrap: anywhere;
   }
 
   .error {

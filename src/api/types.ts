@@ -48,7 +48,8 @@ export type ErrorCode =
   | 'not_a_note'
   | 'read_only'
   | 'scheme_not_allowed'
-  | 'io_failed';
+  | 'io_failed'
+  | 'nested_vault';
 
 export type NameProblem =
   | 'empty'
@@ -73,6 +74,8 @@ export interface CoreError {
 
 export interface VaultListItem extends VaultSummary {
   is_open: boolean;
+  /** Папка на месте; `false` — диск отключён или папку удалили (задача 2.8б). */
+  available: boolean;
 }
 
 export interface VaultListResponse {
@@ -94,7 +97,12 @@ export interface VaultCurrentResponse {
 
 export interface VaultCreateRequest {
   name: string;
+  /** Родительская папка — ровно путь из последнего `folder_pick` этого окна. */
+  parent: string;
 }
+
+/** Ответ `folder_pick`: родительская папка нового хранилища (задача 2.8б). */
+export type FolderPickOutcome = { outcome: 'picked'; path: string } | { outcome: 'cancelled' };
 
 export type VaultChooseOutcome = { outcome: 'opened'; vault: VaultSummary } | { outcome: 'cancelled' };
 
@@ -309,6 +317,8 @@ export interface CoreCommands {
   vault_remove_from_list: { request: VaultIdRequest; response: null };
   /** Окно «Управление хранилищами» (задача 2.8а). */
   vault_manager_open: { request: null; response: null };
+  /** Выбор родительской папки в системном окне ядра; только окно управления (задача 2.8б). */
+  folder_pick: { request: null; response: FolderPickOutcome };
   tree_list: { request: null; response: TreeListResponse };
   note_create: { request: NameInDirRequest; response: EntryPathResponse };
   folder_create: { request: NameInDirRequest; response: EntryPathResponse };

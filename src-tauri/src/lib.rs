@@ -343,8 +343,8 @@ pub fn run() {
         // хранилища: наблюдатель останавливается.
         .on_window_event(on_window_event)
         .setup(|app| {
-            // Сигнал второго экземпляра → точка «повторный запуск» (решение 58;
-            // задача 2.8 откроет там «Управление хранилищами»). Сигнал приходит
+            // Сигнал второго экземпляра → точка «повторный запуск» (решение 58):
+            // окно «Управление хранилищами» (задача 2.8б). Сигнал приходит
             // в `window_proc` в главном потоке, а `run_on_main_thread` из
             // главного потока выполнил бы замыкание сразу, внутри обработки
             // `WM_COPYDATA` (второй процесс ждал бы ответа). Поэтому вызов
@@ -354,7 +354,10 @@ pub fn run() {
             app.state::<single_instance::Instance>()
                 .listen(Box::new(move || {
                     let handle = handle.clone();
-                    std::thread::spawn(move || {
+                    // Builder, а не thread::spawn: нехватка ресурсов ОС не
+                    // должна паниковать в `window_proc` (обзор 0.5); не
+                    // удалось — сигнал теряется, первый экземпляр живёт.
+                    let _ = std::thread::Builder::new().spawn(move || {
                         let target = handle.clone();
                         let _ = handle.run_on_main_thread(move || {
                             single_instance::on_second_instance(&target)
@@ -395,6 +398,20 @@ mod tests {
         assert_eq!(window.label(), label);
         assert!(label.starts_with(windows::LABEL_PREFIX));
         assert!(app.get_webview_window(&label).is_some());
+    }
+
+    /// Задача 2.8б: метка окна управления не попадает под шаблон прав окон
+    /// хранилищ (`vault-*`), а метка окна хранилища — под шаблон окна
+    /// управления (`manager-*`).
+    #[test]
+    fn manager_label_prefix_is_separate_from_vault_windows() {
+        let manager = windows::new_manager_label();
+        let vault = windows::new_label();
+        assert!(manager.starts_with(windows::MANAGER_LABEL_PREFIX));
+        assert!(!manager.starts_with(windows::LABEL_PREFIX));
+        assert!(!vault.starts_with(windows::MANAGER_LABEL_PREFIX));
+        assert!(!windows::MANAGER_LABEL_PREFIX.starts_with(windows::LABEL_PREFIX));
+        assert!(!windows::LABEL_PREFIX.starts_with(windows::MANAGER_LABEL_PREFIX));
     }
 
     #[test]

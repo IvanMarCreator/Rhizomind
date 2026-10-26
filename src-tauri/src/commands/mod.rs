@@ -76,6 +76,28 @@ use crate::watcher::VaultWatcher;
 /// Имена всех команд ядра — тот же список, что в `AppManifest::commands`.
 pub const COMMAND_NAMES: &[&str] = with_core_commands!(core_command_names);
 
+/// Команды только окна «Управление хранилищами» (задача 2.8б): у окон
+/// хранилищ прав на них нет (`capabilities/main.json`), а ядро отказывает
+/// любому другому окну (`vaults::require_manager`).
+pub const MANAGER_ONLY_COMMANDS: &[&str] = &[
+    "vault_create",
+    "vault_open_folder",
+    "vault_remove_from_list",
+    "folder_pick",
+];
+
+/// Все права окна «Управление хранилищами» (`capabilities/manager.json`):
+/// команды только для него и общие — список, своё окно, открытие хранилища.
+pub const MANAGER_COMMANDS: &[&str] = &[
+    "vault_list",
+    "vault_current",
+    "vault_open",
+    "vault_create",
+    "vault_open_folder",
+    "vault_remove_from_list",
+    "folder_pick",
+];
+
 macro_rules! core_handler {
     ($($command:ident),* $(,)?) => {
         tauri::generate_handler![$($command),*]
@@ -164,6 +186,9 @@ pub struct Core {
     /// или создаётся. Окно управления одно; хранилище к нему не привязывается
     /// ([`Core::claim_vault`]).
     manager: Mutex<Option<String>>,
+    /// Родительская папка, выбранная `folder_pick` в окне (метка → путь):
+    /// `vault_create` принимает только её (задача 2.8б).
+    picked_parents: Mutex<HashMap<String, std::path::PathBuf>>,
 }
 
 /// Окно «Управление хранилищами» для [`Core::reserve_manager`].
@@ -393,6 +418,11 @@ impl Core {
         if manager.as_deref() == Some(window_label) {
             *manager = None;
         }
+        drop(manager);
+        self.picked_parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(window_label);
     }
 
     fn manager(&self) -> std::sync::MutexGuard<'_, Option<String>> {
@@ -404,6 +434,23 @@ impl Core {
     /// Метка окна «Управление хранилищами», если оно открыто.
     pub fn manager_label(&self) -> Option<String> {
         self.manager().clone()
+    }
+
+    /// Запоминает папку, выбранную `folder_pick` в окне `window_label`.
+    pub fn remember_picked_parent(&self, window_label: &str, parent: std::path::PathBuf) {
+        self.picked_parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(window_label.to_owned(), parent);
+    }
+
+    /// Папка, выбранная `folder_pick` в окне `window_label`.
+    pub fn picked_parent(&self, window_label: &str) -> Option<std::path::PathBuf> {
+        self.picked_parents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(window_label)
+            .cloned()
     }
 
     /// Окно `window_label` — окно «Управление хранилищами».

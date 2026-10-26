@@ -67,16 +67,20 @@ export const ru = {
   'vaults.manager.create.title': 'Создать хранилище',
   'vaults.manager.create.hint': 'Новая папка для заметок: имя и место на диске.',
   'vaults.manager.create.button': 'Создать',
-  'vaults.manager.create.where':
-    'После «Создать» выберите в системном окне папку, в которой появится хранилище. Внутри него будет служебная папка .rhizomind.',
+  'vaults.manager.create.where': 'Нажмите «Обзор…» и выберите папку, в которой появится хранилище.',
+  'vaults.manager.create.resultBefore': 'Будет создана папка ',
+  'vaults.manager.create.resultAfter': '. Внутри неё появится служебная папка .rhizomind.',
+  'vaults.manager.where': 'Где создать (родительская папка)',
+  'vaults.manager.browse': 'Обзор…',
+  'vaults.manager.unavailable': 'недоступно',
+  'vaults.manager.unavailableHint': 'Папка недоступна: диск отключён, или папку переместили или удалили.',
   'vaults.manager.openFolder.title': 'Открыть папку как хранилище',
   'vaults.manager.openFolder.hint': 'Подойдёт уже существующая папка с файлами .md.',
   'vaults.manager.openFolder.button': 'Открыть',
   'vaults.manager.back': 'Назад',
   'vaults.manager.name': 'Имя хранилища',
   'vaults.manager.cancel': 'Отмена',
-  'vaults.manager.offline':
-    'Работает без сети. Данные хранилища — только в его папке; в профиле Windows — лишь список хранилищ.',
+  'vaults.manager.offline': 'Список хранилищ хранится только на этом компьютере.',
   'vaults.manager.version': 'Версия {version} · редакция Secure',
 
   // Строка над заметкой
@@ -166,6 +170,7 @@ export const ru = {
   'errors.read_only': 'Заметка открыта только для чтения.',
   'errors.scheme_not_allowed': 'Ссылки такого вида не открываются.',
   'errors.io_failed': 'Не удалось прочитать или записать файл.',
+  'errors.nested_vault': 'Эта папка внутри другого хранилища. Выберите папку вне хранилищ.',
   'errors.ipc_failed': 'Внутренняя ошибка приложения. Перезапустите окно.',
 
   // Причины отказа в имени: names.<problem>
