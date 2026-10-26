@@ -19,8 +19,8 @@ describe('главное окно', () => {
   it('открывается с заголовком «Rhizomind» на фоне темы и сохраняет снимок экрана', async () => {
     const { browser } = session;
     try {
-      // Оболочка окна (задача 2.2) вместо прежнего заголовка <h1>.
-      await browser.$('[data-testid="shell"]').waitForDisplayed({ timeout: 20_000 });
+      // Запуск без хранилища — окно «Управление хранилищами» (задача 2.8а).
+      await browser.$('[data-testid="vault-manager"]').waitForDisplayed({ timeout: 20_000 });
 
       expect(await browser.getTitle()).toBe('Rhizomind');
 

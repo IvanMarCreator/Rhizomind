@@ -217,6 +217,12 @@ fn vault_remove_from_list() {
     );
 }
 
+/// Окно «Управление хранилищами» (задача 2.8а, расширение контракта v1).
+#[test]
+fn vault_manager_open() {
+    command("vault_manager_open", &(), &[err(ErrorCode::IoFailed)]);
+}
+
 #[test]
 fn tree_list() {
     command(

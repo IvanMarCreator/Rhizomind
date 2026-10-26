@@ -2,7 +2,7 @@
 // tauri-driver запускает собранный исполняемый файл и передаёт команды движку:
 // на Windows — msedgedriver (путь в MSEDGEDRIVER или в PATH), на Linux — WebKitWebDriver.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, openSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,8 +115,31 @@ export interface StartOptions {
    * Папка хранилища, которое тестовая сборка откроет при запуске — без
    * системного окна выбора папки (переменная RHIZOMIND_E2E_VAULT, только в
    * сборке с функцией `webdriver`: src-tauri/src/windows/mod.rs, модуль e2e).
+   * Несколько папок попадают в список хранилищ; открывается последняя.
    */
-  vault?: string;
+  vault?: string | string[];
+  /**
+   * Ответ системного окна выбора папки для «Создать хранилище» и «Открыть
+   * папку как хранилище» (переменная RHIZOMIND_E2E_PICK_FOLDER, только в
+   * тестовой сборке; задача 2.8а).
+   */
+  pickFolder?: string;
+}
+
+/**
+ * Тестовое хранилище `name` (имя папки — имя хранилища) в своей временной
+ * папке, с заметками `notes`. Удаляется [`removeTestVault`].
+ */
+export function createTestVault(name: string, notes: Record<string, string> = {}): string {
+  const root = path.join(mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-vault-')), name);
+  mkdirSync(root);
+  for (const [file, text] of Object.entries(notes)) writeFileSync(path.join(root, file), text);
+  return root;
+}
+
+/** Удаляет хранилище из [`createTestVault`] вместе с его временной папкой. */
+export function removeTestVault(root: string): void {
+  rmSync(path.dirname(root), { recursive: true, force: true });
 }
 
 export async function startApp(options: StartOptions = {}): Promise<Session> {
@@ -125,8 +148,11 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   // %LOCALAPPDATA%\Rhizomind пользователя (RHIZOMIND_E2E_PROFILE_DIR).
   const profile = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-profile-'));
   const env: NodeJS.ProcessEnv = { ...process.env, RHIZOMIND_E2E_PROFILE_DIR: profile };
-  if (options.vault) env.RHIZOMIND_E2E_VAULT = options.vault;
+  const vaults = typeof options.vault === 'string' ? [options.vault] : (options.vault ?? []);
+  if (vaults.length > 0) env.RHIZOMIND_E2E_VAULT = vaults.join(path.delimiter);
   else delete env.RHIZOMIND_E2E_VAULT;
+  if (options.pickFolder) env.RHIZOMIND_E2E_PICK_FOLDER = options.pickFolder;
+  else delete env.RHIZOMIND_E2E_PICK_FOLDER;
   const removeProfile = () => rmSync(profile, { recursive: true, force: true });
   await waitForPortsFree(30_000);
   const args = ['--port', String(PORT)];

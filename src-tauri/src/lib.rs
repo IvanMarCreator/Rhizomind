@@ -139,12 +139,13 @@ fn webdriver_overrides_from_env() -> (String, Option<std::path::PathBuf>) {
     (security::browser_args(), None)
 }
 
-/// Создаёт окно `label` со страницей интерфейса из сборки (`dist/index.html`)
-/// и защищёнными настройками движка — так создаётся **каждое** окно
-/// приложения (задача 1.3: окна хранилищ — `crate::windows`). `Shell` должен
-/// быть в состоянии приложения: у всех окон одного запуска одна временная
-/// папка данных и одни флаги движка, поэтому они работают в одном процессе
-/// браузера WebView2.
+/// Создаёт окно хранилища `label` со страницей интерфейса из сборки
+/// (`dist/index.html`) и защищёнными настройками движка — так создаётся
+/// **каждое** окно приложения (задача 1.3: окна хранилищ — `crate::windows`;
+/// задача 2.8а: окно управления хранилищами — [`create_manager_window`]).
+/// `Shell` должен быть в состоянии приложения: у всех окон одного запуска одна
+/// временная папка данных и одни флаги движка, поэтому они работают в одном
+/// процессе браузера WebView2.
 ///
 /// `saved` — размер и положение окна хранилища из списка хранилищ:
 /// положение задаётся, только если заголовок окна виден на одном из
@@ -156,6 +157,32 @@ pub fn create_window<R: Runtime>(
     saved: Option<registry::WindowState>,
 ) -> tauri::Result<WebviewWindow<R>> {
     let size = windows::placement(saved, &[]);
+    build_window(app, label, &main_window_title(), size, saved)
+}
+
+/// Создаёт окно «Управление хранилищами» (920 × 600, без хранилища) той же
+/// защищённой оболочкой, что окна хранилищ: те же настройки движка, метка
+/// `vault-*` и права не шире ([`create_window`]).
+pub fn create_manager_window<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+) -> tauri::Result<WebviewWindow<R>> {
+    build_window(
+        app,
+        label,
+        &windows::manager_title(),
+        windows::manager_placement(),
+        None,
+    )
+}
+
+fn build_window<R: Runtime>(
+    app: &AppHandle<R>,
+    label: &str,
+    title: &str,
+    size: windows::Placement,
+    saved: Option<registry::WindowState>,
+) -> tauri::Result<WebviewWindow<R>> {
     let shell = app.state::<Shell>();
     let dev_url = if cfg!(dev) {
         app.config().build.dev_url.clone()
@@ -164,7 +191,7 @@ pub fn create_window<R: Runtime>(
     };
 
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title(main_window_title())
+        .title(title)
         .inner_size(size.width, size.height)
         .min_inner_size(
             f64::from(windows::MIN_SIZE.0),

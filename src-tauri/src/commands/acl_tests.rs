@@ -31,8 +31,14 @@ macro_rules! handler_with_probe {
 }
 
 fn app() -> App<MockRuntime> {
+    // Оболочка 0.3 — для окон, которые создают команды (`vault_manager_open`).
+    let data_dir = std::env::temp_dir().join(format!("rhz-acl-test-{}", std::process::id()));
+    std::fs::create_dir_all(&data_dir).expect("папка");
+    let data_dir = crate::webview_traces::WebviewDataDir::prepare_in(&data_dir, std::process::id())
+        .expect("папка данных");
     mock_builder()
         .plugin(tauri_plugin_dialog::init())
+        .manage(crate::Shell::new(data_dir, crate::security::browser_args()))
         .manage(Core::default())
         .invoke_handler(with_core_commands!(handler_with_probe))
         .build(tauri::generate_context!(test = true))
