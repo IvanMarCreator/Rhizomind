@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applicationPath, createTestProfile, startApp, waitForAppExit, type Session } from './driver.ts';
+import { appWindowTitles } from './window-titles.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const MANAGER = '[data-testid="vault-manager"]';
@@ -643,6 +644,22 @@ describe('сценарий выпуска 0.1: от первого запуск�
     await waitForContent(path.join(archive, 'Итоги года.md'), 'Год закрыт');
     await b.waitUntil(async () => (await statusText(b)) === 'Сохранено', { timeout: 5_000 });
     await shot(b, 'archive-note');
+  });
+
+  it('Н2, вопрос 82 (А): заголовки окон — «<хранилище> — Rhizomind», без имени открытой заметки', async () => {
+    // Тестовая сборка добавляет к «Rhizomind» пометку (WEBDRIVER_BUILD_MARKER).
+    const suffix = ' — Rhizomind — ТЕСТОВАЯ СБОРКА (webdriver)';
+    let titles: string[] = [];
+    await browser().waitUntil(
+      async () => {
+        titles = appWindowTitles();
+        return titles.length >= 2;
+      },
+      { timeout: 10_000, timeoutMsg: 'нет двух окон программы' },
+    );
+    expect(titles).toEqual([`Архив${suffix}`, `Рабочая база${suffix}`]);
+    // Открытая заметка «Итоги года» в заголовок не попадает (инвариант 2).
+    expect(titles.some((title) => title.includes('Итоги года'))).toBe(false);
   });
 
   // ---- С3.1: перезапуск ---------------------------------------------------------------

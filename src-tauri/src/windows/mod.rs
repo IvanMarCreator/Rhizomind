@@ -77,6 +77,44 @@ pub fn manager_title() -> String {
     format!("Управление хранилищами — {}", crate::main_window_title())
 }
 
+/// Наибольшая длина имени хранилища в заголовке окна (символов, вместе с
+/// многоточием).
+pub const VAULT_TITLE_MAX_CHARS: usize = 120;
+
+/// Заголовок окна хранилища: «<имя хранилища> — Rhizomind» (задача 2.11,
+/// находка QA Н2, вопрос 82 вариант А). Имя открытой заметки в заголовок
+/// **не** попадает: заголовок видит Windows (панель задач, Alt+Tab,
+/// журнал действий, специальные возможности), а имена заметок вне хранилища
+/// не уходят (инвариант 2, docs/SECURITY.md). Имя хранилища — то, что
+/// показывает интерфейс (`VaultSummary::name`, имя папки); из него убраны
+/// управляющие символы, переводы строк и знаки направления текста (подмена
+/// вида заголовка), длина ограничена [`VAULT_TITLE_MAX_CHARS`]. Пустое
+/// имя — просто «Rhizomind».
+pub fn vault_title(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !is_direction_mark(*c))
+        .collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return crate::main_window_title();
+    }
+    let shown = if clean.chars().count() > VAULT_TITLE_MAX_CHARS {
+        let mut cut: String = clean.chars().take(VAULT_TITLE_MAX_CHARS - 1).collect();
+        cut.push('…');
+        cut
+    } else {
+        clean.to_owned()
+    };
+    format!("{shown} — {}", crate::main_window_title())
+}
+
+/// Невидимые знаки направления текста (LRM/RLM, встраивания, изоляции):
+/// переставляют части заголовка при показе.
+fn is_direction_mark(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
 /// Как поставить окно управления: 920 × 600, положение выбирает ОС.
 pub fn manager_placement() -> Placement {
     Placement {
@@ -251,6 +289,7 @@ async fn open_vault_in_window<R: Runtime>(
     let opening_app = app.clone();
     let opening_label = label.clone();
     let opening_vault = vault.clone();
+    let title = vault_title(&vault.name);
     crate::commands::blocking(move || {
         bind_vault(&opening_app, &opening_label, opening_vault)?;
         drop(claim);
@@ -258,10 +297,15 @@ async fn open_vault_in_window<R: Runtime>(
     })
     .await?;
     if caller_is_empty {
+        // Окно уже есть: заголовок меняет ядро (у интерфейса права на
+        // заголовок нет).
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.set_title(&title);
+        }
         return Ok(VaultOpenOutcome::Opened);
     }
     let saved = core.registry().window(&vault.id);
-    if let Err(error) = crate::create_window(app, &label, saved) {
+    if let Err(error) = crate::create_window(app, &label, &title, saved) {
         eprintln!("Rhizomind: не удалось создать окно: {error}");
         core.unbind_window(&label);
         return Err(CoreError::new(ErrorCode::IoFailed));
@@ -298,19 +342,22 @@ pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
             .ok()
             .flatten();
         let mut saved = None;
+        let mut title = crate::main_window_title();
         if let Some(vault) = last {
             let id = vault.id.clone();
+            let name = vault.name.clone();
             let binding_app = app.clone();
             let binding_label = label.clone();
             let bound =
                 crate::commands::blocking(move || bind_vault(&binding_app, &binding_label, vault))
                     .await;
             if bound.is_ok() {
+                title = vault_title(&name);
                 saved = Some(core.registry().window(&id));
             }
         }
         let opened = match saved {
-            Some(saved) => crate::create_window(&app, &label, saved)
+            Some(saved) => crate::create_window(&app, &label, &title, saved)
                 .map(|_| ())
                 .map_err(|error| {
                     eprintln!("Rhizomind: не удалось создать окно: {error}");

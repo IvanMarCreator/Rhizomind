@@ -43,7 +43,13 @@ fn app_with(closing: closing::Closing) -> (App<MockRuntime>, tempfile::TempDir) 
 }
 
 fn window(app: &App<MockRuntime>) -> WebviewWindow<MockRuntime> {
-    crate::create_window(app.handle(), &new_label(), None).expect("окно")
+    crate::create_window(
+        app.handle(),
+        &new_label(),
+        &crate::main_window_title(),
+        None,
+    )
+    .expect("окно")
 }
 
 fn call(window: &WebviewWindow<MockRuntime>, command: &str, args: Value) -> Result<Value, Value> {
@@ -924,4 +930,45 @@ fn no_manager_window_after_exit_has_begun() {
 
     assert_eq!(window_count(&app), before, "новое окно не создано");
     assert!(app.state::<Core>().manager_label().is_none());
+}
+
+// Заголовок окна хранилища (задача 2.11, находка QA Н2, вопрос 82 вариант А):
+// «<имя хранилища> — Rhizomind», без имени заметки.
+
+#[test]
+fn vault_title_is_vault_name_then_app_title() {
+    assert_eq!(
+        vault_title("Работа"),
+        format!("Работа — {}", crate::main_window_title())
+    );
+}
+
+#[test]
+fn vault_title_drops_control_and_direction_characters() {
+    assert_eq!(
+        vault_title("  Ра\nбо\r\tта\u{0}\u{1b}[31m\u{202e}\u{2066}  "),
+        format!("Работа[31m — {}", crate::main_window_title())
+    );
+}
+
+#[test]
+fn vault_title_cuts_long_name_with_ellipsis() {
+    let title = vault_title(&"я".repeat(500));
+    let name = title
+        .strip_suffix(&format!(" — {}", crate::main_window_title()))
+        .expect("хвост заголовка");
+    assert_eq!(name.chars().count(), VAULT_TITLE_MAX_CHARS);
+    assert_eq!(name, format!("{}…", "я".repeat(VAULT_TITLE_MAX_CHARS - 1)));
+    // Ровно на пределе — без многоточия.
+    let exact = "ё".repeat(VAULT_TITLE_MAX_CHARS);
+    assert_eq!(
+        vault_title(&exact),
+        format!("{exact} — {}", crate::main_window_title())
+    );
+}
+
+#[test]
+fn vault_title_without_name_is_app_title() {
+    assert_eq!(vault_title(""), crate::main_window_title());
+    assert_eq!(vault_title(" \n\t\u{7f} "), crate::main_window_title());
 }
