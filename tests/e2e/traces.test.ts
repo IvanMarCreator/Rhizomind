@@ -74,22 +74,30 @@ function diff(before: Snapshot, after: Snapshot): { changed: string[]; removed: 
 const TEST_HARNESS_PATHS = [
   path.join('Microsoft', 'Windows', 'PowerShell') + path.sep,
   path.join('AppData', 'Local', 'Microsoft', 'PowerShell') + path.sep,
+];
+
+// Исключения файлового снимка с точными путями (docs/SECURITY.md, строка теста следов):
+const LOCAL_APP_DATA = isWindows ? realpathSync.native(env('LOCALAPPDATA')) : '';
+const NOISE_FILES: ((p: string) => boolean)[] = [
   // Журнал загрузки .NET для powershell.exe (UI Automation при вводе текста).
-  path.join('Microsoft', 'CLR_v4.0', 'UsageLogs') + path.sep,
-  // База кэша WinINet (ESE) — её меняют фоновые задачи Windows и без
-  // приложения (пауза без приложения, задача 0.6); Rhizomind и WebView2 WinINet
-  // не используют.
-  path.join('Microsoft', 'Windows', 'WebCache') + path.sep,
-  // Файлы куста HKCU\Software\Classes (UsrClass.dat и его журналы): меняются
-  // при любой записи в эту ветку реестра; сами записи проверяет снимок реестра.
-  path.join('Microsoft', 'Windows', 'UsrClass.dat'),
+  (p) =>
+    path.dirname(p) === path.join(LOCAL_APP_DATA, 'Microsoft', 'CLR_v4.0', 'UsageLogs') && /^powershell[^\\]*\.log$/i.test(path.basename(p)),
+  // Слепая зона: база кэша WinINet (ESE) — её меняют фоновые задачи Windows и
+  // без приложения (задача 0.6); база заблокирована, содержимое не прочесть.
+  // Rhizomind и WebView2 WinINet не используют; проверка — вручную Process
+  // Monitor, когда появятся внешние ссылки.
+  (p) => p.startsWith(path.join(LOCAL_APP_DATA, 'Microsoft', 'Windows', 'WebCache') + path.sep),
+  // Файлы куста HKCU\Software\Classes (UsrClass.dat и журналы): меняются при
+  // любой записи в эту ветку реестра; сами записи проверяет снимок реестра.
+  (p) => path.dirname(p) === path.join(LOCAL_APP_DATA, 'Microsoft', 'Windows') && /^UsrClass\.dat/i.test(path.basename(p)),
 ];
 
 // Точные пути, которые меняет PowerShell без приложения (например, список
 // переходов PowerShell в Recent\CustomDestinations): калибровка до запуска.
 const calibratedNoise = new Set<string>();
 
-const isHarnessNoise = (p: string) => calibratedNoise.has(p) || TEST_HARNESS_PATHS.some((h) => p.includes(h));
+const isHarnessNoise = (p: string) =>
+  calibratedNoise.has(p) || TEST_HARNESS_PATHS.some((h) => p.includes(h)) || NOISE_FILES.some((f) => f(p));
 
 /** Калибровка: что меняют вызовы PowerShell самого теста, пока приложение не запущено. */
 function calibrateHarnessNoise(roots: string[]): string[] {
@@ -144,12 +152,12 @@ for ($attempt = 1; $attempt -le 3 -and -not $editor; $attempt++) {
 }
 if (-not $editor) {
   $p = Get-Process -Id ${pid}
-  "нет редактора; окно: '$($p.MainWindowTitle)'"
+  "no-editor; window: '$($p.MainWindowTitle)'"
   exit 0
 }
 $editor.SetFocus(); Start-Sleep -Milliseconds 500
 $ws.SendKeys('^{END}'); $ws.SendKeys(' ${text}'); Start-Sleep -Milliseconds 3000
-'введено'
+'typed-ok'
 `;
   return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' }).trim();
 }
@@ -257,9 +265,23 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   const typedText = `trace-text-${hex()}`;
   const vaultDir = path.join(REG_DIR, vaultName);
   const noteFile = path.join(vaultDir, `${noteName}.md`);
-  let savedVaults: Buffer | undefined;
-  let createdProfileDir = false;
+  // Подмена vaults.json — только при явной переменной (в CI выставлена):
+  // на машине владельца тест не трогает его список хранилищ без спроса.
+  // Прежний файл сохраняется на диск рядом и восстанавливается в конце или,
+  // если процесс прервали, при следующем запуске теста.
+  const vaultScenario = process.env.RHIZOMIND_TRACES_VAULT_SCENARIO === '1';
+  const vaultsBackup = path.join(profileDir, 'vaults.json.traces-backup');
   let typing = '';
+
+  /** Возвращает прежний vaults.json из копии на диске, если она есть. */
+  function restoreVaults(): void {
+    if (!isWindows || !existsSync(vaultsBackup)) return;
+    const saved = JSON.parse(readFileSync(vaultsBackup, 'utf8')) as { existed: boolean; profileExisted: boolean; content: string };
+    if (saved.existed) writeFileSync(vaultsFile, Buffer.from(saved.content, 'base64'));
+    else rmSync(vaultsFile, { force: true });
+    rmSync(vaultsBackup, { force: true });
+    if (!saved.profileExisted) rmSync(profileDir, { recursive: true, force: true });
+  }
   // Остаток «аварийного» запуска: процесс 4000000000 не существует.
   const leftover = path.join(temp, 'rhizomind-webview-4000000000-0123456789abcdef');
   const evilUserData = path.join(temp, `rhizomind-e2e-evil-udf-${Date.now()}`);
@@ -281,19 +303,26 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
 
     mkdirSync(path.join(leftover, 'EBWebView'), { recursive: true });
     writeFileSync(path.join(leftover, 'EBWebView', 'Local State'), '{}');
-    // Хранилище и список хранилищ: приложение откроет его при запуске (последнее открытое).
-    mkdirSync(vaultDir, { recursive: true });
-    writeFileSync(noteFile, 'Заметка теста следов.\n');
-    if (existsSync(vaultsFile)) savedVaults = readFileSync(vaultsFile);
-    if (!existsSync(profileDir)) {
+    restoreVaults(); // остаток прерванного прошлого запуска
+    if (vaultScenario) {
+      // Хранилище и список хранилищ: приложение откроет его при запуске (последнее открытое).
+      mkdirSync(vaultDir, { recursive: true });
+      writeFileSync(noteFile, 'Заметка теста следов.\n');
+      const existed = existsSync(vaultsFile);
+      const profileExisted = existsSync(profileDir);
       mkdirSync(profileDir, { recursive: true });
-      createdProfileDir = true;
+      writeFileSync(
+        vaultsBackup,
+        JSON.stringify({ existed, profileExisted, content: existed ? readFileSync(vaultsFile).toString('base64') : '' }),
+      );
+      const vaultId = randomBytes(8).toString('hex');
+      writeFileSync(
+        vaultsFile,
+        JSON.stringify({ format_version: 1, vaults: [{ id: vaultId, name: vaultName, path: real(vaultDir) }], last_opened: vaultId }, null, 2),
+      );
+    } else {
+      console.log('сценарий с тестовым хранилищем пропущен: нет RHIZOMIND_TRACES_VAULT_SCENARIO=1 (vaults.json не подменяется)');
     }
-    const vaultId = randomBytes(8).toString('hex');
-    writeFileSync(
-      vaultsFile,
-      JSON.stringify({ format_version: 1, vaults: [{ id: vaultId, name: vaultName, path: real(vaultDir) }], last_opened: vaultId }, null, 2),
-    );
 
     processes(); // прогрев PowerShell до первого снимка
     const harness = calibrateHarnessNoise(roots);
@@ -325,8 +354,10 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     );
     // Движок поднимает процессы не сразу: даём ему поработать.
     await new Promise((r) => setTimeout(r, 5000));
-    typing = typeIntoNote(pid, noteKey, typedText);
-    console.log(`ввод в заметку: ${typing}`);
+    if (vaultScenario) {
+      typing = typeIntoNote(pid, noteKey, typedText);
+      console.log(`ввод в заметку: ${typing}`);
+    }
     engine = descendants(pid, processes());
     during = snapshot(roots);
   }, 120_000);
@@ -335,11 +366,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     if (app && app.exitCode === null) app.kill();
     rmSync(leftover, { recursive: true, force: true });
     rmSync(evilUserData, { recursive: true, force: true });
-    if (isWindows) {
-      if (savedVaults) writeFileSync(vaultsFile, savedVaults);
-      else rmSync(vaultsFile, { force: true });
-      if (createdProfileDir) rmSync(profileDir, { recursive: true, force: true });
-    }
+    if (isWindows) restoreVaults();
   });
 
   it('при запуске убирает остатки прошлых запусков', () => {
@@ -418,8 +445,10 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     expect(removed.filter((p) => !isLeftover(p) && !isKnownTrace(p))).toEqual([]);
     expect(existsSync(leftover)).toBe(false);
     // Сценарий дошёл до конца: введённый текст записан в заметку до выхода.
-    expect(typing).toBe('введено');
-    expect(readFileSync(noteFile, 'utf8')).toContain(typedText);
+    if (vaultScenario) {
+      expect(typing).toBe('typed-ok');
+      expect(readFileSync(noteFile, 'utf8')).toContain(typedText);
+    }
   }, 60_000);
 
   it('реестр HKCU: нет путей и упоминаний приложения вне учтённых записей', () => {

@@ -161,6 +161,9 @@ jobs:
       - name: Сценарный тест (Windows)
         timeout-minutes: 10
         if: runner.os == 'Windows'
+        env:
+          # Тест следов подменяет vaults.json тестовым хранилищем (машина CI одноразовая).
+          RHIZOMIND_TRACES_VAULT_SCENARIO: "1"
         run: npm run test:e2e
 
       - name: Снимки экрана сценарных тестов
