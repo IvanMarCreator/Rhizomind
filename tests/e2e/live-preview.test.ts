@@ -105,6 +105,58 @@ function modeChecked(browser: WebdriverIO.Browser): Promise<string> {
   );
 }
 
+/**
+ * Отступы и рамка фокуса текста (находки Н7, Н3; задача 2.10). Базовая тема
+ * CodeMirror вставляется элементом <style>, а CSP окна (`style-src 'self'`)
+ * его запрещает — у текста был `white-space: normal`, пробелы в начале строки
+ * и подряд схлопывались. Правила базовой темы теперь в статическом
+ * src/editor/codemirror-base.css, CSP та же.
+ */
+async function expectIndentsVisible(browser: WebdriverIO.Browser, name: string): Promise<void> {
+  await cursorTo(browser, 'Последняя строка.');
+  const look = await browser.execute((selector) => {
+    const lines = [...document.querySelectorAll(`${selector} .cm-line`)];
+    /** Левый край первого видимого символа строки (не пробела). */
+    const start = (fragment: string) => {
+      const line = lines.find((item) => (item.textContent ?? '').includes(fragment));
+      if (!line) return -1;
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent ?? '';
+        const at = text.search(/\S/);
+        if (at < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + 1);
+        return Math.round(range.getBoundingClientRect().left);
+      }
+      return -1;
+    };
+    const content = document.querySelector(selector) as HTMLElement;
+    return {
+      whiteSpace: getComputedStyle(content).whiteSpace,
+      outline: getComputedStyle(content).outlineStyle,
+      focused: document.activeElement === content,
+      nested: start('Вложенный пункт'),
+      top: start('Второй пункт'),
+      codeInner: start('return 42;'),
+      codeOuter: start('function ответ'),
+    };
+  }, TEXT);
+  const detail = JSON.stringify(look);
+  expect(['pre-wrap', 'break-spaces'], detail).toContain(look.whiteSpace);
+  // Два пробела перед «- Вложенный пункт», четыре перед «return».
+  expect(look.nested - look.top, detail).toBeGreaterThanOrEqual(4);
+  expect(look.codeInner - look.codeOuter, detail).toBeGreaterThanOrEqual(8);
+  expect(look.focused, detail).toBe(true);
+  expect(look.outline, detail).toBe('none');
+  await browser.execute(() => {
+    const line = [...document.querySelectorAll('.cm-line')].find((item) => (item.textContent ?? '').includes('Пункт списка'));
+    line?.scrollIntoView({ block: 'start' });
+  });
+  await shotThemes(browser, name);
+}
+
 describe('живой предпросмотр и режим исходного текста', () => {
   let session: Session | undefined;
   let vault = '';
@@ -181,6 +233,10 @@ describe('живой предпросмотр и режим исходного �
     await shotThemes(b, 'cursor-on-heading');
   });
 
+  it('живой предпросмотр: пробелы в начале строки видны — вложенный пункт и код сдвинуты (Н7), рамки фокуса нет (Н3)', async () => {
+    await expectIndentsVisible(browser(), 'indents-preview');
+  });
+
   it('Ctrl+E — режим исходного текста: разметка как есть, без оформления; файл не меняется', async () => {
     const b = browser();
     await b.keys(['Control', 'e']);
@@ -199,74 +255,8 @@ describe('живой предпросмотр и режим исходного �
     expect(readFileSync(file, 'utf8')).toBe(SAMPLE);
   });
 
-  // Находка Н7 (docs/reviews/2026-10-26-task-3.1.md): базовая тема CodeMirror
-  // вставляется элементом <style>, а CSP окна (`style-src 'self'`) его
-  // запрещает — у текста был `white-space: normal`, пробелы в начале строки и
-  // подряд схлопывались. Задача 2.10: правила базовой темы — статическим CSS
-  // (src/editor/codemirror-base.css), CSP та же.
-  it('пробелы в начале строки видны: вложенный пункт и код сдвинуты (Н7), рамки фокуса нет (Н3)', async () => {
-    const b = browser();
-    const measure = () =>
-      b.execute((selector) => {
-        const lines = [...document.querySelectorAll(`${selector} .cm-line`)];
-        /** Левый край первого видимого символа строки (не пробела). */
-        const start = (fragment: string) => {
-          const line = lines.find((item) => (item.textContent ?? '').includes(fragment));
-          if (!line) return -1;
-          const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
-          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-            const text = node.textContent ?? '';
-            const at = text.search(/\S/);
-            if (at < 0) continue;
-            const range = document.createRange();
-            range.setStart(node, at);
-            range.setEnd(node, at + 1);
-            return Math.round(range.getBoundingClientRect().left);
-          }
-          return -1;
-        };
-        const content = document.querySelector(selector) as HTMLElement;
-        return {
-          whiteSpace: getComputedStyle(content).whiteSpace,
-          outline: getComputedStyle(content).outlineStyle,
-          focused: document.activeElement === content,
-          nested: start('Вложенный пункт'),
-          top: start('Второй пункт'),
-          codeInner: start('return 42;'),
-          codeOuter: start('function ответ'),
-        };
-      }, TEXT);
-    // Режим исходного текста (после Ctrl+E): строки как в файле.
-    await cursorTo(b, 'Последняя строка.');
-    const source = await measure();
-    expect(['pre-wrap', 'break-spaces']).toContain(source.whiteSpace);
-    // Два пробела перед «- Вложенный пункт», четыре перед «return».
-    expect(source.nested - source.top, JSON.stringify(source)).toBeGreaterThanOrEqual(4);
-    expect(source.codeInner - source.codeOuter, JSON.stringify(source)).toBeGreaterThanOrEqual(8);
-    expect(source.focused).toBe(true);
-    expect(source.outline).toBe('none');
-    await b.execute(() => {
-      const line = [...document.querySelectorAll('.cm-line')].find((item) => (item.textContent ?? '').includes('Пункт списка'));
-      line?.scrollIntoView({ block: 'start' });
-    });
-    await shotThemes(b, 'indents-source');
-    // Живой предпросмотр: отступы те же, затем обратно в исходный текст
-    // (следующий тест проверяет, что режим помнится).
-    await b.keys(['Control', 'e']);
-    await b.waitUntil(async () => (await modeChecked(b)).includes('Живой предпросмотр'), { timeout: 5_000 });
-    await cursorTo(b, 'Последняя строка.');
-    const preview = await measure();
-    expect(preview.nested - preview.top, JSON.stringify(preview)).toBeGreaterThanOrEqual(4);
-    expect(preview.codeInner - preview.codeOuter, JSON.stringify(preview)).toBeGreaterThanOrEqual(8);
-    expect(preview.outline).toBe('none');
-    await b.execute(() => {
-      const line = [...document.querySelectorAll('.cm-line')].find((item) => (item.textContent ?? '').includes('Пункт списка'));
-      line?.scrollIntoView({ block: 'start' });
-    });
-    await shotThemes(b, 'indents-preview');
-    await b.keys(['Control', 'e']);
-    await b.waitUntil(async () => (await modeChecked(b)).includes('Исходный текст'), { timeout: 5_000 });
-    expect(readFileSync(file, 'utf8')).toBe(SAMPLE);
+  it('исходный текст: пробелы в начале строки видны (Н7), рамки фокуса нет (Н3)', async () => {
+    await expectIndentsVisible(browser(), 'indents-source');
   });
 
   it('выбранный режим помнится после перезапуска (С3.3, решение 72)', async () => {

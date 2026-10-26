@@ -62,12 +62,18 @@
   -webkit-user-modify: read-write-plaintext-only;
 }
 
-/* EditorView.lineWrapping: пробелы в начале строки и подряд видны (Н7). */
+/*
+  EditorView.lineWrapping: пробелы в начале строки и подряд видны (Н7),
+  строки переносятся по пробелам.
+  Отличие от базовой темы: без `overflow-wrap: anywhere` и
+  `word-break: break-word` — слово без пробелов не разрывается (как было до
+  задачи 2.10). С ними WebKitGTK раскладывает строку в мегабайты без пробелов
+  дольше минуты, окно не отвечает (файл больше лимита в сценарии выпуска,
+  tests/e2e/release.test.ts).
+*/
 .cm-editor .cm-lineWrapping {
   white-space: pre-wrap;
   white-space: break-spaces;
-  word-break: break-word;
-  overflow-wrap: anywhere;
   flex-shrink: 1;
 }
 
