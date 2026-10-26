@@ -1,13 +1,17 @@
-<!-- Боковая панель: заголовок «Файлы», дерево файлов (задача 2.3), внизу переключатель хранилищ. -->
+<!-- Боковая панель: заголовок «Файлы», дерево файлов (задача 2.3), внизу переключатель хранилищ (2.8а). -->
 <script lang="ts">
   import type { CurrentVault } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import FileTree from '../tree/FileTree.svelte';
   import TreeActions from '../tree/TreeActions.svelte';
   import type { FileTreeState } from '../tree/tree.svelte.ts';
-  import VaultSwitcher from './VaultSwitcher.svelte';
+  import VaultSwitcher from '../vaults/VaultSwitcher.svelte';
 
-  let { vault, files }: { vault: CurrentVault | null; files: FileTreeState } = $props();
+  let {
+    vault,
+    files,
+    onNotice,
+  }: { vault: CurrentVault | null; files: FileTreeState; onNotice?: (text: string) => void } = $props();
 
   // Кнопки создания в корне видны при наведении на панель и при фокусе внутри неё (решение 48).
   let hovered = $state(false);
@@ -37,7 +41,7 @@
     {/if}
   </div>
   <div class="footer">
-    <VaultSwitcher {vault} />
+    <VaultSwitcher {vault} {onNotice} />
   </div>
 </aside>
 

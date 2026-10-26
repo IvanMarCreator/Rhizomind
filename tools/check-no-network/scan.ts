@@ -15,9 +15,19 @@ export interface Finding {
   severity: Severity;
 }
 
+/** Находка с позицией в строке (с 1): нужна, чтобы найти исходник по карте сборки. */
+export interface LocatedFinding extends Finding {
+  column: number;
+}
+
+interface Located {
+  line: number;
+  column: number;
+}
+
 interface Node {
   type: string;
-  loc?: { start: { line: number } };
+  loc?: { start: { line: number; column: number } };
   start?: number;
   [key: string]: unknown;
 }
@@ -174,6 +184,26 @@ function isDefaultView(node: unknown): boolean {
   );
 }
 
+// Свойства, в которых обычно лежит окно: `el.ownerDocument.defaultView`, `view.win` (CodeMirror).
+const WINDOW_PROPERTIES = new Set(['defaultView', 'win']);
+
+/** `X.defaultView` или `X.win` — выражение, которое, скорее всего, окно. */
+function isWindowProperty(node: Node): boolean {
+  const name = memberName(node);
+  return name !== undefined && WINDOW_PROPERTIES.has(name);
+}
+
+/** Текст цепочки свойств для сообщения: `this.view.win`, `el.ownerDocument.defaultView`. */
+function memberPath(node: Node): string {
+  if (node.type === 'Identifier') return node.name as string;
+  if (node.type === 'ThisExpression') return 'this';
+  if (node.type === 'MemberExpression') {
+    const name = memberName(node);
+    return `${memberPath(node.object as Node)}.${name ?? '[<вычисляемое>]'}`;
+  }
+  return '(…)';
+}
+
 /** Имя глобального объекта для выражения: идентификатор или `document.defaultView`. */
 function globalName(node: unknown): string | undefined {
   if (!isNode(node)) return undefined;
@@ -248,7 +278,7 @@ function isHarmlessGlobalUse(node: Node, parent: Node | undefined): boolean {
 }
 
 class Scanner {
-  readonly findings: Finding[] = [];
+  readonly findings: LocatedFinding[] = [];
 
   private readonly text: string;
   // Глобальные объекты и их псевдонимы в этом файле (`const w = window`).
@@ -259,14 +289,14 @@ class Scanner {
     this.globals = collectGlobalAliases(root);
   }
 
-  private lineOf(node: Node): number {
-    if (node.loc) return node.loc.start.line;
-    if (typeof node.start === 'number') return this.text.slice(0, node.start).split('\n').length;
-    return 0;
+  private positionOf(node: Node): Located {
+    if (node.loc) return { line: node.loc.start.line, column: node.loc.start.column + 1 };
+    if (typeof node.start === 'number') return positionAt(this.text, node.start);
+    return { line: 0, column: 0 };
   }
 
   private report(node: Node, what: string, severity: Severity): void {
-    this.findings.push({ line: this.lineOf(node), what, severity });
+    this.findings.push({ ...this.positionOf(node), what, severity });
   }
 
   private checkModule(node: Node, source: unknown, how: 'import' | 'require'): void {
@@ -288,7 +318,14 @@ class Scanner {
     if (LOADING_CONSTRUCTORS.has(name)) {
       this.report(node, name, 'suspicious');
     } else if (CODE_FROM_STRING.has(name)) {
-      this.report(node, name, 'suspicious');
+      // `x instanceof Function` — только проверка типа: Function не вызывается.
+      // Отдельный вид, чтобы исключение для него не разрешало другие обращения.
+      const typeCheck =
+        name === 'Function' &&
+        parent?.type === 'BinaryExpression' &&
+        parent.operator === 'instanceof' &&
+        parent.right === node;
+      this.report(node, typeCheck ? 'Function справа от instanceof' : name, 'suspicious');
     } else if (this.globals.has(name) && !isHarmlessGlobalUse(node, parent)) {
       this.report(node, `глобальный объект ${name} без свойства`, 'suspicious');
     }
@@ -303,9 +340,24 @@ class Scanner {
       return;
     }
     const objectName = globalName(object);
+    if (objectName === undefined && isWindowProperty(object)) {
+      this.checkWindowMember(node, memberPath(object), name);
+      return;
+    }
     if (objectName === undefined || !this.globals.has(objectName)) return;
     if (name === undefined) {
       this.report(node, `${objectName}[<вычисляемое>]`, 'suspicious');
+    } else if (name === 'open') {
+      this.report(node, 'window.open', 'network');
+    } else if (node.computed && NETWORK_GLOBALS.has(name)) {
+      this.report(node, name, 'network');
+    }
+  }
+
+  /** Обращение к окну через `X.defaultView` или `X.win` (окно документа, окно редактора). */
+  private checkWindowMember(node: Node, objectText: string, name: string | undefined): void {
+    if (name === undefined) {
+      this.report(node, `${objectText}[<вычисляемое>]`, 'suspicious');
     } else if (name === 'open') {
       this.report(node, 'window.open', 'network');
     } else if (node.computed && NETWORK_GLOBALS.has(name)) {
@@ -409,14 +461,19 @@ function lineAt(text: string, offset: number): number {
   return text.slice(0, offset).split('\n').length;
 }
 
-function scanScript(text: string, lineOffset = 0, jsx = false): Finding[] {
+function positionAt(text: string, offset: number): Located {
+  const before = text.slice(0, offset);
+  return { line: before.split('\n').length, column: offset - before.lastIndexOf('\n') };
+}
+
+function scanScript(text: string, lineOffset = 0, jsx = false): LocatedFinding[] {
   const ast = parseTs(text, { loc: true, range: false, jsx }) as unknown as Node;
   const scanner = new Scanner(text, ast);
   scanner.visit(ast);
   return scanner.findings.map((f) => ({ ...f, line: f.line + lineOffset }));
 }
 
-function scanSvelte(text: string): Finding[] {
+function scanSvelte(text: string): LocatedFinding[] {
   const root = parseSvelte(text, { modern: true }) as unknown as Node;
   const scanner = new Scanner(text, root);
   // Код: <script>, <script module> и выражения в разметке. Стили не код.
@@ -432,10 +489,10 @@ function scanSvelte(text: string): Finding[] {
 const HTML_EXTERNAL_ATTR = /\b(?:src|href|action|formaction|data|poster|srcset)\s*=\s*["']?((?:https?:|wss?:|\/\/)[^"'\s>]*)/gi;
 const HTML_INLINE_SCRIPT = /<script\b(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)<\/script>/gi;
 
-function scanHtml(text: string): Finding[] {
-  const findings: Finding[] = [];
+function scanHtml(text: string): LocatedFinding[] {
+  const findings: LocatedFinding[] = [];
   for (const match of text.matchAll(HTML_EXTERNAL_ATTR)) {
-    findings.push({ line: lineAt(text, match.index), what: `внешний адрес ${match[1]}`, severity: 'network' });
+    findings.push({ ...positionAt(text, match.index), what: `внешний адрес ${match[1]}`, severity: 'network' });
   }
   for (const match of text.matchAll(HTML_INLINE_SCRIPT)) {
     const body = match[1] ?? '';
@@ -445,16 +502,21 @@ function scanHtml(text: string): Finding[] {
   return findings;
 }
 
-/** Находки в тексте одного файла, по возрастанию строки. Вид файла — по расширению. */
-export function scanSource(text: string, fileName: string): Finding[] {
-  let findings: Finding[];
+/** Находки в тексте одного файла с позицией в строке, по возрастанию позиции. Вид файла — по расширению. */
+export function scanSourceLocated(text: string, fileName: string): LocatedFinding[] {
+  let findings: LocatedFinding[];
   if (fileName.endsWith('.svelte')) findings = scanSvelte(text);
   else if (fileName.endsWith('.html')) findings = scanHtml(text);
   else findings = scanScript(text, 0, /\.[jt]sx$/.test(fileName));
-  return findings.sort((a, b) => a.line - b.line);
+  return findings.sort((a, b) => a.line - b.line || a.column - b.column);
 }
 
-export interface FileFinding extends Finding {
+/** Находки в тексте одного файла, по возрастанию строки. Вид файла — по расширению. */
+export function scanSource(text: string, fileName: string): Finding[] {
+  return scanSourceLocated(text, fileName).map(({ line, what, severity }) => ({ line, what, severity }));
+}
+
+export interface FileFinding extends LocatedFinding {
   /** Путь относительно base, через «/». */
   file: string;
 }
@@ -485,15 +547,15 @@ export async function scanPaths(targets: string[], base: string): Promise<FileFi
     for await (const file of walk(target)) {
       const relative = path.relative(base, file).split(path.sep).join('/');
       const text = await readFile(file, 'utf8');
-      let findings: Finding[];
+      let findings: LocatedFinding[];
       try {
-        findings = scanSource(text, file);
+        findings = scanSourceLocated(text, file);
       } catch (error) {
         const message = error instanceof Error ? error.message.split('\n')[0] : String(error);
-        findings = [{ line: 0, what: `не удалось разобрать: ${message}`, severity: 'suspicious' }];
+        findings = [{ line: 0, column: 0, what: `не удалось разобрать: ${message}`, severity: 'suspicious' }];
       }
       for (const finding of findings) found.push({ file: relative, ...finding });
     }
   }
-  return found.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
+  return found.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
 }

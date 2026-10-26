@@ -30,6 +30,7 @@ fn app() -> (App<MockRuntime>, tempfile::TempDir) {
         .manage(crate::Shell::new(data_dir, crate::security::browser_args()))
         .manage(Core::new(Registry::default()))
         .invoke_handler(crate::commands::handler())
+        .on_window_event(crate::commands::on_window_event)
         .build(tauri::generate_context!(test = true))
         .expect("тестовое приложение");
     (app, temp)
@@ -352,4 +353,156 @@ fn window_without_size_does_not_overwrite_remembered_placement() {
     remember_placement(&first.as_ref().window());
 
     assert_eq!(core.registry().window(&a), Some(saved));
+}
+
+// ---- Окно «Управление хранилищами» (задача 2.8а) ------------------------------
+
+fn manager(app: &App<MockRuntime>) -> WebviewWindow<MockRuntime> {
+    open_manager(app.handle()).expect("окно управления");
+    let label = app
+        .state::<Core>()
+        .manager_label()
+        .expect("метка окна управления");
+    app.get_webview_window(&label).expect("окно управления")
+}
+
+/// Окно управления — окно приложения с меткой `vault-*` и теми же правами,
+/// что у окон хранилищ; хранилища в нём нет (`vault_current` → `null`), а
+/// второе открытие не создаёт второе окно управления.
+#[test]
+fn manager_window_is_single_and_has_no_vault() {
+    let (app, _temp) = app();
+    let first = manager(&app);
+    assert!(first.label().starts_with(LABEL_PREFIX), "{}", first.label());
+    let current = call(&first, "vault_current", json!({})).expect("права окна");
+    assert_eq!(current["vault"], Value::Null);
+
+    open_manager(app.handle()).expect("повторно");
+    assert_eq!(window_count(&app), 1, "второе окно управления не создаётся");
+    assert_eq!(
+        app.state::<Core>().manager_label().as_deref(),
+        Some(first.label())
+    );
+}
+
+/// Команда `vault_manager_open` из окна хранилища открывает окно управления;
+/// повторный вызов — фокус на него.
+#[test]
+fn manager_open_command_opens_one_manager_window() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+
+    assert_eq!(
+        call(&first, "vault_manager_open", json!({})).expect("vault_manager_open"),
+        Value::Null
+    );
+    assert_eq!(window_count(&app), 2);
+    call(&first, "vault_manager_open", json!({})).expect("повторно");
+    assert_eq!(window_count(&app), 2);
+    let core = app.state::<Core>();
+    let label = core.manager_label().expect("окно управления");
+    assert_ne!(label, first.label());
+    assert!(core.window_vault(&label).is_none());
+}
+
+/// Хранилище из окна управления открывается в новом окне (окно управления не
+/// становится окном хранилища), после чего окно управления закрывается.
+#[test]
+fn vault_opened_from_manager_gets_own_window_and_manager_closes() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let manager = manager(&app);
+    let manager_label = manager.label().to_owned();
+
+    assert_eq!(open(&manager, &a), json!({ "outcome": "opened" }));
+
+    let core = app.state::<Core>();
+    let label_a = core.window_of_vault(&a).expect("А открыто");
+    assert_ne!(
+        label_a, manager_label,
+        "окно управления не занимает хранилище"
+    );
+    assert!(core.window_vault(&manager_label).is_none());
+    assert!(app.get_webview_window(&label_a).is_some());
+    // Окно управления закрыто: его метка забыта. Само окно подменный runtime
+    // из списка не убирает (событие Destroyed приходит из цикла событий ОС);
+    // закрытие проверяет сценарный тест tests/e2e/vaults.test.ts.
+    assert!(core.manager_label().is_none());
+}
+
+/// Окно управления нельзя занять хранилищем никаким путём.
+#[test]
+fn manager_window_cannot_be_claimed_for_a_vault() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let manager = manager(&app);
+    let core = app.state::<Core>();
+    assert_eq!(
+        core.claim_vault(&a, manager.label()).map(|_| ()),
+        Err(crate::commands::ClaimRefused::WindowBusy)
+    );
+}
+
+/// Уже открытое хранилище из окна управления — фокус на его окно, окно
+/// управления закрывается.
+#[test]
+fn opening_open_vault_from_manager_focuses_it_and_closes_manager() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let manager = manager(&app);
+    let manager_label = manager.label().to_owned();
+
+    assert_eq!(open(&manager, &a), json!({ "outcome": "focused" }));
+    let core = app.state::<Core>();
+    assert!(core.manager_label().is_none());
+    assert_ne!(
+        core.window_of_vault(&a).as_deref(),
+        Some(manager_label.as_str())
+    );
+}
+
+/// Окно управления закрыли — следующий вызов создаёт новое.
+#[test]
+fn closed_manager_is_forgotten() {
+    let (app, _temp) = app();
+    let first = manager(&app);
+    let label = first.label().to_owned();
+    app.state::<Core>().unbind_window(&label);
+    assert!(app.state::<Core>().manager_label().is_none());
+}
+
+/// Запуск без последнего хранилища (первый запуск или папка недоступна) —
+/// окно управления, а не пустое окно хранилища (решение владельца 58, Э11б).
+#[test]
+fn startup_without_last_vault_opens_manager() {
+    let (app, _temp) = app();
+    open_at_startup(app.handle());
+    wait_until(|| app.state::<Core>().manager_label().is_some());
+    assert_eq!(window_count(&app), 1);
+}
+
+/// Запуск с последним хранилищем — его окно, окна управления нет.
+#[test]
+fn startup_with_last_vault_opens_its_window() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    app.state::<Core>()
+        .registry()
+        .mark_opened(&a)
+        .expect("последнее");
+    open_at_startup(app.handle());
+    wait_until(|| app.state::<Core>().window_of_vault(&a).is_some());
+    assert!(app.state::<Core>().manager_label().is_none());
+}
+
+fn wait_until(condition: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "условие не наступило");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }

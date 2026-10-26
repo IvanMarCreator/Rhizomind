@@ -1,6 +1,7 @@
 <!--
   Оболочка окна по концепту К2 (docs/design/README.md, Э1): лента иконок,
   боковая панель, область заметки со строкой над ней, уведомления внизу.
+  Окно без хранилища — окно «Управление хранилищами» (src/vaults/, Э11).
   Заголовок окна — системный (свой заголовок требует настройки окна в ядре).
 -->
 <script lang="ts">
@@ -10,8 +11,12 @@
   import { isQuickSwitcherKey } from '../quick-switcher/keys.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTheme } from '../theme/theme.ts';
+  import Editor from '../editor/Editor.svelte';
+  import SaveIndicator from '../editor/SaveIndicator.svelte';
+  import type { SaveStatus } from '../editor/session.ts';
   import NoteTitle from '../tree/NoteTitle.svelte';
-  import { FileTreeState } from '../tree/tree.svelte.ts';
+  import { FileTreeState, type TreeHost } from '../tree/tree.svelte.ts';
+  import VaultManager from '../vaults/VaultManager.svelte';
   import EmptyState from './EmptyState.svelte';
   import NoteHeader from './NoteHeader.svelte';
   import Notifications from './Notifications.svelte';
@@ -21,12 +26,37 @@
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
+  let saveStatus = $state.raw<SaveStatus | null>(null);
+
+  /** Редактор: сигналы «переименовано» и «удалено» доходят до него раньше, чем окно сменит путь. */
+  let editor: Editor | undefined = $state();
 
   /** Дерево файлов окна: им же переименовывается заметка из заголовка. */
   const files = createFiles();
 
   function createFiles(): FileTreeState {
-    return new FileTreeState(model);
+    const owner = model;
+    const host: TreeHost = {
+      get currentPath() {
+        return owner.currentPath;
+      },
+      get confirmDelete() {
+        return owner.confirmDelete;
+      },
+      open: (path) => owner.open(path),
+      entryRenamed: (from, to) => {
+        // Сначала редактор: смена пути после этого — не уход с заметки.
+        editor?.renamed(from, to);
+        owner.entryRenamed(from, to);
+      },
+      entryRemoved: (path) => {
+        // Ввод удалённой заметки не пишется (решение владельца).
+        editor?.removed(path);
+        owner.entryRemoved(path);
+      },
+      notify: (text) => owner.notify(text),
+    };
+    return new FileTreeState(host);
   }
 
   /** Окно быстрого перехода (Ctrl+O, задача 2.7) открыто. */
@@ -53,7 +83,7 @@
   $effect(() => applyTheme(model.theme));
 
   function onKeydown(event: KeyboardEvent) {
-    if (model.status.kind !== 'ready') return;
+    if (model.status.kind !== 'ready' || !model.vault) return;
     if (isQuickSwitcherKey(event)) {
       event.preventDefault();
       openSwitcher();
@@ -68,11 +98,14 @@
   }
 </script>
 
-{#if model.status.kind === 'ready'}
+{#if model.status.kind === 'ready' && !model.vault}
+  <!-- Окно без хранилища — окно «Управление хранилищами» (задача 2.8а). -->
+  <VaultManager onNotice={(text) => model.notify(text)} />
+{:else if model.status.kind === 'ready'}
   <div class="shell" data-testid="shell">
     <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} onQuickSwitcher={openSwitcher} />
     {#if model.sidebarOpen}
-      <Sidebar vault={model.vault} {files} />
+      <Sidebar vault={model.vault} {files} onNotice={(text) => model.notify(text)} />
     {/if}
     <main class="note">
       <NoteHeader
@@ -82,7 +115,11 @@
         bind:mode={model.editorMode}
         onBack={() => model.back()}
         onForward={() => model.forward()}
-      />
+      >
+        {#snippet status()}
+          <SaveIndicator status={saveStatus} />
+        {/snippet}
+      </NoteHeader>
       <div class="body">
         {#if !model.currentPath}
           <EmptyState />
@@ -92,6 +129,13 @@
             <NoteTitle tree={files} path={model.currentPath} />
           </div>
         {/if}
+        <Editor
+          bind:this={editor}
+          path={model.currentPath}
+          showTitle={false}
+          notify={(text) => model.notify(text)}
+          onStatus={(status) => (saveStatus = status)}
+        />
       </div>
     </main>
   </div>

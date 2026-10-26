@@ -45,10 +45,39 @@ export const ru = {
   'note.title.renameHint': 'Нажмите, чтобы переименовать',
   'note.title.editHint': 'Enter — сохранить · Esc — отменить',
 
-  // Переключатель хранилищ
+  // Переключатель хранилищ (Э10б)
   'vaults.switcher.current': 'Хранилище «{name}»',
   'vaults.switcher.none': 'Хранилище не открыто',
   'vaults.switcher.open': 'Сменить хранилище',
+  'vaults.menu.label': 'Хранилища',
+  'vaults.menu.manage': 'Управление хранилищами…',
+
+  // Окно «Управление хранилищами» (Э11а–Э11в)
+  'vaults.manager.list': 'Хранилища',
+  'vaults.manager.isOpen': 'открыто',
+  'vaults.manager.open': 'Открыть',
+  'vaults.manager.openNamed': 'Открыть хранилище «{name}»',
+  'vaults.manager.more': 'Действия с хранилищем «{name}»',
+  'vaults.manager.remove': 'Убрать из списка',
+  'vaults.manager.removeHint': 'Файлы и папка на диске не удаляются',
+  'vaults.manager.removed': 'Хранилище «{name}» убрано из списка. Файлы на диске остались.',
+  'vaults.manager.empty.title': 'Пока нет хранилищ',
+  'vaults.manager.empty.hint': 'Создайте новое хранилище или откройте папку с заметками — справа.',
+  'vaults.manager.tagline': 'База знаний из связанных заметок',
+  'vaults.manager.create.title': 'Создать хранилище',
+  'vaults.manager.create.hint': 'Новая папка для заметок: имя и место на диске.',
+  'vaults.manager.create.button': 'Создать',
+  'vaults.manager.create.where':
+    'После «Создать» выберите в системном окне папку, в которой появится хранилище. Внутри него будет служебная папка .rhizomind.',
+  'vaults.manager.openFolder.title': 'Открыть папку как хранилище',
+  'vaults.manager.openFolder.hint': 'Подойдёт уже существующая папка с файлами .md.',
+  'vaults.manager.openFolder.button': 'Открыть',
+  'vaults.manager.back': 'Назад',
+  'vaults.manager.name': 'Имя хранилища',
+  'vaults.manager.cancel': 'Отмена',
+  'vaults.manager.offline':
+    'Работает без сети. Данные хранилища — только в его папке; в профиле Windows — лишь список хранилищ.',
+  'vaults.manager.version': 'Версия {version} · редакция Secure',
 
   // Строка над заметкой
   'note.header.label': 'Заметка',
@@ -58,6 +87,32 @@ export const ru = {
   'note.mode.label': 'Режим редактора',
   'note.mode.livePreview': 'Живой предпросмотр',
   'note.mode.source': 'Исходный текст (Ctrl+E)',
+
+  // Редактор: текст и сохранение
+  'editor.label': 'Текст заметки',
+  'editor.loading': 'Открываем заметку…',
+  'editor.openFailed': 'Не удалось открыть заметку. {message}',
+  'editor.status.label': 'Состояние сохранения',
+  'editor.status.saved': 'Сохранено',
+  'editor.status.pending': 'Сохраняется',
+  'editor.status.failed': 'Не сохранено',
+  'editor.status.readOnly': 'Только чтение',
+  'editor.status.deleted': 'Удалена на диске',
+  'editor.status.missing': 'Не сохранено: файла нет на диске',
+  'editor.closeUnsaved': 'Ввод в заметке «{name}» не сохранён: {message}',
+  'editor.saveFailed':
+    'Не удалось сохранить заметку «{name}». {message} Текст остаётся в редакторе, сохранение повторится.',
+  'editor.conflictSaved':
+    'Заметка «{name}» изменилась на диске одновременно с вашими правками. Сохранены обе версии: ваша — в заметке, версия с диска — рядом, в «{copy}».',
+  'editor.readOnly.tooLarge.title': 'Только чтение: файл {size}, лимит для редактирования — {limit}',
+  'editor.readOnly.tooLarge.hint':
+    'Чтобы редактировать, увеличьте «Максимальный размер файла для редактирования» в настройках хранилища и откройте файл заново.',
+  'editor.readOnly.tooLarge.hidden': 'Файл больше {max}, поэтому его текст не показывается.',
+  'editor.readOnly.invalidUtf8.title': 'Только чтение: файл не в кодировке UTF-8',
+  'editor.readOnly.invalidUtf8.hint':
+    'Неверные байты показаны знаком «�». Правка запрещена, чтобы не испортить файл.',
+  'editor.readOnly.openSettings': 'Открыть настройки',
+  'units.megabytes': '{value} МБ',
 
   // Пустое состояние
   'shell.empty.title': 'Нет открытой заметки',

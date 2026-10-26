@@ -71,13 +71,44 @@ describe('оболочка окна', () => {
     expect(screen.queryByRole('complementary', { name: 'Боковая панель' })).toBeNull();
   });
 
-  it('окно без хранилища не читает настройки и раскладку', async () => {
+  it('окно без хранилища — «Управление хранилищами»; настройки и раскладка не читаются', async () => {
     const { calls } = await renderShell({
       vault_current: () => ({ api_version: 1, vault: null }),
+      vault_list: () => ({ vaults: [], last_opened: null }),
     });
 
-    expect(await screen.findByRole('button', { name: 'Хранилище не открыто' })).toBeTruthy();
-    expect(calls.map(([command]) => command)).toEqual(['vault_current']);
+    expect(await screen.findByText('Пока нет хранилищ')).toBeTruthy();
+    expect(screen.queryByTestId('shell')).toBeNull();
+    await waitFor(() => expect(calls.map(([command]) => command)).toEqual(['vault_current', 'vault_list']));
+  });
+
+  it('уведомления окна управления — внизу окна', async () => {
+    const failed: CoreError = { code: 'io_failed', message_key: 'errors.io_failed' };
+    await renderShell({
+      vault_current: () => ({ api_version: 1, vault: null }),
+      vault_list: () => {
+        throw failed;
+      },
+    });
+
+    const region = screen.getByRole('region', { name: 'Уведомления' });
+    expect(await within(region).findByText('Не удалось прочитать или записать файл.')).toBeTruthy();
+  });
+
+  it('переключатель хранилищ внизу боковой панели открывает меню хранилищ', async () => {
+    await renderShell({
+      ...WITH_VAULT,
+      vault_list: () => ({
+        vaults: [{ id: 'v1', name: 'Рабочая база', path: 'D:\\Рабочая база', is_open: true }],
+        last_opened: 'v1',
+      }),
+    });
+    const sidebar = await screen.findByRole('complementary', { name: 'Боковая панель' });
+
+    await fireEvent.click(within(sidebar).getByRole('button', { name: 'Хранилище «Рабочая база»' }));
+
+    const menu = await within(sidebar).findByRole('menu', { name: 'Хранилища' });
+    expect(within(menu).getByRole('menuitem', { name: 'Управление хранилищами…' })).toBeTruthy();
   });
 
   it('несовпадение версии API — понятное сообщение вместо пустого окна', async () => {
@@ -219,8 +250,11 @@ describe('оболочка окна', () => {
   });
 
   it('без хранилища быстрый переход не открывается', async () => {
-    await renderShell({ vault_current: () => ({ api_version: 1, vault: null }) });
-    await screen.findByRole('button', { name: 'Хранилище не открыто' });
+    await renderShell({
+      vault_current: () => ({ api_version: 1, vault: null }),
+      vault_list: () => ({ vaults: [], last_opened: null }),
+    });
+    await screen.findByText('Пока нет хранилищ');
 
     await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
 
