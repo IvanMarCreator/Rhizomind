@@ -1,8 +1,8 @@
 <!--
   Быстрый переход (С3.5, макет Э3): окно по Ctrl+O с полем ввода и списком
   заметок. Поиск — в ядре (`switcher_search`, топ-50, нечёткий по имени и
-  пути); здесь — подсветка, выбор с клавиатуры и создание заметки, если
-  заметки с таким именем нет. Окно рисуется, пока открыто: оболочка решает,
+  пути); здесь — подсветка, выбор с клавиатуры, дополнение имени по Tab
+  (решение 51) и создание заметки, если заметки с таким именем нет. Окно рисуется, пока открыто: оболочка решает,
   когда его показать, и получает выбранную заметку через `onOpen`.
 -->
 <script lang="ts">
@@ -13,7 +13,7 @@
   import { userMessage } from '../i18n/errors.ts';
   import { t } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
-  import { createOffer, newNoteDir, noteFileName } from './create.ts';
+  import { createOffer, hasFolderSeparator, newNoteDir, noteFileName } from './create.ts';
   import { highlightItem } from './highlight.ts';
   import { LatestOnly } from './latest.ts';
   import SwitcherIcon from './SwitcherIcon.svelte';
@@ -32,7 +32,8 @@
     onNotice: (text: string) => void;
   } = $props();
 
-  type Option = { kind: 'note'; item: SwitcherItem } | { kind: 'create'; title: string };
+  /** `blocked` — в имени разделитель папок: пункт неактивен (решение 50). */
+  type Option = { kind: 'note'; item: SwitcherItem } | { kind: 'create'; title: string; blocked: boolean };
 
   const LISTBOX_ID = 'quick-switcher-list';
 
@@ -44,6 +45,11 @@
   let createError = $state<string | null>(null);
   let creating = $state(false);
   let selected = $state(0);
+  /**
+   * Дополнение по Tab ждёт ответа на подставленное имя: тогда выбор ставится
+   * на ту же заметку (по пути — одинаковые имена различаются папками).
+   */
+  let completed: { query: string; path: VaultPath } | null = null;
   /** Окно закрыто (Esc, клик мимо) или убрано оболочкой: незаконченное создание не продолжается. */
   let closed = false;
 
@@ -58,7 +64,10 @@
     (text, response) => {
       result = { query: text, items: response.items };
       searchError = null;
-      selected = 0;
+      const keep = completed?.query === text ? completed.path : null;
+      completed = null;
+      const index = keep ? response.items.findIndex((item) => samePath(item.path, keep)) : -1;
+      selected = Math.max(index, 0);
     },
     (_, error) => {
       result = null;
@@ -73,7 +82,7 @@
     if (!result) return [];
     const notes: Option[] = result.items.map((item) => ({ kind: 'note', item }));
     const title = createOffer(result.query, result.items);
-    return title === null ? notes : [...notes, { kind: 'create', title }];
+    return title === null ? notes : [...notes, { kind: 'create', title, blocked: hasFolderSeparator(title) }];
   });
   const shownQuery = $derived(result?.query ?? '');
 
@@ -98,10 +107,33 @@
     return `${LISTBOX_ID}-${index}`;
   }
 
-  function onInput(event: Event & { currentTarget: HTMLInputElement }) {
-    query = event.currentTarget.value;
+  function samePath(a: VaultPath, b: VaultPath): boolean {
+    return a.length === b.length && a.every((part, i) => part === b[i]);
+  }
+
+  function setQuery(text: string) {
+    query = text;
     createError = null;
     searcher.request(limited(query));
+  }
+
+  function onInput(event: Event & { currentTarget: HTMLInputElement }) {
+    completed = null;
+    setQuery(event.currentTarget.value);
+  }
+
+  /** Tab: полное имя выбранной заметки — в поле (решение 51); на пункте создания — ничего. */
+  function complete() {
+    const option = options[selected];
+    if (option?.kind !== 'note') return;
+    const name = option.item.name;
+    completed = { query: limited(name), path: option.item.path };
+    setQuery(name);
+    // Значение — сразу, не дожидаясь обновления разметки; курсор — в конец.
+    if (input) {
+      input.value = name;
+      input.setSelectionRange(name.length, name.length);
+    }
   }
 
   function move(step: number) {
@@ -130,8 +162,9 @@
         close();
         break;
       case 'Tab':
-        // Окно модальное: фокус остаётся в поле.
+        // Окно модальное: фокус остаётся в поле (и при Shift+Tab).
         event.preventDefault();
+        if (!event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) complete();
         break;
     }
   }
@@ -139,6 +172,7 @@
   async function choose(index: number) {
     const option = options[index];
     if (!option || creating) return;
+    if (option.kind === 'create' && option.blocked) return;
     if (option.kind === 'note') {
       onOpen(option.item.path);
       close();
@@ -180,16 +214,23 @@
     if (event.target === event.currentTarget) close();
   }
 
-  /** Клик по списку и подсказкам не забирает фокус у поля. */
+  /** Клик внутри окна мимо поля не забирает у него фокус: фокус удерживается в окне. */
   function keepFocus(event: MouseEvent) {
-    event.preventDefault();
+    if (event.target !== input) event.preventDefault();
   }
 </script>
 
 <!-- Затемнение закрывает окно мышью; с клавиатуры окно закрывает Esc в поле. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="scrim" data-testid="quick-switcher-scrim" onmousedown={onScrimMouseDown}>
-  <div class="switcher" role="dialog" aria-modal="true" aria-label={t('quickSwitcher.label')}>
+  <div
+    class="switcher"
+    role="dialog"
+    tabindex="-1"
+    aria-modal="true"
+    aria-label={t('quickSwitcher.label')}
+    onmousedown={keepFocus}
+  >
     <div class="field">
       <span class="search-icon"><SwitcherIcon name="search" /></span>
       <input
@@ -216,7 +257,7 @@
       <p class="field-error" id="quick-switcher-error" role="alert">{createError}</p>
     {/if}
 
-    <ul class="list" id={LISTBOX_ID} role="listbox" aria-label={t('quickSwitcher.results')} onmousedown={keepFocus}>
+    <ul class="list" id={LISTBOX_ID} role="listbox" aria-label={t('quickSwitcher.results')}>
       {#each options as option, index (option.kind === 'note' ? option.item.path.join('/') : '\u0000create')}
         <!-- Выбор с клавиатуры — из поля (aria-activedescendant), мышью — кликом. -->
         <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -224,8 +265,10 @@
           id={optionId(index)}
           role="option"
           class:create={option.kind === 'create'}
+          class:blocked={option.kind === 'create' && option.blocked}
           class:selected={index === selected}
           aria-selected={index === selected}
+          aria-disabled={option.kind === 'create' && option.blocked ? 'true' : undefined}
           onmousemove={() => (selected = index)}
           onclick={() => void choose(index)}
         >
@@ -243,8 +286,11 @@
           {:else}
             <span class="icon"><SwitcherIcon name="plus" /></span>
             <span class="name">{t('quickSwitcher.create', { name: option.title })}</span>
+            {#if option.blocked}
+              <span class="reason" title={t('quickSwitcher.createSeparator')}>{t('quickSwitcher.createSeparator')}</span>
+            {/if}
           {/if}
-          {#if index === selected}
+          {#if index === selected && !(option.kind === 'create' && option.blocked)}
             <span class="enter"><SwitcherIcon name="corner-down-left" size={14} /></span>
           {/if}
         </li>
@@ -256,8 +302,9 @@
       <p class="message">{t('quickSwitcher.noNotes')}</p>
     {/if}
 
-    <div class="hints" aria-hidden="true" onmousedown={keepFocus}>
+    <div class="hints" aria-hidden="true">
       <span><kbd>{t('quickSwitcher.key.arrows')}</kbd>{t('quickSwitcher.hint.select')}</span>
+      <span><kbd>{t('quickSwitcher.key.tab')}</kbd>{t('quickSwitcher.hint.complete')}</span>
       <span><kbd>{t('quickSwitcher.key.enter')}</kbd>{t('quickSwitcher.hint.open')}</span>
       <span><kbd>{t('quickSwitcher.key.esc')}</kbd>{t('quickSwitcher.hint.close')}</span>
     </div>
@@ -374,6 +421,20 @@
     border-top: 1px solid var(--border-default);
   }
 
+  li.blocked {
+    color: var(--text-muted);
+  }
+
+  .reason {
+    flex: 0 1 auto;
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--status-error);
+    font-size: var(--font-size-caption);
+  }
+
   .icon {
     display: grid;
     place-items: center;
@@ -383,6 +444,10 @@
   li.selected .icon,
   li.create .icon {
     color: var(--accent);
+  }
+
+  li.blocked .icon {
+    color: var(--icon-muted);
   }
 
   .name {

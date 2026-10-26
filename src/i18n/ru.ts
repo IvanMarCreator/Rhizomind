@@ -95,13 +95,16 @@ export const ru = {
   'quickSwitcher.shortcut': 'Ctrl+O',
   'quickSwitcher.results': 'Заметки',
   'quickSwitcher.create': 'Создать заметку „{name}“',
+  'quickSwitcher.createSeparator': 'Косая черта в имени недопустима: сначала создайте папку',
   'quickSwitcher.noNotes': 'Заметок пока нет.',
   'quickSwitcher.key.arrows': '↑ ↓',
   'quickSwitcher.key.enter': 'Enter',
   'quickSwitcher.key.esc': 'Esc',
+  'quickSwitcher.key.tab': 'Tab',
   'quickSwitcher.hint.select': 'выбрать',
   'quickSwitcher.hint.open': 'открыть',
   'quickSwitcher.hint.close': 'закрыть',
+  'quickSwitcher.hint.complete': 'дополнить',
 
   // Уведомления внизу окна
   'notifications.label': 'Уведомления',
