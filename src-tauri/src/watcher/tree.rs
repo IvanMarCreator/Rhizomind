@@ -259,6 +259,16 @@ impl TreeModel {
         }
         let diff = diff(&disk, &model);
         let (changes, held) = self.resolve(diff, &disk, own, hold);
+        // Неизвестный идентификатор при том же содержимом — прежний.
+        for (key, node) in disk.iter_mut() {
+            if node.id.is_none()
+                && let Some(old) = self.nodes.get(key)
+                && old.kind == node.kind
+                && old.same_content(node)
+            {
+                node.id = old.id;
+            }
+        }
         // Отложенные остаются в модели как были.
         for key in &held {
             if let Some(node) = self.nodes.get(key) {
@@ -691,7 +701,13 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
     if file_type.is_symlink() {
         return Ok(None);
     }
-    let id = file_id::get_file_id(entry.path()).ok();
+    // Файл исчез между списком папки и открытием (перенесли, удалили) —
+    // его здесь уже нет; другая ошибка — идентификатор неизвестен.
+    let id = match file_id::get_file_id(entry.path()) {
+        Ok(id) => Some(id),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => None,
+    };
     if file_type.is_dir() {
         return Ok(Some(Node {
             kind: EntryKind::Folder,
@@ -739,7 +755,11 @@ fn diff(disk: &BTreeMap<Key, Node>, model: &BTreeMap<Key, Node>) -> Diff {
     for (key, old) in model {
         match disk.get(key) {
             Some(new) if new.kind == old.kind => {
-                if !old.is_folder() && (!old.same_content(new) || old.id != new.id) {
+                // Идентификатор сравнивается, только если известен с обеих
+                // сторон: неизвестный (файл ушёл между списком и открытием)
+                // правкой не считается.
+                let other_id = matches!((old.id, new.id), (Some(a), Some(b)) if a != b);
+                if !old.is_folder() && (!old.same_content(new) || other_id) {
                     out.changed.push((key.clone(), old.clone()));
                 }
             }
