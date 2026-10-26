@@ -903,3 +903,24 @@ fn ready_answer_closes_at_once() {
     });
     assert!(started.elapsed() < Duration::from_secs(1));
 }
+
+/// Ревью 0.7 (W6): после завершения браузера (выход начат) повторный запуск
+/// программы окно управления не создаёт — окружение движка уже мертво.
+#[test]
+fn no_manager_window_after_exit_has_begun() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&first, "window_close_ready", json!({})).expect("ответ");
+    wait_for("уничтожение", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    let before = window_count(&app);
+
+    open_manager(app.handle()).expect("без ошибки");
+
+    assert_eq!(window_count(&app), before, "новое окно не создано");
+    assert!(app.state::<Core>().manager_label().is_none());
+}

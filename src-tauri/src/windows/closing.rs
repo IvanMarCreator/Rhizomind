@@ -70,6 +70,9 @@ pub struct Closing {
     windows: Mutex<HashMap<String, Entry>>,
     /// Окна, уничтоженные после закрытия (метки окон не повторяются).
     gone: Mutex<std::collections::HashSet<String>>,
+    /// Выход начат: последнее окно закрывается, процесс браузера завершён
+    /// (решение 64) — новых окон не создавать (ревью 0.7, W6).
+    exiting: std::sync::atomic::AtomicBool,
     /// Окно вышло из цикла закрытия (уничтожено или показано снова).
     changed: Condvar,
 }
@@ -88,6 +91,7 @@ impl Closing {
             timeout,
             windows: Mutex::default(),
             gone: Mutex::default(),
+            exiting: std::sync::atomic::AtomicBool::new(false),
             changed: Condvar::new(),
         }
     }
@@ -156,6 +160,16 @@ impl Closing {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .contains(label)
+    }
+
+    /// Выход начат (последнее окно закрывается) — новых окон не будет.
+    pub fn is_exiting(&self) -> bool {
+        self.exiting.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn begin_exit(&self) {
+        self.exiting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Ни одно окно не закрывается.
@@ -361,6 +375,11 @@ pub fn is_last_window<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> boo
 
 /// Завершает процесс браузера WebView2 (решение 64), если он известен.
 fn end_browser<R: Runtime>(app: &tauri::AppHandle<R>) {
+    // Сначала — признак выхода: окно, созданное после завершения браузера,
+    // открылось бы в мёртвом окружении движка (ревью 0.7, W6).
+    if let Some(closing) = app.try_state::<Closing>() {
+        closing.begin_exit();
+    }
     // Тестовая сборка: контрольный прогон сценарного теста — штатное закрытие.
     #[cfg(feature = "webdriver")]
     if crate::windows::e2e::keep_browser() {
@@ -385,6 +404,12 @@ pub fn answer<R: Runtime>(window: &tauri::Window<R>, answer: Answer) {
     if let Some(closing) = window.try_state::<Closing>() {
         closing.answer(window.label(), answer);
     }
+}
+
+/// Выход начат: новых окон не создавать.
+pub fn is_exiting<R: Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    app.try_state::<Closing>()
+        .is_some_and(|closing| closing.is_exiting())
 }
 
 /// Окно `label` закрывается (скрыто, пишет ввод)?

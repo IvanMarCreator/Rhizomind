@@ -331,6 +331,12 @@ pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
 /// программы (задача 0.5, решение владельца 58). Вызывать можно из любого
 /// потока, в том числе из главного: замков на время создания окна не держит.
 pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
+    // Выход начат (последнее окно закрывается, браузер завершён): окно не
+    // создаётся. Повторный запуск в эти доли секунды ничего не откроет —
+    // программу запускают ещё раз после выхода.
+    if closing::is_exiting(app) {
+        return Ok(());
+    }
     let core = app.state::<Core>();
     match core.reserve_manager(&new_manager_label()) {
         ManagerSlot::Existing(label) => {

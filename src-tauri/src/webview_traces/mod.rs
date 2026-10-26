@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 mod process;
 
-pub use process::{is_process_alive, wait_for_process_tree_exit};
+pub use process::{BrowserProcess, is_process_alive, wait_for_process_tree_exit};
 
 /// Начало имени папки данных. Отличается от других временных папок проекта
 /// (например, `rhizomind-portable-*` у `tools/package-portable`).
@@ -129,7 +129,8 @@ pub fn remove_with_retries(path: &Path, timeout: Duration) -> io::Result<()> {
 #[derive(Debug)]
 pub struct WebviewDataDir {
     path: PathBuf,
-    browser_pid: Mutex<Option<u32>>,
+    /// Процесс браузера: дескриптор держится с создания окна (ревью 0.7, B3).
+    browser: Mutex<Option<BrowserProcess>>,
 }
 
 /// Сколько ждать завершения процесса браузера после `TerminateProcess`.
@@ -150,7 +151,7 @@ impl WebviewDataDir {
         sweep_leftovers(temp, pid, is_process_alive);
         Ok(Self {
             path: create_data_dir(temp, pid)?,
-            browser_pid: Mutex::new(None),
+            browser: Mutex::new(None),
         })
     }
 
@@ -158,29 +159,49 @@ impl WebviewDataDir {
         &self.path
     }
 
-    /// Запоминает `BrowserProcessId` движка: при выходе ядро ждёт его завершения.
+    /// `BrowserProcessId` движка (создано окно): дескриптор процесса браузера
+    /// открывается сразу и держится до выхода — завершение и ожидание идут
+    /// через него, а не по номеру (номер упавшего браузера мог достаться
+    /// чужому процессу). Тот же живой браузер — дескриптор прежний.
     pub fn set_browser_pid(&self, pid: u32) {
-        if let Ok(mut slot) = self.browser_pid.lock() {
-            *slot = Some(pid);
+        let Ok(mut slot) = self.browser.lock() else {
+            return;
+        };
+        if slot
+            .as_ref()
+            .is_some_and(|browser| browser.pid() == pid && browser.is_alive())
+        {
+            return;
+        }
+        match BrowserProcess::open(pid) {
+            Some(browser) => *slot = Some(browser),
+            None => eprintln!(
+                "Rhizomind: процесс браузера WebView2 {pid} не открыт (не жив или не msedgewebview2.exe)"
+            ),
         }
     }
 
     /// Выход программы (решение владельца 64): завершить процесс браузера
     /// WebView2 до закрытия последнего окна — штатное закрытие загружает
     /// модуль OneAuth движка, и ОС обращается к службе входа Microsoft.
-    /// `true` — процесс был и завершён.
+    /// Только через дескриптор, открытый при создании окна. `true` — процесс
+    /// был и завершён.
     pub fn terminate_browser(&self) -> bool {
-        let browser_pid = self.browser_pid.lock().ok().and_then(|slot| *slot);
-        browser_pid.is_some_and(|pid| process::terminate(pid, BROWSER_TERMINATE_TIMEOUT))
+        let Ok(slot) = self.browser.lock() else {
+            return false;
+        };
+        slot.as_ref()
+            .is_some_and(|browser| browser.terminate(BROWSER_TERMINATE_TIMEOUT))
     }
 
     /// После закрытия окон: дождаться завершения процесса браузера и его
     /// дочерних, затем удалить папку с повторами.
     pub fn remove_after_exit(&self, timeout: Duration) -> io::Result<()> {
         let deadline = Instant::now() + timeout;
-        let browser_pid = self.browser_pid.lock().ok().and_then(|slot| *slot);
-        if let Some(pid) = browser_pid {
-            wait_for_process_tree_exit(pid, timeout);
+        // Дескриптор забирается: после ожидания он закрывается (Drop).
+        let browser = self.browser.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(browser) = browser {
+            browser.wait_tree_exit(timeout);
         }
         remove_with_retries(
             &self.path,
@@ -317,7 +338,7 @@ mod tests {
         let root = temp_root("session");
         let dir = WebviewDataDir {
             path: create_data_dir(&root, 9).unwrap(),
-            browser_pid: Mutex::new(None),
+            browser: Mutex::new(None),
         };
         std::fs::write(dir.path().join("Local State"), "{}").unwrap();
         dir.remove_after_exit(Duration::from_secs(1))
