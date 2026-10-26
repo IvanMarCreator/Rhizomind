@@ -333,6 +333,26 @@ internal static class MiniWebView
         };
         var nav = Array.IndexOf(parts, "nav") > 0;
         var lang = Array.IndexOf(parts, "lang") > 0;
+        // +abrupt — выход процесса без Close контроллера; +destroy — окно закрывается
+        // раньше контроллера (контроллер не закрывается явно).
+        var abrupt = Array.IndexOf(parts, "abrupt") > 0;
+        var destroy = Array.IndexOf(parts, "destroy") > 0;
+        // +dpi — процесс с учётом DPI по мониторам (PerMonitorV2), как окно tao/wry.
+        var dpi = Array.IndexOf(parts, "dpi") > 0;
+        if (dpi) Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        // Вызовы API, которые делает wry при создании окна (vendor/wry/src/webview2/mod.rs):
+        //   +ncr — Settings9.IsNonClientRegionSupportEnabled = true; +xdrop — AllowExternalDrop = false;
+        //   +settings — строка состояния, меню, масштаб, devtools, жесты; +events — подписки на события;
+        //   +script — AddScriptToExecuteOnDocumentCreated; +wry — всё вместе.
+        bool Has(string p) => Array.IndexOf(parts, p) > 0 || Array.IndexOf(parts, "wry") > 0;
+        var ncr = Has("ncr");
+        var xdrop = Has("xdrop");
+        var settings = Has("settings");
+        var events = Has("events");
+        var script = Has("script");
+        // +tcbv — TargetCompatibleBrowserVersion как у webview2-com 0.39.1 (wry); +noext — расширения выключены (как wry).
+        var tcbv = Array.IndexOf(parts, "tcbv") > 0;
+        var noext = Array.IndexOf(parts, "noext") > 0;
         var dataDir = Path.Combine(Path.GetTempPath(), "t06-webview-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dataDir);
         var info = new Dictionary<string, object> { ["mode"] = mode, ["dataDir"] = dataDir };
@@ -350,6 +370,9 @@ internal static class MiniWebView
                     AllowSingleSignOnUsingOSPrimaryAccount = false,
                     IsCustomCrashReportingEnabled = true,
                 };
+                if (tcbv) options.TargetCompatibleBrowserVersion = "145.0.3800.47";
+                if (noext) options.AreBrowserExtensionsEnabled = false;
+                info["sdkTarget"] = options.TargetCompatibleBrowserVersion;
                 if (lang)
                 {
                     options.Language = "en-US";
@@ -363,6 +386,32 @@ internal static class MiniWebView
                 controller.Bounds = form.ClientRectangle;
                 var core = controller.CoreWebView2;
                 core.Settings.IsPasswordAutosaveEnabled = false;
+                if (xdrop) controller.AllowExternalDrop = false;
+                if (settings)
+                {
+                    core.Settings.IsStatusBarEnabled = false;
+                    core.Settings.AreDefaultContextMenusEnabled = true;
+                    core.Settings.IsZoomControlEnabled = true;
+                    core.Settings.AreDevToolsEnabled = false;
+                    core.Settings.IsScriptEnabled = true;
+                    core.Settings.IsPinchZoomEnabled = true;
+                    core.Settings.IsSwipeNavigationEnabled = false;
+                }
+                if (ncr) core.Settings.IsNonClientRegionSupportEnabled = true;
+                if (events)
+                {
+                    core.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
+                    core.WindowCloseRequested += (_, _) => { };
+                    core.DocumentTitleChanged += (_, _) => { };
+                    core.ContentLoading += (_, _) => { };
+                    core.NavigationCompleted += (_, _) => { };
+                    core.NavigationStarting += (_, _) => { };
+                    core.NewWindowRequested += (_, e) => e.Handled = true;
+                    core.DownloadStarting += (_, e) => e.Cancel = true;
+                    core.WebMessageReceived += (_, _) => { };
+                }
+                if (script) await core.AddScriptToExecuteOnDocumentCreatedAsync("window.__t06 = 1;");
+                info["wryApi"] = new { ncr, xdrop, settings, events, script };
                 core.Settings.IsGeneralAutofillEnabled = false;
                 browserPid = core.BrowserProcessId;
                 info["browserPid"] = browserPid;
@@ -383,7 +432,24 @@ internal static class MiniWebView
                     core.NavigateToString("<!doctype html><title>t06</title><h1>t06 mini webview</h1>");
                 }
                 var timer = new System.Windows.Forms.Timer { Interval = seconds * 1000 };
-                timer.Tick += (_, _) => { timer.Stop(); controller.Close(); form.Close(); };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    if (abrupt)
+                    {
+                        info["closeMode"] = "abrupt";
+                        Out.Json(info);
+                        Environment.Exit(0);
+                    }
+                    if (destroy)
+                    {
+                        info["closeMode"] = "destroy";
+                        form.Close();
+                        return;
+                    }
+                    controller.Close();
+                    form.Close();
+                };
                 timer.Start();
             }
             catch (Exception e)

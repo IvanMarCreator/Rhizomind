@@ -20,8 +20,10 @@
     <SelfContained>false</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Версию SDK можно сменить: dotnet publish -p:WebView2Version=… -->
+    <WebView2Version Condition="'$(WebView2Version)' == ''">1.0.4314.35</WebView2Version>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3179.45" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="$(WebView2Version)" />
   </ItemGroup>
 </Project>
