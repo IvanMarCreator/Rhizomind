@@ -21,6 +21,11 @@ const LOCAL_URL: &str = if cfg!(windows) {
 /// Приложение как в `lib.rs::run`: оболочка 0.3, ядро со списком хранилищ
 /// в памяти, права окон — из `capabilities/main.json`.
 fn app() -> (App<MockRuntime>, tempfile::TempDir) {
+    app_with(closing::Closing::default())
+}
+
+/// [`app`] с заданным учётом закрытий (предел ожидания для тестов).
+fn app_with(closing: closing::Closing) -> (App<MockRuntime>, tempfile::TempDir) {
     let temp = tempfile::tempdir().expect("папка");
     let data_dir =
         crate::webview_traces::WebviewDataDir::prepare_in(temp.path(), std::process::id())
@@ -29,6 +34,7 @@ fn app() -> (App<MockRuntime>, tempfile::TempDir) {
         .plugin(tauri_plugin_dialog::init())
         .manage(crate::Shell::new(data_dir, crate::security::browser_args()))
         .manage(Core::new(Registry::default()))
+        .manage(closing)
         .invoke_handler(crate::commands::handler())
         .on_window_event(crate::commands::on_window_event)
         .build(tauri::generate_context!(test = true))
@@ -505,4 +511,192 @@ fn wait_until(condition: impl Fn() -> bool) {
         assert!(std::time::Instant::now() < deadline, "условие не наступило");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+// ---- Закрытие окна после записи ввода (задача 0.7) ------------------------------
+
+use closing::{Closing, Phase, on_close_requested};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+use tauri::Listener;
+
+/// Считает события `window:close-requested`, пришедшие окну.
+fn close_events(window: &WebviewWindow<MockRuntime>) -> Arc<AtomicUsize> {
+    let count = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&count);
+    window.listen(
+        crate::commands::event::WINDOW_CLOSE_REQUESTED,
+        move |event| {
+            assert_eq!(event.payload(), "{}");
+            counter.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    count
+}
+
+fn wait_for(what: &str, check: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !check() {
+        assert!(Instant::now() < deadline, "не дождались: {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn phase(app: &App<MockRuntime>, window: &WebviewWindow<MockRuntime>) -> Option<Phase> {
+    app.state::<Closing>().phase(window.label())
+}
+
+/// Окно хранилища: закрытие откладывается, окну уходит событие, окно
+/// уничтожается только после `window_close_ready`.
+#[test]
+fn vault_window_waits_for_interface_before_it_is_destroyed() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let events = close_events(&first);
+
+    assert!(
+        on_close_requested(&first.as_ref().window()),
+        "закрытие отложено"
+    );
+    wait_for("событие окну", || {
+        events.load(Ordering::SeqCst) == 1
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(phase(&app, &first), Some(Phase::Waiting), "ждёт ответа");
+
+    assert_eq!(
+        call(&first, "window_close_ready", json!({})).expect("window_close_ready"),
+        Value::Null
+    );
+    wait_for("уничтожение окна", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    // Destroyed (из цикла событий ОС) выводит окно из цикла закрытия.
+    closing::on_window_event(&first.as_ref().window(), &tauri::WindowEvent::Destroyed);
+    assert_eq!(phase(&app, &first), None);
+    assert!(app.state::<Closing>().is_idle());
+}
+
+/// Повторное закрытие во время ожидания второго цикла не начинает.
+#[test]
+fn repeated_close_request_while_waiting_starts_no_second_cycle() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let events = close_events(&first);
+
+    assert!(on_close_requested(&first.as_ref().window()));
+    assert!(
+        on_close_requested(&first.as_ref().window()),
+        "снова отложено"
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(events.load(Ordering::SeqCst), 1, "событие — одно");
+    assert_eq!(phase(&app, &first), Some(Phase::Waiting));
+}
+
+/// Нет ответа за предел — окно уничтожается без ответа: программа не висит.
+#[test]
+fn window_is_destroyed_without_answer_after_timeout() {
+    let (app, temp) = app_with(Closing::new(Duration::from_millis(100)));
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+
+    let started = Instant::now();
+    assert!(on_close_requested(&first.as_ref().window()));
+    wait_for("уничтожение по пределу", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert!(started.elapsed() >= Duration::from_millis(100));
+}
+
+/// Запись не удалась: окно показывается снова и остаётся; следующее закрытие —
+/// новый цикл.
+#[test]
+fn cancel_keeps_window_and_next_close_starts_new_cycle() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let events = close_events(&first);
+
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&first, "window_close_cancel", json!({})).expect("window_close_cancel");
+    wait_for("окно вне цикла закрытия", || {
+        phase(&app, &first).is_none()
+    });
+    assert!(app.get_webview_window(first.label()).is_some());
+    assert!(app.state::<Core>().window_vault(first.label()).is_some());
+
+    assert!(on_close_requested(&first.as_ref().window()));
+    wait_for("второе событие", || {
+        events.load(Ordering::SeqCst) == 2
+    });
+}
+
+/// Ответ действует только на своё окно и только во время ожидания.
+#[test]
+fn answers_act_only_on_own_waiting_window() {
+    let (app, temp) = app();
+    let (a, b) = (vault(&app, temp.path(), "А"), vault(&app, temp.path(), "Б"));
+    let first = window(&app);
+    open(&first, &a);
+    let second = window(&app);
+    open(&second, &b);
+    let second_events = close_events(&second);
+
+    // Без закрытия ответ ничего не делает.
+    call(&second, "window_close_ready", json!({})).expect("без закрытия");
+    assert_eq!(phase(&app, &second), None);
+
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&second, "window_close_ready", json!({})).expect("чужое окно");
+    call(&second, "window_close_cancel", json!({})).expect("чужое окно");
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(phase(&app, &first), Some(Phase::Waiting), "первое ждёт");
+    assert_eq!(
+        second_events.load(Ordering::SeqCst),
+        0,
+        "событие — только своему окну"
+    );
+}
+
+/// Окну без хранилища (окно управления) записывать нечего — закрывается сразу.
+#[test]
+fn window_without_vault_closes_at_once() {
+    let (app, _temp) = app();
+    let manager = manager(&app);
+    let events = close_events(&manager);
+    assert!(!on_close_requested(&manager.as_ref().window()));
+    assert_eq!(phase(&app, &manager), None);
+    let empty = window(&app);
+    assert!(!on_close_requested(&empty.as_ref().window()));
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(events.load(Ordering::SeqCst), 0);
+}
+
+/// Выход из программы ждёт окна, которые ещё записывают ввод.
+#[test]
+fn exit_waits_while_a_window_is_closing() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    assert!(!closing::exit_must_wait(app.handle()));
+    assert!(on_close_requested(&first.as_ref().window()));
+    assert!(closing::exit_must_wait(app.handle()));
+    call(&first, "window_close_ready", json!({})).expect("ответ");
+    wait_for("уничтожение", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert!(
+        closing::exit_must_wait(app.handle()),
+        "до Destroyed — ещё ждать"
+    );
+    closing::on_window_event(&first.as_ref().window(), &tauri::WindowEvent::Destroyed);
+    assert!(!closing::exit_must_wait(app.handle()));
 }

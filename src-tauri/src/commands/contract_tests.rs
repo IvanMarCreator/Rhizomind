@@ -223,6 +223,18 @@ fn vault_manager_open() {
     command("vault_manager_open", &(), &[err(ErrorCode::IoFailed)]);
 }
 
+/// Закрытие окна хранилища после записи ввода (задача 0.7, расширение
+/// контракта v1): ответы интерфейса на `window:close-requested`.
+#[test]
+fn window_close_ready() {
+    command("window_close_ready", &(), &[]);
+}
+
+#[test]
+fn window_close_cancel() {
+    command("window_close_cancel", &(), &[]);
+}
+
 #[test]
 fn tree_list() {
     command(
@@ -607,6 +619,14 @@ fn event_vault_availability() {
     event(
         event::VAULT_AVAILABILITY,
         &VaultAvailabilityPayload { available: false },
+    );
+}
+
+#[test]
+fn event_window_close_requested() {
+    event(
+        event::WINDOW_CLOSE_REQUESTED,
+        &WindowCloseRequestedPayload {},
     );
 }
 

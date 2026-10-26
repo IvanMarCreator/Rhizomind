@@ -1,0 +1,9 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "window_close_ready",
+  "errors": [],
+  "request": null,
+  "response": null
+}

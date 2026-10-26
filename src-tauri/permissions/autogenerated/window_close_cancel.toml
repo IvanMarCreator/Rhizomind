@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-close-cancel"
+description = "Enables the window_close_cancel command without any pre-configured scope."
+commands.allow = ["window_close_cancel"]
+
+[[permission]]
+identifier = "deny-window-close-cancel"
+description = "Denies the window_close_cancel command without any pre-configured scope."
+commands.deny = ["window_close_cancel"]

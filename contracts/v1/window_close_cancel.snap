@@ -1,0 +1,9 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "window_close_cancel",
+  "errors": [],
+  "request": null,
+  "response": null
+}

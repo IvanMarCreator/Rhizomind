@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { onCoreEvent } from '../api/index.ts';
   import { historyKeyAction } from '../core/history/history.ts';
   import { t } from '../i18n/index.ts';
   import { isQuickSwitcherKey } from '../quick-switcher/keys.ts';
@@ -23,6 +24,7 @@
   import Ribbon from './Ribbon.svelte';
   import Sidebar from './Sidebar.svelte';
   import StartupError from './StartupError.svelte';
+  import { WindowClosing, coreClosing } from './closing.ts';
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
@@ -59,6 +61,16 @@
     return new FileTreeState(host);
   }
 
+  /**
+   * Закрытие окна (задача 0.7): ядро скрыло окно и ждёт, пока ввод запишется.
+   * Без редактора (окно загружается, ошибка запуска) записывать нечего.
+   */
+  const closing = new WindowClosing({
+    flush: () => editor?.flushForClose() ?? Promise.resolve([]),
+    ...coreClosing,
+    notify: (text) => model.notify(text),
+  });
+
   /** Окно быстрого перехода (Ctrl+O, задача 2.7) открыто. */
   let switcherOpen = $state(false);
 
@@ -73,11 +85,16 @@
   }
 
   onMount(() => {
+    // Подписка — первой: окно могут закрыть, пока оно загружается.
+    const unsubscribe = onCoreEvent('window:close-requested', () => void closing.closeRequested());
     void model.start();
     // Не <svelte:window>: Svelte передаёт тогда объект window значением, и
     // проверка сети (tools/check-no-network) не может доказать безопасность.
     window.addEventListener('keydown', onKeydown);
-    return () => window.removeEventListener('keydown', onKeydown);
+    return () => {
+      window.removeEventListener('keydown', onKeydown);
+      void unsubscribe.then((stop) => stop()).catch(() => undefined);
+    };
   });
 
   $effect(() => applyTheme(model.theme));

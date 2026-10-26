@@ -1,8 +1,10 @@
 <!--
   Область заметки (С3.3): заголовок — имя файла, подсказка «только чтение»,
   текст в CodeMirror. Сохранение — sessions.ts: через 1 с паузы ввода, при
-  переходе к другой заметке (смена `path`) и при закрытии окна (pagehide,
-  beforeunload, скрытие окна). Состояние для индикатора — `onStatus`.
+  переходе к другой заметке (смена `path`) и при закрытии окна: по сигналу
+  ядра (`flushForClose`, оболочка — src/shell/closing.ts, задача 0.7) и
+  запасным путём по pagehide, beforeunload, скрытию окна. Состояние для
+  индикатора — `onStatus`.
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
@@ -12,7 +14,7 @@
   import NoteText from './NoteText.svelte';
   import ReadOnlyNotice from './ReadOnlyNotice.svelte';
   import { coreNoteStore, type NoteStore, type SaveStatus } from './session.ts';
-  import { EditorSessions, noteName, type EditorPane } from './sessions.ts';
+  import { EditorSessions, noteName, type EditorPane, type UnsavedNote } from './sessions.ts';
 
   let {
     path,
@@ -73,8 +75,17 @@
     sessions.removed(removedPath);
   }
 
+  /**
+   * Закрытие окна (задача 0.7): записать ввод всех заметок и дождаться
+   * ответов; возвращает заметки, ввод которых записать не удалось.
+   */
+  export function flushForClose(): Promise<UnsavedNote[]> {
+    return sessions.flushForClose();
+  }
+
   onMount(() => {
-    // Закрытие окна: запросы записи уходят синхронно, до выгрузки страницы.
+    // Запасной путь закрытия окна (основной — сигнал ядра, flushForClose):
+    // запросы записи уходят синхронно, до выгрузки страницы.
     const flush = () => void sessions.flushAll();
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') flush();

@@ -90,7 +90,7 @@ describe('фильтр изолированного iframe', () => {
   // метку чужого окна. Подписка — только на события ядра.
   it('пропускает подписку ровно на события ядра из events.rs', () => {
     const events = coreEvents();
-    expect(events).toHaveLength(6);
+    expect(events).toHaveLength(7);
     expect([...eventsInFilter()].sort()).toEqual([...events].sort());
     const hook = loadHook();
     for (const event of events) expect(hook(listenTo(event)), event).toEqual(listenTo(event));

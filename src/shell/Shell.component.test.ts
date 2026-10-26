@@ -79,7 +79,9 @@ describe('оболочка окна', () => {
 
     expect(await screen.findByText('Пока нет хранилищ')).toBeTruthy();
     expect(screen.queryByTestId('shell')).toBeNull();
-    await waitFor(() => expect(calls.map(([command]) => command)).toEqual(['vault_current', 'vault_list']));
+    // Подписка на сигнал закрытия окна (задача 0.7) — не обращение к ядру.
+    const commands = () => calls.map(([command]) => command).filter((command) => !command.startsWith('plugin:event|'));
+    await waitFor(() => expect(commands()).toEqual(['vault_current', 'vault_list']));
   });
 
   it('уведомления окна управления — внизу окна', async () => {

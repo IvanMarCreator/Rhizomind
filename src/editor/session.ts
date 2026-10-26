@@ -138,6 +138,11 @@ export class NoteSession {
     return this.#status;
   }
 
+  /** Запись в полёте (ответ ядра ещё не пришёл). */
+  get writing(): boolean {
+    return this.#inFlight !== null;
+  }
+
   /** Есть ввод, которого ещё нет в файле, или идёт запись. */
   get hasUnsavedChanges(): boolean {
     if (this.#status.kind === 'deleted' || this.readOnly) return false;

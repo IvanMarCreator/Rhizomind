@@ -37,6 +37,7 @@ mod note;
 mod settings;
 mod types;
 mod vaults;
+mod window;
 
 #[cfg(test)]
 mod acl_tests;
@@ -52,7 +53,8 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use error::{CoreError, CoreResult, ErrorCode, NameProblem};
 pub use events::{
     EVENT_NAMES, NoteChangedPayload, NoteConflictSavedPayload, NoteDeletedPayload,
-    NoteRenamedPayload, TreeChange, VaultAvailabilityPayload, VaultChangedPayload, event,
+    NoteRenamedPayload, TreeChange, VaultAvailabilityPayload, VaultChangedPayload,
+    WindowCloseRequestedPayload, event,
 };
 pub use files::*;
 pub use index::NoteIndex;
@@ -63,6 +65,7 @@ pub use types::{
     API_VERSION, CurrentVault, EntryKind, FileVersion, VaultId, VaultPath, VaultSummary,
 };
 pub use vaults::*;
+pub use window::*;
 
 use crate::events::{Emit, VaultEvents};
 use crate::own_writes::OwnWrites;
@@ -492,15 +495,14 @@ impl Core {
     }
 }
 
-/// Отвязка окна от хранилища при его закрытии (`Builder::on_window_event`).
-/// Наблюдатель останавливается в отдельном потоке: остановка ждёт конца
-/// текущей сверки, а главный поток ждать не должен.
+/// Закрытие окна (`Builder::on_window_event`): запись ввода перед закрытием
+/// и размер окна — [`crate::windows::closing`] (задачи 0.7, 1.3); отвязка
+/// уничтоженного окна от хранилища. Наблюдатель останавливается в отдельном
+/// потоке: остановка ждёт конца текущей сверки, а главный поток ждать не
+/// должен.
 pub fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &tauri::WindowEvent) {
     use tauri::Manager;
-    if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-        // Размер и положение окна — в список хранилищ (задача 1.3).
-        crate::windows::remember_placement(window);
-    }
+    crate::windows::closing::on_window_event(window, event);
     if matches!(event, tauri::WindowEvent::Destroyed) {
         let app = window.app_handle().clone();
         let label = window.label().to_owned();

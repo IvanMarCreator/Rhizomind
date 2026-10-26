@@ -124,6 +124,12 @@ export interface StartOptions {
    * тестовой сборке; задача 2.8а).
    */
   pickFolder?: string;
+  /**
+   * «Медленный диск»: пауза перед каждой записью заметки, мс (переменная
+   * RHIZOMIND_E2E_SLOW_WRITE_MS, только в тестовой сборке; задача 0.7 —
+   * предел ожидания при закрытии окна).
+   */
+  slowWriteMs?: number;
 }
 
 /**
@@ -153,6 +159,8 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   else delete env.RHIZOMIND_E2E_VAULT;
   if (options.pickFolder) env.RHIZOMIND_E2E_PICK_FOLDER = options.pickFolder;
   else delete env.RHIZOMIND_E2E_PICK_FOLDER;
+  if (options.slowWriteMs !== undefined) env.RHIZOMIND_E2E_SLOW_WRITE_MS = String(options.slowWriteMs);
+  else delete env.RHIZOMIND_E2E_SLOW_WRITE_MS;
   const removeProfile = () => rmSync(profile, { recursive: true, force: true });
   await waitForPortsFree(30_000);
   const args = ['--port', String(PORT)];

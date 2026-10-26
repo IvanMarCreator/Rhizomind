@@ -4,7 +4,7 @@
 //!   шестнадцатеричных цифр>` ([`new_label`]). Права окна выдаются по
 //!   шаблону `vault-*` (`capabilities/main.json`), одни и те же у каждого
 //!   окна. Изоляция событий между окнами держится на фильтре изолированного
-//!   iframe (`src-isolation/index.js`): подписка — только на 6 событий ядра
+//!   iframe (`src-isolation/index.js`): подписка — только на 7 событий ядра
 //!   (`commands::EVENT_NAMES`) и только с целью «окно с меткой». Встроенные
 //!   события Tauri (`tauri://window-created`, `tauri://webview-created`)
 //!   рассылаются всем окнам и несут метку нового окна — подписка на них
@@ -32,6 +32,9 @@
 //! - Размер и положение окна запоминаются в списке хранилищ при закрытии
 //!   окна ([`remember_placement`]); при запуске открывается последнее
 //!   хранилище ([`open_at_startup`]).
+//! - Закрытие окна хранилища (задача 0.7, решение владельца 53): окно сразу
+//!   скрывается, а уничтожается после того, как интерфейс записал ввод (или
+//!   через предел ожидания) — [`closing`].
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +48,7 @@ use crate::commands::{
 use crate::events::WindowEmitter;
 use crate::registry::WindowState;
 
+pub mod closing;
 #[cfg(test)]
 mod tests;
 
@@ -397,6 +401,20 @@ pub mod e2e {
     /// `vault_open_folder`): папка, которую «выбрал» пользователь. Окно не
     /// показывается (задача 2.8а: сценарные тесты создания и открытия).
     pub const PICK_FOLDER_ENV: &str = "RHIZOMIND_E2E_PICK_FOLDER";
+    /// Пауза перед каждой записью заметки (`note_write`), миллисекунды:
+    /// «медленный диск» для сценарного теста предела ожидания при закрытии
+    /// окна (задача 0.7).
+    pub const SLOW_WRITE_ENV: &str = "RHIZOMIND_E2E_SLOW_WRITE_MS";
+
+    /// Пауза из [`SLOW_WRITE_ENV`] перед записью заметки.
+    pub fn slow_note_write() {
+        let delay = std::env::var(SLOW_WRITE_ENV)
+            .ok()
+            .and_then(|ms| ms.parse::<u64>().ok());
+        if let Some(ms) = delay {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
 
     /// Папка из [`PICK_FOLDER_ENV`] вместо системного окна выбора папки.
     pub fn picked_folder() -> Option<std::path::PathBuf> {

@@ -2,7 +2,7 @@
 // заметки её ввод записывается сразу; заметка, чью запись не удалось
 // завершить, остаётся в памяти — при возврате показывается её текст, а не
 // файл с диска, и повтор записи продолжается. При закрытии окна —
-// `flushAll()`.
+// `flushForClose()` (задача 0.7): ядро закрывает окно после ответа.
 import { CoreCallError, type VaultPath } from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t } from '../i18n/index.ts';
@@ -14,6 +14,24 @@ export type EditorPane =
   | { kind: 'loading'; path: VaultPath }
   | { kind: 'open'; session: NoteSession }
   | { kind: 'failed'; path: VaultPath; error: unknown };
+
+/**
+ * Сколько при закрытии окна ждать сигнала о переименовании заметки, файла
+ * которой нет на диске (`missing`): внешнее переименование могло случиться
+ * перед самым закрытием, а событие наблюдателя ещё в пути.
+ */
+export const MISSING_GRACE_MS = 1500;
+const MISSING_POLL_MS = 100;
+
+/** Заметка, ввод которой при закрытии окна записать не удалось. */
+export interface UnsavedNote {
+  path: VaultPath;
+  /** Причина: ошибка записи или `not_found` (файла нет на диске). */
+  error: unknown;
+}
+
+const notFound = (): CoreCallError =>
+  new CoreCallError('note_write', { code: 'not_found', message_key: 'errors.not_found' });
 
 export interface EditorListener {
   onPane(pane: EditorPane): void;
@@ -154,11 +172,7 @@ export class EditorSessions {
       void session.flush().finally(() => {
         if (session.hasUnsavedChanges) {
           const status = session.status;
-          const message = userMessage(
-            status.kind === 'failed'
-              ? status.error
-              : new CoreCallError('note_write', { code: 'not_found', message_key: 'errors.not_found' }),
-          );
+          const message = userMessage(status.kind === 'failed' ? status.error : notFound());
           this.#listener.notify(t('editor.closeUnsaved', { name: noteName(session.path), message }));
         }
         session.dispose();
@@ -176,6 +190,33 @@ export class EditorSessions {
   /** Записать ввод всех заметок окна (закрытие окна). Запросы уходят синхронно. */
   async flushAll(): Promise<void> {
     await Promise.all(this.#sessions().map((session) => session.flush()));
+  }
+
+  /**
+   * Закрытие окна (задача 0.7): записать ввод всех заметок окна и дождаться
+   * ответов всех записей — и тех, что ушли раньше, и повторов после
+   * переименования (`missing` → `renamed()`), и конфликтов (обе версии
+   * сохраняет ядро). Возвращает заметки, ввод которых записать не удалось;
+   * их текст остаётся в памяти. Удалённые заметки (`removed()`) не пишутся.
+   */
+  async flushForClose(): Promise<UnsavedNote[]> {
+    let waited = 0;
+    for (;;) {
+      await this.flushAll();
+      const sessions = this.#sessions();
+      if (sessions.some((session) => session.writing)) continue;
+      const missing = sessions.some((session) => session.status.kind === 'missing' && session.hasUnsavedChanges);
+      if (!missing || waited >= MISSING_GRACE_MS) break;
+      // Файла нет: ждём сигнала о переименовании (запись по новому пути).
+      await new Promise((resolve) => setTimeout(resolve, MISSING_POLL_MS));
+      waited += MISSING_POLL_MS;
+    }
+    return this.#sessions()
+      .filter((session) => session.hasUnsavedChanges)
+      .map((session) => {
+        const status = session.status;
+        return { path: session.path, error: status.kind === 'failed' ? status.error : notFound() };
+      });
   }
 
   #currentSession(): NoteSession | null {

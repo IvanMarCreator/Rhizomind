@@ -271,13 +271,29 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
     }
 }
 
-/// Обработка событий приложения: после выхода удаляется папка данных движка.
+/// Обработка событий приложения: выход откладывается, пока окна записывают
+/// ввод (задача 0.7); после выхода удаляется папка данных движка.
 ///
 /// Приложение завершается закрытием окон, а не `AppHandle::exit`: при `exit`
 /// событие `Exit` приходит, пока WebView и процесс браузера ещё живы, — папка
 /// занята и останется до уборки остатков при следующем запуске. Будущая команда
 /// «Выход» должна закрывать окна (проверка — `tests/webview2_runtime.rs`).
 pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
+    if let RunEvent::ExitRequested { api, code, .. } = event {
+        // Обычно сюда не попасть, пока окно ждёт записи: оно ещё существует
+        // (скрыто). Но выход могли попросить и явно (`AppHandle::exit`).
+        if windows::closing::exit_must_wait(app) {
+            api.prevent_exit();
+            let app = app.clone();
+            let code = code.unwrap_or(0);
+            // Поток не создать — выход остаётся отложенным: окна сами
+            // закроются по пределу ожидания, и выход наступит обычным путём.
+            let _ = std::thread::Builder::new()
+                .name("rhizomind-exit".into())
+                .spawn(move || windows::closing::exit_after_closing(&app, code));
+        }
+        return;
+    }
     if !matches!(event, RunEvent::Exit) {
         return;
     }
@@ -292,8 +308,8 @@ pub fn handle_run_event<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
     }
 }
 
-/// События окон: учёт активного окна (один экземпляр) и привязки окна к
-/// хранилищу.
+/// События окон: учёт активного окна (один экземпляр), запись ввода перед
+/// закрытием окна и привязка окна к хранилищу.
 fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &tauri::WindowEvent) {
     single_instance::on_window_event(window, event);
     commands::on_window_event(window, event);
@@ -317,6 +333,8 @@ pub fn run() {
         .manage(shell)
         .manage(instance)
         .manage(single_instance::Recent::default())
+        // Окна, которые записывают ввод перед закрытием (задача 0.7).
+        .manage(windows::closing::Closing::default())
         // Диалоги ядра — только из Rust: прав dialog:* у окна нет (ADR 0009).
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Core::new(windows::startup_registry()))

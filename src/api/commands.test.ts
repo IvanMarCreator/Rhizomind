@@ -90,6 +90,8 @@ describe('обёртки команд ядра', () => {
       'workspace_read',
       'workspace_write',
       'open_external',
+      'window_close_ready',
+      'window_close_cancel',
     ];
     const camel = (name: string) => name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
     expect(Object.keys(core).sort()).toEqual(names.map(camel).sort());

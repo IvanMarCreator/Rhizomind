@@ -30,6 +30,8 @@
     "allow-workspace-read",
     "allow-workspace-write",
     "allow-open-external",
+    "allow-window-close-ready",
+    "allow-window-close-cancel",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]
