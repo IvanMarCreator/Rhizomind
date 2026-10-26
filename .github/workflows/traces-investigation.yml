@@ -35,6 +35,8 @@ jobs:
         job: [app, minimal, dialog-rfd, dialog-rfd-cancel, dialog-dontaddtorecent, dialog-clientguid, dialog-clientguid-clear, dialog-all]
     runs-on: windows-latest
     timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1" # вывод на русском в журнал (иначе cp1252)
     defaults:
       run:
         shell: pwsh
