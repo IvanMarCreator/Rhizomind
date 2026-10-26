@@ -8,7 +8,6 @@
 //!   (проверено в CI: без правки ключа нет), тест читает командную строку
 //!   процесса по `BrowserProcessId`;
 //! - процесс браузера получил временную папку данных и защищённые флаги;
-//! - `AllowExternalDrop = false`: файлы и текст извне в окно не бросаются;
 //! - окно после показа на переднем плане (исправление КТ1);
 //! - настоящее перетаскивание мышью (SendInput) внутри страницы доходит до
 //!   `drop` (исправление КТ1: перехватчик Tauri ломал его);
@@ -69,12 +68,6 @@ mod windows_only {
         match security::windows::is_in_private_mode_enabled(controller) {
             Ok(true) => println!("ok: IsInPrivateModeEnabled = true"),
             other => failures.push(format!("IsInPrivateModeEnabled: {other:?}")),
-        }
-
-        // Файлы и текст извне в окно не бросаются (контур хранилища).
-        match security::windows::is_external_drop_allowed(controller) {
-            Ok(false) => println!("ok: AllowExternalDrop = false"),
-            other => failures.push(format!("AllowExternalDrop: {other:?}")),
         }
 
         let pid = match security::windows::browser_process_id(controller) {
@@ -181,7 +174,10 @@ mod windows_only {
     /// `draggable` тянется на цель, страница получает `drop` (исправление КТ1,
     /// п. 1). События HTML5 из скрипта (как в tests/e2e/tree.test.ts) обходят
     /// цикл перетаскивания Windows (OLE DoDragDrop), а перехватчик
-    /// перетаскивания Tauri ломал именно его: курсор «запрещено».
+    /// перетаскивания Tauri ломал именно его: курсор «запрещено». Ломает его и
+    /// `AllowExternalDrop = false` (проба: dragstart → dragend:none). Заодно
+    /// видно, что запрет бросков извне в странице (src/shell/externalDrop.ts)
+    /// своё перетаскивание пропускает.
     fn check_real_drag(window: &tauri::WebviewWindow) -> Vec<String> {
         use ::windows::Win32::Foundation::{HWND, POINT};
         use ::windows::Win32::Graphics::Gdi::ClientToScreen;
@@ -215,6 +211,7 @@ mod windows_only {
               window.__rzDrag.push('dragstart');
             });
             target.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+            source.addEventListener('dragend', (e) => window.__rzDrag.push('dragend:' + e.dataTransfer.dropEffect));
             target.addEventListener('drop', (e) => { e.preventDefault(); window.__rzDrag.push('drop'); });
             const center = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
             const [sx, sy] = center(source);
@@ -292,13 +289,21 @@ mod windows_only {
             sent += send(x, y, MOUSE_EVENT_FLAGS(0));
             pause(40);
         }
-        pause(400);
+        // Несколько мелких движений над целью: цикл перетаскивания Windows
+        // опрашивает цель (DragOver) по движению мыши.
+        const WIGGLE: i32 = 6;
+        for step in 0..WIGGLE {
+            let dx = if step % 2 == 0 { 2 } else { -2 };
+            sent += send(to.x + dx, to.y, MOUSE_EVENT_FLAGS(0));
+            pause(60);
+        }
+        pause(300);
         sent += send(to.x, to.y, MOUSEEVENTF_LEFTUP);
         pause(1000);
-        if sent != STEPS as u32 + 3 {
+        if sent != (STEPS + WIGGLE) as u32 + 3 {
             return vec![format!(
                 "перетаскивание: SendInput принял {sent} событий из {}",
-                STEPS + 3
+                STEPS + WIGGLE + 3
             )];
         }
         match run_script(window, "(window.__rzDrag || []).join(',')") {

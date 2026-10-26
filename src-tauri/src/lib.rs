@@ -224,8 +224,9 @@ fn build_window<R: Runtime>(
         // Свой перехватчик перетаскивания Tauri (события файлов ОС) — выключен:
         // на Windows он подменяет обработчик WebView2, и перетаскивание
         // внутри страницы (дерево файлов) не работает — курсор «запрещено»
-        // (исправление КТ1). Файлы и текст извне в окно не бросаются:
-        // AllowExternalDrop = false (harden_platform_webview).
+        // (исправление КТ1). Файлы и текст извне страница не принимает сама
+        // (src/shell/externalDrop.ts): у WebView2 `AllowExternalDrop = false`
+        // выключает и перетаскивание внутри страницы (проба CI).
         .disable_drag_drop_handler()
         // Разрешения браузера: камера, микрофон, геолокация, уведомления,
         // буфер обмена, файловая система, MIDI и др. — всё отклоняется.
@@ -240,11 +241,10 @@ fn build_window<R: Runtime>(
     Ok(window)
 }
 
-/// Настройки WebView2, которых нет в Tauri: SmartScreen и броски извне
-/// (AllowExternalDrop) выключаются, номер процесса браузера запоминается для
-/// удаления папки данных после выхода; окно показывается, только если движок
-/// подтвердил InPrivate, и выходит на передний план с фокусом; развёрнутое
-/// окно разворачивается после показа (скрытое окно Windows при развороте
+/// Настройки WebView2, которых нет в Tauri: SmartScreen выключается, номер
+/// процесса браузера запоминается для удаления папки данных после выхода;
+/// окно показывается, только если движок подтвердил InPrivate, и выходит на
+/// передний план с фокусом; развёрнутое окно разворачивается после показа (скрытое окно Windows при развороте
 /// показалось бы до проверки).
 fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool) {
     #[cfg(windows)]
@@ -255,9 +255,6 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
             let controller = webview.controller();
             if let Err(error) = security::windows::disable_smartscreen(&controller) {
                 eprintln!("Rhizomind: не удалось выключить SmartScreen WebView2: {error}");
-            }
-            if let Err(error) = security::windows::disallow_external_drop(&controller) {
-                eprintln!("Rhizomind: не удалось запретить перетаскивание извне: {error}");
             }
             if let Ok(pid) = security::windows::browser_process_id(&controller) {
                 app.state::<Shell>().data_dir.set_browser_pid(pid);

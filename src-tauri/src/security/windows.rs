@@ -2,7 +2,7 @@
 //! Windows об ошибках (WER) для процесса `rhizomind.exe`.
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2_13, ICoreWebView2Controller, ICoreWebView2Controller4, ICoreWebView2Settings8,
+    ICoreWebView2_13, ICoreWebView2Controller, ICoreWebView2Settings8,
 };
 use windows::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode,
@@ -81,35 +81,6 @@ pub fn is_in_private_mode_enabled(
             .Profile()?
             .IsInPrivateModeEnabled(&mut value)?
     };
-    Ok(value.as_bool())
-}
-
-fn controller4(
-    controller: &ICoreWebView2Controller,
-) -> windows::core::Result<ICoreWebView2Controller4> {
-    controller.cast()
-}
-
-/// Запрещает бросать в окно данные извне — файлы и текст из Проводника и
-/// других программ (`ICoreWebView2Controller4::AllowExternalDrop = false`).
-/// Перетаскивание внутри страницы (HTML5 drag and drop в дереве) остаётся:
-/// настройка действует только на данные из-за пределов WebView2.
-///
-/// Нужна, потому что у окон выключен перехватчик перетаскивания Tauri
-/// (`disable_drag_drop_handler`, `build_window`): он и выключал внешние
-/// броски, но заодно ломал перетаскивание внутри страницы.
-pub fn disallow_external_drop(controller: &ICoreWebView2Controller) -> windows::core::Result<()> {
-    // SAFETY: вызов COM на главном потоке, где wry создал контроллер.
-    unsafe { controller4(controller)?.SetAllowExternalDrop(false) }
-}
-
-/// Значение `AllowExternalDrop` (для интеграционного теста).
-pub fn is_external_drop_allowed(
-    controller: &ICoreWebView2Controller,
-) -> windows::core::Result<bool> {
-    let mut value = BOOL::default();
-    // SAFETY: вызов COM на главном потоке; value — локальная переменная.
-    unsafe { controller4(controller)?.AllowExternalDrop(&mut value)? };
     Ok(value.as_bool())
 }
 
