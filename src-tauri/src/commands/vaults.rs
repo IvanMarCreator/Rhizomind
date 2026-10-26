@@ -200,6 +200,14 @@ pub async fn vault_remove_from_list(
     blocking(move || registry.remove(&request.id)).await
 }
 
+/// Открывает окно «Управление хранилищами» (переключатель хранилищ, пункт
+/// «Управление хранилищами…»); уже открытое окно получает фокус
+/// ([`crate::windows::open_manager`], задача 2.8а).
+#[tauri::command]
+pub async fn vault_manager_open<R: Runtime>(app: AppHandle<R>) -> CoreResult<()> {
+    crate::windows::open_manager(&app)
+}
+
 /// Открытие хранилища для команд группы «Хранилища» — одна функция для
 /// `vault_create`, `vault_open_folder` и `vault_open` (ревью 0.4): уже
 /// открытое хранилище получает фокус, окно без хранилища открывает его в
