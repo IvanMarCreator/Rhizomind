@@ -18,18 +18,25 @@ path = "src/lib.rs"
 name = "rhizomind"
 path = "src/main.rs"
 
+[[test]]
+# Настоящее окно WebView2 на Windows: нужен главный поток, поэтому свой main.
+name = "webview2_runtime"
+harness = false
+
 [features]
 # Только для сборки сценарных тестов (npm run build:e2e): передаёт WebView2
 # флаги msedgedriver (порт отладки). Выпускные сборки (build, package:*) — без неё.
 webdriver = []
 
 [build-dependencies]
-tauri-build = { version = "=2.7.4", features = [] }
+tauri-build = { version = "=2.7.4", features = ["isolation"] }
 
 [dependencies]
 # Функции по умолчанию: wry, compression, common-controls-v6, dynamic-acl, x11, dbus.
-# Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls.
-tauri = { version = "=2.12.5", features = [] }
+# isolation — вызовы ядра через изолированный iframe с шифрованием (ADR 0009,
+# `app.security.pattern` в tauri.conf.json, код фильтра — src-isolation/).
+# Запрещены (src-tauri/deny.toml): devtools, native-tls*, rustls-tls, protocol-asset.
+tauri = { version = "=2.12.5", features = ["isolation"] }
 # Системные диалоги ядра (выбор папки хранилища, подтверждение внешней ссылки
 # и безвозвратного удаления) — только из Rust; интерфейсу права dialog:* не
 # выдаются (ADR 0009).
@@ -65,8 +72,23 @@ notify = "=9.0.0-rc.6"
 notify-debouncer-full = "=0.8.0-rc.2"
 # Идентификатор файла (FileId NTFS, inode) — распознавание переименований.
 file-id = "=0.2.3"
+# Папка списка хранилищ: data_local_dir (Windows %LOCALAPPDATA%, решение 46).
+# Уже был в дереве через tauri: новых крейтов нет.
+dirs = "=7.0.0"
 
 [target.'cfg(windows)'.dependencies]
+# Те же версии, что уже приходят через wry: новых крейтов нет.
+webview2-com = "=0.39.1"
+windows = { version = "=0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ErrorReporting",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
 # ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
 # (итоговый путь открытого файла) — хранилище, задача 1.2.
 # Местное время для имени копии при конфликте — FileTimeToSystemTime и
@@ -98,7 +120,7 @@ open = "=5.4.5"
 proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 # Функция `test` — подменный runtime Tauri для тестов без настоящего окна;
 # в выпускную сборку не попадает (только dev-зависимость).
-tauri = { version = "=2.12.5", features = ["test"] }
+tauri = { version = "=2.12.5", features = ["isolation", "test"] }
 # Снимки контракта команд: contracts/v1/*.snap (их же читает Vitest).
 insta = { version = "=1.49.0", features = ["json"] }
 # Генератор тестового хранилища: образцы кодировок в тестах vault, ожидаемые
@@ -110,4 +132,5 @@ gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
 # Точки соединения NTFS в тестах контура хранилища.
 junction = "=2.1.0"
 
-# Профиль выпуска — в корневом Cargo.toml (рабочее пространство).
+# Профиль выпуска и [patch.crates-io] (своя копия wry) — в корневом Cargo.toml
+# (рабочее пространство): в члене Cargo их молча игнорирует.

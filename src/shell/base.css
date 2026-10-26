@@ -7,6 +7,22 @@ body,
   margin: 0;
 }
 
+html {
+  overflow: hidden;
+}
+
+/* Изолированный iframe Tauri (isolation pattern, src-isolation/) вставляется в
+   конец <body> без стилей — 300 × 150 пикселей под #app высотой 100%. Он
+   давал лишнюю высоту страницы и полосу прокрутки на пустом окне Windows
+   (обзор 0.3). Скрипты iframe работают и без места на странице. */
+iframe#__tauri_isolation__ {
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 0;
+  visibility: hidden;
+}
+
 body {
   overflow: hidden;
   background: var(--bg-app);

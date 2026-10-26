@@ -1,16 +1,12 @@
 //! Команды группы «Хранилища».
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime, State, Window};
+use tauri::{AppHandle, Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult, NameProblem};
 use super::types::{API_VERSION, CurrentVault, VaultId, VaultSummary};
 use super::{Core, blocking, check_entry_name};
 use crate::dialogs::{self, FolderPurpose};
-use crate::events::WindowEmitter;
 
 /// Хранилище в окне «Управление хранилищами».
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,39 +201,14 @@ pub async fn vault_remove_from_list(
 }
 
 /// Открытие хранилища для команд группы «Хранилища» — одна функция для
-/// `vault_create`, `vault_open_folder` и `vault_open` (ревью 0.4):
-/// - хранилище уже открыто в каком-то окне — фокус на него (`focused`);
-/// - окно вызова без хранилища — хранилище открывается в нём
-///   ([`Core::open_vault`]: общий журнал своих записей, наблюдатель, события
-///   только этому окну);
-/// - иначе нужно новое окно — модуль окон, задача 1.3 (`not_implemented`).
+/// `vault_create`, `vault_open_folder` и `vault_open` (ревью 0.4): уже
+/// открытое хранилище получает фокус, окно без хранилища открывает его в
+/// себе, иначе — новое окно ([`crate::windows::open_vault`], задача 1.3).
 pub async fn open_in_window<R: Runtime>(
     app: AppHandle<R>,
-    core: &Core,
+    _core: &Core,
     window: &Window<R>,
     vault: VaultSummary,
 ) -> CoreResult<VaultOpenOutcome> {
-    if let Some(label) = core.window_of_vault(&vault.id) {
-        if let Some(open) = app.get_webview_window(&label) {
-            let _ = open.set_focus();
-        }
-        return Ok(VaultOpenOutcome::Focused);
-    }
-    if core.window_vault(window.label()).is_some() {
-        // Новое окно для другого хранилища — задача 1.3 (модуль окон).
-        return Err(CoreError::not_implemented());
-    }
-    let label = window.label().to_owned();
-    let registry = core.shared_registry();
-    blocking(move || {
-        let core = app.state::<Core>();
-        let emit = Arc::new(WindowEmitter::new(app.clone(), label.clone()));
-        let root = PathBuf::from(&vault.path);
-        core.open_vault(&label, vault.clone(), &root, emit)?;
-        // «Последнее открытое» не важно для открытия: ошибка списка
-        // хранилищ не отменяет уже открытое хранилище.
-        let _ = registry.mark_opened(&vault.id);
-        Ok(VaultOpenOutcome::Opened)
-    })
-    .await
+    crate::windows::open_vault(&app, window.label(), vault).await
 }

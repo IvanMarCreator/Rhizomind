@@ -27,7 +27,7 @@
 - **SmartScreen** выключен: `IsReputationCheckingRequired = false` через `with_webview` (и флаг `msSmartScreenProtection` из набора wry).
 - **Автозаполнение** выключено в настройках окна (в Tauri по умолчанию включено).
 - **Инструменты разработчика** выключены в выпускной сборке: функция `devtools` крейта `tauri` запрещена в `cargo-deny` (ADR 0009).
-- **Отчёты о падениях:** по умолчанию WebView2 отправляет дамп в Microsoft (`IsCustomCrashReportingEnabled = false`); wry это свойство не выставляет, Tauri не открывает. Держим свою правку wry: `IsCustomCrashReportingEnabled = true` — дампы не уходят в Microsoft. Правка подключается через `[patch.crates-io]` в `src-tauri/Cargo.toml` на свою копию wry той же версии; исправление предлагаем авторам wry, после принятия патч убираем. Своего обработчика падений нет, дампы не собираем.
+- **Отчёты о падениях:** по умолчанию WebView2 отправляет дамп в Microsoft (`IsCustomCrashReportingEnabled = false`); wry это свойство не выставляет, Tauri не открывает. Держим свою правку wry: `IsCustomCrashReportingEnabled = true` — дампы не уходят в Microsoft. Правка подключается через `[patch.crates-io]` в корневом `Cargo.toml` (рабочее пространство Cargo) на свою копию wry той же версии; исправление предлагаем авторам wry, после принятия патч убираем. Своего обработчика падений нет, дампы не собираем.
 - **Проверка орфографии:** CodeMirror ставит `spellcheck="false"`; отсутствие загрузки словарей подтверждается аудитом.
 
 ### Режим поставки WebView2 — системная версия (Evergreen)

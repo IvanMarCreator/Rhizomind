@@ -17,7 +17,7 @@
     stem,
     ext,
     renaming,
-    submit,
+    save,
     onDone,
     variant = 'row',
   }: {
@@ -26,7 +26,7 @@
     stem: string;
     ext: string;
     renaming: VaultPath;
-    submit: (fullName: string) => Promise<string | null>;
+    save: (fullName: string) => Promise<string | null>;
     /** Поле закрыто: имя сохранено или правка отменена. */
     onDone: () => void;
     variant?: 'row' | 'title';
@@ -38,7 +38,7 @@
   let closed = false;
 
   function createField(): NameInput {
-    return new NameInput({ kind, dir, stem, ext, renaming, submit });
+    return new NameInput({ kind, dir, stem, ext, renaming, save });
   }
 
   onMount(() => {
