@@ -187,15 +187,44 @@ try {
       # поэтому варианты идут подряд на одной машине.
       $base = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection'
       $dir = Split-Path $AppExe
-      $renamed = Join-Path $dir 'notes-t06.exe'
-      Copy-Item $AppExe $renamed -Force
-      $probeDir = Split-Path $Probe
-      $probeAsApp = Join-Path $probeDir 'rhizomind.exe'
+      $root = Split-Path $dir
+      # Варианты имени и места одного и того же rhizomind.exe.
+      $copies = [ordered]@{
+        'app-otherdir'   = Join-Path $root 'app2\rhizomind.exe'
+        'app-renamed'    = Join-Path $dir 'notes-t06.exe'
+        'app-upper'      = Join-Path $dir 'Rhizomind.exe.tmp'
+        'app-portable'   = Join-Path $dir 'rhizomind-portable.exe'
+        'app-name-app'   = Join-Path $dir 'app.exe'
+        'app-name-notes' = Join-Path $dir 'notes.exe'
+      }
+      foreach ($name in $copies.Keys) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $copies[$name]) | Out-Null
+        Copy-Item $AppExe $copies[$name] -Force
+      }
+      # Зонды под именем rhizomind.exe в папке приложения (то же место, другой код).
+      $probeHome = Join-Path $root 'probe-as-app'
+      Copy-Item (Split-Path $Probe) $probeHome -Recurse -Force
+      $probeAsApp = Join-Path $probeHome 'rhizomind.exe'
       Copy-Item $Probe $probeAsApp -Force
+      $wryAsAppDir = Join-Path $root 'wry-as-app'
+      New-Item -ItemType Directory -Force -Path $wryAsAppDir | Out-Null
+      $wryAsApp = Join-Path $wryAsAppDir 'rhizomind.exe'
+      Copy-Item $WryProbe $wryAsApp -Force
       Phase 'idle#1' { Scenario-Idle 'idle#1' }
       Phase 'app#1' { Scenario-Exe 'app#1' $AppExe @() }
-      Phase 'app-renamed#1' { Scenario-Exe 'app-renamed#1' $renamed @() }
+      foreach ($name in $copies.Keys) {
+        $exe = $copies[$name]
+        if ($name -eq 'app-upper') {
+          # Регистр имени: Rhizomind.exe рядом с rhizomind.exe нельзя (NTFS без учёта регистра) — отдельная папка.
+          $exe = Join-Path $root 'app3\Rhizomind.exe'
+          New-Item -ItemType Directory -Force -Path (Split-Path $exe) | Out-Null
+          Copy-Item $AppExe $exe -Force
+        }
+        Phase "$name#1" { Scenario-Exe "$name#1" $exe @() }
+      }
+      Phase 'app#2' { Scenario-Exe 'app#2' $AppExe @() }
       Phase 'mini-as-rhizomind#1' { Scenario-Exe 'mini-as-rhizomind#1' $probeAsApp @('webview', 'rhizomind-flags', '6') }
+      Phase 'wry-as-rhizomind#1' { Scenario-Exe 'wry-as-rhizomind#1' $wryAsApp @('datadir', 'incognito', 'flags', 'protocol', 'secs=8') }
       $wryVariants = [ordered]@{
         'wry-min'       = @()
         'wry-all'       = @('datadir', 'incognito', 'flags', 'noext', 'bg', 'ipc', 'init', 'protocol')
@@ -228,7 +257,7 @@ try {
         Phase "$name#1" { Scenario-Exe "$name#1" $AppExe @() }
       }
       Set-AppPolicy 'rhizomind.exe' ''
-      Phase 'app#2' { Scenario-Exe 'app#2' $AppExe @() }
+      Phase 'app#3' { Scenario-Exe 'app#3' $AppExe @() }
     }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]

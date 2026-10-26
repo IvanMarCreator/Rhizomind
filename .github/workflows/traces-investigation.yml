@@ -139,7 +139,7 @@ jobs:
         if: matrix.job == 'oneauth-sweep'
         run: |
           rustup show active-toolchain
-          cargo build --release --manifest-path tools/traces-investigation/wry-probe/Cargo.toml
+          cargo build --release --manifest-path tools/traces-investigation/wry-probe/Cargo.toml --target-dir tools/traces-investigation/wry-probe/target
           "WRY_PROBE=$env:GITHUB_WORKSPACE\tools\traces-investigation\wry-probe\target\release\t06-wry-probe.exe" >> $env:GITHUB_ENV
 
       - name: Сценарии под Process Monitor

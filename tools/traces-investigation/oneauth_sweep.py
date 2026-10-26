@@ -62,13 +62,17 @@ for pml in sorted(glob.glob(os.path.join(OUT, "cap*.pml"))):
             if "wlidsvc" in cmd and " -> " in path and "Connect" in op:
                 row["wlid"].add(path.split("-> ")[-1])
 
-lines = ["# OneAuth: загрузка по фазам", "", "| фаза | oneauth.dll | клиент WAM | запись .tbres | wlidsvc в сеть | параметры |", "|---|---|---|---|---|---|"]
+lines = ["# OneAuth: загрузка по фазам", "", "| фаза | oneauth.dll | клиент WAM | запись .tbres | wlidsvc в сеть | exe | pfhostedapp | параметры |", "|---|---|---|---|---|---|---|---|"]
 for p in phases:
     r = rows[p]
     res = results.get(p, {})
     params = res.get("policy") or res.get("args") or ""
+    cmd = res.get("browserCmd") or ""
+    hosted = re.search(r"/pfhostedapp:([0-9a-f]+)", cmd)
+    exe = re.search(r"--webview-exe-name=(\S+)", cmd)
     lines.append(
-        f"| {p} | {'да' if r['oneauth'] else 'нет'} | {'да' if r['webcore'] else 'нет'} | {r['tbres']} | {', '.join(sorted(r['wlid'])) or '—'} | {params} |"
+        f"| {p} | {'да' if r['oneauth'] else 'нет'} | {'да' if r['webcore'] else 'нет'} | {r['tbres']} | {', '.join(sorted(r['wlid'])) or '—'} "
+        f"| {exe.group(1) if exe else ''} | {hosted.group(1)[:12] if hosted else ''} | {params} |"
     )
 text = "\n".join(lines) + "\n"
 with open(os.path.join(OUT, "oneauth.md"), "w", encoding="utf-8") as f:
