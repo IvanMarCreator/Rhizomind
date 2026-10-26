@@ -615,3 +615,111 @@ fn revert_to_older_own_version_after_newer_one_is_external() {
         vec![TreeChange::Modified { path: vp("n.md") }]
     );
 }
+
+#[test]
+fn file_moved_while_the_walk_is_in_progress_is_a_rename() {
+    // Обход не мгновенный: файл прочитан в старой папке, а пока обход дошёл
+    // до новой, его туда перенесли — в снимке он оказался в двух местах.
+    // Так на Windows при переполнении (Rescan посреди переноса) переносы
+    // уходили как «появился», а старый путь — отдельным «исчез».
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/заметка.md", "текст");
+    fs::create_dir(dir.path().join("Я")).expect("папка");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let root = dir.path().to_path_buf();
+    model.after_listing(
+        vp("А"),
+        Box::new(move || {
+            fs::rename(root.join("А/заметка.md"), root.join("Я/заметка.md")).expect("перенос");
+        }),
+    );
+
+    let changes = rescan_changes(&mut model, &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![TreeChange::Renamed {
+            from: vp("А/заметка.md"),
+            to: vp("Я/заметка.md")
+        }]
+    );
+    model.clear_failures();
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn file_moved_into_already_walked_folder_during_the_walk_is_a_rename() {
+    // Обратный порядок: новая папка уже прочитана (файла там ещё нет), а
+    // старая читается после переноса (файла там уже нет) — в снимке файла
+    // нет нигде.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Я/заметка.md", "текст");
+    fs::create_dir(dir.path().join("А")).expect("папка");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let root = dir.path().to_path_buf();
+    model.after_listing(
+        vp("А"),
+        Box::new(move || {
+            fs::rename(root.join("Я/заметка.md"), root.join("А/заметка.md")).expect("перенос");
+        }),
+    );
+
+    let changes = rescan_changes(&mut model, &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![TreeChange::Renamed {
+            from: vp("Я/заметка.md"),
+            to: vp("А/заметка.md")
+        }]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn vanished_file_is_held_until_its_new_path_shows_up_in_a_later_batch() {
+    // Старый путь проверен в одной пачке (событие о папке-источнике), а
+    // новый появится только в следующей: исчезнувший файл с идентификатором
+    // не выдаётся сразу «исчез», а ждёт — иначе перенос открытой заметки
+    // закрыл бы её. Так падал нагрузочный тест на Windows (1993 из 2000).
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/заметка.md", "текст");
+    write(dir.path(), "Я/другая.md", "д");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(
+        dir.path().join("А/заметка.md"),
+        dir.path().join("Я/заметка.md"),
+    )
+    .expect("перенос");
+
+    let first = model.reconcile_holding([vp("А")], &OwnWrites::new());
+    assert!(first.changes.is_empty(), "{:?}", first.changes);
+    assert_eq!(first.held, vec![vp("А/заметка.md")]);
+
+    let second = model.reconcile_holding([vp("Я/заметка.md")], &OwnWrites::new());
+    assert_eq!(
+        second.changes,
+        vec![TreeChange::Renamed {
+            from: vp("А/заметка.md"),
+            to: vp("Я/заметка.md")
+        }]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn held_file_still_missing_at_final_check_is_removed() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/заметка.md", "текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::remove_file(dir.path().join("А/заметка.md")).expect("удаление");
+
+    let first = model.reconcile_holding([vp("А/заметка.md")], &OwnWrites::new());
+    assert!(first.changes.is_empty());
+    assert_eq!(
+        changes(&mut model, first.held, &OwnWrites::new()),
+        vec![TreeChange::Removed {
+            path: vp("А/заметка.md")
+        }]
+    );
+}

@@ -25,6 +25,15 @@ fn generate(root: &Path, notes: usize) -> PathBuf {
     out
 }
 
+/// Путь файла внутри хранилища — компонентами, как в событиях.
+fn rel(root: &Path, path: &Path) -> Vec<String> {
+    path.strip_prefix(root)
+        .expect("внутри")
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect()
+}
+
 fn notes_under(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -86,28 +95,38 @@ fn ten_thousand_files_created_then_modified_in_one_go() {
     assert!(mirror.tree.len() > FILES);
 
     let started = Instant::now();
+    // Изменения считаются только с этого места: при создании файл мог
+    // попасть в сверку пустым (появился, потом записан) — это законное
+    // `Modified` той фазы, а не правки ниже.
+    let before = collector.payloads().len();
     let notes = notes_under(&out);
     for note in &notes {
         let mut text = fs::read(note).expect("чтение");
         text.extend_from_slice("\nдописано\n".as_bytes());
         fs::write(note, text).expect("запись");
     }
+    let expected: std::collections::HashSet<Vec<String>> =
+        notes.iter().map(|p| rel(dir.path(), p)).collect();
+    collector
+        .wait_modified(&expected, before, TIMEOUT)
+        .expect("правка каждой заметки дошла");
     let settled = collector
         .settle(&mut mirror, dir.path(), QUIET, TIMEOUT)
         .expect("после изменения всех заметок дерево совпадает с диском");
     report("изменение всех заметок", started, settled, &collector);
-    let modified: std::collections::HashSet<_> = collector
-        .changes()
-        .into_iter()
+    let modified: std::collections::HashSet<Vec<String>> = collector.payloads()[before..]
+        .iter()
+        .flat_map(|p| p.changes.iter())
         .filter_map(|c| match c {
-            TreeChange::Modified { path } => Some(path),
+            TreeChange::Modified { path } => Some(path.components().to_vec()),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        modified.len(),
-        notes.len(),
-        "каждая изменённая заметка — изменение"
+    let missing: Vec<_> = expected.difference(&modified).take(3).collect();
+    let extra: Vec<_> = modified.difference(&expected).take(3).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "каждая изменённая заметка — изменение, и только они: нет {missing:?}, лишние {extra:?}"
     );
 }
 
@@ -276,6 +295,11 @@ fn own_writes_during_external_storm_are_not_external() {
         fs::write(path, "внешняя правка").expect("запись");
     }
     writer.join().expect("поток своих записей");
+    let external_paths: std::collections::HashSet<Vec<String>> =
+        external.iter().map(|p| rel(dir.path(), p)).collect();
+    collector
+        .wait_modified(&external_paths, 0, TIMEOUT)
+        .expect("внешние правки дошли");
 
     let settled = collector
         .settle(&mut mirror, dir.path(), QUIET, TIMEOUT)
