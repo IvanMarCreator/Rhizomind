@@ -19,6 +19,7 @@
 #              другим именем, минимальный WebView2 под именем rhizomind.exe,
 #              зонд wry с переключателями и приложение с политиками-кандидатами;
 #              сводка — oneauth.md (загрузка oneauth.dll по фазам);
+#   oneauth-long — те же окна по 40 с (успевает ли загрузиться OneAuth);
 #   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
 #              rfd (как в приложении), rfd-cancel, dontaddtorecent,
 #              clientguid, clientguid-clear, proposal, all.
@@ -45,7 +46,7 @@ jobs:
       matrix:
         # Задания 0.6 (app, app-repeat, mini-*, app-policy-*, dialog-* …) остаются в run.ps1;
         # в матрице — только текущий опыт, чтобы не тратить машины CI.
-        job: [oneauth-sweep]
+        job: [oneauth-long]
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -121,7 +122,7 @@ jobs:
       # Имена функций движка, связанных с OneAuth/WAM, — кандидаты для --disable-features
       # (только перечень строк из msedge.dll; ничего не включается и не выключается).
       - name: Строки OneAuth/WAM в msedge.dll
-        if: matrix.job == 'app' || matrix.job == 'oneauth-sweep'
+        if: matrix.job == 'app' || startsWith(matrix.job, 'oneauth-')
         run: |
           $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
           $version = (Get-ItemProperty -Path $key).pv
@@ -136,7 +137,7 @@ jobs:
           }
 
       - name: Зонд wry (окно wry 0.57.1 с переключателями)
-        if: matrix.job == 'oneauth-sweep'
+        if: startsWith(matrix.job, 'oneauth-')
         run: |
           rustup show active-toolchain
           cargo build --release --manifest-path tools/traces-investigation/wry-probe/Cargo.toml --target-dir tools/traces-investigation/wry-probe/target
@@ -154,7 +155,7 @@ jobs:
         run: |
           $out = Join-Path $env:RUNNER_TEMP 't06'
           python tools/traces-investigation/analyze.py $out $env:LOCALAPPDATA $env:APPDATA
-          if ('${{ matrix.job }}' -eq 'oneauth-sweep') {
+          if ('${{ matrix.job }}' -like 'oneauth-*') {
             python tools/traces-investigation/oneauth_sweep.py $out
             Get-Content -Raw (Join-Path $out 'oneauth.md') >> $env:GITHUB_STEP_SUMMARY
           }

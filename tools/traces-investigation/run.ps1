@@ -81,7 +81,7 @@ function Scenario-App([string] $phase) {
 
 # Любой исполняемый файл с окном WebView2: запуск, ожидание процесса браузера,
 # 6 с работы, закрытие окна (зонд wry выходит сам по secs=), пауза.
-function Scenario-Exe([string] $phase, [string] $exe, [string[]] $arguments) {
+function Scenario-Exe([string] $phase, [string] $exe, [string[]] $arguments, [int] $seconds = 6) {
   $p = if ($arguments) { Start-Process -FilePath $exe -ArgumentList $arguments -PassThru } else { Start-Process -FilePath $exe -PassThru }
   $null = $p.Handle
   $browser = $null
@@ -90,7 +90,7 @@ function Scenario-Exe([string] $phase, [string] $exe, [string[]] $arguments) {
     $browser = Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue |
       Where-Object { $_.ParentProcessId -eq $p.Id } | Select-Object -First 1
   }
-  Start-Sleep -Seconds 6
+  Start-Sleep -Seconds $seconds
   $closed = $false
   if (-not $p.HasExited) { $closed = $p.CloseMainWindow() }
   if (-not $p.WaitForExit(20000)) { $p.Kill() }
@@ -120,13 +120,13 @@ function Scenario-Dialog([string] $phase, [string] $variant, [string] $folder) {
   Start-Sleep -Seconds 5
 }
 
-function Phase([string] $name, [scriptblock] $body) {
-  Write-Host "=== фаза $name"
-  Snap (($name -replace '#', '-') + '-pre')
-  Mark $name 'start'
+function Phase([string] $phaseName, [scriptblock] $body) {
+  Write-Host "=== фаза $phaseName"
+  Snap (($phaseName -replace '#', '-') + '-pre')
+  Mark $phaseName 'start'
   & $body
-  Mark $name 'end'
-  Snap (($name -replace '#', '-') + '-post')
+  Mark $phaseName 'end'
+  Snap (($phaseName -replace '#', '-') + '-post')
 }
 
 # --- Process Monitor -------------------------------------------------------------
@@ -258,6 +258,17 @@ try {
       }
       Set-AppPolicy 'rhizomind.exe' ''
       Phase 'app#3' { Scenario-Exe 'app#3' $AppExe @() }
+    }
+    '^oneauth-long$' {
+      # Загрузка oneauth.dll идёт через 3–7 с после запуска. Не успевал ли
+      # минимальный WebView2 закрыться раньше? Все окна держатся 40 с.
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'mini-flags-long#1' { Scenario-Exe 'mini-flags-long#1' $Probe @('webview', 'rhizomind-flags', '40') 42 }
+      Phase 'mini-default-long#1' { Scenario-Exe 'mini-default-long#1' $Probe @('webview', 'default', '40') 42 }
+      Phase 'mini-nav-lang-long#1' { Scenario-Exe 'mini-nav-lang-long#1' $Probe @('webview', 'rhizomind-flags+nav+lang', '40') 42 }
+      Phase 'wry-min-long#1' { Scenario-Exe 'wry-min-long#1' $WryProbe @('secs=40') 42 }
+      Phase 'app-long#1' { Scenario-Exe 'app-long#1' $AppExe @() 40 }
+      Phase 'mini-flags-long#2' { Scenario-Exe 'mini-flags-long#2' $Probe @('webview', 'rhizomind-flags', '40') 42 }
     }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
