@@ -27,14 +27,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use file_id::FileId;
 use windows_sys::Win32::Foundation::{
-    ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED,
-    HANDLE,
+    ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, ERROR_PATH_NOT_FOUND, HANDLE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FileIdExtdDirectoryInfo, FileIdExtdDirectoryRestartInfo, FileIdInfo,
-    GetFileInformationByHandleEx,
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FileAttributeTagInfo, FileIdExtdDirectoryInfo,
+    FileIdExtdDirectoryRestartInfo, FileIdInfo, GetFileInformationByHandleEx,
 };
 
 /// Метка точки повторного разбора «суррогат имени»: символическая ссылка,
@@ -51,7 +50,8 @@ pub(super) struct Entry {
     pub kind: Kind,
     pub size: u64,
     pub modified: Option<SystemTime>,
-    pub id: FileId,
+    /// Идентификатор файла; 0 у файловой системы без идентификаторов — `None`.
+    pub id: Option<FileId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,14 +63,49 @@ pub(super) enum Kind {
 }
 
 /// Список папки `dir`. `Ok(None)` — файловая система не отдаёт
-/// идентификаторы в списке; читать прежним способом. Имена не в UTF-16
+/// идентификаторы в списке (или отвечает на запрос ошибкой, кроме «нет
+/// папки» и «нет доступа»); читать прежним способом. Имена не в UTF-16
 /// без пары (не выражаются в `String`) пропускаются, как и раньше.
-pub(super) fn list(dir: &Path) -> io::Result<Option<Vec<Entry>>> {
+///
+/// `follow_link = false` — папка внутри хранилища: открывается сама точка
+/// повторного разбора (`FILE_FLAG_OPEN_REPARSE_POINT`), и если папку между
+/// чтением родителя и её самой подменили символической ссылкой или точкой
+/// соединения, — ошибка чтения, а не содержимое за контуром хранилища.
+/// `true` — корень хранилища: пользователь мог открыть его по ссылке.
+pub(super) fn list(dir: &Path, follow_link: bool) -> io::Result<Option<Vec<Entry>>> {
+    let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
+    if !follow_link {
+        flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+    }
     let folder = fs::OpenOptions::new()
         .access_mode(FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .custom_flags(flags)
         .open(dir)?;
     let handle = folder.as_raw_handle() as HANDLE;
+
+    if !follow_link {
+        let mut tag: FILE_ATTRIBUTE_TAG_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: дескриптор открыт; `tag` — локальная структура своего размера.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileAttributeTagInfo,
+                (&mut tag as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+                size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+            )
+        };
+        if ok == 0 {
+            return unsupported_or(io::Error::last_os_error());
+        }
+        if is_link(tag.FileAttributes, tag.ReparseTag) {
+            return Err(io::Error::other(
+                "папка стала ссылкой: за контур не читается",
+            ));
+        }
+        if tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(io::Error::from(io::ErrorKind::NotADirectory));
+        }
+    }
 
     let mut volume: FILE_ID_INFO = unsafe { std::mem::zeroed() };
     // SAFETY: дескриптор открыт; `volume` — локальная структура своего размера.
@@ -107,30 +142,66 @@ pub(super) fn list(dir: &Path) -> io::Result<Option<Vec<Entry>>> {
             return Err(error);
         }
         class = FileIdExtdDirectoryInfo;
-        let base = buffer.as_ptr().cast::<u8>();
-        let mut offset = 0usize;
-        loop {
-            // SAFETY: ОС записала в буфер цепочку записей; `offset` — от
-            // `NextEntryOffset` предыдущей записи, внутри записанного.
-            let info = unsafe { &*base.add(offset).cast::<FILE_ID_EXTD_DIR_INFO>() };
-            // SAFETY: имя лежит сразу в записи, длина — `FileNameLength` байт.
-            let name = unsafe {
-                std::slice::from_raw_parts(
-                    std::ptr::addr_of!(info.FileName).cast::<u16>(),
-                    info.FileNameLength as usize / 2,
-                )
-            };
-            if let Some(entry) = entry(name, info, volume.VolumeSerialNumber) {
-                entries.push(entry);
-            }
-            if info.NextEntryOffset == 0 {
-                break;
-            }
-            offset += info.NextEntryOffset as usize;
-        }
+        // SAFETY: буфер — наш `Vec<u64>`, байтов в нём `buffer_bytes`.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), buffer_bytes as usize)
+        };
+        entries.extend(parse(bytes, volume.VolumeSerialNumber)?);
     }
     drop(folder);
     Ok(Some(entries))
+}
+
+/// Записи одного ответа `FileIdExtdDirectoryInfo` в `buffer`. Запись, имя
+/// или следующая запись за пределами буфера — ошибка чтения папки
+/// (`InvalidData`), а не чтение чужой памяти: ответ даёт драйвер файловой
+/// системы, в том числе сторонний (сетевой, WinFsp, Dokan).
+fn parse(buffer: &[u8], volume: u64) -> io::Result<Vec<Entry>> {
+    let broken =
+        |what: &str| io::Error::new(io::ErrorKind::InvalidData, format!("список папки: {what}"));
+    let name_at = std::mem::offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+    let mut entries = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let header_end = offset
+            .checked_add(size_of::<FILE_ID_EXTD_DIR_INFO>())
+            .ok_or_else(|| broken("запись за пределами"))?;
+        if header_end > buffer.len() {
+            return Err(broken("запись за пределами"));
+        }
+        // SAFETY: заголовок записи целиком внутри `buffer` (проверено выше);
+        // чтение без требования выравнивания.
+        let info = unsafe {
+            std::ptr::read_unaligned(buffer.as_ptr().add(offset).cast::<FILE_ID_EXTD_DIR_INFO>())
+        };
+        let name_start = offset + name_at;
+        let name_end = name_start
+            .checked_add(info.FileNameLength as usize)
+            .filter(|end| *end <= buffer.len())
+            .ok_or_else(|| broken("имя за пределами"))?;
+        let name: Vec<u16> = buffer[name_start..name_end]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        if let Some(entry) = entry(&name, &info, volume) {
+            entries.push(entry);
+        }
+        if info.NextEntryOffset == 0 {
+            break;
+        }
+        offset = offset
+            .checked_add(info.NextEntryOffset as usize)
+            .filter(|next| *next < buffer.len())
+            .ok_or_else(|| broken("следующая запись за пределами"))?;
+    }
+    Ok(entries)
+}
+
+/// Символическая ссылка или точка соединения (суррогат имени).
+fn is_link(attributes: u32, tag: u32) -> bool {
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 && tag & NAME_SURROGATE != 0
 }
 
 fn entry(name: &[u16], info: &FILE_ID_EXTD_DIR_INFO, volume: u64) -> Option<Entry> {
@@ -139,9 +210,7 @@ fn entry(name: &[u16], info: &FILE_ID_EXTD_DIR_INFO, volume: u64) -> Option<Entr
         return None;
     }
     let attributes = info.FileAttributes;
-    let link = attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        && info.ReparsePointTag & NAME_SURROGATE != 0;
-    let kind = if link {
+    let kind = if is_link(attributes, info.ReparsePointTag) {
         Kind::Link
     } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
         Kind::Folder
@@ -153,7 +222,11 @@ fn entry(name: &[u16], info: &FILE_ID_EXTD_DIR_INFO, volume: u64) -> Option<Entr
         kind,
         size: u64::try_from(info.EndOfFile).unwrap_or(0),
         modified: filetime(info.LastWriteTime),
-        id: FileId::new_high_res(volume, u128::from_le_bytes(info.FileId.Identifier)),
+        // 0 — у файловой системы нет идентификаторов: неизвестен.
+        id: match u128::from_le_bytes(info.FileId.Identifier) {
+            0 => None,
+            id => Some(FileId::new_high_res(volume, id)),
+        },
     })
 }
 
@@ -174,9 +247,129 @@ fn filetime(value: i64) -> Option<SystemTime> {
     }
 }
 
+/// Ошибка первого запроса (сведения о томе, атрибуты, первая порция
+/// списка): «нет папки» и «нет доступа» — ошибка чтения; любая другая
+/// (`ERROR_INVALID_PARAMETER`, `ERROR_INVALID_LEVEL` от Samba, WinFsp, Dokan
+/// и прочие) — файловая система так не умеет, читать прежним способом.
 fn unsupported_or<T>(error: io::Error) -> io::Result<Option<T>> {
     match error.raw_os_error().map(|code| code as u32) {
-        Some(ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED | ERROR_INVALID_FUNCTION) => Ok(None),
-        _ => Err(error),
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_ACCESS_DENIED) => Err(error),
+        _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Задача 0.10б: разбор ответа ОС и выбор запасного пути — без ОС.
+
+    use super::*;
+    use std::mem::offset_of;
+
+    const NAME_AT: usize = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
+
+    /// Запись с именем `name` в `buffer` по смещению `at`; длина имени в
+    /// байтах — `name_bytes` (по умолчанию — настоящая).
+    fn put(buffer: &mut [u8], at: usize, name: &str, next: u32, name_bytes: Option<u32>, id: u128) {
+        let wide: Vec<u16> = name.encode_utf16().collect();
+        let mut info: FILE_ID_EXTD_DIR_INFO = unsafe { std::mem::zeroed() };
+        info.NextEntryOffset = next;
+        info.FileNameLength = name_bytes.unwrap_or((wide.len() * 2) as u32);
+        info.EndOfFile = 5;
+        info.LastWriteTime = UNIX_EPOCH_FILETIME;
+        info.FileId.Identifier = id.to_le_bytes();
+        // SAFETY: запись помещается в буфер теста (проверено ниже срезом).
+        unsafe {
+            std::ptr::write_unaligned(
+                buffer[at..].as_mut_ptr().cast::<FILE_ID_EXTD_DIR_INFO>(),
+                info,
+            );
+        }
+        for (n, unit) in wide.iter().enumerate() {
+            let place = at + NAME_AT + n * 2;
+            buffer[place..place + 2].copy_from_slice(&unit.to_le_bytes());
+        }
+    }
+
+    /// Буфер теста и больший запас за ним: чтение за срез без проверок не
+    /// падало бы, а вернуло мусор — тест ловит именно отсутствие проверки.
+    fn spare(len: usize) -> Vec<u8> {
+        vec![0u8; len + 4096]
+    }
+
+    #[test]
+    fn well_formed_answer_gives_entries() {
+        let mut buffer = spare(256);
+        put(&mut buffer, 0, "а.md", 128, None, 7);
+        put(&mut buffer, 128, "б", 0, None, 8);
+        let entries = parse(&buffer[..256], 1).expect("разбор");
+        let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["а.md", "б"]);
+        assert_eq!(entries[0].id, Some(FileId::new_high_res(1, 7)));
+        assert_eq!(entries[0].size, 5);
+        assert_eq!(entries[0].modified, Some(UNIX_EPOCH));
+    }
+
+    #[test]
+    fn name_past_the_answer_is_an_error_not_a_read_beyond() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 0, Some(1000), 7);
+        let error = parse(&buffer[..128], 1).expect_err("имя за пределами ответа");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn next_entry_past_the_answer_is_an_error() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 4096, None, 7);
+        let error = parse(&buffer[..128], 1).expect_err("следующая запись за пределами");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn entry_header_past_the_answer_is_an_error() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 120, None, 7);
+        let error = parse(&buffer[..128], 1).expect_err("заголовок записи за пределами");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn zero_file_id_is_unknown() {
+        let mut buffer = spare(128);
+        put(&mut buffer, 0, "а", 0, None, 0);
+        let entries = parse(&buffer[..128], 1).expect("разбор");
+        assert_eq!(
+            entries[0].id, None,
+            "0 — файловая система без идентификаторов"
+        );
+    }
+
+    #[test]
+    fn first_request_falls_back_on_any_error_but_missing_or_denied() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_INVALID_FUNCTION, ERROR_INVALID_LEVEL, ERROR_INVALID_PARAMETER,
+            ERROR_NOT_SUPPORTED,
+        };
+        for code in [
+            ERROR_INVALID_LEVEL,
+            ERROR_INVALID_PARAMETER,
+            ERROR_NOT_SUPPORTED,
+            ERROR_INVALID_FUNCTION,
+            1784, // ERROR_INVALID_USER_BUFFER — что угодно ещё
+        ] {
+            let answer = unsupported_or::<()>(io::Error::from_raw_os_error(code as i32));
+            assert!(
+                matches!(answer, Ok(None)),
+                "код {code}: запасной путь, а не ошибка"
+            );
+        }
+        for code in [
+            ERROR_FILE_NOT_FOUND,
+            ERROR_PATH_NOT_FOUND,
+            ERROR_ACCESS_DENIED,
+        ] {
+            let answer = unsupported_or::<()>(io::Error::from_raw_os_error(code as i32));
+            assert!(answer.is_err(), "код {code}: ошибка чтения папки");
+        }
     }
 }
