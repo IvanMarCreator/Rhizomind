@@ -615,24 +615,17 @@ impl TreeModel {
         if self.failing.contains(dir) {
             return Err(io::Error::from(io::ErrorKind::PermissionDenied));
         }
-        let mut out = HashMap::new();
-        let entries = match fs::read_dir(self.abs(dir)) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(out),
+        let path = self.abs(dir);
+        let listed = match listed_at_once(&path) {
+            Ok(Some(out)) => Ok(out),
+            Ok(None) => list_entry_by_entry(&path),
+            Err(err) => Err(err),
+        };
+        let out = match listed {
+            Ok(out) => out,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(err) => return Err(err),
         };
-        for entry in entries {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().into_string() else {
-                continue; // имя не UTF-8 в путях хранилища не выражается
-            };
-            if is_hidden(&name) {
-                continue;
-            }
-            if let Some(node) = read_node(&entry, &name)? {
-                out.insert(name, node);
-            }
-        }
         #[cfg(test)]
         if let Some(action) = self.hooks.0.lock().expect("шов").remove(dir) {
             action();
@@ -676,6 +669,76 @@ fn through(applied: &[(Key, Key)], mut key: Key) -> Key {
     key
 }
 
+/// Список папки одним чтением, без открытия её содержимого (Windows,
+/// [`super::listing_windows`]): пока папка читается, её нельзя перенести, а
+/// открытый файл внутри держал бы её и дольше. `None` — так прочитать
+/// нельзя (другая ОС, файловая система без идентификаторов в списке).
+#[cfg(windows)]
+fn listed_at_once(path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
+    use super::listing_windows::{self, Kind};
+    let Some(entries) = listing_windows::list(path)? else {
+        return Ok(None);
+    };
+    let mut out = HashMap::new();
+    for entry in entries {
+        if is_hidden(&entry.name) {
+            continue;
+        }
+        let node = match entry.kind {
+            Kind::Link => continue,
+            Kind::Folder => Node {
+                kind: EntryKind::Folder,
+                size: 0,
+                modified: None,
+                id: Some(entry.id),
+            },
+            Kind::File => Node {
+                kind: if names::is_note(&entry.name) {
+                    EntryKind::Note
+                } else {
+                    EntryKind::Attachment
+                },
+                size: entry.size,
+                modified: entry.modified,
+                id: Some(entry.id),
+            },
+        };
+        out.insert(entry.name, node);
+    }
+    Ok(Some(out))
+}
+
+#[cfg(not(windows))]
+fn listed_at_once(_path: &Path) -> io::Result<Option<HashMap<String, Node>>> {
+    Ok(None)
+}
+
+/// Список папки по элементам: идентификатор каждого — отдельным открытием
+/// (`file-id`). На Linux и macOS это `stat`, без дескриптора.
+fn list_entry_by_entry(path: &Path) -> io::Result<HashMap<String, Node>> {
+    let mut out = HashMap::new();
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue; // имя не UTF-8 в путях хранилища не выражается
+        };
+        if is_hidden(&name) {
+            continue;
+        }
+        if let Some(node) = read_node(&entry, &name)? {
+            out.insert(name, node);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Тесты: сколько раз этот поток открывал элемент папки ради его
+    /// идентификатора ([`read_node`]).
+    pub(crate) static ENTRY_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Имя с точки в начале: дерево его не показывает, слежение не учитывает.
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
@@ -703,6 +766,8 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
     }
     // Файл исчез между списком папки и открытием (перенесли, удалили) —
     // его здесь уже нет; другая ошибка — идентификатор неизвестен.
+    #[cfg(test)]
+    ENTRY_OPENS.with(|opens| opens.set(opens.get() + 1));
     let id = match file_id::get_file_id(entry.path()) {
         Ok(id) => Some(id),
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1066,5 +1131,66 @@ mod diff_tests {
         let model = BTreeMap::from([(key.clone(), note(Some(7)))]);
         let disk = BTreeMap::from([(key, note(None))]);
         assert!(diff(&disk, &model).changed.is_empty());
+    }
+}
+
+/// Задача 0.10: на Windows папка читается одним списком — её содержимое не
+/// открывается, а данные элементов те же, что при чтении по элементам.
+#[cfg(all(test, windows))]
+mod windows_listing_tests {
+    use super::*;
+
+    fn sample() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("временная папка");
+        let root = dir.path();
+        for n in 0..20 {
+            fs::write(root.join(format!("заметка {n}.md")), format!("# {n}\n")).expect("запись");
+        }
+        fs::write(root.join("картинка.png"), [0u8; 300]).expect("запись");
+        fs::create_dir(root.join("Папка")).expect("папка");
+        fs::write(root.join("Папка/вложенная.md"), "текст").expect("запись");
+        fs::write(root.join(".скрытый.md"), "x").expect("запись");
+        let outside = dir.path().join("Папка");
+        junction::create(&outside, root.join("соединение")).expect("точка соединения");
+        dir
+    }
+
+    #[test]
+    fn listing_a_folder_opens_none_of_its_entries() {
+        let dir = sample();
+        ENTRY_OPENS.with(|opens| opens.set(0));
+        let model = TreeModel::scan(dir.path()).expect("обход");
+        assert_eq!(
+            model.entries().len(),
+            23,
+            "20 заметок, картинка, папка и вложенная"
+        );
+        assert_eq!(
+            ENTRY_OPENS.with(std::cell::Cell::get),
+            0,
+            "пока папка читается, её содержимое не открывается: иначе папку нельзя перенести"
+        );
+    }
+
+    #[test]
+    fn one_listing_gives_the_same_entries_as_reading_entry_by_entry() {
+        let dir = sample();
+        for folder in [dir.path().to_path_buf(), dir.path().join("Папка")] {
+            let at_once = listed_at_once(&folder)
+                .expect("список")
+                .expect("NTFS отдаёт идентификаторы в списке");
+            let by_entry = list_entry_by_entry(&folder).expect("список по элементам");
+            assert_eq!(at_once, by_entry, "{}", folder.display());
+        }
+    }
+
+    #[test]
+    fn missing_folder_lists_as_empty_and_file_is_not_a_folder() {
+        let dir = sample();
+        let mut model = TreeModel::scan(dir.path()).expect("обход");
+        model.root = dir.path().join("нет такой");
+        assert!(model.list(&[]).expect("пусто").is_empty());
+        model.root = dir.path().join("картинка.png");
+        assert!(model.list(&[]).is_err(), "файл — не папка");
     }
 }

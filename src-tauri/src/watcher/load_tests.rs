@@ -55,6 +55,34 @@ fn notes_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Перенос папки, как его делает пользователь в Проводнике с кнопкой
+/// «Повторить». На Windows папку нельзя перенести, пока открыто что-то внутри
+/// неё (`Access is denied`, os error 5) — в том числе пока наблюдатель читает
+/// список её вложенной папки (одно чтение на папку, задача 0.10:
+/// `listing_windows.rs`), а также индексатор поиска или антивирус. Повтор —
+/// только на эту ошибку, через 50 мс, не дольше 5 с. Возвращает число повторов.
+fn rename_like_explorer(from: &Path, to: &Path) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut retries = 0;
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return retries,
+            Err(err)
+                if cfg!(windows)
+                    && err.kind() == std::io::ErrorKind::PermissionDenied
+                    && Instant::now() < deadline =>
+            {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!(
+                "перенос папки {}: {err} (повторов: {retries})",
+                from.display()
+            ),
+        }
+    }
+}
+
 fn report(name: &str, started: Instant, settled: Duration, collector: &Collector) {
     let payloads = collector.payloads();
     for (n, p) in payloads.iter().enumerate().take(5) {
@@ -188,10 +216,12 @@ fn renames_of_files_and_folders() {
         .filter(|p| p.is_dir() && *p != target)
         .collect();
     folders.sort();
+    let mut busy = 0;
     for (n, folder) in folders.iter().take(3).enumerate() {
         let new = out.join(format!("Переименованная папка {n}"));
-        fs::rename(folder, new).expect("перенос папки");
+        busy += rename_like_explorer(folder, &new);
     }
+    eprintln!("  перенос папок: повторов из-за «папка занята» — {busy}");
 
     let settled = collector
         .settle(&mut mirror, dir.path(), QUIET, TIMEOUT)

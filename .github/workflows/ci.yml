@@ -35,11 +35,37 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Пакеты apt кэшируются: зеркало Azure временами отдаёт их по десяткам
+      # КБ/с, и шаг шёл до 38 минут (задача 0.10, tools/ci-apt/install.sh).
+      # Ключ — образ раннера и скрипт со списком пакетов; сохраняется сразу после шага,
+      # даже если задание потом упадёт.
+      - name: Образ раннера (Linux)
+        id: image
+        if: runner.os == 'Linux'
+        run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+
+      - name: Кэш пакетов apt (Linux)
+        id: apt-cache
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ steps.image.outputs.version }}-${{ hashFiles('tools/ci-apt/install.sh') }}
+          restore-keys: apt-${{ steps.image.outputs.version }}-
+
       - name: Системные библиотеки (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev webkit2gtk-driver xvfb
+        timeout-minutes: 20
+        env:
+          APT_CACHE_DIR: ${{ runner.temp }}/apt-archives
+        run: tools/ci-apt/install.sh
+
+      - name: Сохранить кэш пакетов apt (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ steps.image.outputs.version }}-${{ hashFiles('tools/ci-apt/install.sh') }}
 
       # Версия Rust берётся из rust-toolchain.toml: rustup ставит её при первом вызове cargo.
       - name: Rust из rust-toolchain.toml
@@ -158,6 +184,19 @@ jobs:
           NO_AT_BRIDGE: "1"
         run: xvfb-run -a npm run test:e2e
 
+      # Телеметрия компилятора MSVC (vctip.exe) остаётся висеть после сборок
+      # Rust и пишет %LOCALAPPDATA%\Microsoft\VSApplicationInsights — тест
+      # следов принимал это за запись программы (задача 0.10; раньше — «чужой
+      # процесс vctip.exe»). Сборок дальше нет — процесс останавливается.
+      - name: Остановить телеметрию MSVC (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vctip = @(Get-Process -Name vctip -ErrorAction SilentlyContinue)
+          Write-Host "vctip.exe: $($vctip.Count)"
+          $vctip | Stop-Process -Force -ErrorAction SilentlyContinue
+          $vctip | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+
       - name: Сценарный тест (Windows)
         timeout-minutes: 10
         if: runner.os == 'Windows'
@@ -165,6 +204,19 @@ jobs:
           # Тест следов подменяет vaults.json тестовым хранилищем (машина CI одноразовая).
           RHIZOMIND_TRACES_VAULT_SCENARIO: "1"
         run: npm run test:e2e
+
+      # Сбой сценарного теста: хвосты журналов драйверов — прямо в журнал CI
+      # (артефакты без входа в GitHub не скачать; задача 0.10).
+      - name: Журналы драйверов при сбое
+        if: failure()
+        shell: bash
+        run: |
+          for log in test-results/tauri-driver-*.log "$RUNNER_TEMP/msedgedriver/msedgedriver.log"; do
+            [ -f "$log" ] || continue
+            echo "::group::$log (последние 200 строк)"
+            tail -n 200 "$log"
+            echo "::endgroup::"
+          done
 
       - name: Снимки экрана сценарных тестов
         if: always()
