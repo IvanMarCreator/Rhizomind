@@ -6,13 +6,16 @@
 // поэтому нарушением считается не любое изменение, а:
 //  - любое изменение в местах, где оболочка хранит пути: ComDlg32, RecentDocs,
 //    TypedPaths, CIDOpen, ShellBags (BagMRU, Bags) — тест окна не открывает;
-//  - любое изменение, в ключе, имени или данных которого (включая строки
-//    UTF-16 внутри двоичных значений) есть метка приложения — `rhizomind`,
-//    имя временной папки движка, путь хранилища.
-// Учтённые записи (docs/SECURITY.md, «Записи вне хранилища») — не нарушение:
-// служебные ключи движка WebView2 (решение 61) и записи оболочки Windows о
-// запуске программы (MuiCache, UserAssist). Остальное — фон ОС: печатается
-// в журнал, тест не валит.
+//  - изменение вне учтённых ключей, в ключе, имени или данных которого
+//    (включая строки UTF-16 внутри двоичных значений, с чётного и нечётного
+//    байта) есть метка приложения — `rhizomind`, имя временной папки движка;
+//  - где угодно, в том числе в учтённых ключах, — метка данных: случайные
+//    имена тестового хранилища, заметки и введённого текста. Их тест ищет
+//    и во всём экспорте «после» ([`findMarkers`]), а не только в изменениях.
+// Учтённые записи (docs/SECURITY.md, «Записи вне хранилища») без меток данных —
+// не нарушение: служебные ключи движка WebView2 (решение 61) и записи оболочки
+// Windows о запуске программы (MuiCache, UserAssist). Остальное — фон ОС:
+// печатается в журнал, тест не валит.
 
 export type RegExport = Map<string, Map<string, string>>;
 
@@ -67,7 +70,11 @@ export function diffRegistry(before: RegExport, after: RegExport): RegChange[] {
   return changes;
 }
 
-/** Данные значения для поиска меток: строки UTF-16 и ASCII из hex:… как текст. */
+/**
+ * Данные значения для поиска меток: для hex:… — строки UTF-16LE с чётного и
+ * с нечётного байта (имена внутри PIDL выравнены как придётся) и байты как
+ * latin1; для строк — текст без экранирования `\\`.
+ */
 export function searchableText(data: string): string {
   const m = /^hex(?:\([0-9a-f]+\))?:(.*)$/i.exec(data);
   if (m?.[1] === undefined) return data.replace(/\\\\/g, '\\');
@@ -77,8 +84,11 @@ export function searchableText(data: string): string {
       .filter(Boolean)
       .map((h) => parseInt(h, 16)),
   );
-  const utf16 = bytes.subarray(0, bytes.length - (bytes.length % 2)).toString('utf16le');
-  return `${utf16}\n${bytes.toString('latin1')}`;
+  const utf16 = (from: number) => {
+    const part = bytes.subarray(from);
+    return part.subarray(0, part.length - (part.length % 2)).toString('utf16le');
+  };
+  return `${utf16(0)}\n${utf16(1)}\n${bytes.toString('latin1')}`;
 }
 
 /** Места, где оболочка Windows хранит пути к папкам (окно выбора папки, недавние). */
@@ -108,25 +118,60 @@ export interface RegistryCheck {
   background: RegChange[];
 }
 
-/**
- * Раскладывает изменения HKCU на нарушения, учтённые записи и фон ОС.
- * `markers` — подстроки, по которым узнаётся приложение (без учёта регистра).
- */
-export function checkRegistryChanges(changes: RegChange[], markers: string[]): RegistryCheck {
-  const lower = markers.filter(Boolean).map((m) => m.toLowerCase());
+/** Метки (без учёта регистра): `app` — приложение вообще, `data` — данные хранилища. */
+export interface Markers {
+  app: string[];
+  data: string[];
+}
+
+function changeText(change: { key: string; name?: string; data?: string }): string {
+  return `${change.key}\n${change.name ?? ''}\n${change.data ? searchableText(change.data) : ''}`.toLowerCase();
+}
+
+const lowered = (list: string[]) => list.filter(Boolean).map((m) => m.toLowerCase());
+
+/** Раскладывает изменения HKCU на нарушения, учтённые записи и фон ОС. */
+export function checkRegistryChanges(changes: RegChange[], markers: Markers): RegistryCheck {
+  const app = lowered(markers.app);
+  const data = lowered(markers.data);
   const result: RegistryCheck = { violations: [], known: [], background: [] };
   for (const change of changes) {
+    const text = changeText(change);
+    if (data.some((m) => text.includes(m))) {
+      result.violations.push(change);
+      continue;
+    }
     const known = KNOWN_KEYS.find((k) => k.pattern.test(change.key));
     if (known) {
       result.known.push({ ...change, why: known.why });
       continue;
     }
-    const text = `${change.key}\n${change.name ?? ''}\n${change.data ? searchableText(change.data) : ''}`.toLowerCase();
-    const mentionsApp = lower.some((m) => text.includes(m));
-    if (mentionsApp || PATH_HISTORY_KEYS.some((p) => p.test(change.key))) result.violations.push(change);
+    if (app.some((m) => text.includes(m)) || PATH_HISTORY_KEYS.some((p) => p.test(change.key))) result.violations.push(change);
     else result.background.push(change);
   }
   return result;
+}
+
+export interface MarkerHit {
+  key: string;
+  name?: string;
+  marker: string;
+}
+
+/** Все места экспорта (ключи и значения), где встречается одна из меток. */
+export function findMarkers(reg: RegExport, markers: string[]): MarkerHit[] {
+  const list = markers.filter(Boolean);
+  const hits: MarkerHit[] = [];
+  const match = (text: string) => list.find((m) => text.includes(m.toLowerCase()));
+  for (const [key, values] of reg) {
+    const inKey = match(key.toLowerCase());
+    if (inKey) hits.push({ key, marker: inKey });
+    for (const [name, data] of values) {
+      const found = match(changeText({ key: '', name, data }));
+      if (found) hits.push({ key, name, marker: found });
+    }
+  }
+  return hits;
 }
 
 /** Короткая сводка фона: число изменений по первым уровням пути ключа. */
