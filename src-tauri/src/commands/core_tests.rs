@@ -11,7 +11,6 @@
 //! - окно подтверждения безвозвратного удаления и общий замок диалогов ядра.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -71,6 +70,15 @@ fn window(app: &App<MockRuntime>, label: &str) -> WebviewWindow<MockRuntime> {
     WebviewWindowBuilder::new(app, label, Default::default())
         .build()
         .expect("окно")
+}
+
+/// Окно «Управление хранилищами» (метка `manager-*`, запись в ядре).
+fn manager_window(app: &App<MockRuntime>, label: &str) -> WebviewWindow<MockRuntime> {
+    assert_eq!(
+        app.state::<Core>().reserve_manager(label),
+        crate::commands::ManagerSlot::New(label.into())
+    );
+    window(app, label)
 }
 
 fn invoke(window: &WebviewWindow<MockRuntime>, command: &str, args: Value) -> Result<Value, Value> {
@@ -349,21 +357,39 @@ fn contract_examples_pass_on_real_core() {
         json!({ "outcome": "cancelled" })
     );
 
-    // Хранилища: выбор папки отменён — `cancelled`; список хранилищ
+    // Хранилища. Окну хранилища команды окна управления ядро не выполняет
+    // (второй рубеж прав, задача 2.8б), даже если права выданы.
+    for name in crate::commands::MANAGER_ONLY_COMMANDS {
+        let args = match example(name) {
+            Value::Null => json!({}),
+            request => json!({ "request": request }),
+        };
+        let error = core_error(name, invoke(&w, name, args).expect_err(name));
+        assert_eq!(error.field.as_deref(), Some("window"), "{name}");
+    }
+    // Окно управления: выбор папки отменён — `cancelled`; `vault_create`
+    // без выбранной в окне ядра папки — отказ; список хранилищ
     // (`vaults.json`, задача 1.3) — в памяти: хранилища из примеров в нём нет.
+    let m = manager_window(&app, "manager-c0ffee0000000001");
     assert_eq!(
-        invoke(&w, "vault_open_folder", json!({})).expect("vault_open_folder"),
+        invoke(&m, "vault_open_folder", json!({})).expect("vault_open_folder"),
         json!({ "outcome": "cancelled" })
     );
     assert_eq!(
-        call(&w, "vault_create", example("vault_create")).expect("vault_create"),
+        invoke(&m, "folder_pick", json!({})).expect("folder_pick"),
         json!({ "outcome": "cancelled" })
     );
+    let error = core_error(
+        "vault_create",
+        call(&m, "vault_create", example("vault_create")).expect_err("без выбора папки"),
+    );
+    assert_eq!(error.field.as_deref(), Some("parent"));
     let list: VaultListResponse = typed(
         "vault_list",
         invoke(&w, "vault_list", json!({})).expect("vault_list"),
     );
     assert!(list.vaults.is_empty());
+    let w = m;
     for (name, args) in [
         ("vault_open", json!({ "request": example("vault_open") })),
         (
@@ -802,53 +828,38 @@ fn permanent_delete_needs_confirmation_in_core_dialog() {
     assert!(found.items.is_empty(), "удалённая заметка ушла из поиска");
 }
 
-/// Пока в окне открыто подтверждение удаления, выбор папки в том же окне не
-/// показывается (общий замок диалогов ядра) — ответ `cancelled`.
+/// Пока в окне открыт диалог ядра, выбор папки в том же окне не
+/// показывается (общий замок диалогов ядра, `dialogs::DialogSlot`) — ответ
+/// `cancelled`. С задачи 2.8б выбор папки есть только у окна управления;
+/// общий замок для всех видов диалогов проверяет и `dialogs::tests`.
 #[test]
 fn core_dialogs_share_one_lock_per_window() {
     let app = app();
-    let w = window(&app, "busy");
+    let label = "manager-b0b0000000000001";
+    let w = manager_window(&app, label);
     let dir = tempfile::tempdir().expect("папка");
-    let root = dir.path().join("флешка");
+    let root = dir.path().join("Флешка");
     put(&root, "Заметка.md", b"1");
-    open_vault(
-        &app,
-        "busy",
-        "busy",
-        &root,
-        trash_into(dir.path().join("bin"), false),
-    );
     test_answers::set(
-        "busy",
+        label,
         Answers {
-            folder: Some(dir.path().to_path_buf()),
-            confirm_delete: false,
-            hold: Some(Duration::from_secs(2)),
+            folder: Some(root.clone()),
+            ..Answers::default()
         },
     );
 
-    let (done, finished) = mpsc::channel();
-    let trashing = w.clone();
-    std::thread::spawn(move || {
-        let _ = done.send(call(
-            &trashing,
-            "entry_trash",
-            json!({ "path": ["Заметка.md"] }),
-        ));
-    });
-    std::thread::sleep(Duration::from_millis(500));
+    let open_dialog = crate::dialogs::DialogSlot::take(label).expect("окно свободно");
+    for name in ["vault_open_folder", "folder_pick"] {
+        assert_eq!(
+            invoke(&w, name, json!({})).expect("ответ"),
+            json!({ "outcome": "cancelled" }),
+            "{name}"
+        );
+    }
+    drop(open_dialog);
 
-    // Без замка выбор папки дошёл бы до списка хранилищ (`not_implemented`).
-    assert_eq!(
-        invoke(&w, "vault_open_folder", json!({})).expect("ответ"),
-        json!({ "outcome": "cancelled" })
-    );
-    assert_eq!(
-        finished.recv_timeout(WAIT).expect("удаление ответило"),
-        Ok(json!({ "outcome": "cancelled" }))
-    );
-    // Окно свободно — выбор папки снова доходит до списка хранилищ: папка
-    // становится хранилищем и открывается в новом окне (у окна уже есть своё).
+    // Окно свободно — выбор папки доходит до списка хранилищ: папка
+    // становится хранилищем и открывается в новом окне.
     let opened: VaultChooseOutcome = typed(
         "vault_open_folder",
         invoke(&w, "vault_open_folder", json!({})).expect("ответ"),
@@ -857,9 +868,83 @@ fn core_dialogs_share_one_lock_per_window() {
         panic!("ожидалось открытие: {opened:?}");
     };
     let core = app.state::<Core>();
-    let label = core.window_of_vault(&vault.id).expect("открыто");
-    assert_ne!(label, "busy");
-    assert!(app.get_webview_window(&label).is_some());
+    let opened_in = core.window_of_vault(&vault.id).expect("открыто");
+    assert_ne!(opened_in, label);
+    assert!(app.get_webview_window(&opened_in).is_some());
+}
+
+/// Решение владельца 62: «Обзор…» (`folder_pick`) → «Создать»
+/// (`vault_create` с той же папкой). Папка внутри хранилища — `nested_vault`;
+/// папка, которую не выбирали в окне ядра, — `invalid_argument` (`parent`).
+#[test]
+fn vault_is_created_in_folder_picked_by_core_dialog() {
+    let app = app();
+    let label = "manager-b0b0000000000002";
+    let w = manager_window(&app, label);
+    let dir = tempfile::tempdir().expect("папка");
+    let parent = dir.path().join("Заметки");
+    std::fs::create_dir(&parent).expect("папка");
+    let other = dir.path().join("Другая");
+    std::fs::create_dir(&other).expect("папка");
+    let canonical = dunce::canonicalize(&parent).expect("путь");
+    let path = canonical.to_str().expect("путь строкой").to_owned();
+
+    test_answers::set(
+        label,
+        Answers {
+            folder: Some(parent.clone()),
+            ..Answers::default()
+        },
+    );
+    assert_eq!(
+        invoke(&w, "folder_pick", json!({})).expect("folder_pick"),
+        json!({ "outcome": "picked", "path": path })
+    );
+
+    // Другую папку подставить нельзя.
+    let other_path = dunce::canonicalize(&other).expect("путь");
+    let error = core_error(
+        "vault_create",
+        call(
+            &w,
+            "vault_create",
+            json!({ "name": "Проекты", "parent": other_path.to_str().expect("путь") }),
+        )
+        .expect_err("не выбранная папка"),
+    );
+    assert_eq!(error.field.as_deref(), Some("parent"));
+    assert!(!other.join("Проекты").exists());
+
+    let created: VaultChooseOutcome = typed(
+        "vault_create",
+        call(
+            &w,
+            "vault_create",
+            json!({ "name": "Проекты", "parent": path }),
+        )
+        .expect("vault_create"),
+    );
+    let VaultChooseOutcome::Opened { vault } = created else {
+        panic!("ожидалось открытие: {created:?}");
+    };
+    assert!(canonical.join("Проекты").join(".rhizomind").is_dir());
+    assert_eq!(vault.name, "Проекты");
+
+    // Внутри созданного хранилища — нельзя. Окно управления после открытия
+    // хранилища закрылось; в тесте — снова то же окно.
+    app.state::<Core>().reserve_manager(label);
+    test_answers::set(
+        label,
+        Answers {
+            folder: Some(canonical.join("Проекты")),
+            ..Answers::default()
+        },
+    );
+    let error = core_error(
+        "folder_pick",
+        invoke(&w, "folder_pick", json!({})).expect_err("внутри хранилища"),
+    );
+    assert_eq!(error.code, ErrorCode::NestedVault);
 }
 
 // ---- Скорость ---------------------------------------------------------------

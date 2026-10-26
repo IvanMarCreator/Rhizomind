@@ -135,6 +135,43 @@ impl Vault {
         dunce::canonicalize(&target).map_err(io_error)
     }
 
+    /// Проверяет родительскую папку нового хранилища (задача 2.8б):
+    /// существует и это папка (иначе `vault_unavailable`); ни она, ни её
+    /// предки не хранилище (нет служебной папки `.rhizomind/`), не служебная
+    /// папка и не лежат внутри известного хранилища `known_roots` (иначе
+    /// `nested_vault`). Возвращает канонический путь.
+    pub fn check_parent(parent: &Path, known_roots: &[PathBuf]) -> CoreResult<PathBuf> {
+        if !parent.is_absolute() {
+            return Err(CoreError::new(ErrorCode::InvalidPath));
+        }
+        let parent = dunce::canonicalize(parent).map_err(|_| unavailable())?;
+        if !std::fs::metadata(&parent)
+            .map_err(|_| unavailable())?
+            .is_dir()
+        {
+            return Err(unavailable());
+        }
+        let nested = || CoreError::new(ErrorCode::NestedVault);
+        if parent
+            .components()
+            .any(|c| is_service_dir(&c.as_os_str().to_string_lossy()))
+        {
+            return Err(nested());
+        }
+        for ancestor in parent.ancestors() {
+            if ancestor.join(SERVICE_DIR).is_dir() {
+                return Err(nested());
+            }
+        }
+        for root in known_roots {
+            let root = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
+            if parent.starts_with(&root) {
+                return Err(nested());
+            }
+        }
+        Ok(parent)
+    }
+
     /// Открывает папку как хранилище: канонизирует корень, создаёт
     /// `.rhizomind/` и `.rhizomind/tmp/`, убирает остатки временных файлов.
     /// Служебная папка или её `tmp` — ссылка (в том числе точка соединения)

@@ -245,8 +245,10 @@ fn remove_from_list_keeps_files_and_open_window() {
     let first = window(&app);
     open(&first, &a);
 
+    // «Убрать из списка» — только из окна управления (задача 2.8б).
+    let manager = manager(&app);
     call(
-        &first,
+        &manager,
         "vault_remove_from_list",
         json!({ "request": { "id": a.0 } }),
     )
@@ -366,14 +368,20 @@ fn manager(app: &App<MockRuntime>) -> WebviewWindow<MockRuntime> {
     app.get_webview_window(&label).expect("окно управления")
 }
 
-/// Окно управления — окно приложения с меткой `vault-*` и теми же правами,
-/// что у окон хранилищ; хранилища в нём нет (`vault_current` → `null`), а
-/// второе открытие не создаёт второе окно управления.
+/// Окно управления — окно приложения с меткой `manager-<16 цифр>` и своими
+/// правами (задача 2.8б), не `vault-*`; хранилища в нём нет
+/// (`vault_current` → `null`), а второе открытие не создаёт второе окно.
 #[test]
 fn manager_window_is_single_and_has_no_vault() {
     let (app, _temp) = app();
     let first = manager(&app);
-    assert!(first.label().starts_with(LABEL_PREFIX), "{}", first.label());
+    let random = first
+        .label()
+        .strip_prefix(MANAGER_LABEL_PREFIX)
+        .expect("начало manager-");
+    assert_eq!(random.len(), 16);
+    assert!(random.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(!first.label().starts_with(LABEL_PREFIX));
     let current = call(&first, "vault_current", json!({})).expect("права окна");
     assert_eq!(current["vault"], Value::Null);
 
@@ -481,8 +489,13 @@ fn closed_manager_is_forgotten() {
 fn startup_without_last_vault_opens_manager() {
     let (app, _temp) = app();
     open_at_startup(app.handle());
-    wait_until(|| app.state::<Core>().manager_label().is_some());
-    assert_eq!(window_count(&app), 1);
+    // Метка занимается до создания окна (`reserve_manager`): ждём и окно.
+    wait_until(|| app.state::<Core>().manager_label().is_some() && window_count(&app) == 1);
+    let label = app
+        .state::<Core>()
+        .manager_label()
+        .expect("окно управления");
+    assert!(app.get_webview_window(&label).is_some());
 }
 
 /// Запуск с последним хранилищем — его окно, окна управления нет.
@@ -505,4 +518,25 @@ fn wait_until(condition: impl Fn() -> bool) {
         assert!(std::time::Instant::now() < deadline, "условие не наступило");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+/// Решение 58 (задача 2.8б): повторный запуск программы открывает окно
+/// «Управление хранилищами»; ещё один — не создаёт второе.
+#[test]
+fn second_instance_opens_the_manager_window() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+
+    crate::single_instance::on_second_instance(app.handle());
+    let label = app
+        .state::<Core>()
+        .manager_label()
+        .expect("окно управления");
+    assert!(label.starts_with(MANAGER_LABEL_PREFIX));
+    assert_eq!(window_count(&app), 2);
+
+    crate::single_instance::on_second_instance(app.handle());
+    assert_eq!(window_count(&app), 2);
 }

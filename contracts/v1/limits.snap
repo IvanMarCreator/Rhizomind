@@ -9,6 +9,7 @@ source: src/commands/contract_tests.rs
   "max_note_bytes": 104857600,
   "max_workspace_bytes": 1048576,
   "max_url_bytes": 8192,
+  "max_folder_path_utf16": 32767,
   "edit_size_range": [
     1048576,
     104857600

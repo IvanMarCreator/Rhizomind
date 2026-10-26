@@ -54,8 +54,11 @@
         {#if vault.is_open}
           <span class="pill">{t('vaults.manager.isOpen')}</span>
         {/if}
+        {#if !vault.available}
+          <span class="pill unavailable" title={t('vaults.manager.unavailableHint')}>{t('vaults.manager.unavailable')}</span>
+        {/if}
       </span>
-      <span class="path">{vault.path}</span>
+      <span class="path" title={vault.path}>{vault.path}</span>
     </span>
   </button>
   <span class="tools">
@@ -72,6 +75,7 @@
       type="button"
       class="more"
       bind:this={moreButton}
+      {disabled}
       aria-label={t('vaults.manager.more', { name: vault.name })}
       title={t('vaults.manager.more', { name: vault.name })}
       aria-haspopup="menu"
@@ -190,6 +194,11 @@
     font-weight: 500;
   }
 
+  .pill.unavailable {
+    background: var(--status-warning-subtle);
+    color: var(--status-warning);
+  }
+
   .path {
     color: var(--text-muted);
     font-size: 12px;
@@ -242,7 +251,12 @@
     color: var(--icon-default);
   }
 
-  .more:hover,
+  .more:disabled,
+  .open-button:disabled {
+    opacity: 0.45;
+  }
+
+  .more:hover:not(:disabled),
   .row.menu-open .more {
     background: var(--bg-active);
   }

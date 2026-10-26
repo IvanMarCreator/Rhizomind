@@ -23,7 +23,9 @@
 //! - Окно «Управление хранилищами» (задача 2.8а, решение владельца 58) —
 //!   отдельное окно приложения 920 × 600 без хранилища, одно на программу
 //!   ([`open_manager`]). Оно создаётся той же защищённой оболочкой, с меткой
-//!   `vault-*` и теми же правами, что окна хранилищ. Хранилище к нему не
+//!   `manager-<16 шестнадцатеричных цифр>` и своими правами
+//!   (`capabilities/manager.json`, задача 2.8б): создание, открытие папки,
+//!   выбор папки и «Убрать из списка» есть только у него. Хранилище к нему не
 //!   привязывается ([`Core::claim_vault`]): выбранное хранилище открывается в
 //!   своём окне, а окно управления закрывается. Интерфейс узнаёт окно
 //!   управления по ответу `vault_current` без хранилища.
@@ -48,8 +50,14 @@ use crate::registry::WindowState;
 #[cfg(test)]
 mod tests;
 
-/// Начало метки каждого окна; на шаблон `vault-*` выданы права окна.
+/// Начало метки окна хранилища; на шаблон `vault-*` выданы права окон
+/// хранилищ (`capabilities/main.json`).
 pub const LABEL_PREFIX: &str = "vault-";
+
+/// Начало метки окна «Управление хранилищами»; на шаблон `manager-*` выданы
+/// его права (`capabilities/manager.json`, задача 2.8б). Не начинается с
+/// `vault-`: права окон хранилищ ему не достаются.
+pub const MANAGER_LABEL_PREFIX: &str = "manager-";
 
 /// Размер нового окна (логические пиксели).
 pub const DEFAULT_SIZE: (u32, u32) = (1200, 800);
@@ -75,9 +83,17 @@ pub fn manager_placement() -> Placement {
     }
 }
 
-/// Новая уникальная метка окна: `vault-<16 шестнадцатеричных цифр>`.
+/// Новая уникальная метка окна хранилища: `vault-<16 шестнадцатеричных цифр>`.
 pub fn new_label() -> String {
     format!("{LABEL_PREFIX}{:016x}", crate::webview_traces::random_u64())
+}
+
+/// Новая уникальная метка окна управления: `manager-<16 шестнадцатеричных цифр>`.
+pub fn new_manager_label() -> String {
+    format!(
+        "{MANAGER_LABEL_PREFIX}{:016x}",
+        crate::webview_traces::random_u64()
+    )
 }
 
 /// Прямоугольник рабочей области экрана в логических пикселях.
@@ -299,10 +315,14 @@ pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
 /// потока, в том числе из главного: замков на время создания окна не держит.
 pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
     let core = app.state::<Core>();
-    match core.reserve_manager(&new_label()) {
+    match core.reserve_manager(&new_manager_label()) {
         ManagerSlot::Existing(label) => {
-            // Окно ещё создаётся — фокус получит само при показе.
-            if let Some(window) = app.get_webview_window(&label) {
+            // Окно ещё создаётся или скрыто до проверки InPrivate (Windows) —
+            // не трогаем: `unminimize` показал бы его раньше проверки;
+            // фокус оно получит само при показе.
+            if let Some(window) = app.get_webview_window(&label)
+                && window.is_visible().unwrap_or(false)
+            {
                 focus(&window);
             }
             Ok(())
