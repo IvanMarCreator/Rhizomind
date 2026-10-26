@@ -298,6 +298,18 @@ try {
       Phase 'mini-dpi-lang#2' { Scenario-Exe 'mini-dpi-lang#2' $Probe @('webview', 'rhizomind-flags+dpi+lang', '8') 12 }
       Phase 'app#1' { Scenario-Exe 'app#1' $AppExe @() 8 }
     }
+    '^oneauth-api$' {
+      # Командная строка одинакова; отличие — вызовы API окна. Вызовы wry по одному в C#.
+      $m = 'rhizomind-flags+dpi+lang'
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'mini#1' { Scenario-Exe 'mini#1' $Probe @('webview', $m, '8') 12 }
+      Phase 'mini-wry#1' { Scenario-Exe 'mini-wry#1' $Probe @('webview', "$m+wry", '8') 12 }
+      foreach ($v in @('ncr', 'xdrop', 'settings', 'events', 'script')) {
+        Phase "mini-$v#1" { Scenario-Exe "mini-$v#1" $Probe @('webview', "$m+$v", '8') 12 }
+      }
+      Phase 'mini-wry#2' { Scenario-Exe 'mini-wry#2' $Probe @('webview', "$m+wry", '8') 12 }
+      Phase 'wry#1' { Scenario-Exe 'wry#1' $WryProbe @('datadir', 'incognito', 'flags', 'drop', 'secs=8') 14 }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')

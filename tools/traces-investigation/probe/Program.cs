@@ -340,6 +340,16 @@ internal static class MiniWebView
         // +dpi — процесс с учётом DPI по мониторам (PerMonitorV2), как окно tao/wry.
         var dpi = Array.IndexOf(parts, "dpi") > 0;
         if (dpi) Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        // Вызовы API, которые делает wry при создании окна (vendor/wry/src/webview2/mod.rs):
+        //   +ncr — Settings9.IsNonClientRegionSupportEnabled = true; +xdrop — AllowExternalDrop = false;
+        //   +settings — строка состояния, меню, масштаб, devtools, жесты; +events — подписки на события;
+        //   +script — AddScriptToExecuteOnDocumentCreated; +wry — всё вместе.
+        bool Has(string p) => Array.IndexOf(parts, p) > 0 || Array.IndexOf(parts, "wry") > 0;
+        var ncr = Has("ncr");
+        var xdrop = Has("xdrop");
+        var settings = Has("settings");
+        var events = Has("events");
+        var script = Has("script");
         var dataDir = Path.Combine(Path.GetTempPath(), "t06-webview-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dataDir);
         var info = new Dictionary<string, object> { ["mode"] = mode, ["dataDir"] = dataDir };
@@ -370,6 +380,32 @@ internal static class MiniWebView
                 controller.Bounds = form.ClientRectangle;
                 var core = controller.CoreWebView2;
                 core.Settings.IsPasswordAutosaveEnabled = false;
+                if (xdrop) controller.AllowExternalDrop = false;
+                if (settings)
+                {
+                    core.Settings.IsStatusBarEnabled = false;
+                    core.Settings.AreDefaultContextMenusEnabled = true;
+                    core.Settings.IsZoomControlEnabled = true;
+                    core.Settings.AreDevToolsEnabled = false;
+                    core.Settings.IsScriptEnabled = true;
+                    core.Settings.IsPinchZoomEnabled = true;
+                    core.Settings.IsSwipeNavigationEnabled = false;
+                }
+                if (ncr) core.Settings.IsNonClientRegionSupportEnabled = true;
+                if (events)
+                {
+                    core.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
+                    core.WindowCloseRequested += (_, _) => { };
+                    core.DocumentTitleChanged += (_, _) => { };
+                    core.ContentLoading += (_, _) => { };
+                    core.NavigationCompleted += (_, _) => { };
+                    core.NavigationStarting += (_, _) => { };
+                    core.NewWindowRequested += (_, e) => e.Handled = true;
+                    core.DownloadStarting += (_, e) => e.Cancel = true;
+                    core.WebMessageReceived += (_, _) => { };
+                }
+                if (script) await core.AddScriptToExecuteOnDocumentCreatedAsync("window.__t06 = 1;");
+                info["wryApi"] = new { ncr, xdrop, settings, events, script };
                 core.Settings.IsGeneralAutofillEnabled = false;
                 browserPid = core.BrowserProcessId;
                 info["browserPid"] = browserPid;
