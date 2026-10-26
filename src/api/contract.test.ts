@@ -104,6 +104,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     errors: [
       invalidArgument('name'),
       invalidArgument('parent'),
+      invalidArgument('window'),
       invalidName('reserved_name'),
       err('already_exists'),
       err('nested_vault'),
@@ -113,13 +114,13 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     command: 'folder_pick',
     request: null,
     response: { outcome: 'picked', path: 'C:\\Users\\ivan\\Documents' },
-    errors: [err('nested_vault'), err('vault_unavailable')],
+    errors: [err('nested_vault'), err('vault_unavailable'), invalidArgument('window')],
   },
   vault_open_folder: {
     command: 'vault_open_folder',
     request: null,
     response: { outcome: 'cancelled' },
-    errors: [err('vault_unavailable')],
+    errors: [err('vault_unavailable'), err('nested_vault'), invalidArgument('window')],
   },
   vault_open: {
     command: 'vault_open',
@@ -131,7 +132,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     command: 'vault_remove_from_list',
     request: { id: vault.id },
     response: null,
-    errors: [err('vault_not_found')],
+    errors: [err('vault_not_found'), invalidArgument('window')],
   },
   vault_manager_open: {
     command: 'vault_manager_open',

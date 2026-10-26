@@ -12,6 +12,11 @@
 //! Диалоги блокируют поток до ответа пользователя: вызывать вне рабочих
 //! потоков async (`spawn_blocking`) и не из главного потока.
 //!
+//! Окно выбора папки на Windows — своё ([`folder_windows`], задача 0.8,
+//! решение владельца 56): путь к выбранной папке не попадает в перемещаемый
+//! профиль. На Linux и macOS — `tauri-plugin-dialog`. Окна подтверждения —
+//! `tauri-plugin-dialog` на всех ОС.
+//!
 //! В тестах крейта (подменный runtime) системные окна не показываются:
 //! ответ берётся из [`test_answers`] по метке окна, по умолчанию — отмена.
 //! В тестовой сборке (функция `webdriver`) окно выбора папки можно
@@ -22,6 +27,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 
 use crate::commands::{CoreResult, EntryKind};
+
+#[cfg(windows)]
+mod folder_windows;
 
 /// Окна, в которых сейчас открыт диалог ядра.
 static BUSY_WINDOWS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
@@ -132,7 +140,29 @@ pub fn confirm_permanent_delete<R: tauri::Runtime>(
     ask_permanent_delete(window, &PermanentDelete::for_entry(name, kind))
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), windows))]
+fn ask_folder<R: tauri::Runtime>(
+    window: &tauri::Window<R>,
+    purpose: FolderPurpose,
+) -> Option<PathBuf> {
+    // Тестовая сборка: ответ окна выбора папки — из переменной окружения
+    // сценарного теста (в выпуске этой ветки нет: release-binary.test.ts).
+    #[cfg(feature = "webdriver")]
+    if let Some(folder) = crate::windows::e2e::picked_folder() {
+        return Some(folder);
+    }
+    // Владелец — окно вызова: окно выбора модально к нему.
+    let owner = match window.hwnd() {
+        Ok(hwnd) => Some(hwnd.0 as isize),
+        Err(error) => {
+            eprintln!("Rhizomind: окно выбора папки без владельца (нет HWND окна): {error}");
+            None
+        }
+    };
+    folder_windows::pick_folder(owner, purpose.title())
+}
+
+#[cfg(all(not(test), not(windows)))]
 fn ask_folder<R: tauri::Runtime>(
     window: &tauri::Window<R>,
     purpose: FolderPurpose,

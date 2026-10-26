@@ -135,6 +135,18 @@ impl Vault {
         dunce::canonicalize(&target).map_err(io_error)
     }
 
+    /// Папка для «Открыть папку как хранилище» (задача 2.8в): не служебная
+    /// папка `.rhizomind` и не папка внутри неё (иначе `nested_vault`);
+    /// папка внутри другого хранилища допустима. Канонизирует путь; папки
+    /// нет — `vault_unavailable`.
+    pub fn check_open_root(root: &Path) -> CoreResult<PathBuf> {
+        let root = dunce::canonicalize(root).map_err(|_| unavailable())?;
+        if is_inside_service_dir(&root) {
+            return Err(CoreError::new(ErrorCode::NestedVault));
+        }
+        Ok(root)
+    }
+
     /// Проверяет родительскую папку нового хранилища (задача 2.8б):
     /// существует и это папка (иначе `vault_unavailable`); ни она, ни её
     /// предки не хранилище (нет служебной папки `.rhizomind/`), не служебная
@@ -152,10 +164,7 @@ impl Vault {
             return Err(unavailable());
         }
         let nested = || CoreError::new(ErrorCode::NestedVault);
-        if parent
-            .components()
-            .any(|c| is_service_dir(&c.as_os_str().to_string_lossy()))
-        {
+        if is_inside_service_dir(&parent) {
             return Err(nested());
         }
         for ancestor in parent.ancestors() {
@@ -1186,6 +1195,12 @@ fn io_error(error: std::io::Error) -> CoreError {
         ErrorKind::AlreadyExists | ErrorKind::DirectoryNotEmpty => ErrorCode::AlreadyExists,
         _ => ErrorCode::IoFailed,
     })
+}
+
+/// Один из компонентов пути — служебная папка `.rhizomind` (по ключу имени).
+fn is_inside_service_dir(path: &Path) -> bool {
+    path.components()
+        .any(|c| is_service_dir(&c.as_os_str().to_string_lossy()))
 }
 
 fn unavailable() -> CoreError {

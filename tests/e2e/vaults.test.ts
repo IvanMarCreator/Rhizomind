@@ -273,8 +273,13 @@ describe.skipIf(!isWindows)('повторный запуск', () => {
     if (work) removeTestVault(work);
   });
 
-  it('второй запуск завершается, а в первом открывается окно управления', async () => {
+  // Открыто только окно хранилища, окна управления нет: повторный запуск
+  // создаёт его заново в главном потоке первого экземпляра
+  // (single_instance::on_second_instance → windows::open_manager, задача 2.8в).
+  it('открыто окно хранилища → второй запуск завершается, в первом появляется окно управления', async () => {
     const { browser } = session;
+    expect(await browser.getWindowHandles()).toHaveLength(1);
+    expect(await browser.$(MANAGER).isExisting()).toBe(false);
     const env: NodeJS.ProcessEnv = Object.fromEntries(
       Object.entries(process.env).filter(([name]) => !name.startsWith('WEBVIEW2_') && !name.startsWith('RHIZOMIND_E2E_')),
     );
@@ -284,5 +289,7 @@ describe.skipIf(!isWindows)('повторный запуск', () => {
 
     await switchToWindowWith(browser, MANAGER, 2);
     await shot(browser, 'vaults-second-instance');
+    // Окно хранилища на месте.
+    await switchToWindowWith(browser, switcherLabel('Рабочая база'), 2);
   });
 });

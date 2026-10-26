@@ -182,6 +182,7 @@ fn vault_create() {
         &[
             CoreError::invalid_argument("name"),
             CoreError::invalid_argument("parent"),
+            CoreError::invalid_argument("window"),
             CoreError::invalid_name(NameProblem::ReservedName),
             err(ErrorCode::AlreadyExists),
             err(ErrorCode::NestedVault),
@@ -201,6 +202,7 @@ fn folder_pick() {
         &[
             err(ErrorCode::NestedVault),
             err(ErrorCode::VaultUnavailable),
+            CoreError::invalid_argument("window"),
         ],
     );
 }
@@ -210,7 +212,11 @@ fn vault_open_folder() {
     command(
         "vault_open_folder",
         &VaultChooseOutcome::Cancelled,
-        &[err(ErrorCode::VaultUnavailable)],
+        &[
+            err(ErrorCode::VaultUnavailable),
+            err(ErrorCode::NestedVault),
+            CoreError::invalid_argument("window"),
+        ],
     );
 }
 
@@ -233,7 +239,10 @@ fn vault_remove_from_list() {
         "vault_remove_from_list",
         &VaultIdRequest { id: vault().id },
         &(),
-        &[err(ErrorCode::VaultNotFound)],
+        &[
+            err(ErrorCode::VaultNotFound),
+            CoreError::invalid_argument("window"),
+        ],
     );
 }
 
