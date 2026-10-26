@@ -25,9 +25,9 @@ describe('scanPaths', () => {
     });
     const found = await scanPaths([path.join(root, 'src'), path.join(root, 'dist')], root);
     expect(found).toEqual([
-      { file: 'dist/index.html', line: 1, what: 'внешний адрес //cdn.test/x.js', severity: 'network' },
-      { file: 'src/main.ts', line: 1, what: 'fetch', severity: 'network' },
-      { file: 'src/ui/App.svelte', line: 2, what: 'WebSocket', severity: 'network' },
+      { file: 'dist/index.html', line: 1, column: 9, what: 'внешний адрес //cdn.test/x.js', severity: 'network' },
+      { file: 'src/main.ts', line: 1, column: 1, what: 'fetch', severity: 'network' },
+      { file: 'src/ui/App.svelte', line: 2, column: 5, what: 'WebSocket', severity: 'network' },
     ]);
   });
 

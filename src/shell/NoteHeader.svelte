@@ -4,6 +4,7 @@
   здесь только выбор кнопки.
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import type { EditorMode, VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import Icon from './Icon.svelte';
@@ -15,6 +16,7 @@
     mode = $bindable(),
     onBack,
     onForward,
+    status,
   }: {
     path: VaultPath | null;
     canGoBack: boolean;
@@ -22,6 +24,8 @@
     mode: EditorMode;
     onBack: () => void;
     onForward: () => void;
+    /** Индикатор сохранения (редактор, src/editor/SaveIndicator.svelte). */
+    status?: Snippet;
   } = $props();
 
   const folders = $derived(path ? path.slice(0, -1) : []);
@@ -61,6 +65,8 @@
       {/each}
       <span class="name">{name}</span>
     </nav>
+
+    {@render status?.()}
 
     <div class="mode" role="group" aria-label={t('note.mode.label')}>
       <button
