@@ -151,7 +151,7 @@ internal interface IFileOpenDialog
     void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
     void Close(int hr);
     void SetClientGuid(ref Guid guid);
-    void ClearClientData();
+    [PreserveSig] int ClearClientData();
     void SetFilter(IntPtr pFilter);
     void GetResults(out IntPtr ppenum);
     void GetSelectedItems(out IntPtr ppsai);
@@ -203,6 +203,7 @@ internal static class FolderDialog
     ///   dontaddtorecent — + FOS_DONTADDTORECENT;
     ///   clientguid      — + SetClientGuid;
     ///   clientguid-clear— + SetClientGuid, после Show — ClearClientData;
+    ///   proposal        — FOS_PICKFOLDERS|FOS_DONTADDTORECENT + SetClientGuid + ClearClientData (предложение);
     ///   all             — FOS_PICKFOLDERS|FOS_DONTADDTORECENT|FOS_NOCHANGEDIR|FOS_FORCEFILESYSTEM + SetClientGuid + ClearClientData.
     public static int Run(string variant, string folder)
     {
@@ -217,6 +218,11 @@ internal static class FolderDialog
             case "dontaddtorecent": options |= FOS_DONTADDTORECENT; break;
             case "clientguid": guid = true; break;
             case "clientguid-clear": guid = true; clear = true; break;
+            case "proposal":
+                options |= FOS_DONTADDTORECENT;
+                guid = true;
+                clear = true;
+                break;
             case "all":
                 options |= FOS_DONTADDTORECENT | FOS_NOCHANGEDIR | FOS_FORCEFILESYSTEM;
                 guid = true;
@@ -283,7 +289,7 @@ internal static class FolderDialog
             dialog.GetResult(out var item);
             item.GetDisplayName(SIGDN_FILESYSPATH, out chosen);
         }
-        if (clear) dialog.ClearClientData();
+        int? clearHr = clear ? dialog.ClearClientData() : null;
         clicker.Join(1000);
         Marshal.FinalReleaseComObject(dialog);
         Out.Json(new
@@ -292,6 +298,7 @@ internal static class FolderDialog
             options = "0x" + options.ToString("x"),
             clientGuid = guid,
             clearClientData = clear,
+            clearHr = clearHr.HasValue ? "0x" + clearHr.Value.ToString("x8") : null,
             hr = "0x" + hr.ToString("x8"),
             chosen,
             expected = full,

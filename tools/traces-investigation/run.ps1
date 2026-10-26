@@ -118,6 +118,20 @@ try {
       foreach ($i in 1..3) { Phase "mini-rhizomind-flags#$i" { Scenario-Mini "mini-rhizomind-flags#$i" 'rhizomind-flags' } }
       foreach ($i in 1..3) { Phase "mini-default#$i" { Scenario-Mini "mini-default#$i" 'default' } }
     }
+    '^app-repeat$' {
+      foreach ($i in 1..2) { Phase "idle#$i" { Scenario-Idle "idle#$i" } }
+      foreach ($i in 1..5) { Phase "app#$i" { Scenario-App "app#$i" } }
+    }
+    '^mini-then-app$' {
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      foreach ($i in 1..3) { Phase "mini-rhizomind-flags#$i" { Scenario-Mini "mini-rhizomind-flags#$i" 'rhizomind-flags' } }
+      foreach ($i in 1..3) { Phase "app#$i" { Scenario-App "app#$i" } }
+    }
+    '^app-then-mini$' {
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      foreach ($i in 1..3) { Phase "app#$i" { Scenario-App "app#$i" } }
+      foreach ($i in 1..3) { Phase "mini-rhizomind-flags#$i" { Scenario-Mini "mini-rhizomind-flags#$i" 'rhizomind-flags' } }
+    }
     '^dialog-(.+)$' {
       $variant = $Matches[1]
       Phase 'idle#1' { Scenario-Idle 'idle#1' }

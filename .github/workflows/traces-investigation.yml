@@ -8,9 +8,12 @@
 #              (портативный архив из последнего успешного CI на main);
 #   minimal  — B ×3, затем C: минимальное окно WebView2 без ядра Rhizomind
 #              с флагами Rhizomind ×3 и с флагами по умолчанию ×3;
+#   app-repeat — то же, что app (воспроизводимость);
+#   mini-then-app / app-then-mini — C ×3 и A ×3 на одной машине в разном порядке
+#              (влияет ли первый запуск движка на машине);
 #   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
 #              rfd (как в приложении), rfd-cancel, dontaddtorecent,
-#              clientguid, clientguid-clear, all.
+#              clientguid, clientguid-clear, proposal, all.
 # Итог каждого задания — summary.md в журнале шага «Разбор» и в сводке
 # запуска; полная запись (PML, снимки) — в артефакте traces-<задание>.
 name: traces-investigation
@@ -32,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [app, minimal, dialog-rfd, dialog-rfd-cancel, dialog-dontaddtorecent, dialog-clientguid, dialog-clientguid-clear, dialog-all]
+        job: [app, app-repeat, mini-then-app, app-then-mini, minimal, dialog-rfd, dialog-rfd-cancel, dialog-dontaddtorecent, dialog-clientguid, dialog-clientguid-clear, dialog-proposal, dialog-all]
     runs-on: windows-latest
     timeout-minutes: 40
     env:
@@ -52,6 +55,8 @@ jobs:
           Write-Host "WebView2 Runtime: $((Get-ItemProperty -Path $key).pv)"
           Write-Host "Пользователь: $env:USERNAME; LOCALAPPDATA=$env:LOCALAPPDATA; APPDATA=$env:APPDATA"
           Get-Service TokenBroker, VaultSvc -ErrorAction SilentlyContinue | Format-Table -AutoSize Name, Status, StartType | Out-String | Write-Host
+          # Где лежат кусты реестра пользователя: NTUSER.DAT (перемещаемый) и UsrClass.dat (Local).
+          (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\hivelist').PSObject.Properties | Where-Object Name -match 'REGISTRY\\USER' | ForEach-Object { Write-Host "$($_.Name) = $($_.Value)" }
           Write-Host "Перемещаемый профиль: $((Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -eq $env:USERPROFILE }).RoamingConfigured)"
 
       - name: Process Monitor (Sysinternals, проверка подписи)
@@ -90,7 +95,7 @@ jobs:
           "PROBE=$env:RUNNER_TEMP\t06probe\t06probe.exe" >> $env:GITHUB_ENV
 
       - name: Выпускная сборка из CI на main
-        if: matrix.job == 'app'
+        if: startsWith(matrix.job, 'app') || endsWith(matrix.job, '-app')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
