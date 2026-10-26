@@ -41,16 +41,19 @@
 
 <div class="block">
   <Row title={t('settings.newNote.title')} hint={t('settings.newNote.hint')}>
-    <select
-      class="select"
-      aria-label={t('settings.newNote.title')}
-      value={location.kind}
-      onchange={(event) => setKind(event.currentTarget.value as NewNoteLocation['kind'])}
-    >
-      <option value="vault_root">{t('settings.newNote.root')}</option>
-      <option value="current_folder">{t('settings.newNote.current')}</option>
-      <option value="folder">{t('settings.newNote.folder')}</option>
-    </select>
+    <span class="select-wrap">
+      <select
+        class="select"
+        aria-label={t('settings.newNote.title')}
+        value={location.kind}
+        onchange={(event) => setKind(event.currentTarget.value as NewNoteLocation['kind'])}
+      >
+        <option value="vault_root">{t('settings.newNote.root')}</option>
+        <option value="current_folder">{t('settings.newNote.current')}</option>
+        <option value="folder">{t('settings.newNote.folder')}</option>
+      </select>
+      <span class="chevron" aria-hidden="true"><Icon name="chevron-down" size={14} /></span>
+    </span>
   </Row>
   {#if location.kind === 'folder'}
     <div class="folder-row">
@@ -73,8 +76,10 @@
   hint={t('settings.renameLinks.hint')}
   badge={t('settings.badge.release02')}
   disabled
+  singleLine
 >
   <Segmented
+    compact
     labelledby="settings-rename-links"
     value={null}
     disabled
@@ -111,10 +116,26 @@
     border-bottom: none;
   }
 
+  .select-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .chevron {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    color: var(--icon-default);
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
   .select {
     min-width: 190px;
     height: 28px;
-    padding: 0 8px;
+    padding: 0 28px 0 8px;
+    appearance: none;
+    cursor: pointer;
     border: 1px solid var(--border-strong);
     border-radius: 5px;
     background: var(--bg-app);

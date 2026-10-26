@@ -1,9 +1,10 @@
 // Сценарии окна «Настройки хранилища» (С3.1, задача 2.8б): каждая настройка
 // меняется в окне, записывается в хранилище и действует сразу.
 import { clearMocks } from '@tauri-apps/api/mocks';
+import { EditorView } from '@codemirror/view';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Settings, SettingsWriteRequest } from '../api/index.ts';
+import type { NoteReadResponse, Settings, SettingsWriteRequest } from '../api/index.ts';
 import { mockCore, type CoreMocks, type RecordedCall } from '../api/testing.ts';
 import Shell from '../shell/Shell.svelte';
 import { WindowModel } from '../shell/window.svelte.ts';
@@ -360,5 +361,125 @@ describe('горячие клавиши в окне', () => {
     expect(model.editorMode).toBe('source');
     expect(model.settings.editor_mode).toBe('source');
     await waitFor(() => expect(lastWrite(calls)?.editor_mode).toBe('source'));
+  });
+
+  /** Открытая заметка с текстом в редакторе. */
+  async function openEditor(settings: Partial<Settings> = {}) {
+    const ctx = setup(settings, {
+      note_read: (): NoteReadResponse => ({
+        text: 'один два три',
+        version: { hash: 'a'.repeat(64), size: 1, modified_ms: 1 },
+        read_only: null,
+      }),
+    });
+    await screen.findByText('Нет открытой заметки');
+    ctx.model.open(['А.md']);
+    ctx.model.open(['План.md']);
+    const content = await screen.findByRole('textbox', { name: 'Текст заметки' });
+    const view = EditorView.findFromDOM(content);
+    if (!view) throw new Error('нет редактора');
+    view.focus();
+    view.dispatch({ selection: { anchor: 12 } });
+    return { ...ctx, view, content };
+  }
+
+  const keydown = (target: Element, init: KeyboardEventInit) => {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  };
+
+  it('решение 80: Alt+← в тексте заметки — «Назад» окна, а не сочетание редактора', async () => {
+    const { model, view, content } = await openEditor();
+    keydown(content, { key: 'ArrowLeft', code: 'ArrowLeft', altKey: true });
+    expect(model.currentPath).toEqual(['А.md']);
+    expect(view.state.selection.main.head).toBe(12);
+  });
+
+  it('решение 80: «Назад» перенесли на Alt+B — Alt+← снова работает в редакторе', async () => {
+    const { model, view, content } = await openEditor({ hotkeys: { 'history.back': ['Alt+KeyB'] } });
+    keydown(content, { key: 'ArrowLeft', code: 'ArrowLeft', altKey: true });
+    expect(model.currentPath).toEqual(['План.md']);
+    // Alt+← в CodeMirror — переход к началу слова.
+    expect(view.state.selection.main.head).toBeLessThan(12);
+  });
+
+  it('решение 81: назначенная клавиша правки текста в поле и в тексте остаётся полю', async () => {
+    const { model, content } = await openEditor({ hotkeys: { 'history.back': ['Ctrl+Backspace'] } });
+    const inText = keydown(content, { key: 'Backspace', code: 'Backspace', ctrlKey: true });
+    expect(model.currentPath).toEqual(['План.md']);
+    expect(inText.defaultPrevented).toBe(true); // обработал редактор (удаление слова)
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Настройки' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Горячие клавиши' }));
+    const search = screen.getByRole('textbox', { name: 'Найти команду…' });
+    const inField = keydown(search, { key: 'Backspace', code: 'Backspace', ctrlKey: true });
+    expect(inField.defaultPrevented).toBe(false);
+    // Вне полей сочетание — команда окна.
+    await fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    keydown(document.body, { key: 'Backspace', code: 'Backspace', ctrlKey: true });
+    expect(model.currentPath).toEqual(['А.md']);
+  });
+});
+
+describe('очередь записей настроек', () => {
+  /** Ядро с файлом настроек в памяти и ручным управлением записью. */
+  function slowDisk(failFirst = false) {
+    let disk: Settings = { ...DEFAULT_SETTINGS };
+    const pending: (() => void)[] = [];
+    let writes = 0;
+    const mocks: CoreMocks = {
+      settings_read: () => ({ settings: { ...disk } }),
+      settings_write: ({ settings }) =>
+        new Promise<null>((resolve, reject) => {
+          const index = writes++;
+          pending.push(() => {
+            if (failFirst && index === 0) {
+              reject({ code: 'io_failed', message_key: 'errors.io_failed' });
+              return;
+            }
+            disk = settings;
+            resolve(null);
+          });
+        }),
+    };
+    return { mocks, pending, disk: () => disk };
+  }
+
+  async function flush(pending: (() => void)[]) {
+    while (pending.length === 0) await new Promise((r) => setTimeout(r, 0));
+    pending.shift()?.();
+  }
+
+  it('две быстрые записи с задержками — на диске оба поля', async () => {
+    const fake = slowDisk();
+    setup({}, fake.mocks);
+    const dialog = await openSettings('Оформление');
+    await fireEvent.click(within(dialog).getByRole('radio', { name: 'Тёмная' }));
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Файлы и ссылки' }));
+    await fireEvent.click(within(dialog).getByRole('switch', { name: 'Подтверждать удаление в корзину' }));
+
+    await flush(fake.pending);
+    await flush(fake.pending);
+
+    await waitFor(() => expect(fake.disk()).toEqual({ ...DEFAULT_SETTINGS, theme: 'dark', confirm_delete: false }));
+  });
+
+  it('первая из двух быстрых записей не удалась — её поле откатывается, второе остаётся', async () => {
+    const fake = slowDisk(true);
+    const { model } = setup({}, fake.mocks);
+    const dialog = await openSettings('Оформление');
+    await fireEvent.click(within(dialog).getByRole('radio', { name: 'Тёмная' }));
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Файлы и ссылки' }));
+    await fireEvent.click(within(dialog).getByRole('switch', { name: 'Подтверждать удаление в корзину' }));
+
+    await flush(fake.pending);
+    await flush(fake.pending);
+
+    expect(await screen.findByText('Не удалось прочитать или записать файл.')).toBeTruthy();
+    await waitFor(() => expect(model.settings.theme).toBe('system'));
+    expect(root().dataset.theme).toBe('light');
+    expect(model.settings.confirm_delete).toBe(false);
+    expect(fake.disk()).toEqual({ ...DEFAULT_SETTINGS, confirm_delete: false });
   });
 });

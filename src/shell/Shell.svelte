@@ -11,7 +11,7 @@
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTextSettings } from '../settings/apply.ts';
-  import { bindingsOf, chordText, matchCommand, type CommandId } from '../settings/hotkeys.ts';
+  import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import Editor from '../editor/Editor.svelte';
@@ -138,9 +138,11 @@
     void model.start();
     // Не <svelte:window>: Svelte передаёт тогда объект window значением, и
     // проверка сети (tools/check-no-network) не может доказать безопасность.
-    window.addEventListener('keydown', onKeydown);
+    // Фаза перехвата: команды реестра важнее сочетаний редактора и полей
+    // (решение 80), кроме клавиш правки текста в полях (решение 81).
+    window.addEventListener('keydown', onKeydown, true);
     return () => {
-      window.removeEventListener('keydown', onKeydown);
+      window.removeEventListener('keydown', onKeydown, true);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
     };
   });
@@ -148,12 +150,20 @@
   $effect(() => applyTheme(model.theme));
   $effect(() => applyTextSettings(model.settings));
 
+  /** Поле ввода или текст заметки (CodeMirror — contenteditable). */
+  function isTextField(target: EventTarget | null): boolean {
+    return (
+      target instanceof Element &&
+      target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null
+    );
+  }
+
   /** Горячие клавиши окна — по реестру и назначениям хранилища (src/settings/hotkeys.ts). */
   function onKeydown(event: KeyboardEvent) {
     if (model.status.kind !== 'ready' || !model.vault) return;
-    // Нажатие уже обработано (редактор, поле ввода, дерево).
-    if (event.defaultPrevented) return;
-    const command = matchCommand(model.hotkeys, event, 'window');
+    const command = isTextField(event.target)
+      ? windowCommandInText(model.hotkeys, event)
+      : matchCommand(model.hotkeys, event, 'window');
     if (!command) return;
     event.preventDefault();
     // Под модальным окном команды окна не действуют.

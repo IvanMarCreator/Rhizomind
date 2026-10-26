@@ -126,6 +126,9 @@ source: src/commands/contract_tests.rs
     "Ctrl+KeyX",
     "Ctrl+KeyY",
     "Ctrl+KeyZ",
-    "Ctrl+Shift+KeyZ"
+    "Ctrl+Shift+KeyZ",
+    "Shift+Delete",
+    "Shift+Insert",
+    "Ctrl+Insert"
   ]
 }

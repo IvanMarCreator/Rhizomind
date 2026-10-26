@@ -111,8 +111,8 @@ pub const HOTKEY_BARE_KEYS: &[&str] = &[
     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Delete",
 ];
 
-/// Системные сочетания Windows и общие сочетания правки текста: не
-/// переназначаются.
+/// Системные сочетания Windows и общие сочетания правки текста (в том числе
+/// старые «вырезать / копировать / вставить», решение 81): не переназначаются.
 pub const HOTKEY_RESERVED: &[&str] = &[
     "Alt+F4",
     "Alt+Space",
@@ -125,6 +125,9 @@ pub const HOTKEY_RESERVED: &[&str] = &[
     "Ctrl+KeyY",
     "Ctrl+KeyZ",
     "Ctrl+Shift+KeyZ",
+    "Shift+Delete",
+    "Shift+Insert",
+    "Ctrl+Insert",
 ];
 
 /// Имя команды: 1–64 байта из `a-z`, `0-9`, `.`, `_`, `-`.

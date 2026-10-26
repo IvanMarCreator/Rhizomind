@@ -175,10 +175,24 @@ export class WindowModel implements TreeHost {
         this.#savedSettings = next;
       } catch (error) {
         this.notify(userMessage(error));
-        if (this.settings === shown) this.#showSettings(this.#savedSettings, false);
+        this.#revert(patch);
       }
     });
     return this.#settingsWrite;
+  }
+
+  /**
+   * Запись `patch` не удалась: его поля возвращаются к записанным значениям —
+   * кроме тех, что с тех пор поменяла следующая правка (её запись в очереди).
+   */
+  #revert(patch: Partial<Settings>): void {
+    const back: Partial<Settings> = {};
+    for (const key of Object.keys(patch) as (keyof Settings)[]) {
+      if (JSON.stringify(this.settings[key]) === JSON.stringify(patch[key])) {
+        Object.assign(back, { [key]: this.#savedSettings[key] });
+      }
+    }
+    this.#showSettings({ ...this.settings, ...back }, false);
   }
 
   /** Показывает настройки; режим заметки — только при чтении (его меняет заметка, а не окно настроек). */
