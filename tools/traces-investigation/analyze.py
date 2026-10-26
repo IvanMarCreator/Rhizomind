@@ -337,7 +337,7 @@ emit()
 for phase in phase_names:
     emit(f"## Фаза {phase}")
     for r in results.get(phase, []):
-        emit(f"- ответ зонда: `{json.dumps(r, ensure_ascii=False)[:600]}`")
+        emit(f"- ответ зонда: `{json.dumps(r, ensure_ascii=False)[:1500]}`")
     d = snapshot_diff(phase)
     if d is None:
         emit("- снимков нет")

@@ -132,6 +132,24 @@ try {
       foreach ($i in 1..3) { Phase "app#$i" { Scenario-App "app#$i" } }
       foreach ($i in 1..3) { Phase "mini-rhizomind-flags#$i" { Scenario-Mini "mini-rhizomind-flags#$i" 'rhizomind-flags' } }
     }
+    '^app-policy-(.+)$' {
+      # Опыт: функции движка, связанные с OneAuth/WAM, выключаются политикой WebView2
+      # AdditionalBrowserArguments (без правки приложения). Список --disable-features
+      # повторяет флаги Rhizomind и добавляет кандидатов: если политика заменяет
+      # список приложения, защитные функции не теряются.
+      $extra = @{
+        'oneauthwam' = 'msOneAuthWAM'
+        'background' = 'msLoadOneAuthInBackground'
+        'both'       = 'msOneAuthWAM,msLoadOneAuthInBackground'
+      }[$Matches[1]]
+      $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+      New-Item -Path $key -Force | Out-Null
+      $value = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,$extra"
+      Set-ItemProperty -Path $key -Name 'rhizomind.exe' -Value $value
+      Add-Content -LiteralPath $results -Value (@{ phase = 'policy'; key = $key; value = $value } | ConvertTo-Json -Compress) -Encoding utf8
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      foreach ($i in 1..3) { Phase "app#$i" { Scenario-App "app#$i" } }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')

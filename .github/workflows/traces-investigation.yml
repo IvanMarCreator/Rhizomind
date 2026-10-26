@@ -13,6 +13,8 @@
 #              (влияет ли первый запуск движка на машине);
 #   mini-nav / mini-lang / mini-nav-lang — B, C ×2 с отличиями от Rhizomind
 #              (страница http://tauri.localhost; язык и расширения как в wry), затем A ×1;
+#   app-policy-* — политика WebView2 AdditionalBrowserArguments выключает функции
+#              OneAuth/WAM движка; B ×1, A ×3 (опыт без правки приложения);
 #   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
 #              rfd (как в приложении), rfd-cancel, dontaddtorecent,
 #              clientguid, clientguid-clear, proposal, all.
@@ -37,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [app, app-repeat, mini-then-app, app-then-mini, minimal, mini-nav, mini-lang, mini-nav-lang, dialog-rfd, dialog-rfd-cancel, dialog-dontaddtorecent, dialog-clientguid, dialog-clientguid-clear, dialog-proposal, dialog-all]
+        job: [app, app-policy-oneauthwam, app-policy-background, app-policy-both, app-repeat, mini-then-app, app-then-mini, minimal, mini-nav, mini-lang, mini-nav-lang, dialog-rfd, dialog-rfd-cancel, dialog-dontaddtorecent, dialog-clientguid, dialog-clientguid-clear, dialog-proposal, dialog-all]
     runs-on: windows-latest
     timeout-minutes: 40
     env:
