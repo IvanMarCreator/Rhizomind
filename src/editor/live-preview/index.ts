@@ -6,7 +6,17 @@
 // Ссылки `[текст](адрес)` — без элементов `<a>` и переходов в окне: щелчок
 // передаёт адрес наверх, окно открывает его командой ядра `open_external`
 // с подтверждением (С3.4, docs/SECURITY.md).
-import { RangeSet, RangeValue, StateField, type EditorState, type Text, type Extension, type Range, type TransactionSpec } from '@codemirror/state';
+import {
+  RangeSet,
+  RangeValue,
+  StateField,
+  type ChangeSet,
+  type EditorState,
+  type Extension,
+  type Range,
+  type Text,
+  type TransactionSpec,
+} from '@codemirror/state';
 import {
   Decoration,
   EditorView,
@@ -16,7 +26,22 @@ import {
   type ViewUpdate,
 } from '@codemirror/view';
 import { t } from '../../i18n/index.ts';
-import { BLOCK_EDGE, parseLine, scanBlocks, type CodeBlock, type WidgetKind } from './markdown.ts';
+import {
+  MAX_BLOCK_TEXT,
+  PROPERTIES_CLOSE,
+  PROPERTIES_OPEN,
+  fenceStep,
+  findProperties,
+  isFenceLike,
+  openFenceAt,
+  parseLine,
+  scanBlocks,
+  type Blocks,
+  type CodeBlock,
+  type OpenFence,
+  type Span,
+  type WidgetKind,
+} from './markdown.ts';
 
 // ---- Блоки кода и блок свойств ----------------------------------------------
 
@@ -25,10 +50,11 @@ interface BlockState {
   code: RangeSet<RangeValue>;
   /** Начало незакрытого блока: он идёт до конца текста. */
   unclosed: number | null;
-  properties: { from: number; to: number } | null;
+  properties: Span | null;
 }
 
 const CODE_BLOCK = new (class extends RangeValue {})();
+const NO_BLOCKS: BlockState = { code: RangeSet.empty, unclosed: null, properties: null };
 
 function scan(doc: Text): BlockState {
   const blocks = scanBlocks(doc);
@@ -41,38 +67,158 @@ function scan(doc: Text): BlockState {
   };
 }
 
+/** Пересчитать всё заново: правка задела границу блока свойств. */
+const RESCAN = Symbol('rescan');
+
 /**
- * Блоки, зависящие от строк выше. Пересчитываются целиком, только если правка
- * задела строку, похожую на ограду или границу блока свойств; иначе позиции
- * сдвигаются вслед за правкой.
+ * Блоки, зависящие от строк выше. Обычная правка только сдвигает позиции.
+ * Правка строки-ограды пересчитывает ограды с места правки до первой строки,
+ * где новый разбор совпал с прежним (`rescanFences`). Весь текст заново —
+ * только если сдвинулась граница блока свойств. Текст больше
+ * `MAX_BLOCK_TEXT` — без блоков (решение 77).
  */
 const blocksField = StateField.define<BlockState>({
   create: (state) => scan(state.doc),
   update(blocks, tr) {
     if (!tr.docChanged) return blocks;
-    let rescan = false;
-    tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
-      if (rescan) return;
-      rescan =
-        touchesEdge(tr.startState.doc, fromA, toA) ||
-        touchesEdge(tr.state.doc, fromB, toB) ||
-        (blocks.properties !== null && fromA <= blocks.properties.to + 1) ||
-        fromB <= tr.state.doc.line(1).to;
-    });
-    if (rescan) return scan(tr.state.doc);
-    return {
-      properties: blocks.properties,
+    const before = tr.startState.doc;
+    const doc = tr.state.doc;
+    if (doc.length > MAX_BLOCK_TEXT) return NO_BLOCKS;
+    if (before.length > MAX_BLOCK_TEXT) return scan(doc);
+    const properties = updateProperties(blocks.properties, tr.changes, before, doc);
+    if (properties === RESCAN) return scan(doc);
+    const mapped: BlockState = {
+      properties,
       code: blocks.code.map(tr.changes),
       unclosed: blocks.unclosed === null ? null : tr.changes.mapPos(blocks.unclosed, -1),
     };
+    // Ограды разбираются после блока свойств: правки внутри него их не меняют.
+    const fencesFrom = properties ? properties.to + 1 : 0;
+    let from = -1;
+    let to = -1;
+    tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+      if (toB < fencesFrom) return;
+      if (anyLine(before, fromA, toA, isFenceLike) || anyLine(doc, fromB, toB, isFenceLike)) {
+        if (from < 0) from = Math.max(fromB, fencesFrom);
+        to = toB;
+      }
+    });
+    return from < 0 ? mapped : rescanFences(doc, mapped, from, to);
   },
 });
 
-function touchesEdge(doc: Text, from: number, to: number): boolean {
+function anyLine(doc: Text, from: number, to: number, test: (text: string) => boolean): boolean {
   for (let n = doc.lineAt(from).number, last = doc.lineAt(to).number; n <= last; n++) {
-    if (BLOCK_EDGE.test(doc.line(n).text)) return true;
+    if (test(doc.line(n).text)) return true;
   }
   return false;
+}
+
+/** Блок свойств после правки; `RESCAN` — сдвинулась его граница, блоки кода надо искать заново. */
+function updateProperties(old: Span | null, changes: ChangeSet, before: Text, doc: Text): Span | null | typeof RESCAN {
+  const wasOpen = before.lines > 1 && PROPERTIES_OPEN.test(before.line(1).text);
+  const isOpen = doc.lines > 1 && PROPERTIES_OPEN.test(doc.line(1).text);
+  if (!wasOpen && !isOpen) return null;
+  if (wasOpen !== isOpen) return RESCAN;
+  let touched = false;
+  changes.iterChangedRanges((fromA, _toA, fromB, toB) => {
+    if (touched) return;
+    // Нет закрывающей строки: блок появится, только если правка её добавила.
+    touched = old ? fromA <= old.to : anyLine(doc, fromB, toB, (text) => PROPERTIES_CLOSE.test(text));
+  });
+  if (!touched) return old;
+  if (!old) return RESCAN;
+  const next = findProperties(doc);
+  return next && next.to === changes.mapPos(old.to, 1) ? next : RESCAN;
+}
+
+/** Начало закрытого блока, внутри которого (не на первой строке) лежит строка с началом `pos`. */
+function enclosingBlock(code: RangeSet<RangeValue>, pos: number): number | null {
+  let found: number | null = null;
+  code.between(pos, pos, (from, to) => {
+    if (from < pos && to >= pos) {
+      found = from;
+      return false;
+    }
+    return undefined;
+  });
+  return found;
+}
+
+/**
+ * Ограды после правки строк-оград в `[changeFrom, changeTo]`. Разбор идёт с
+ * начала первой задетой строки (или с открывающей ограды блока, в котором
+ * она лежит) и останавливается на первой строке ниже правки, перед которой и
+ * новый, и прежний разбор — вне блока: дальше текст и разбор те же, блоки
+ * берутся из прежнего, сдвинутые. Если ограду открыли или закрыли, а дальше
+ * блоки без названия языка, разбор может дойти до конца текста.
+ */
+function rescanFences(doc: Text, mapped: BlockState, changeFrom: number, changeTo: number): BlockState {
+  const first = doc.lineAt(changeFrom);
+  const regionEnd = doc.lineAt(changeTo).to;
+  // Прежний разбор ниже правки: курсор идёт вперёд вместе с разбором,
+  // без поиска по набору блоков на каждой проверке.
+  const old = mapped.code.iter(regionEnd);
+  const insideOld = (pos: number): boolean => {
+    if (mapped.unclosed !== null && mapped.unclosed < pos) return true;
+    while (old.value && old.to < pos) old.next();
+    return old.value !== null && old.from < pos;
+  };
+
+  // Разбор с первой задетой строки; если она внутри блока — с состоянием
+  // «блок открыт» его оградой (строка ограды выше правки не менялась).
+  let start = first.from;
+  let pos = first.from;
+  let open: OpenFence | null = null;
+  const enclosing =
+    mapped.unclosed !== null && mapped.unclosed < start ? mapped.unclosed : enclosingBlock(mapped.code, start);
+  if (enclosing !== null) {
+    start = enclosing;
+    open = openFenceAt(doc.lineAt(enclosing).text, enclosing);
+  }
+
+  const closed: CodeBlock[] = [];
+  let resync = -1;
+  let check = true;
+  const lines = doc.iterLines(first.number);
+  for (lines.next(); !lines.done; lines.next()) {
+    if (check && open === null && pos > regionEnd) {
+      // Разборы могут совпасть только после строки, где новый закрыл блок.
+      check = false;
+      if (!insideOld(pos)) {
+        resync = pos;
+        break;
+      }
+    }
+    const text = lines.value;
+    const wasOpen = open !== null;
+    open = fenceStep(open, text, pos, pos + text.length, closed);
+    if (wasOpen && open === null) check = true;
+    pos += text.length + 1;
+  }
+
+  const end = resync < 0 ? doc.length + 1 : resync;
+  return {
+    properties: mapped.properties,
+    code: mapped.code.update({
+      filter: (from) => from < start || from >= end,
+      filterFrom: start,
+      filterTo: end,
+      add: closed.map((block) => CODE_BLOCK.range(block.from, block.to)),
+    }),
+    unclosed: resync < 0 ? (open?.from ?? null) : mapped.unclosed !== null && mapped.unclosed >= end ? mapped.unclosed : null,
+  };
+}
+
+/** Блоки кода и блок свойств из состояния редактора (для тестов: сверка с `scanBlocks`). */
+export function codeBlocks(state: EditorState): Blocks {
+  const blocks = state.field(blocksField, false) ?? NO_BLOCKS;
+  const code: CodeBlock[] = [];
+  blocks.code.between(0, state.doc.length, (from, to) => {
+    code.push({ from, to, closeLine: state.doc.lineAt(to).from });
+  });
+  if (blocks.unclosed !== null) code.push({ from: blocks.unclosed, to: state.doc.length, closeLine: null });
+  return { code, properties: blocks.properties };
 }
 
 /** Блок кода, в котором лежит строка с началом `pos`. */

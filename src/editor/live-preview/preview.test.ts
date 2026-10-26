@@ -6,7 +6,8 @@ import { EditorSelection, EditorState } from '@codemirror/state';
 import { Decoration } from '@codemirror/view';
 import { describe, expect, it } from 'vitest';
 import { createEditorState } from '../codemirror.ts';
-import { previewDecorations } from './index.ts';
+import { codeBlocks, previewDecorations, taskToggle } from './index.ts';
+import { scanBlocks } from './markdown.ts';
 
 /** Курсор — после символа `|` (сам символ из текста убирается). */
 function stateWithCursor(marked: string): EditorState {
@@ -249,5 +250,54 @@ describe('незакрытый блок кода после правок', () =>
       '4: cm-rz-codeblock',
       '5: cm-rz-codeblock',
     ]);
+  });
+});
+
+describe('блоки после правок совпадают с разбором всего текста заново', () => {
+  // Пересчёт идёт с места правки до совпадения с прежним разбором (2.5а).
+  // Случайные правки строк из оград, свойств и текста: результат обязан
+  // совпасть с полным разбором.
+  const LINES = ['```', '```js', '~~~', '````', '``` a`b', '   ```', '    ```', '---', '...', 'текст', '', '# з', '`код`'];
+  const PIECES = ['`', '``', '```', '~', '-', '.', 'js', ' ', '\n', '\n```\n', '\n---\n', 'а'];
+
+  function random(seed: number): () => number {
+    let x = seed;
+    return () => {
+      x = (x * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return x / 2_147_483_648;
+    };
+  }
+
+  it('2000 случайных правок', () => {
+    const next = random(7);
+    const pick = <T>(list: readonly T[]): T => list[Math.floor(next() * list.length)] as T;
+    for (let doc = 0; doc < 40; doc++) {
+      const lines = Array.from({ length: 4 + Math.floor(next() * 20) }, () => pick(LINES));
+      let state = createEditorState(lines.join('\n'), { mode: 'live_preview' });
+      for (let k = 0; k < 50; k++) {
+        const length = state.doc.length;
+        const from = Math.floor(next() * (length + 1));
+        const to = Math.min(length, from + (next() < 0.5 ? 0 : Math.floor(next() * 6)));
+        const insert = next() < 0.3 ? '' : pick(PIECES);
+        // Иногда вторая правка в той же транзакции (несколько курсоров).
+        const second = Math.floor(next() * (length + 1));
+        const extra = next() < 0.3 && (second < from || second > to) ? [{ from: second, insert: pick(PIECES) }] : [];
+        state = state.update({ changes: [{ from, to, insert }, ...extra] }).state;
+        expect(codeBlocks(state), `текст: ${JSON.stringify(state.doc.toString())}`).toEqual(scanBlocks(state.doc));
+      }
+    }
+  });
+});
+
+describe('чекбокс', () => {
+  it('переключение меняет ровно один символ: `[ ]` ↔ `[x]`', () => {
+    const state = createEditorState('- [ ] задача\n- [X] сделано', { mode: 'live_preview' });
+    for (const [pos, from, insert] of [[2, 3, 'x'], [15, 16, ' ']] as const) {
+      const spec = taskToggle(state, pos);
+      const changes = state.update(spec ?? {}).changes;
+      const touched: [number, number, string][] = [];
+      changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => touched.push([fromA, toA, inserted.toString()]));
+      expect(touched).toEqual([[from, from + 1, insert]]);
+    }
   });
 });
