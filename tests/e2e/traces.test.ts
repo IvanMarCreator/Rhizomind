@@ -310,8 +310,17 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     const known = changed.filter(isKnownTrace);
     if (known.length > 0) console.log(`учтённая запись после выхода (SECURITY.md, «Записи вне хранилища»): ${known.join(', ')}`);
     expect(changed.filter(unexpected)).toEqual([]);
-    const leftoverReal = path.join(real(temp), path.basename(leftover));
-    expect(removed.filter((p) => !p.startsWith(leftoverReal) && !isKnownTrace(p))).toEqual([]);
+    // Удалены могут быть только остатки папок движка прошлых запусков —
+    // подложенный тестом и оставшиеся от сценарных тестов WebDriver, чьи
+    // процессы драйвер завершил без выхода (уборка остатков при запуске, ADR 0007).
+    // Имя папки — точно `rhizomind-webview-<номер процесса>-<16 шестнадцатеричных>`
+    // (src-tauri/src/webview_traces/), и учтённые записи (кэш TokenBroker).
+    const tempReal = real(temp) + path.sep;
+    const LEFTOVER_NAME = /^rhizomind-webview-\d+-[0-9a-f]{16}$/;
+    const isLeftover = (p: string) =>
+      p.startsWith(tempReal) && LEFTOVER_NAME.test(p.slice(tempReal.length).split(path.sep)[0] ?? '');
+    expect(removed.filter((p) => !isLeftover(p) && !isKnownTrace(p))).toEqual([]);
+    expect(existsSync(leftover)).toBe(false);
   }, 60_000);
 
   it('реестр HKCU: нет путей и упоминаний приложения вне учтённых записей', () => {

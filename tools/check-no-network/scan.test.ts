@@ -238,3 +238,39 @@ describe('scanSource: обходы через глобальный объект 
     expect(kinds('const a = <div onClick={() => fetch(u)} />;', 'A.tsx')).toEqual(['fetch']);
   });
 });
+
+describe('scanSource: окно через .defaultView и .win (ревью 2.4, В1)', () => {
+  it.each([
+    ['(view.win)[atob(s)](u)', 'view.win[<вычисляемое>]'],
+    ['el.ownerDocument.defaultView[k](u)', 'el.ownerDocument.defaultView[<вычисляемое>]'],
+    ['this.view.win[name]', 'this.view.win[<вычисляемое>]'],
+  ])('вычисляемое имя: %s — подозрительно', (code, what) => {
+    expect(scanSource(code, 'a.ts')).toEqual([{ line: 1, what, severity: 'suspicious' }]);
+  });
+
+  it.each([
+    ["view.win['fetch'](u)", 'fetch'],
+    ["el.ownerDocument.defaultView['XMLHttpRequest']", 'XMLHttpRequest'],
+    ['view.win.open(u)', 'window.open'],
+    ["el.ownerDocument.defaultView['open'](u)", 'window.open'],
+  ])('сетевое имя: %s — сеть', (code, what) => {
+    expect(scanSource(code, 'a.ts')).toEqual([{ line: 1, what, severity: 'network' }]);
+  });
+
+  it('обычные свойства окна по постоянному имени — не находка', () => {
+    expect(kinds('view.win.innerHeight; el.ownerDocument.defaultView.getComputedStyle(el)')).toEqual([]);
+  });
+});
+
+describe('scanSource: Function справа от instanceof — отдельный вид', () => {
+  it('i instanceof Function — свой вид находки (разрешимый исключением)', () => {
+    expect(kinds('x = i instanceof Function ? i(v) : i')).toEqual(['Function справа от instanceof']);
+  });
+
+  it.each(['new Function(code)', 'Function(code)', 'const F = Function', 'Function instanceof x'])(
+    '%s — обычная находка Function',
+    (code) => {
+      expect(kinds(code)).toEqual(['Function']);
+    },
+  );
+});

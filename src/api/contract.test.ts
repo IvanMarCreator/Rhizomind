@@ -88,7 +88,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   vault_list: {
     command: 'vault_list',
     request: null,
-    response: { vaults: [{ ...vault, is_open: true }], last_opened: vault.id },
+    response: { vaults: [{ ...vault, is_open: true, available: true }], last_opened: vault.id },
     errors: [err('io_failed')],
   },
   vault_current: {
@@ -99,9 +99,21 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   },
   vault_create: {
     command: 'vault_create',
-    request: { name: 'Работа' },
+    request: { name: 'Работа', parent: 'C:\\Users\\ivan\\Documents' },
     response: { outcome: 'opened', vault },
-    errors: [invalidArgument('name'), invalidName('reserved_name'), err('already_exists')],
+    errors: [
+      invalidArgument('name'),
+      invalidArgument('parent'),
+      invalidName('reserved_name'),
+      err('already_exists'),
+      err('nested_vault'),
+    ],
+  },
+  folder_pick: {
+    command: 'folder_pick',
+    request: null,
+    response: { outcome: 'picked', path: 'C:\\Users\\ivan\\Documents' },
+    errors: [err('nested_vault'), err('vault_unavailable')],
   },
   vault_open_folder: {
     command: 'vault_open_folder',
@@ -120,6 +132,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     request: { id: vault.id },
     response: null,
     errors: [err('vault_not_found')],
+  },
+  vault_manager_open: {
+    command: 'vault_manager_open',
+    request: null,
+    response: null,
+    errors: [err('io_failed')],
   },
   tree_list: {
     command: 'tree_list',
@@ -345,6 +363,7 @@ const enums = {
     read_only: true,
     scheme_not_allowed: true,
     io_failed: true,
+    nested_vault: true,
   } satisfies Record<ErrorCode, true>,
   NameProblem: {
     empty: true,

@@ -147,6 +147,7 @@ fn vault_list() {
                 name: summary.name,
                 path: summary.path,
                 is_open: true,
+                available: true,
             }],
             last_opened: Some(summary.id),
         },
@@ -175,12 +176,31 @@ fn vault_create() {
         "vault_create",
         &VaultCreateRequest {
             name: "Работа".into(),
+            parent: "C:\\Users\\ivan\\Documents".into(),
         },
         &VaultChooseOutcome::Opened { vault: vault() },
         &[
             CoreError::invalid_argument("name"),
+            CoreError::invalid_argument("parent"),
             CoreError::invalid_name(NameProblem::ReservedName),
             err(ErrorCode::AlreadyExists),
+            err(ErrorCode::NestedVault),
+        ],
+    );
+}
+
+/// Выбор родительской папки нового хранилища (задача 2.8б, расширение
+/// контракта v1).
+#[test]
+fn folder_pick() {
+    command(
+        "folder_pick",
+        &FolderPickOutcome::Picked {
+            path: "C:\\Users\\ivan\\Documents".into(),
+        },
+        &[
+            err(ErrorCode::NestedVault),
+            err(ErrorCode::VaultUnavailable),
         ],
     );
 }
@@ -215,6 +235,12 @@ fn vault_remove_from_list() {
         &(),
         &[err(ErrorCode::VaultNotFound)],
     );
+}
+
+/// Окно «Управление хранилищами» (задача 2.8а, расширение контракта v1).
+#[test]
+fn vault_manager_open() {
+    command("vault_manager_open", &(), &[err(ErrorCode::IoFailed)]);
 }
 
 #[test]
@@ -708,7 +734,8 @@ fn enums() {
             | ErrorCode::NotANote
             | ErrorCode::ReadOnly
             | ErrorCode::SchemeNotAllowed
-            | ErrorCode::IoFailed => {}
+            | ErrorCode::IoFailed
+            | ErrorCode::NestedVault => {}
         }
     }
     let name_problems = NameProblem::ALL;

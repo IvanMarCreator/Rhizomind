@@ -5,7 +5,7 @@ use tauri::{AppHandle, Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult, NameProblem};
 use super::types::{API_VERSION, CurrentVault, VaultId, VaultSummary};
-use super::{Core, blocking, check_entry_name};
+use super::{Core, blocking, check_entry_name, limits};
 use crate::dialogs::{self, FolderPurpose};
 
 /// Хранилище в окне «Управление хранилищами».
@@ -20,6 +20,9 @@ pub struct VaultListItem {
     pub path: String,
     /// Открыто ли в каком-либо окне.
     pub is_open: bool,
+    /// Папка на месте (диск подключён); `false` — открыть сейчас нельзя
+    /// (задача 2.8б: пометка в окне управления).
+    pub available: bool,
 }
 
 /// Ответ `vault_list`.
@@ -49,6 +52,22 @@ pub struct VaultCurrentResponse {
 pub struct VaultCreateRequest {
     /// Имя папки нового хранилища (правила имён С3.2).
     pub name: String,
+    /// Родительская папка — ровно та, что вернул последний `folder_pick`
+    /// этого окна (задача 2.8б, решение владельца 62).
+    pub parent: String,
+}
+
+/// Ответ `folder_pick`: родительская папка нового хранилища.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FolderPickOutcome {
+    /// Папка выбрана и проверена: полный путь для показа и для `vault_create`.
+    Picked {
+        /// Полный путь к папке.
+        path: String,
+    },
+    /// Пользователь закрыл окно выбора папки.
+    Cancelled,
 }
 
 /// Ответ `vault_create` и `vault_open_folder`: выбор папки в диалоге ядра.
@@ -86,15 +105,26 @@ pub enum VaultOpenOutcome {
 #[tauri::command]
 pub async fn vault_list(core: State<'_, Core>) -> CoreResult<VaultListResponse> {
     let registry = core.shared_registry();
-    let entries = blocking(move || registry.entries()).await?;
+    let (entries, available) = blocking(move || {
+        let entries = registry.entries()?;
+        let available: Vec<bool> = entries
+            .vaults
+            .iter()
+            .map(|vault| std::path::Path::new(&vault.path).is_dir())
+            .collect();
+        Ok((entries, available))
+    })
+    .await?;
     let vaults = entries
         .vaults
         .into_iter()
-        .map(|vault| VaultListItem {
+        .zip(available)
+        .map(|(vault, available)| VaultListItem {
             is_open: core.window_of_vault(&vault.id).is_some(),
             id: vault.id,
             name: vault.name,
             path: vault.path,
+            available,
         })
         .collect();
     Ok(VaultListResponse {
@@ -118,11 +148,67 @@ pub async fn vault_current<R: Runtime>(
     })
 }
 
-/// Создаёт хранилище: родительскую папку пользователь выбирает в диалоге ядра.
+/// Второй рубеж прав (задача 2.8б): команды создания, открытия папки,
+/// выбора папки и «Убрать из списка» — только окну «Управление
+/// хранилищами». Первый рубеж — capability `manager` (окна хранилищ этих
+/// прав не имеют); ядро отказывает и окну, которому права выдали по ошибке.
+fn require_manager<R: Runtime>(core: &Core, window: &Window<R>) -> CoreResult<()> {
+    if core.is_manager(window.label()) {
+        Ok(())
+    } else {
+        Err(CoreError::invalid_argument("window"))
+    }
+}
+
+/// Известные хранилища — для проверки родительской папки.
+fn known_roots(registry: &crate::registry::Registry) -> CoreResult<Vec<std::path::PathBuf>> {
+    Ok(registry
+        .entries()?
+        .vaults
+        .into_iter()
+        .map(|vault| std::path::PathBuf::from(vault.path))
+        .collect())
+}
+
+/// Выбор родительской папки нового хранилища в системном окне ядра (Э11в,
+/// «Обзор…»; решение владельца 62). Папка проверяется сразу
+/// ([`crate::vault::Vault::check_parent`]: есть, папка, не внутри хранилища —
+/// иначе `nested_vault`) и запоминается за окном: `vault_create` примет
+/// только её.
+#[tauri::command]
+pub async fn folder_pick<R: Runtime>(
+    window: Window<R>,
+    core: State<'_, Core>,
+) -> CoreResult<FolderPickOutcome> {
+    require_manager(&core, &window)?;
+    let registry = core.shared_registry();
+    let picker = window.clone();
+    let picked = blocking(move || {
+        let Some(folder) = dialogs::pick_folder(&picker, FolderPurpose::NewVaultParent)? else {
+            return Ok(None);
+        };
+        let parent = crate::vault::Vault::check_parent(&folder, &known_roots(&registry)?)?;
+        let path = parent
+            .to_str()
+            .ok_or_else(|| CoreError::new(super::ErrorCode::InvalidPath))?
+            .to_owned();
+        Ok(Some((parent, path)))
+    })
+    .await?;
+    let Some((parent, path)) = picked else {
+        return Ok(FolderPickOutcome::Cancelled);
+    };
+    core.remember_picked_parent(window.label(), parent);
+    Ok(FolderPickOutcome::Picked { path })
+}
+
+/// Создаёт хранилище `name` в родительской папке `parent`, выбранной
+/// `folder_pick` этого окна (Э11в; решение владельца 62).
 ///
-/// Порядок: правила имён (до диалога — чтобы не спрашивать папку зря) →
-/// диалог (общий замок диалогов ядра; занято — `cancelled`) → компонент
-/// пути и «`parent.join(name)` лежит прямо в `parent`» → создание папки
+/// Порядок: окно управления → правила имён → пределы `parent` → `parent`
+/// совпадает с выбранной в окне ядра папкой (иначе `invalid_argument`) →
+/// повторная проверка папки (могла измениться) → компонент пути и
+/// «`parent.join(name)` лежит прямо в `parent`» → создание папки
 /// (`Vault::create`) → запись в список хранилищ → открытие
 /// ([`open_in_window`]).
 #[tauri::command]
@@ -132,24 +218,24 @@ pub async fn vault_create<R: Runtime>(
     core: State<'_, Core>,
     request: VaultCreateRequest,
 ) -> CoreResult<VaultChooseOutcome> {
+    require_manager(&core, &window)?;
     check_entry_name(&request.name, "name")?;
+    limits::folder_path(&request.parent, "parent")?;
+    let parent = std::path::PathBuf::from(&request.parent);
+    if core.picked_parent(window.label()).as_deref() != Some(parent.as_path()) {
+        return Err(CoreError::invalid_argument("parent"));
+    }
     let registry = core.shared_registry();
-    let picker = window.clone();
-    let summary = blocking(move || {
-        let Some(parent) = dialogs::pick_folder(&picker, FolderPurpose::NewVaultParent)? else {
-            return Ok(None);
-        };
+    let vault = blocking(move || {
+        let parent = crate::vault::Vault::check_parent(&parent, &known_roots(&registry)?)?;
         crate::vault::check_component(&request.name)?;
         if parent.join(&request.name).parent() != Some(parent.as_path()) {
             return Err(CoreError::invalid_name(NameProblem::ForbiddenChars));
         }
         let root = crate::vault::Vault::create(&parent, &request.name)?;
-        registry.add(&root).map(Some)
+        registry.add(&root)
     })
     .await?;
-    let Some(vault) = summary else {
-        return Ok(VaultChooseOutcome::Cancelled);
-    };
     open_in_window(app, &core, &window, vault.clone()).await?;
     Ok(VaultChooseOutcome::Opened { vault })
 }
@@ -161,6 +247,7 @@ pub async fn vault_open_folder<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
 ) -> CoreResult<VaultChooseOutcome> {
+    require_manager(&core, &window)?;
     let registry = core.shared_registry();
     let picker = window.clone();
     let summary = blocking(move || {
@@ -192,12 +279,22 @@ pub async fn vault_open<R: Runtime>(
 
 /// Убирает хранилище из списка; файлы не удаляются.
 #[tauri::command]
-pub async fn vault_remove_from_list(
+pub async fn vault_remove_from_list<R: Runtime>(
+    window: Window<R>,
     core: State<'_, Core>,
     request: VaultIdRequest,
 ) -> CoreResult<()> {
+    require_manager(&core, &window)?;
     let registry = core.shared_registry();
     blocking(move || registry.remove(&request.id)).await
+}
+
+/// Открывает окно «Управление хранилищами» (переключатель хранилищ, пункт
+/// «Управление хранилищами…»); уже открытое окно получает фокус
+/// ([`crate::windows::open_manager`], задача 2.8а).
+#[tauri::command]
+pub async fn vault_manager_open<R: Runtime>(app: AppHandle<R>) -> CoreResult<()> {
+    crate::windows::open_manager(&app)
 }
 
 /// Открытие хранилища для команд группы «Хранилища» — одна функция для

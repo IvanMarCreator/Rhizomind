@@ -10,6 +10,11 @@ source: src/commands/contract_tests.rs
       "message_key": "errors.invalid_argument"
     },
     {
+      "code": "invalid_argument",
+      "field": "parent",
+      "message_key": "errors.invalid_argument"
+    },
+    {
       "code": "invalid_name",
       "message_key": "errors.invalid_name",
       "name_problem": "reserved_name"
@@ -17,10 +22,15 @@ source: src/commands/contract_tests.rs
     {
       "code": "already_exists",
       "message_key": "errors.already_exists"
+    },
+    {
+      "code": "nested_vault",
+      "message_key": "errors.nested_vault"
     }
   ],
   "request": {
-    "name": "Работа"
+    "name": "Работа",
+    "parent": "C:\\Users\\ivan\\Documents"
   },
   "response": {
     "outcome": "opened",
