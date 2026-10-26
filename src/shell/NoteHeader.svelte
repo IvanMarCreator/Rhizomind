@@ -238,6 +238,7 @@
     position: relative;
     display: flex;
     flex: none;
+    gap: 2px;
     margin-left: auto;
     padding: 2px;
     border-radius: 7px;
@@ -272,7 +273,8 @@
     outline-offset: 1px;
   }
 
-  /* Подсказка (tokens.md, «Добавлено к решению 72»): под переключателем, справа. */
+  /* Подсказка (tokens.md, «Добавлено к решению 72»): под переключателем, справа.
+     Клавиша — по tokens.md «Клавиша»: высота 22, отступы 7, фон `bg/app`, текст `text/secondary`. */
   .tooltip {
     position: absolute;
     top: calc(100% + 6px);
@@ -299,18 +301,20 @@
   }
 
   .plus {
-    color: var(--text-faint);
+    color: var(--text-muted);
   }
 
   kbd {
     display: inline-grid;
     place-items: center;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 6px;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
     border: 1px solid var(--border-strong);
     border-bottom-width: 2px;
     border-radius: 5px;
+    background: var(--bg-app);
+    color: var(--text-secondary);
     font-family: inherit;
     font-size: var(--font-size-caption);
     font-weight: 500;

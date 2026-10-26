@@ -310,6 +310,28 @@ describe('закрытие окна (задача 0.7): сигнал ядра wi
     expect(await screen.findByText(/Окно не закрыто: не удалось сохранить заметку «LF без BOM»/)).toBeTruthy();
     expect(view.state.doc.toString()).toContain('ещё');
   });
+
+  it('конец сеанса Windows (решение 79): оболочка передаёт sessionEnd — при сбое своё уведомление, а не «Окно не закрыто…»', async () => {
+    const disk = new Disk(SAMPLES);
+    const failure: CoreError = { code: 'io_failed', message_key: 'errors.io_failed' };
+    const { view, calls } = await openWindow(disk, ['LF без BOM.md'], {
+      note_write: () => {
+        throw failure;
+      },
+      window_close_ready: () => null,
+      window_close_cancel: () => null,
+    });
+    type(view, 'ещё');
+
+    await emitCoreEvent('window:close-requested', { sessionEnd: true });
+
+    await waitFor(() => expect(answers(calls)).toEqual(['window_close_cancel']));
+    expect(
+      await screen.findByText('Перед выходом из системы не удалось сохранить заметки. Текст остаётся в редакторе.'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Окно не закрыто/)).toBeNull();
+    expect(view.state.doc.toString()).toContain('ещё');
+  });
 });
 
 describe('конфликт изменений и удаление снаружи', () => {
