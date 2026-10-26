@@ -5,11 +5,12 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_CLICK, FindWindowW, GetDlgItem, IDCANCEL, IDOK, IsWindow, PostMessageW, SendMessageW,
-    SetForegroundWindow, WM_COMMAND,
+    BM_CLICK, EnumChildWindows, FindWindowW, GetClassNameW, GetDlgItem, GetWindowTextW, IDCANCEL,
+    IDOK, IsWindow, PostMessageW, SendMessageW, SetForegroundWindow, WM_COMMAND,
 };
+use windows::core::BOOL;
 use windows::core::{HSTRING, PCWSTR};
 use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
 use windows_sys::Win32::System::Registry::{
@@ -46,10 +47,125 @@ fn unique(prefix: &str) -> String {
     format!("{prefix}-{}-{nanos}", std::process::id())
 }
 
-/// «Пользователь» в отдельном потоке: ждёт окно с заголовком `title` и
-/// нажимает кнопку выбора папки (как зонд расследования 0.6, вариант `proposal`).
-fn press_select(title: String) -> std::thread::JoinHandle<Vec<String>> {
-    press(title, IDOK.0, 200)
+/// «Пользователь» в отдельном потоке: ждёт окно с заголовком `title`, в поле
+/// имени которого уже стоит путь к папке `folder` с `\` в конце; первой
+/// кнопкой переходит в папку, второй — выбирает её.
+///
+/// Каждый шаг ждёт видимого признака в окне, а не паузы (задача 0.10): окно
+/// готово — в адресной строке путь; переход сделан — в адресной строке имя
+/// `folder`. Прежние паузы 2 с и 3 с иногда не дожидались перехода, и
+/// вторая кнопка выбирала папку по умолчанию («Документы»).
+fn press_select(title: String, folder: String) -> std::thread::JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let mut log = Vec::new();
+        let Some(window) = find_dialog(&title, 200) else {
+            log.push("окно не найдено".to_owned());
+            return log;
+        };
+        log.push("окно найдено".to_owned());
+        let ready = wait_for(Duration::from_secs(20), || {
+            address(window).filter(|text| text.contains(":\\"))
+        });
+        log.push(format!("адрес до перехода: {ready:?}"));
+        // SAFETY: сообщения окну диалога, которое живёт в другом потоке.
+        unsafe {
+            let _ = SetForegroundWindow(window);
+            let button = GetDlgItem(Some(window), IDOK.0).ok();
+            let _ = PostMessageW(
+                Some(window),
+                WM_COMMAND,
+                WPARAM(IDOK.0 as usize),
+                LPARAM(button.map_or(0, |b| b.0 as isize)),
+            );
+            log.push(format!("WM_COMMAND {}", IDOK.0));
+            let moved = wait_for(Duration::from_secs(20), || {
+                if !IsWindow(Some(window)).as_bool() {
+                    return Some("окно закрылось".to_owned());
+                }
+                address(window).filter(|text| text.contains(&folder))
+            });
+            log.push(format!("после перехода: {moved:?}"));
+            if IsWindow(Some(window)).as_bool() {
+                if let Some(button) = button {
+                    SendMessageW(button, BM_CLICK, None, None);
+                    log.push("BM_CLICK".to_owned());
+                }
+                let closed = wait_for(Duration::from_secs(20), || {
+                    (!IsWindow(Some(window)).as_bool()).then_some(())
+                });
+                if closed.is_none() {
+                    let _ = PostMessageW(
+                        Some(window),
+                        WM_COMMAND,
+                        WPARAM(IDCANCEL.0 as usize),
+                        LPARAM(0),
+                    );
+                    log.push("окно не закрылось: IDCANCEL".to_owned());
+                }
+            }
+        }
+        log
+    })
+}
+
+/// Окно диалога (класс `#32770`) с заголовком `title`: до `tries` × 100 мс.
+fn find_dialog(title: &str, tries: u32) -> Option<HWND> {
+    let title = HSTRING::from(title);
+    let class = HSTRING::from("#32770");
+    for _ in 0..tries {
+        std::thread::sleep(Duration::from_millis(100));
+        // SAFETY: только поиск окна по классу и заголовку.
+        if let Ok(found) = unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR(title.as_ptr())) } {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Ждёт, пока `probe` вернёт значение, проверяя каждые 100 мс; не дольше `limit`.
+fn wait_for<T>(limit: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if let Some(value) = probe() {
+            return Some(value);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Текст адресной строки окна выбора (панель `ToolbarWindow32` вида
+/// «Address: C:\…»), если она уже есть.
+fn address(window: HWND) -> Option<String> {
+    unsafe extern "system" fn visit(child: HWND, found: LPARAM) -> BOOL {
+        // SAFETY: `found` — указатель на `Vec<String>` вызывающего, живой на
+        // время перебора; окна — того же процесса.
+        unsafe {
+            let mut class = [0u16; 64];
+            let len = GetClassNameW(child, &mut class);
+            if String::from_utf16_lossy(&class[..len.max(0) as usize]) == "ToolbarWindow32" {
+                let mut text = [0u16; 1024];
+                let len = GetWindowTextW(child, &mut text);
+                let text = String::from_utf16_lossy(&text[..len.max(0) as usize]);
+                if text.contains(":\\") {
+                    (*(found.0 as *mut Vec<String>)).push(text);
+                }
+            }
+        }
+        BOOL(1)
+    }
+    let mut found: Vec<String> = Vec::new();
+    // SAFETY: перебор дочерних окон; указатель на `found` живёт до возврата.
+    unsafe {
+        let _ = EnumChildWindows(
+            Some(window),
+            Some(visit),
+            LPARAM(&mut found as *mut Vec<String> as isize),
+        );
+    }
+    found.into_iter().next()
 }
 
 /// Ждёт окно с заголовком `title` до `tries` × 100 мс и нажимает кнопку `id`.
@@ -307,7 +423,12 @@ fn dialog_in_child_process() {
     let kind = kind.to_string_lossy().into_owned();
     let folder = PathBuf::from(folder);
     let title = unique("Rhizomind проверка окна");
-    let user = press_select(title.clone());
+    let folder_name = folder
+        .file_name()
+        .expect("имя папки")
+        .to_string_lossy()
+        .into_owned();
+    let user = press_select(title.clone(), folder_name);
     let target = folder.clone();
     // Как пользователь: путь с `\` в конце в поле имени — первая кнопка
     // переходит в папку, вторая выбирает её. `SetFolder` не вызывается.
