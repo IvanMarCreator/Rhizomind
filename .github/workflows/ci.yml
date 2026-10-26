@@ -1,193 +1,36 @@
-# Проверка, сборка и сценарный тест на Windows и Linux.
-# Без секретов и сторонних сервисов; права только на чтение кода.
-# Все actions закреплены по SHA коммита (ADR 0009); версия — в комментарии.
+# Временная ветка опыта 0.8: только окно выбора папки, два способа задать папку.
 name: CI
-
 on:
   push:
-    branches: ["**"]
-  pull_request:
-
+    branches: ["task/0.8-probe"]
 permissions:
   contents: read
-
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  verify:
-    name: verify (${{ matrix.os }})
+  probe:
+    name: probe (${{ matrix.preset }})
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    # Обычно ~25 мин на Windows с кэшем; запас на холодный кэш. Зависание —
-    # ошибка, а не часы ожидания.
+        preset: [full-path, default-folder]
+    runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - name: Получить код
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Установить Node.js 22
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
-
-      - name: Системные библиотеки (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev webkit2gtk-driver xvfb
-
-      # Версия Rust берётся из rust-toolchain.toml: rustup ставит её при первом вызове cargo.
-      - name: Rust из rust-toolchain.toml
-        shell: bash
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustc --version
-          cargo --version
-
-      - name: Кэш Rust
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Рабочее пространство Cargo в корне. Выпускная сборка — src-tauri/target
-          # (.cargo/config.toml), тестовая (функция webdriver) — src-tauri/target-e2e
-          # (CARGO_TARGET_DIR в tools/build-e2e).
           workspaces: |
             . -> src-tauri/target
-            . -> src-tauri/target-e2e
-          cache-bin: true
-
-      - name: Инструменты проверки (cargo-deny, tauri-driver)
-        shell: bash
-        run: |
-          cargo install --locked cargo-deny@0.20.2
-          cargo install --locked tauri-driver@2.1.0
-
-      # Скрипты установки пакетов не запускаются (.npmrc: ignore-scripts=true).
-      - name: Зависимости интерфейса
-        run: npm ci
-
-      - name: Проверки (типы, линтер, тесты, сеть, лицензии, cargo fmt/clippy/test/deny/tree)
-        run: npm run verify
-
-      # Окно выбора папки (задача 0.8, решение владельца 56): настоящее окно ОС
-      # на рабочем столе раннера, «пользователь» выбирает временную папку; затем
-      # поиск её имени во всём HKCU, кроме Software\Classes (UsrClass.dat — Local),
-      # и в %APPDATA% (перемещаемый профиль). Контроль: окно с опциями rfd пишет
-      # путь в Roaming, и поиск его находит. Идёт и после сбоя verify
-      # (интерфейс для сборки ядра уже собран в check:network).
-      - name: Окно выбора папки без следов в Roaming (Windows)
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
-        timeout-minutes: 15
+      - run: npm ci
+      - run: npm run build:ui
+      - name: dialog
         shell: bash
         env:
           RHIZOMIND_T08_CONTROL: "1"
-        run: cargo test -p rhizomind --locked --lib dialogs::folder_windows -- --ignored --nocapture --test-threads=1
-
-      # Генератор тестового хранилища (задача 1.6). Проверка состава идёт в verify;
-      # здесь — нагрузочный тест в выпускном профиле (10 000 заметок быстрее 10 с) и прогон командной строки.
-      - name: Генератор тестового хранилища
-        shell: bash
-        run: |
-          cargo test -p gen-vault --release --locked -- --ignored --nocapture
-          cargo run -p gen-vault --release --locked -- --notes 10000 --out "$RUNNER_TEMP/vault-10k" --manifest "$RUNNER_TEMP/vault-10k.json"
-
-      # Тест производительности быстрого перехода (задача 1.1): поиск по 10 000
-      # именам не дольше 20 мс; в verify не входит — нужен выпускной профиль.
-      - name: Производительность поиска ядра
-        shell: bash
-        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --skip watcher::load_tests --skip dialogs::folder_windows
-
-      # Слежение за папкой под нагрузкой (задача 1.4, ADR 0006): 10 000 файлов,
-      # массовая замена как при git checkout, переименования, переполнение.
-      # Тестовая сборка — та же, что в verify (отладочный профиль).
-      - name: Слежение за папкой под нагрузкой
-        timeout-minutes: 15
-        shell: bash
-        run: cargo test -p rhizomind --locked --lib watcher::load_tests -- --ignored --nocapture --test-threads=1
-
-      - name: Сборка приложения
-        run: npm run build
-
-      # msedgedriver должен совпадать по версии с установленным WebView2 Runtime.
-      - name: msedgedriver под версию WebView2 (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          $version = (Get-ItemProperty -Path $key).pv
-          Write-Host "WebView2 Runtime: $version"
-          $dir = Join-Path $env:RUNNER_TEMP 'msedgedriver'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $zip = Join-Path $dir 'edgedriver.zip'
-          try {
-            Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath $dir -Force
-            $driver = Join-Path $dir 'msedgedriver.exe'
-          } catch {
-            Write-Warning "Не удалось скачать msedgedriver $version ($_); беру предустановленный"
-            $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
-          }
-          & $driver --version
-          # Обёртка пишет подробный журнал msedgedriver (выкладывается артефактом).
-          $wrapper = Join-Path $dir 'msedgedriver-logged.cmd'
-          "@`"$driver`" %* --verbose --log-path=`"$dir\msedgedriver.log`"" | Set-Content -Encoding ascii $wrapper
-          "MSEDGEDRIVER=$wrapper" >> $env:GITHUB_ENV
-
-      # Сценарные тесты WebDriver идут на сборке с функцией `webdriver` (порт отладки
-      # для msedgedriver поверх защищённых флагов, src-tauri/src/lib.rs) в отдельной
-      # папке src-tauri/target-e2e. Тест следов и флагов (tests/e2e/traces.test.ts)
-      # идёт на выпускной сборке из шага «Сборка приложения».
-      - name: Сборка для сценарного теста
-        run: npm run build:e2e
-
-      - name: Сценарный тест (Linux)
-        timeout-minutes: 10
-        if: runner.os == 'Linux'
-        env:
-          # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
-          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
-          # Без шины доступности GTK ждёт её по D-Bus (предупреждение AT-SPI) —
-          # это замедляет запуск окна под WebDriver.
-          NO_AT_BRIDGE: "1"
-        run: xvfb-run -a npm run test:e2e
-
-      - name: Сценарный тест (Windows)
-        timeout-minutes: 10
-        if: runner.os == 'Windows'
-        run: npm run test:e2e
-
-      - name: Снимки экрана сценарных тестов
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-screenshots-${{ runner.os }}
-          path: test-results/
-          retention-days: 14
-          # Шаг идёт и после сбоя раньше теста; отсутствие снимка при успехе ловит сам тест.
-          if-no-files-found: warn
-
-      - name: Журнал msedgedriver (Windows)
-        if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: msedgedriver-log
-          path: ${{ runner.temp }}/msedgedriver/msedgedriver.log
-          retention-days: 14
-          if-no-files-found: ignore
-
-      - name: Портативная сборка (Windows)
-        if: runner.os == 'Windows'
-        run: npm run package:portable
-
-      - name: Загрузить портативную сборку (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: rhizomind-portable-windows
-          path: release/*.zip
-          retention-days: 14
-          if-no-files-found: error
+          RHIZOMIND_T08_PRESET: ${{ matrix.preset }}
+        run: cargo test -p rhizomind --locked --lib dialogs::folder_windows -- --include-ignored --nocapture --test-threads=1
