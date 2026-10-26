@@ -61,8 +61,9 @@
   .text :global(.cm-editor) {
     color: var(--text-primary);
     font-family: var(--font-ui);
-    font-size: 16px;
-    line-height: 26px;
+    /* Размер шрифта текста — настройка хранилища (src/settings/apply.ts). */
+    font-size: var(--note-font-size, 16px);
+    line-height: 1.625;
   }
 
   .text :global(.cm-editor.cm-focused) {

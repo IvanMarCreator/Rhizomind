@@ -18,6 +18,7 @@ const SETTINGS: Settings = {
   new_note_location: { kind: 'vault_root' },
   confirm_delete: true,
   max_edit_size_bytes: 10 * 1024 * 1024,
+  hotkeys: {},
 };
 
 const NOTE = '# Заголовок\n\nтекст **жирный**\n\n- [ ] задача\n- [x] сделано\n\n[сайт](https://example.org)\n';

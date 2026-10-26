@@ -4,7 +4,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::commands::{NewNoteLocation, Settings, limits};
+use crate::commands::{HotkeyOverrides, NewNoteLocation, Settings, hotkeys, limits};
 
 /// Версия формата `settings.json`, которую пишет это ядро.
 pub const SETTINGS_FORMAT_VERSION: u32 = 1;
@@ -79,6 +79,11 @@ impl SettingsFile {
             max_edit_size_bytes: field(&self.values, "max_edit_size_bytes")
                 .filter(|size| (min_edit..=max_edit).contains(size))
                 .unwrap_or(defaults.max_edit_size_bytes),
+            // Назначение с ошибкой (файл правили руками) пропускается: у
+            // команды — сочетания по умолчанию.
+            hotkeys: field::<HotkeyOverrides>(&self.values, "hotkeys")
+                .map(hotkeys::sanitize)
+                .unwrap_or(defaults.hotkeys),
         }
     }
 
@@ -159,6 +164,38 @@ mod tests {
             Settings::default().max_edit_size_bytes
         );
         assert_eq!(settings.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn old_file_without_hotkeys_reads_with_defaults() {
+        let file: SettingsFile =
+            serde_json::from_value(json!({ "format_version": 1, "theme": "dark" })).expect("файл");
+        let settings = file.to_settings();
+        assert!(settings.hotkeys.is_empty());
+        assert_eq!(settings.theme, Theme::Dark);
+    }
+
+    #[test]
+    fn hotkeys_read_tolerantly_and_bad_commands_are_dropped() {
+        let file: SettingsFile = serde_json::from_value(json!({
+            "hotkeys": {
+                "quick_switcher.open": ["Ctrl+KeyP"],
+                "window.close": ["Alt+F4"],
+                "tree.delete": []
+            }
+        }))
+        .expect("файл");
+        let hotkeys = file.to_settings().hotkeys;
+        assert_eq!(hotkeys.len(), 2);
+        assert_eq!(
+            hotkeys["quick_switcher.open"],
+            vec!["Ctrl+KeyP".to_string()]
+        );
+        assert!(hotkeys["tree.delete"].is_empty());
+
+        let broken: SettingsFile =
+            serde_json::from_value(json!({ "hotkeys": ["Ctrl+KeyP"] })).expect("файл");
+        assert!(broken.to_settings().hotkeys.is_empty());
     }
 
     #[test]

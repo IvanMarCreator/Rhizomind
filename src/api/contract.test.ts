@@ -74,6 +74,7 @@ const settings: Settings = {
   new_note_location: { kind: 'folder', path: ['Входящие'] },
   confirm_delete: true,
   max_edit_size_bytes: 10 * 1024 * 1024,
+  hotkeys: { 'quick_switcher.open': ['Ctrl+KeyO', 'Ctrl+KeyP'], 'tree.delete': [] },
 };
 const conflictCopy = ['Проекты', 'Встреча (внешняя версия 2026-10-25 12-00).md'];
 

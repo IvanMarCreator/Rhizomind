@@ -133,6 +133,15 @@ fn settings_example() -> Settings {
         },
         confirm_delete: true,
         max_edit_size_bytes: 10 * 1024 * 1024,
+        hotkeys: [
+            (
+                "quick_switcher.open".to_string(),
+                vec!["Ctrl+KeyO".to_string(), "Ctrl+KeyP".to_string()],
+            ),
+            ("tree.delete".to_string(), vec![]),
+        ]
+        .into_iter()
+        .collect(),
     }
 }
 

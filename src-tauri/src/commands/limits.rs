@@ -7,6 +7,7 @@
 use serde::Serialize;
 
 use super::error::{CoreError, CoreResult};
+use super::hotkeys;
 use super::settings::{NewNoteLocation, Settings};
 use super::types::VaultPath;
 
@@ -47,6 +48,13 @@ pub struct Limits {
     pub max_folder_path_utf16: usize,
     pub edit_size_range: (u64, u64),
     pub font_size_range: (u16, u16),
+    pub hotkey_max_commands: usize,
+    pub hotkey_max_chords: usize,
+    pub hotkey_max_command_bytes: usize,
+    pub hotkey_modifiers: &'static [&'static str],
+    pub hotkey_keys: &'static [&'static str],
+    pub hotkey_bare_keys: &'static [&'static str],
+    pub hotkey_reserved: &'static [&'static str],
 }
 
 /// Все пределы одним значением.
@@ -61,6 +69,13 @@ pub const LIMITS: Limits = Limits {
     max_folder_path_utf16: MAX_FOLDER_PATH_UTF16,
     edit_size_range: EDIT_SIZE_RANGE,
     font_size_range: FONT_SIZE_RANGE,
+    hotkey_max_commands: hotkeys::MAX_HOTKEY_COMMANDS,
+    hotkey_max_chords: hotkeys::MAX_HOTKEY_CHORDS,
+    hotkey_max_command_bytes: hotkeys::MAX_HOTKEY_COMMAND_BYTES,
+    hotkey_modifiers: hotkeys::HOTKEY_MODIFIERS,
+    hotkey_keys: hotkeys::HOTKEY_KEYS,
+    hotkey_bare_keys: hotkeys::HOTKEY_BARE_KEYS,
+    hotkey_reserved: hotkeys::HOTKEY_RESERVED,
 };
 
 fn ensure(ok: bool, field: &str) -> CoreResult<()> {
@@ -133,7 +148,8 @@ pub fn url(url: &str) -> CoreResult<()> {
     )
 }
 
-/// Значения настроек в своих диапазонах; путь папки новых заметок — как путь.
+/// Значения настроек в своих диапазонах; путь папки новых заметок — как путь;
+/// назначения горячих клавиш — по правилам `commands::hotkeys`.
 pub fn settings(settings: &Settings) -> CoreResult<()> {
     let (min_edit, max_edit) = EDIT_SIZE_RANGE;
     ensure(
@@ -148,7 +164,10 @@ pub fn settings(settings: &Settings) -> CoreResult<()> {
     if let NewNoteLocation::Folder { path: folder } = &settings.new_note_location {
         path(folder, "settings.new_note_location.path")?;
     }
-    Ok(())
+    ensure(
+        hotkeys::overrides_are_valid(&settings.hotkeys),
+        "settings.hotkeys",
+    )
 }
 
 #[cfg(test)]
@@ -171,6 +190,7 @@ mod tests {
             new_note_location: NewNoteLocation::VaultRoot,
             confirm_delete: true,
             max_edit_size_bytes: 10 * MIB,
+            hotkeys: Default::default(),
         }
     }
 
@@ -263,6 +283,18 @@ mod tests {
         assert_eq!(
             field_of(settings(&folder)),
             Some("settings.new_note_location.path".into())
+        );
+        let mut hotkeys = valid_settings();
+        hotkeys
+            .hotkeys
+            .insert("quick_switcher.open".into(), vec!["Ctrl+KeyP".into()]);
+        assert!(settings(&hotkeys).is_ok());
+        hotkeys
+            .hotkeys
+            .insert("window.close".into(), vec!["Alt+F4".into()]);
+        assert_eq!(
+            field_of(settings(&hotkeys)),
+            Some("settings.hotkeys".into())
         );
     }
 }
