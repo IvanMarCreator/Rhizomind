@@ -112,6 +112,15 @@ jobs:
         shell: bash
         run: cargo test -p rhizomind --locked --lib watcher::load_tests -- --ignored --nocapture --test-threads=1
 
+      # ВРЕМЕННО (0.10, диагностика): кто мешает переносу папки.
+      - name: ДИАГ 0.10 перенос папки
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          powershell -Command "Get-MpComputerStatus | Select RealTimeProtectionEnabled; Get-Service WSearch | Select Status"
+          cargo test -p rhizomind --locked --lib watcher::diag_t010 -- --ignored --nocapture --test-threads=1 2>&1 | grep -E "diag|test result|panicked"
+
       - name: Сборка приложения
         run: npm run build
 

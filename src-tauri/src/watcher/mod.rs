@@ -46,6 +46,8 @@ use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debounc
 
 mod tree;
 
+#[cfg(all(test, windows))]
+mod diag_t010;
 #[cfg(test)]
 mod load_tests;
 #[cfg(test)]
