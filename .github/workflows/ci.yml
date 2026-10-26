@@ -39,14 +39,19 @@ jobs:
       # КБ/с, и шаг шёл до 38 минут (задача 0.10, tools/ci-apt/install.sh).
       # Ключ — образ раннера и скрипт со списком пакетов; сохраняется сразу после шага,
       # даже если задание потом упадёт.
+      - name: Образ раннера (Linux)
+        id: image
+        if: runner.os == 'Linux'
+        run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+
       - name: Кэш пакетов apt (Linux)
         id: apt-cache
         if: runner.os == 'Linux'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ env.ImageOS }}-${{ env.ImageVersion }}-${{ hashFiles('tools/ci-apt/install.sh') }}
-          restore-keys: apt-${{ env.ImageOS }}-
+          key: apt-${{ steps.image.outputs.version }}-${{ hashFiles('tools/ci-apt/install.sh') }}
+          restore-keys: apt-${{ steps.image.outputs.version }}-
 
       - name: Системные библиотеки (Linux)
         if: runner.os == 'Linux'
@@ -56,11 +61,11 @@ jobs:
         run: tools/ci-apt/install.sh
 
       - name: Сохранить кэш пакетов apt (Linux)
-        if: runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ env.ImageOS }}-${{ env.ImageVersion }}-${{ hashFiles('tools/ci-apt/install.sh') }}
+          key: apt-${{ steps.image.outputs.version }}-${{ hashFiles('tools/ci-apt/install.sh') }}
 
       # Версия Rust берётся из rust-toolchain.toml: rustup ставит её при первом вызове cargo.
       - name: Rust из rust-toolchain.toml
