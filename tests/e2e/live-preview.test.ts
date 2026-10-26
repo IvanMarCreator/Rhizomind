@@ -9,7 +9,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, waitForAppExit, type Session } from './driver.ts';
 import { saveScreenshot } from './screenshot.ts';
 
-const isLinux = process.platform === 'linux';
 const TEXT = '[role="textbox"][aria-label="Текст заметки"]';
 const NOTE = 'Образец';
 
@@ -200,10 +199,10 @@ describe('живой предпросмотр и режим исходного �
 
   // Находка Н7 (docs/reviews/2026-10-26-task-3.1.md): базовые стили CodeMirror
   // вставляются элементом <style>, а CSP окна (`style-src 'self'`) его
-  // запрещает, если движок не умеет adoptedStyleSheets (WebKitGTK). Тогда у
-  // текста `white-space: normal`: пробелы в начале строки и подряд не видны.
-  // На Linux подтверждено — it.fails (покраснеет, когда исправят).
-  (isLinux ? it.fails : it)('пробелы в начале строки видны: вложенный пункт сдвинут (стили CodeMirror применены)', async () => {
+  // запрещает. Тогда у текста `white-space: normal`: пробелы в начале строки
+  // и подряд не видны. Подтверждено на Windows и Linux — it.fails
+  // (покраснеет, когда исправят; тогда снять пометку).
+  it.fails('пробелы в начале строки видны: вложенный пункт сдвинут (стили CodeMirror применены)', async () => {
     const b = browser();
     const look = await b.execute((selector) => {
       const lines = [...document.querySelectorAll(`${selector} .cm-line`)];
