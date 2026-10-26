@@ -310,6 +310,19 @@ try {
       Phase 'mini-wry#2' { Scenario-Exe 'mini-wry#2' $Probe @('webview', "$m+wry", '8') 12 }
       Phase 'wry#1' { Scenario-Exe 'wry#1' $WryProbe @('datadir', 'incognito', 'flags', 'drop', 'secs=8') 14 }
     }
+    '^oneauth-sdk$' {
+      # Оставшееся отличие — сторона хоста: версия SDK/загрузчика и объект параметров окружения.
+      $m = 'rhizomind-flags+dpi+lang+wry+noext'
+      $probe3800 = Join-Path (Split-Path (Split-Path $Probe)) 't06probe-3800\t06probe.exe'
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'mini#1' { Scenario-Exe 'mini#1' $Probe @('webview', $m, '8') 12 }
+      Phase 'mini-tcbv#1' { Scenario-Exe 'mini-tcbv#1' $Probe @('webview', "$m+tcbv", '8') 12 }
+      Phase 'mini3800#1' { Scenario-Exe 'mini3800#1' $probe3800 @('webview', $m, '8') 12 }
+      Phase 'mini3800-tcbv#1' { Scenario-Exe 'mini3800-tcbv#1' $probe3800 @('webview', "$m+tcbv", '8') 12 }
+      Phase 'wry#1' { Scenario-Exe 'wry#1' $WryProbe @('datadir', 'incognito', 'flags', 'drop', 'secs=8') 14 }
+      Phase 'mini3800#2' { Scenario-Exe 'mini3800#2' $probe3800 @('webview', $m, '8') 12 }
+      Phase 'mini-tcbv#2' { Scenario-Exe 'mini-tcbv#2' $Probe @('webview', "$m+tcbv", '8') 12 }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')

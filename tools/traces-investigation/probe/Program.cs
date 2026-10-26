@@ -350,6 +350,9 @@ internal static class MiniWebView
         var settings = Has("settings");
         var events = Has("events");
         var script = Has("script");
+        // +tcbv — TargetCompatibleBrowserVersion как у webview2-com 0.39.1 (wry); +noext — расширения выключены (как wry).
+        var tcbv = Array.IndexOf(parts, "tcbv") > 0;
+        var noext = Array.IndexOf(parts, "noext") > 0;
         var dataDir = Path.Combine(Path.GetTempPath(), "t06-webview-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dataDir);
         var info = new Dictionary<string, object> { ["mode"] = mode, ["dataDir"] = dataDir };
@@ -367,6 +370,9 @@ internal static class MiniWebView
                     AllowSingleSignOnUsingOSPrimaryAccount = false,
                     IsCustomCrashReportingEnabled = true,
                 };
+                if (tcbv) options.TargetCompatibleBrowserVersion = "145.0.3800.47";
+                if (noext) options.AreBrowserExtensionsEnabled = false;
+                info["sdkTarget"] = options.TargetCompatibleBrowserVersion;
                 if (lang)
                 {
                     options.Language = "en-US";

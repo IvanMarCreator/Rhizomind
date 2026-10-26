@@ -24,6 +24,7 @@
 #              уничтожение окна раньше контроллера (C# и wry);
 #   oneauth-dpi — минимальный WebView2 с учётом DPI и/или языком, как wry;
 #   oneauth-api — вызовы API окна, которые делает wry, по одному в минимальном WebView2;
+#   oneauth-sdk — версия SDK/загрузчика WebView2 и TargetCompatibleBrowserVersion как у wry;
 #   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
 #              rfd (как в приложении), rfd-cancel, dontaddtorecent,
 #              clientguid, clientguid-clear, proposal, all.
@@ -50,7 +51,7 @@ jobs:
       matrix:
         # Задания 0.6 (app, app-repeat, mini-*, app-policy-*, dialog-* …) остаются в run.ps1;
         # в матрице — только текущий опыт, чтобы не тратить машины CI.
-        job: [oneauth-api]
+        job: [oneauth-sdk]
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -108,6 +109,8 @@ jobs:
           dotnet --version
           dotnet publish tools/traces-investigation/probe/t06probe.csproj -c Release -o "$env:RUNNER_TEMP\t06probe" --nologo
           "PROBE=$env:RUNNER_TEMP\t06probe\t06probe.exe" >> $env:GITHUB_ENV
+          # Тот же зонд на SDK WebView2 1.0.3800.47 — той же версии, что в webview2-com 0.39.1 (wry).
+          dotnet publish tools/traces-investigation/probe/t06probe.csproj -c Release -o "$env:RUNNER_TEMP\t06probe-3800" --nologo -p:WebView2Version=1.0.3800.47
 
       - name: Выпускная сборка из CI на main
         if: ${{ !startsWith(matrix.job, 'dialog-') && matrix.job != 'minimal' }}
