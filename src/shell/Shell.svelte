@@ -210,6 +210,7 @@
           notify={(text) => model.notify(text)}
           onStatus={(status) => (saveStatus = status)}
           onOpenSettings={() => openSettings('files')}
+          onOpenNote={(path) => model.open(path)}
         />
       </div>
     </main>

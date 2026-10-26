@@ -9,13 +9,19 @@
 // Проверка орфографии выключена (С3.3): проверка браузерного движка может
 // обращаться к сети. Режим (живой предпросмотр или исходный текст, задача 2.5)
 // переключается на ходу и только меняет оформление: документ тот же.
-// Вики-ссылки — задача 2.6.
+// Вики-ссылки (задача 2.6): оформление — в живом предпросмотре, переход по
+// щелчку, автодополнение после `[[` и переход к заголовку — в обоих режимах;
+// связь с окном — `WikiHost` (src/editor/wikilinks/host.ts).
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
-import { livePreview } from './live-preview/index.ts';
+import { livePreview, sourceLinks } from './live-preview/index.ts';
+import { wikilinkCompletion } from './wikilinks/autocomplete.ts';
+import { wikiHost, type WikiHost } from './wikilinks/host.ts';
+import { revealPlugin } from './wikilinks/reveal.ts';
+import './wikilinks/wikilinks.css';
 
 /** Переносы из буфера обмена и перетаскивания — в `\n`, как в остальном тексте. */
 export function normalizePastedText(text: string): string {
@@ -47,7 +53,7 @@ export function setReadOnly(view: EditorView, readOnly: boolean): void {
 const modeSlot = new Compartment();
 
 function modeExtension(mode: EditorMode, onOpenLink: ((url: string) => void) | undefined): Extension {
-  return mode === 'live_preview' ? livePreview({ onOpenLink }) : [];
+  return mode === 'live_preview' ? livePreview({ onOpenLink }) : sourceLinks({ onOpenLink });
 }
 
 /** Переключить режим в открытом редакторе. Текст и выделение не меняются. */
@@ -59,14 +65,19 @@ export interface EditorOptions {
   readOnly?: boolean;
   /** Режим редактора; по умолчанию — исходный текст. */
   mode?: EditorMode;
-  /** Щелчок по внешней ссылке в живом предпросмотре: открыть через ядро. */
+  /** Щелчок по внешней ссылке: открыть через ядро. */
   onOpenLink?: (url: string) => void;
+  /** Вики-ссылки: разрешение, переход, подсказки (без него — только оформление). */
+  wiki?: WikiHost;
   /** Документ изменился правкой пользователя. */
   onChange?: (text: string) => void;
 }
 
-export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink, onChange }: EditorOptions = {}): Extension[] {
+export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink, wiki, onChange }: EditorOptions = {}): Extension[] {
   return [
+    wiki ? wikiHost.of(wiki) : [],
+    revealPlugin,
+    wikilinkCompletion(),
     EditorState.lineSeparator.of('\n'),
     lock.of(lockExtension(readOnly)),
     modeSlot.of(modeExtension(mode, onOpenLink)),

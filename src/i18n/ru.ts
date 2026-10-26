@@ -95,6 +95,12 @@ export const ru = {
   // Редактор: текст и сохранение
   'editor.label': 'Текст заметки',
   'editor.task.toggle': 'Отметить задачу',
+  'editor.wikilink.suggestions': 'Заметки для ссылки',
+  'editor.wikilink.loading': 'Ищем заметки…',
+  'editor.wikilink.noMatches': 'Нет подходящих заметок',
+  'editor.wikilink.unlinkable': 'нельзя сослаться',
+  'editor.wikilink.createFailed': 'Не удалось создать заметку по ссылке. {message}',
+  'editor.wikilink.openFailed': 'Не удалось открыть ссылку. {message}',
   'editor.loading': 'Открываем заметку…',
   'editor.openFailed': 'Не удалось открыть заметку. {message}',
   'editor.status.label': 'Состояние сохранения',

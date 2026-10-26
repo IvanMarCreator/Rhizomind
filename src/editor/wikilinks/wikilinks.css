@@ -1,0 +1,80 @@
+/* Вики-ссылки (С3.4, вид 5Б из docs/design/README.md и tokens.md):
+   цвет текста с подчёркиванием акцентом; неразрешённая — серая, без
+   подчёркивания. Список автодополнения — как подсказки и меню (tokens.md:
+   bg/popover, border/strong, скругление 6). Отдельный CSS-файл, а не
+   EditorView.theme: CSP окна запрещает вставку <style> (находка Н7). */
+
+.cm-rz-wikilink {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.cm-rz-wikilink.cm-rz-wikilink-unresolved {
+  color: var(--link-unresolved);
+  text-decoration: none;
+}
+
+.cm-rz-wikilink-separator {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.cm-tooltip.cm-rz-suggest {
+  z-index: 50;
+  min-width: 240px;
+  max-width: 420px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-popover);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 14%);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  line-height: 18px;
+}
+
+.cm-rz-suggest-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.cm-rz-suggest-item[aria-selected='true'] {
+  background: var(--bg-hover);
+}
+
+.cm-rz-suggest-item[aria-disabled='true'] {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.cm-rz-suggest-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-rz-suggest-path,
+.cm-rz-suggest-unlinkable {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.cm-rz-suggest-unlinkable {
+  color: var(--status-warning);
+}
+
+.cm-rz-suggest-note {
+  padding: 6px 8px;
+  color: var(--text-muted);
+}

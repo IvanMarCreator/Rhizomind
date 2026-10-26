@@ -8,11 +8,13 @@
   import type { EditorMode } from '../api/index.ts';
   import { createEditorState, setMode, setReadOnly } from './codemirror.ts';
   import type { NoteSession } from './session.ts';
+  import type { WikiHost } from './wikilinks/host.ts';
 
   let {
     session,
     mode,
     onOpenLink,
+    wiki,
     focus = false,
     locked = false,
   }: {
@@ -20,6 +22,8 @@
     mode: EditorMode;
     /** Щелчок по внешней ссылке в живом предпросмотре. */
     onOpenLink: (url: string) => void;
+    /** Вики-ссылки: переход, разрешение, подсказки (src/editor/wikilinks). */
+    wiki?: WikiHost;
     focus?: boolean;
     /** Заметку удалили: правка запрещена (ввод уже отброшен). */
     locked?: boolean;
@@ -46,6 +50,7 @@
         readOnly: session.readOnly !== null,
         mode: shownMode,
         onOpenLink: (url) => onOpenLink(url),
+        ...(wiki ? { wiki } : {}),
         onChange: (text) => session.edit(text),
       }),
     });
