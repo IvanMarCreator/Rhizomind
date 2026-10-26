@@ -184,6 +184,19 @@ jobs:
           NO_AT_BRIDGE: "1"
         run: xvfb-run -a npm run test:e2e
 
+      # Телеметрия компилятора MSVC (vctip.exe) остаётся висеть после сборок
+      # Rust и пишет %LOCALAPPDATA%\Microsoft\VSApplicationInsights — тест
+      # следов принимал это за запись программы (задача 0.10; раньше — «чужой
+      # процесс vctip.exe»). Сборок дальше нет — процесс останавливается.
+      - name: Остановить телеметрию MSVC (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vctip = @(Get-Process -Name vctip -ErrorAction SilentlyContinue)
+          Write-Host "vctip.exe: $($vctip.Count)"
+          $vctip | Stop-Process -Force -ErrorAction SilentlyContinue
+          $vctip | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+
       - name: Сценарный тест (Windows)
         timeout-minutes: 10
         if: runner.os == 'Windows'
