@@ -28,8 +28,9 @@ impl ExternalAddress {
     ///   длина больше 8 КБ (на входе и после кодирования), символы вне
     ///   RFC 3986 в итоговой строке, параметр `attach`/`attachment` у
     ///   `mailto`, управляющие символы после раскодирования в ключах и
-    ///   значениях `mailto` (кроме `body`), имя пользователя или пароль в
-    ///   `http(s)` — `invalid_argument` (`url`).
+    ///   значениях `mailto` (в `body` — кроме `\r`, `\n`, `\t`), `%` не в
+    ///   виде `%HH`, имя пользователя или пароль в `http(s)` —
+    ///   `invalid_argument` (`url`).
     pub fn parse(input: &str) -> CoreResult<Self> {
         if input.len() > MAX_TARGET_BYTES || input.chars().any(is_hidden) {
             return Err(CoreError::invalid_argument("url"));
@@ -42,7 +43,14 @@ impl ExternalAddress {
             let bad_parameter = url.query_pairs().any(|(key, value)| {
                 is_attachment(&key)
                     || key.chars().any(char::is_control)
-                    || (!key.eq_ignore_ascii_case("body") && value.chars().any(char::is_control))
+                    || if key.eq_ignore_ascii_case("body") {
+                        // В тексте письма — переносы строк и табуляция.
+                        value
+                            .chars()
+                            .any(|c| c.is_control() && !matches!(c, '\r' | '\n' | '\t'))
+                    } else {
+                        value.chars().any(char::is_control)
+                    }
             });
             if bad_parameter {
                 return Err(CoreError::invalid_argument("url"));
@@ -54,7 +62,12 @@ impl ExternalAddress {
         // У `mailto` путь непрозрачный: `url` не кодирует в нём `"`, пробел и
         // `\`, а обработчик почты получает адрес в своей командной строке
         // (`OUTLOOK.EXE ... /m "%1"`). Поэтому в ОС — только символы RFC 3986.
-        if url.as_str().len() > MAX_TARGET_BYTES || !url.as_str().chars().all(is_rfc3986) {
+        // `%` — только как `%HH`: одиночный знак процента обработчик может
+        // раскодировать по-своему.
+        if url.as_str().len() > MAX_TARGET_BYTES
+            || !url.as_str().chars().all(is_rfc3986)
+            || !percent_escapes_are_complete(url.as_str())
+        {
             return Err(CoreError::invalid_argument("url"));
         }
         Ok(Self { url })
@@ -85,6 +98,16 @@ impl ExternalAddress {
             Some(format!("{ascii} ({unicode})"))
         }
     }
+}
+
+/// Каждый `%` в строке — начало `%HH` (две шестнадцатеричные цифры).
+fn percent_escapes_are_complete(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().all(|(i, &b)| {
+        b != b'%'
+            || (bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+                && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit))
+    })
 }
 
 /// Символ из RFC 3986: незарезервированные, зарезервированные и `%`.

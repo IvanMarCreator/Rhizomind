@@ -364,6 +364,16 @@ export interface NoteConflictSavedPayload {
 }
 
 /**
+ * Папка хранилища недоступна (`false`: отключили флешку или сетевой диск,
+ * папку переименовали снаружи) или снова доступна (`true`). Пока недоступна,
+ * заметки не закрываются, запись отклоняется ошибкой ядра. После `true`
+ * приходит `vault:changed` с `rescan: true`. Расширение контракта v1 (задача 1.7).
+ */
+export interface VaultAvailabilityPayload {
+  available: boolean;
+}
+
+/**
  * Все события ядра → интерфейс и их данные. Ядро отправляет их только окну
  * своего хранилища; `note:*` — для любой заметки хранилища, интерфейс
  * фильтрует открытые сам.
@@ -374,6 +384,7 @@ export interface CoreEvents {
   'note:renamed': NoteRenamedPayload;
   'note:deleted': NoteDeletedPayload;
   'note:conflict-saved': NoteConflictSavedPayload;
+  'vault:availability': VaultAvailabilityPayload;
 }
 
 export type EventName = keyof CoreEvents;

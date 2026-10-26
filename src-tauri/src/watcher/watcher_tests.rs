@@ -301,6 +301,49 @@ fn panicking_sink_does_not_stop_the_watcher() {
     );
 }
 
+/// После сбоя получателя полная сверка приходит сама, по таймеру, — не
+/// дожидаясь следующего изменения на диске (повторное ревью 1.4).
+#[test]
+fn delivery_failure_schedules_full_rescan_without_new_changes() {
+    use super::WatcherEvent;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().expect("временная папка");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let (c, r) = (calls.clone(), received.clone());
+    let _watcher = VaultWatcher::start(
+        dir.path(),
+        Box::new(move |event| {
+            if c.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("получатель упал");
+            }
+            r.lock().expect("список").push(event);
+        }),
+    )
+    .expect("слежение");
+
+    write(dir.path(), "1.md", "1");
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < WAIT {
+        let got = received.lock().expect("список").clone();
+        // Модель уже знает «1.md» — сверка без изменений, но с `rescan: true`:
+        // интерфейс перечитывает дерево целиком.
+        let rescued = got
+            .iter()
+            .any(|e| matches!(e, WatcherEvent::Changed(p) if p.rescan));
+        if got.contains(&WatcherEvent::DeliveryFailed) && rescued {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "после сбоя получателя — полная сверка по таймеру: {:?}",
+        received.lock().expect("список")
+    );
+}
+
 #[test]
 fn rescan_flag_and_watcher_errors_from_notify_request_full_rescan() {
     use super::EventPaths;

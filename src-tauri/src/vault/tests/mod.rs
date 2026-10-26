@@ -11,7 +11,7 @@ mod write;
 
 use std::path::{Path, PathBuf};
 
-use super::Vault;
+use super::{OpenOptions, Vault};
 use crate::commands::{CoreError, ErrorCode, VaultPath};
 
 /// Хранилище во временной папке: `<tmp>/vault` — корень, `<tmp>/outside` —
@@ -29,6 +29,11 @@ impl TestVault {
         std::fs::write(dir.path().join("outside").join("secret.md"), "секрет\n").expect("секрет");
         let vault = Vault::open(&dir.path().join("vault")).expect("хранилище открылось");
         Self { dir, vault }
+    }
+
+    /// Открывает то же хранилище заново с зависимостями `options`.
+    pub fn reopen_with(&mut self, options: OpenOptions) {
+        self.vault = Vault::open_with(&self.root(), options).expect("хранилище открылось");
     }
 
     /// Корень хранилища на диске.

@@ -83,8 +83,12 @@ pub fn visible(entry: &std::fs::DirEntry) -> Option<(String, std::fs::FileType)>
 /// оболочка удалила бы файл безвозвратно сама (`NoTrash` → подтверждение).
 pub fn os_trash(path: &Path) -> Result<(), TrashFailure> {
     #[cfg(windows)]
-    if !volume_has_recycle_bin(path) {
-        return Err(TrashFailure::NoTrash);
+    match volume_has_recycle_bin(path) {
+        Some(true) => {}
+        Some(false) => return Err(TrashFailure::NoTrash),
+        // Тип тома не узнать — это сбой, а не «корзины нет»: безвозвратное
+        // удаление не предлагается (повторное ревью 1.2, п. 2).
+        None => return Err(TrashFailure::Failed),
     }
     let owned = path.to_path_buf();
     match std::thread::spawn(move || trash::delete(&owned)).join() {
@@ -97,8 +101,9 @@ pub fn os_trash(path: &Path) -> Result<(), TrashFailure> {
 }
 
 /// Том несъёмный локальный (`DRIVE_FIXED`): у таких томов есть корзина.
+/// `None` — том не определился (`GetVolumePathNameW` отказал).
 #[cfg(windows)]
-fn volume_has_recycle_bin(path: &Path) -> bool {
+fn volume_has_recycle_bin(path: &Path) -> Option<bool> {
     use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumePathNameW};
     const DRIVE_FIXED: u32 = 3;
     let wide = super::atomic::wide_path(path);
@@ -106,10 +111,10 @@ fn volume_has_recycle_bin(path: &Path) -> bool {
     // SAFETY: строки с нулём в конце; буфер длиной `volume.len()`.
     let ok = unsafe { GetVolumePathNameW(wide.as_ptr(), volume.as_mut_ptr(), volume.len() as u32) };
     if ok == 0 {
-        return false;
+        return None;
     }
     // SAFETY: `volume` — строка с нулём в конце от GetVolumePathNameW.
-    unsafe { GetDriveTypeW(volume.as_ptr()) == DRIVE_FIXED }
+    Some(unsafe { GetDriveTypeW(volume.as_ptr()) } == DRIVE_FIXED)
 }
 
 /// Журнал двухшаговой смены регистра (`.rhizomind/rename.json`).

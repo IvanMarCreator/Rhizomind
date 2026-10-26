@@ -32,14 +32,12 @@ pub(crate) mod atomic;
 mod contour;
 pub(crate) mod fsops;
 mod local_time;
-mod own_writes;
 mod settings;
 mod text;
 
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{PoisonError, RwLock};
 
 use crate::commands::{
     CoreError, CoreResult, EntryKind, ErrorCode, FileVersion, NameCheck, NameProblem,
@@ -47,9 +45,10 @@ use crate::commands::{
     VaultPath, Workspace,
 };
 
-pub use contour::{SERVICE_DIR, check_component};
+pub use contour::{SERVICE_DIR, check_component, is_service_dir};
 pub use settings::{SETTINGS_FORMAT_VERSION, SettingsFile};
 
+use crate::own_writes::OwnWrites;
 use contour::Contour;
 
 /// Временные файлы атомарной записи — `.rhizomind/tmp/`.
@@ -76,21 +75,6 @@ pub struct NoteRef {
     pub created_ms: i64,
 }
 
-/// Своя запись ядра: путь, хэш и размер новой версии файла. Сообщается
-/// **до** замены файла (ADR 0006, уточнение 25.10.2026).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OwnWrite {
-    /// Путь заметки.
-    pub path: VaultPath,
-    /// Хэш `blake3` нового содержимого.
-    pub hash: String,
-    /// Размер нового содержимого.
-    pub size: u64,
-}
-
-/// Получатель своих записей.
-pub type OwnWriteHook = Box<dyn Fn(&OwnWrite) + Send + Sync + 'static>;
-
 /// Почему корзина ОС не приняла элемент.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrashFailure {
@@ -103,6 +87,18 @@ pub enum TrashFailure {
 /// Удаление в корзину ОС по абсолютному пути (подменяется в тестах).
 pub type TrashBackend = Box<dyn Fn(&Path) -> Result<(), TrashFailure> + Send + Sync + 'static>;
 
+/// Зависимости хранилища — передаются при открытии ([`Vault::open_with`]),
+/// а не сеттерами после него (ревью 1.2, задача 1.7).
+#[derive(Default)]
+pub struct OpenOptions {
+    /// Журнал своих записей — общий с наблюдателем за папкой
+    /// (`crate::own_writes`). Хранилище записывает в него хэш и размер
+    /// новой версии **до** замены файла.
+    pub own_writes: OwnWrites,
+    /// Корзина; `None` — корзина ОС (`fsops::os_trash`). Подменяется в тестах.
+    pub trash: Option<TrashBackend>,
+}
+
 /// Открытое хранилище: корень и операции над файлами внутри контура.
 ///
 /// Все методы принимают пути [`VaultPath`] от интерфейса как есть и сами
@@ -113,10 +109,10 @@ pub struct Vault {
     contour: Contour,
     /// `.rhizomind/` — канонический путь, проверен при открытии.
     service: PathBuf,
-    /// Свои записи для наблюдателя за папкой.
-    own_writes: own_writes::OwnWrites,
+    /// Свои записи — общий журнал с наблюдателем за папкой.
+    own_writes: OwnWrites,
     /// Подменённая корзина (тесты); `None` — корзина ОС.
-    trash_backend: RwLock<Option<TrashBackend>>,
+    trash_backend: Option<TrashBackend>,
 }
 
 impl std::fmt::Debug for Vault {
@@ -144,6 +140,11 @@ impl Vault {
     /// Служебная папка или её `tmp` — ссылка (в том числе точка соединения)
     /// → `outside_vault`: запись через них ушла бы за контур.
     pub fn open(root: &Path) -> CoreResult<Self> {
+        Self::open_with(root, OpenOptions::default())
+    }
+
+    /// [`Vault::open`] с зависимостями: общий журнал своих записей и корзина.
+    pub fn open_with(root: &Path, options: OpenOptions) -> CoreResult<Self> {
         let root = dunce::canonicalize(root).map_err(|_| unavailable())?;
         if !std::fs::metadata(&root)
             .map_err(|_| unavailable())?
@@ -167,8 +168,8 @@ impl Vault {
         let vault = Self {
             contour,
             service,
-            own_writes: own_writes::OwnWrites::default(),
-            trash_backend: RwLock::new(None),
+            own_writes: options.own_writes,
+            trash_backend: options.trash,
         };
         vault.finish_interrupted_rename();
         vault.recover_tmp();
@@ -411,16 +412,70 @@ impl Vault {
         Ok((bytes, version))
     }
 
-    /// Регистрирует получателя своих записей — наблюдатель за папкой
-    /// (задача 1.4). Получатель вызывается до замены файла на диске.
-    pub fn set_own_write_hook(&self, hook: OwnWriteHook) {
-        self.own_writes.set_hook(hook);
+    /// Журнал своих записей хранилища (общий с наблюдателем).
+    pub fn own_writes(&self) -> &OwnWrites {
+        &self.own_writes
     }
 
     /// Своя ли это недавняя запись ядра (путь, хэш и размер новой версии):
     /// событие о таком файле — не внешнее изменение.
     pub fn is_own_write(&self, path: &VaultPath, hash: &str, size: u64) -> bool {
         self.own_writes.contains(path, hash, size)
+    }
+
+    /// Версия файла заметки на диске (для события `note:changed`): хэш
+    /// потоком, без чтения в память; итоговый путь проверен по дескриптору.
+    pub fn file_version(&self, path: &VaultPath) -> CoreResult<FileVersion> {
+        let abs = self.contour.resolve(path)?;
+        require_note_name(path)?;
+        let file = File::open(&abs).map_err(io_error)?;
+        self.contour.check_opened(&file, &abs, false)?;
+        let meta = file.metadata().map_err(io_error)?;
+        if meta.is_dir() {
+            return Err(CoreError::new(ErrorCode::NotANote));
+        }
+        let mut hasher = blake3::Hasher::new();
+        let size = std::io::copy(&mut &file, &mut hasher).map_err(io_error)?;
+        Ok(FileVersion {
+            hash: hasher.finalize().to_hex().to_string(),
+            size,
+            modified_ms: meta.modified().map(millis).unwrap_or(0),
+        })
+    }
+
+    /// Вид существующего элемента (для текста окна подтверждения
+    /// удаления); `None` — нет или путь не проходит контур.
+    pub fn entry_kind(&self, path: &VaultPath) -> Option<EntryKind> {
+        let abs = self.contour.resolve(path).ok()?;
+        let meta = std::fs::symlink_metadata(abs).ok()?;
+        Some(if meta.is_dir() {
+            EntryKind::Folder
+        } else if path.file_name().is_some_and(crate::names::is_note) {
+            EntryKind::Note
+        } else {
+            EntryKind::Attachment
+        })
+    }
+
+    /// Дата создания заметки (миллисекунды UTC; ФС без даты создания — дата
+    /// изменения), как в [`Vault::notes`]; `None` — элемента нет, это не
+    /// заметка или путь не проходит контур. Для индекса заметок после
+    /// события наблюдателя.
+    pub fn note_created_ms(&self, path: &VaultPath) -> Option<i64> {
+        if !path.file_name().is_some_and(crate::names::is_note) {
+            return None;
+        }
+        let abs = self.contour.resolve(path).ok()?;
+        let meta = std::fs::symlink_metadata(abs).ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        Some(
+            meta.created()
+                .or_else(|_| meta.modified())
+                .map(millis)
+                .unwrap_or(0),
+        )
     }
 
     /// Записывает заметку атомарно по правилу «байт в байт»
@@ -442,6 +497,13 @@ impl Vault {
         let mut copied: Vec<String> = Vec::new();
         let mut copy_path: Option<VaultPath> = None;
         for _ in 0..WRITE_ATTEMPTS {
+            // Файл больше жёсткого потолка открыт только для чтения и в
+            // память не читается — ни для сравнения, ни для копии конфликта.
+            if std::fs::metadata(&abs).map_err(io_error)?.len()
+                > crate::commands::limits::MAX_NOTE_BYTES
+            {
+                return Err(CoreError::new(ErrorCode::ReadOnly));
+            }
             let (disk, disk_version) = self.read_existing_note(&abs)?;
             let decoded = text::decode(&disk);
             let same_content =
@@ -467,7 +529,7 @@ impl Vault {
                 continue;
             }
             let hash = blake3::hash(&bytes).to_hex().to_string();
-            self.own_writes.register(path, &hash, bytes.len() as u64);
+            self.own_writes.record(path, &hash, bytes.len() as u64);
             atomic::replace(temp, &abs).map_err(io_error)?;
             let version = self.version_after_write(&abs, hash, bytes.len() as u64)?;
             return Ok(respond(version, copy_path));
@@ -529,8 +591,7 @@ impl Vault {
             let copy_path =
                 VaultPath::from_components(parent.iter().cloned().chain([copy_name.clone()]));
             let temp = self.temp(atomic::Kind::Note, disk)?;
-            self.own_writes
-                .register(&copy_path, &hash, disk.len() as u64);
+            self.own_writes.record(&copy_path, &hash, disk.len() as u64);
             match atomic::create_new(temp, &dir.join(&copy_name), Some(abs)) {
                 Ok(()) => return Ok(copy_path),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -541,22 +602,29 @@ impl Vault {
     }
 
     /// Есть ли в папке `dir` элемент с тем же ключом имени, что `name`
-    /// (кроме элемента с именем `except` — переименовываемого).
+    /// (кроме переименовываемого элемента `except`). `except` ищется сначала
+    /// по точному написанию, а если так никто не называется — по ключу
+    /// имени: интерфейс может прислать путь в другом регистре, чем на диске
+    /// (Windows), и элемент не должен совпасть сам с собой.
     fn sibling_taken(&self, dir: &Path, name: &str, except: Option<&str>) -> CoreResult<bool> {
         let key = crate::names::key(name);
+        let mut names = Vec::new();
         for entry in std::fs::read_dir(dir).map_err(io_error)? {
             let entry = entry.map_err(io_error)?;
-            let Some(existing) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if except == Some(existing.as_str()) {
-                continue;
-            }
-            if crate::names::key(&existing) == key {
-                return Ok(true);
+            if let Some(existing) = entry.file_name().to_str() {
+                names.push(existing.to_owned());
             }
         }
-        Ok(false)
+        let except_exact = except.is_some_and(|e| names.iter().any(|n| n == e));
+        let except_key = except.map(crate::names::key);
+        Ok(names.iter().any(|existing| {
+            let is_except = match except {
+                Some(e) if except_exact => existing == e,
+                Some(_) => except_key.as_ref() == Some(&crate::names::key(existing)),
+                None => false,
+            };
+            !is_except && crate::names::key(existing) == key
+        }))
     }
 
     /// Создаёт пустую заметку `name` (полное имя с `.md`; UTF-8 без BOM,
@@ -569,7 +637,7 @@ impl Vault {
         }
         let (dir_abs, path) = self.prepare_new_entry(dir, name)?;
         let empty = blake3::hash(b"").to_hex().to_string();
-        self.own_writes.register(&path, &empty, 0);
+        self.own_writes.record(&path, &empty, 0);
         File::create_new(dir_abs.join(name)).map_err(io_error)?;
         Ok(path)
     }
@@ -635,7 +703,7 @@ impl Vault {
         renaming: Option<&VaultPath>,
     ) -> CoreResult<NameCheck> {
         let dir_abs = self.existing_dir(dir)?;
-        if let Some(problem) = crate::names::check(name) {
+        if let Some(problem) = entry_name_problem(name) {
             return Ok(NameCheck::rejected(problem));
         }
         let except = renaming
@@ -759,14 +827,6 @@ impl Vault {
         Ok(child(new_dir, name))
     }
 
-    /// Подменяет корзину ОС (тесты; на настоящем ядре — `fsops::os_trash`).
-    pub fn set_trash_backend(&self, backend: TrashBackend) {
-        *self
-            .trash_backend
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = Some(backend);
-    }
-
     /// Удаляет в корзину ОС (в отдельном потоке). На томе без корзины
     /// спрашивает `confirm_permanent` (окно подтверждения ядра, задача 1.7)
     /// и удаляет безвозвратно только при согласии — после повторной
@@ -778,12 +838,7 @@ impl Vault {
         confirm_permanent: &dyn Fn(&VaultPath) -> bool,
     ) -> CoreResult<TrashOutcome> {
         let (abs, _) = self.existing_entry(path)?;
-        let result = match self
-            .trash_backend
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
+        let result = match self.trash_backend.as_ref() {
             Some(backend) => backend(&abs),
             None => fsops::os_trash(&abs),
         };
@@ -1012,17 +1067,23 @@ fn fit_name(stem: &str, suffix: &str, extension: &str) -> String {
     format!("{}{tail}", base.trim_end_matches(['.', ' ']))
 }
 
-/// Правила имён для нового имени: `names::check` (с причиной для
-/// интерфейса), затем правила контура и служебная папка (`invalid_path`).
+/// Правила имён для нового имени — те же причины, что у команды
+/// `name_check` ([`entry_name_problem`]), затем правила контура
+/// (`invalid_path`, защита в глубину).
 fn check_name(name: &str) -> CoreResult<()> {
-    if let Some(problem) = crate::names::check(name) {
+    if let Some(problem) = entry_name_problem(name) {
         return Err(CoreError::invalid_name(problem));
     }
-    check_component(name)?;
-    if contour::is_service_dir(name) {
-        return Err(contour::invalid_path());
-    }
-    Ok(())
+    check_component(name)
+}
+
+/// Причина, по которой имя нового элемента не подходит: правила имён
+/// Windows (`names::check`) и имя служебной папки `.rhizomind` в любом
+/// регистре — `reserved_name` (имя занято приложением). Одна функция для
+/// проверки при вводе (`name_check`, [`Vault::check_new_name`]) и для
+/// создания и переименования: причины совпадают (ревью 1.2, задача 1.7).
+pub fn entry_name_problem(name: &str) -> Option<NameProblem> {
+    crate::names::check(name).or_else(|| is_service_dir(name).then_some(NameProblem::ReservedName))
 }
 
 /// Пути совпадают по ключам имён компонентов.

@@ -15,6 +15,36 @@ export const ru = {
   'shell.sidebar.label': 'Боковая панель',
   'shell.sidebar.files': 'Файлы',
 
+  // Дерево файлов (С3.2)
+  'tree.label': 'Файлы хранилища',
+  'tree.empty': 'В хранилище пока нет файлов.',
+  'tree.untitled': 'Без названия',
+  'tree.newNote': 'Новая заметка',
+  'tree.newFolder': 'Новая папка',
+  'tree.rootActions': 'Создать в корне хранилища',
+  'tree.undo.missing': 'Не удалось отменить переименование: элемента уже нет.',
+  'tree.undo.taken': 'Не удалось отменить переименование: имя «{name}» уже занято.',
+  'tree.undo.failed': 'Не удалось отменить переименование. {reason}',
+  'tree.rename': 'Переименовать',
+  'tree.delete': 'Удалить',
+  'tree.key.rename': 'F2',
+  'tree.key.delete': 'Delete',
+  'tree.menu.label': 'Действия с файлами',
+  'tree.rename.label': 'Новое имя',
+  'tree.notOpenable': 'В этой версии открываются только заметки. Файл можно переименовать, переместить или удалить.',
+  'tree.delete.titleFile': 'Удалить «{name}»?',
+  'tree.delete.titleFolder': 'Удалить папку «{name}»?',
+  'tree.delete.bodyFile': 'Файл будет перемещён в корзину.',
+  'tree.delete.bodyFolder': 'Папка и всё, что в ней, будут перемещены в корзину.',
+  'tree.delete.confirm': 'Удалить',
+  'tree.delete.cancel': 'Отмена',
+  'tree.deletedPermanently': '«{name}» удалено безвозвратно: на этом диске нет корзины.',
+
+  // Заголовок заметки над текстом (Э4б)
+  'note.title.label': 'Имя заметки',
+  'note.title.renameHint': 'Нажмите, чтобы переименовать',
+  'note.title.editHint': 'Enter — сохранить · Esc — отменить',
+
   // Переключатель хранилищ
   'vaults.switcher.current': 'Хранилище «{name}»',
   'vaults.switcher.none': 'Хранилище не открыто',
@@ -32,6 +62,20 @@ export const ru = {
   // Пустое состояние
   'shell.empty.title': 'Нет открытой заметки',
   'shell.empty.hint': 'Выберите заметку в дереве файлов или откройте быстрый переход: Ctrl+O.',
+
+  // Быстрый переход (Ctrl+O)
+  'quickSwitcher.label': 'Быстрый переход',
+  'quickSwitcher.placeholder': 'Найдите или создайте заметку',
+  'quickSwitcher.shortcut': 'Ctrl+O',
+  'quickSwitcher.results': 'Заметки',
+  'quickSwitcher.create': 'Создать заметку „{name}“',
+  'quickSwitcher.noNotes': 'Заметок пока нет.',
+  'quickSwitcher.key.arrows': '↑ ↓',
+  'quickSwitcher.key.enter': 'Enter',
+  'quickSwitcher.key.esc': 'Esc',
+  'quickSwitcher.hint.select': 'выбрать',
+  'quickSwitcher.hint.open': 'открыть',
+  'quickSwitcher.hint.close': 'закрыть',
 
   // Уведомления внизу окна
   'notifications.label': 'Уведомления',
@@ -73,5 +117,7 @@ export const ru = {
 
   // Предупреждения о допустимом имени: names.warning.<warning>
   'names.warning.unlinkable': 'На эту заметку нельзя будет сослаться.',
+  'names.warning.unlinkable_folder': 'На заметки в этой папке нельзя будет сослаться с путём.',
+  'names.warning.unlinkable_attachment': 'На этот файл нельзя будет сослаться.',
   'names.warning.hidden': 'Имя с точкой в начале: элемент будет скрыт в дереве файлов.',
 } as const satisfies Record<string, string>;

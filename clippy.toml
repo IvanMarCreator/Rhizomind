@@ -6,6 +6,8 @@ disallowed-methods = [
   { path = "url::Url::socket_addrs", reason = "разрешение имени (DNS) — сеть запрещена" },
   { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "разрешение имени (DNS) — сеть запрещена" },
   { path = "std::net::TcpStream::connect", reason = "сеть запрещена" },
+  { path = "std::net::TcpStream::connect_timeout", reason = "сеть запрещена" },
+  { path = "std::net::UdpSocket::connect", reason = "сеть запрещена" },
   { path = "std::net::UdpSocket::bind", reason = "сеть запрещена" },
   { path = "std::net::TcpListener::bind", reason = "сеть запрещена" },
 ]
