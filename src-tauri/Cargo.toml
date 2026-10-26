@@ -93,6 +93,8 @@ windows = { version = "=0.62.2", features = [
   "Win32_System_ErrorReporting",
   "Win32_System_LibraryLoader",
   "Win32_System_Threading",
+  # Своё окно выбора папки (IFileOpenDialog, dialogs/folder_windows.rs, задача 0.8).
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 # ReplaceFileW (замена с сохранением даты создания) и GetFinalPathNameByHandleW
