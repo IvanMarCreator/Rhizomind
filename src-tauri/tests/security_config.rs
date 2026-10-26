@@ -170,9 +170,10 @@ fn only_main_capability_is_enabled() {
 }
 
 #[test]
-fn main_window_has_no_file_network_shell_or_dialog_permissions() {
+fn vault_windows_have_no_file_network_shell_or_dialog_permissions() {
     let capability = read_json("capabilities/main.json");
-    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    // Каждое окно хранилища — метка vault-<16 шестнадцатеричных цифр> (задача 1.3).
+    assert_eq!(capability["windows"], serde_json::json!(["vault-*"]));
     let permissions = capability["permissions"].as_array().expect("permissions");
     let forbidden = [
         "fs:",

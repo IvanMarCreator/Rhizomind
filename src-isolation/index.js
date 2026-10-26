@@ -52,8 +52,30 @@
     );
   }
 
+  // Подписка на события — только с целью «окно с меткой» (WebviewWindow),
+  // как у src/api/events.ts (getCurrentWebviewWindow().listen). Подписка без
+  // цели (Any) получала бы события ВСЕХ окон: Tauri отдаёт событие, отправленное
+  // окну хранилища (emit_to), и слушателям Any в других окнах. Метку чужого окна
+  // интерфейс не знает: метки окон случайные (src-tauri/src/windows/mod.rs).
+  function isAllowedListen(payload) {
+    if (payload === null || typeof payload !== 'object') return false;
+    var target = payload.target;
+    return (
+      target !== null &&
+      typeof target === 'object' &&
+      target.kind === 'WebviewWindow' &&
+      typeof target.label === 'string' &&
+      target.label !== ''
+    );
+  }
+
   function filterIpcMessage(message) {
-    if (message !== null && typeof message === 'object' && isAllowed(message.cmd)) {
+    if (
+      message !== null &&
+      typeof message === 'object' &&
+      isAllowed(message.cmd) &&
+      (message.cmd !== 'plugin:event|listen' || isAllowedListen(message.payload))
+    ) {
       return message;
     }
     var source = message !== null && typeof message === 'object' ? message : {};

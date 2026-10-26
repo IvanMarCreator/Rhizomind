@@ -50,9 +50,41 @@ const message = (cmd: string): IpcMessage => ({ cmd, callback: 1, error: 2, payl
 describe('фильтр изолированного iframe', () => {
   it('пропускает служебные команды событий без изменений', () => {
     const hook = loadHook();
-    for (const cmd of ['plugin:event|listen', 'plugin:event|unlisten']) {
-      expect(hook(message(cmd))).toEqual(message(cmd));
+    const listen = {
+      cmd: 'plugin:event|listen',
+      callback: 1,
+      error: 2,
+      payload: { event: 'vault:changed', target: { kind: 'WebviewWindow', label: 'vault-0123456789abcdef' }, handler: 3 },
+    };
+    expect(hook(listen)).toEqual(listen);
+    const unlisten = { cmd: 'plugin:event|unlisten', callback: 1, error: 2, payload: { event: 'vault:changed', eventId: 3 } };
+    expect(hook(unlisten)).toEqual(unlisten);
+  });
+
+  // Задача 1.3: слушатель с целью Any получал бы события чужих окон (Tauri
+  // отдаёт ему и события, отправленные другому окну через emit_to).
+  it('не пропускает подписку на события без цели «окно с меткой»', () => {
+    const hook = loadHook();
+    for (const target of [
+      undefined,
+      null,
+      { kind: 'Any' },
+      { kind: 'AnyLabel', label: 'vault-0123456789abcdef' },
+      { kind: 'App' },
+      { kind: 'Window', label: 'vault-0123456789abcdef' },
+      { kind: 'Webview', label: 'vault-0123456789abcdef' },
+      { kind: 'WebviewWindow' },
+      { kind: 'WebviewWindow', label: '' },
+      { kind: 'WebviewWindow', label: 42 },
+      'vault-0123456789abcdef',
+    ]) {
+      const out = hook({ cmd: 'plugin:event|listen', callback: 1, error: 2, payload: { event: 'vault:changed', target, handler: 3 } });
+      expect(out.cmd, JSON.stringify(target)).toBe('__rhizomind_isolation_rejected__');
+      expect(out.payload).toEqual({});
     }
+    expect(hook({ cmd: 'plugin:event|listen', callback: 1, error: 2, payload: null }).cmd).toBe(
+      '__rhizomind_isolation_rejected__',
+    );
   });
 
   it('пропускает ровно команды ядра из src-tauri/src/commands/list.rs', () => {

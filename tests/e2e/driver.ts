@@ -2,7 +2,7 @@
 // tauri-driver запускает собранный исполняемый файл и передаёт команды движку:
 // на Windows — msedgedriver (путь в MSEDGEDRIVER или в PATH), на Linux — WebKitWebDriver.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, openSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, openSync, rmSync } from 'node:fs';
 import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,18 +65,35 @@ export interface Session {
   stop: () => Promise<void>;
 }
 
-export async function startApp(): Promise<Session> {
+export interface StartOptions {
+  /**
+   * Папка хранилища, которое тестовая сборка откроет при запуске — без
+   * системного окна выбора папки (переменная RHIZOMIND_E2E_VAULT, только в
+   * сборке с функцией `webdriver`: src-tauri/src/windows/mod.rs, модуль e2e).
+   */
+  vault?: string;
+}
+
+export async function startApp(options: StartOptions = {}): Promise<Session> {
   mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  // Список хранилищ тестовой сборки — во временной папке, а не в
+  // %LOCALAPPDATA%\Rhizomind пользователя (RHIZOMIND_E2E_PROFILE_DIR).
+  const profile = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-profile-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, RHIZOMIND_E2E_PROFILE_DIR: profile };
+  if (options.vault) env.RHIZOMIND_E2E_VAULT = options.vault;
+  else delete env.RHIZOMIND_E2E_VAULT;
+  const removeProfile = () => rmSync(profile, { recursive: true, force: true });
   const args = ['--port', String(PORT)];
   if (process.env.MSEDGEDRIVER) args.push('--native-driver', process.env.MSEDGEDRIVER);
   // Журнал tauri-driver и драйвера движка — рядом со снимками (артефакт CI).
   const driverLog = path.join(SCREENSHOT_DIR, `tauri-driver-${process.platform}.log`);
   const logFd = openSync(driverLog, 'a');
-  const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', logFd, logFd] });
+  const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', logFd, logFd], env });
   try {
     await waitForPort(PORT, 30_000);
   } catch (error) {
     driver.kill();
+    removeProfile();
     throw error;
   }
 
@@ -106,6 +123,7 @@ export async function startApp(): Promise<Session> {
   } catch (error) {
     // Сессия не создана — afterAll не сможет остановить драйвер, останавливаем здесь.
     driver.kill();
+    removeProfile();
     throw error;
   } finally {
     clearTimeout(timer);
@@ -118,6 +136,7 @@ export async function startApp(): Promise<Session> {
         await browser.deleteSession();
       } finally {
         driver.kill();
+        removeProfile();
       }
     },
   };

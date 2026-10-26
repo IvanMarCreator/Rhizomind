@@ -149,6 +149,31 @@ pub struct Core {
     /// открытие это видит и не оставляет живого наблюдателя.
     opening: Mutex<HashMap<String, u64>>,
     next_opening: std::sync::atomic::AtomicU64,
+    /// Закрытые окна. Метки окон не повторяются ([`crate::windows::new_label`]),
+    /// поэтому закрытое окно остаётся закрытым навсегда: открытие, которое
+    /// началось уже после отвязки окна (`unbind_window` раньше записи номера
+    /// открытия), тоже это видит и не оставляет наблюдателя (обзор 1.7).
+    closed: Mutex<std::collections::HashSet<String>>,
+    /// Хранилища, которые сейчас открываются: идентификатор → метка окна
+    /// ([`Core::claim_vault`]).
+    pending: Arc<Mutex<HashMap<VaultId, String>>>,
+}
+
+/// Хранилище занято открытием в окне; снимается при выходе из области
+/// видимости (открытие закончилось успехом или ошибкой).
+#[derive(Debug)]
+pub struct VaultClaim {
+    pending: Arc<Mutex<HashMap<VaultId, String>>>,
+    id: VaultId,
+}
+
+impl Drop for VaultClaim {
+    fn drop(&mut self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
 }
 
 impl std::fmt::Debug for Core {
@@ -235,12 +260,18 @@ impl Core {
         let token = self
             .next_opening
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.opening_map().insert(window_label.to_owned(), token);
+        {
+            let mut opening = self.opening_map();
+            if self.is_closed(window_label) {
+                return Err(CoreError::new(ErrorCode::NoVaultOpen));
+            }
+            opening.insert(window_label.to_owned(), token);
+        }
         let result =
             self.build_window_vault(window_label, summary, root, emit, trash, before_index);
         let mut windows = self.windows();
         let mut opening = self.opening_map();
-        let still_open = opening.get(window_label) == Some(&token);
+        let still_open = opening.get(window_label) == Some(&token) && !self.is_closed(window_label);
         if still_open {
             opening.remove(window_label);
         }
@@ -318,13 +349,53 @@ impl Core {
     }
 
     /// Отвязывает окно от хранилища (окно закрыто): наблюдатель
-    /// останавливается.
+    /// останавливается. Метка запоминается закрытой: открытие в этом окне,
+    /// идущее сейчас или начатое позже, хранилище к нему не привяжет.
     pub fn unbind_window(&self, window_label: &str) {
         let mut windows = self.windows();
         let removed = windows.remove(window_label);
-        self.opening_map().remove(window_label);
+        {
+            let mut opening = self.opening_map();
+            self.closed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(window_label.to_owned());
+            opening.remove(window_label);
+        }
         drop(windows);
         drop(removed);
+    }
+
+    fn is_closed(&self, window_label: &str) -> bool {
+        self.closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(window_label)
+    }
+
+    /// Занимает хранилище `id` для открытия в окне `window_label`. Хранилище
+    /// уже открыто или открывается в каком-то окне — `Err(метка того окна)`:
+    /// повторное открытие даёт фокус, а не второе окно.
+    pub fn claim_vault(&self, id: &VaultId, window_label: &str) -> Result<VaultClaim, String> {
+        let windows = self.windows();
+        if let Some((label, _)) = windows
+            .iter()
+            .find(|(_, entry)| entry.open.summary.id == *id)
+        {
+            return Err(label.clone());
+        }
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(label) = pending.get(id) {
+            return Err(label.clone());
+        }
+        pending.insert(id.clone(), window_label.to_owned());
+        Ok(VaultClaim {
+            pending: Arc::clone(&self.pending),
+            id: id.clone(),
+        })
     }
 
     /// Хранилище окна, если оно открыто.
@@ -354,6 +425,10 @@ impl Core {
 /// текущей сверки, а главный поток ждать не должен.
 pub fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &tauri::WindowEvent) {
     use tauri::Manager;
+    if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+        // Размер и положение окна — в список хранилищ (задача 1.3).
+        crate::windows::remember_placement(window);
+    }
     if matches!(event, tauri::WindowEvent::Destroyed) {
         let app = window.app_handle().clone();
         let label = window.label().to_owned();

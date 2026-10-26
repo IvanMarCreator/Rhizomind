@@ -11,8 +11,8 @@ describe('NameInput', () => {
   it('сохраняет проверенное имя, даже если значение поменялось во время проверки', async () => {
     let answer: ((value: NameCheck) => void) | undefined;
     mockCore({ name_check: () => new Promise<NameCheck>((resolve) => (answer = resolve)) });
-    const submit = vi.fn(async () => null);
-    const field = new NameInput({ kind: 'note', dir: [], stem: 'А', ext: '.md', renaming: ['А.md'], submit });
+    const save = vi.fn(async () => null);
+    const field = new NameInput({ kind: 'note', dir: [], stem: 'А', ext: '.md', renaming: ['А.md'], save });
     field.value = 'Б';
 
     const done = field.commit();
@@ -21,7 +21,7 @@ describe('NameInput', () => {
     answer?.({ status: 'ok', warning: null });
 
     expect(await done).toBe('saved');
-    expect(submit).toHaveBeenCalledWith('Б.md');
+    expect(save).toHaveBeenCalledWith('Б.md');
   });
 
   it.each([
@@ -30,7 +30,7 @@ describe('NameInput', () => {
     ['attachment', 'На этот файл нельзя будет сослаться.'],
   ] as const)('предупреждение unlinkable для «%s» — свой текст', async (kind, text) => {
     mockCore({ name_check: () => ({ status: 'ok', warning: 'unlinkable' }) });
-    const field = new NameInput({ kind, dir: [], stem: 'А', ext: '', renaming: ['А'], submit: async () => null });
+    const field = new NameInput({ kind, dir: [], stem: 'А', ext: '', renaming: ['А'], save: async () => null });
     await field.input('#А');
     expect(field.warning).toBe(text);
   });

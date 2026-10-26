@@ -19,7 +19,7 @@ export interface NameInputOptions {
   /** Путь переименовываемого элемента. */
   renaming: VaultPath;
   /** Сохранение полного имени; `null` — успех, иначе текст отказа. */
-  submit: (fullName: string) => Promise<string | null>;
+  save: (fullName: string) => Promise<string | null>;
 }
 
 /** `unlinkable` (С3.2) сказано про заметку; для папки и файла — свои тексты. */
@@ -105,7 +105,7 @@ export class NameInput {
       const name = this.fullName;
       const result = await this.#check();
       if (result?.status !== 'ok') return 'rejected';
-      this.failure = await this.#options.submit(name);
+      this.failure = await this.#options.save(name);
       return this.failure ? 'rejected' : 'saved';
     } finally {
       this.busy = false;

@@ -38,8 +38,14 @@ const LOCAL_URL: &str = if cfg!(windows) {
 const WAIT: Duration = Duration::from_secs(10);
 
 fn app() -> App<MockRuntime> {
+    // Оболочка 0.3 — для новых окон хранилищ (`crate::create_window`).
+    let data_dir = std::env::temp_dir().join(format!("rhz-core-test-{}", std::process::id()));
+    std::fs::create_dir_all(&data_dir).expect("папка");
+    let data_dir = crate::webview_traces::WebviewDataDir::prepare_in(&data_dir, std::process::id())
+        .expect("папка данных");
     mock_builder()
         .plugin(tauri_plugin_dialog::init())
+        .manage(crate::Shell::new(data_dir, crate::security::browser_args()))
         .manage(Core::default())
         .invoke_handler(handler())
         .build(tauri::generate_context!(test = true))
@@ -50,7 +56,7 @@ fn app() -> App<MockRuntime> {
 /// главного окна, но со своей меткой (тесты идут параллельно, а ответы
 /// диалогов задаются по метке окна).
 fn window(app: &App<MockRuntime>, label: &str) -> WebviewWindow<MockRuntime> {
-    if label != crate::MAIN_WINDOW_LABEL {
+    if !label.starts_with(crate::windows::LABEL_PREFIX) {
         let capability = COMMAND_NAMES.iter().fold(
             CapabilityBuilder::new(format!("test-{label}")).window(label),
             |capability, name| capability.permission(format!("allow-{}", name.replace('_', "-"))),
@@ -344,7 +350,7 @@ fn contract_examples_pass_on_real_core() {
     );
 
     // Хранилища: выбор папки отменён — `cancelled`; список хранилищ
-    // (`vaults.json`) — задача 1.3, модуль пока отвечает `not_implemented`.
+    // (`vaults.json`, задача 1.3) — в памяти: хранилища из примеров в нём нет.
     assert_eq!(
         invoke(&w, "vault_open_folder", json!({})).expect("vault_open_folder"),
         json!({ "outcome": "cancelled" })
@@ -353,8 +359,12 @@ fn contract_examples_pass_on_real_core() {
         call(&w, "vault_create", example("vault_create")).expect("vault_create"),
         json!({ "outcome": "cancelled" })
     );
+    let list: VaultListResponse = typed(
+        "vault_list",
+        invoke(&w, "vault_list", json!({})).expect("vault_list"),
+    );
+    assert!(list.vaults.is_empty());
     for (name, args) in [
-        ("vault_list", json!({})),
         ("vault_open", json!({ "request": example("vault_open") })),
         (
             "vault_remove_from_list",
@@ -364,7 +374,7 @@ fn contract_examples_pass_on_real_core() {
         let error = invoke(&w, name, args).expect_err(name);
         assert_eq!(
             core_error(name, error).code,
-            ErrorCode::NotImplemented,
+            ErrorCode::VaultNotFound,
             "{name}"
         );
     }
@@ -837,13 +847,19 @@ fn core_dialogs_share_one_lock_per_window() {
         finished.recv_timeout(WAIT).expect("удаление ответило"),
         Ok(json!({ "outcome": "cancelled" }))
     );
-    // Окно свободно — выбор папки снова доходит до списка хранилищ.
-    let error =
-        invoke(&w, "vault_open_folder", json!({})).expect_err("список хранилищ — задача 1.3");
-    assert_eq!(
-        core_error("vault_open_folder", error).code,
-        ErrorCode::NotImplemented
+    // Окно свободно — выбор папки снова доходит до списка хранилищ: папка
+    // становится хранилищем и открывается в новом окне (у окна уже есть своё).
+    let opened: VaultChooseOutcome = typed(
+        "vault_open_folder",
+        invoke(&w, "vault_open_folder", json!({})).expect("ответ"),
     );
+    let VaultChooseOutcome::Opened { vault } = opened else {
+        panic!("ожидалось открытие: {opened:?}");
+    };
+    let core = app.state::<Core>();
+    let label = core.window_of_vault(&vault.id).expect("открыто");
+    assert_ne!(label, "busy");
+    assert!(app.get_webview_window(&label).is_some());
 }
 
 // ---- Скорость ---------------------------------------------------------------
@@ -982,16 +998,54 @@ fn window_closed_during_opening_gets_no_vault() {
     assert!(core.window_vault("closed-early").is_none());
     assert!(core.window_of_vault(&VaultId("closed".into())).is_none());
 
-    // Следующее открытие того же окна работает.
+    // Закрытое окно закрыто навсегда (метки окон не повторяются); другое
+    // окно открывает то же хранилище.
+    let error = core
+        .open_vault_with(
+            "closed-early",
+            summary("closed", &root),
+            &root,
+            Arc::new(WindowEmitter::new(app.handle().clone(), "closed-early")),
+            Some(trash_into(dir.path().join("bin"), true)),
+        )
+        .expect_err("окно закрыто");
+    assert_eq!(error.code, ErrorCode::NoVaultOpen);
     core.open_vault_with(
-        "closed-early",
+        "opened-later",
         summary("closed", &root),
         &root,
-        Arc::new(WindowEmitter::new(app.handle().clone(), "closed-early")),
+        Arc::new(WindowEmitter::new(app.handle().clone(), "opened-later")),
         Some(trash_into(dir.path().join("bin"), true)),
     )
     .expect("открыто");
-    assert!(core.window_vault("closed-early").is_some());
+    assert!(core.window_vault("opened-later").is_some());
+}
+
+/// Обзор 1.7: окно закрыли (`unbind_window`) раньше, чем открытие записало
+/// свой номер, — хранилище не привязывается к закрытому окну, наблюдатель не
+/// остаётся.
+#[test]
+fn window_closed_before_opening_started_gets_no_vault() {
+    let app = app();
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    put(&root, "Заметка.md", b"1");
+    let core = app.state::<Core>();
+
+    core.unbind_window("closed-first");
+    let error = core
+        .open_vault_with(
+            "closed-first",
+            summary("first", &root),
+            &root,
+            Arc::new(WindowEmitter::new(app.handle().clone(), "closed-first")),
+            Some(trash_into(dir.path().join("bin"), true)),
+        )
+        .expect_err("окно уже закрыто");
+
+    assert_eq!(error.code, ErrorCode::NoVaultOpen);
+    assert!(core.window_vault("closed-first").is_none());
+    assert!(core.window_of_vault(&VaultId("first".into())).is_none());
 }
 
 /// Папка новых заметок в настройках — путь по компонентам и не служебная.

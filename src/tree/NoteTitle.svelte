@@ -46,7 +46,7 @@
       stem={parts.stem}
       ext={parts.ext}
       renaming={target}
-      submit={(name) => tree.rename(target, name)}
+      save={(name) => tree.rename(target, name)}
       onDone={() => void finishEditing()}
     />
   {:else}

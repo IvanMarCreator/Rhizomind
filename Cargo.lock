@@ -2934,6 +2934,7 @@ name = "rhizomind"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "dirs",
  "dunce",
  "file-id",
  "gen-vault",

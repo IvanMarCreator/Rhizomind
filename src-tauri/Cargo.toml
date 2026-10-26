@@ -72,6 +72,9 @@ notify = "=9.0.0-rc.6"
 notify-debouncer-full = "=0.8.0-rc.2"
 # Идентификатор файла (FileId NTFS, inode) — распознавание переименований.
 file-id = "=0.2.3"
+# Папка списка хранилищ: data_local_dir (Windows %LOCALAPPDATA%, решение 46).
+# Уже был в дереве через tauri: новых крейтов нет.
+dirs = "=7.0.0"
 
 [target.'cfg(windows)'.dependencies]
 # Те же версии, что уже приходят через wry: новых крейтов нет.

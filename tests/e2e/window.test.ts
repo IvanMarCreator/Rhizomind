@@ -29,6 +29,20 @@ describe('главное окно', () => {
         background: getComputedStyle(document.body).backgroundColor,
       }));
       expect(look.background).toBe(look.dark ? BACKGROUND.dark : BACKGROUND.light);
+
+      // Пустое окно без полосы прокрутки (обзор 0.3, снимок Windows): страница
+      // не выше окна, изолированный iframe Tauri места не занимает.
+      const page = await browser.execute(() => {
+        const root = document.scrollingElement ?? document.documentElement;
+        const frame = document.querySelector('iframe#__tauri_isolation__');
+        return {
+          scroll: root.scrollHeight,
+          view: root.clientHeight,
+          frame: frame ? frame.getBoundingClientRect().height : 0,
+        };
+      });
+      expect(page.scroll).toBeLessThanOrEqual(page.view);
+      expect(page.frame).toBe(0);
     } finally {
       await saveScreenshot(browser, 'window-opened');
     }

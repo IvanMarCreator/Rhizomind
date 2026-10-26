@@ -29,9 +29,7 @@ mod windows_only {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use rhizomind_lib::{
-        MAIN_WINDOW_LABEL, Shell, context, create_main_window, handle_run_event, security,
-    };
+    use rhizomind_lib::{Shell, context, create_window, handle_run_event, security, windows};
     use tauri::{Manager, RunEvent};
 
     type Outcome = Arc<Mutex<Vec<String>>>;
@@ -127,35 +125,77 @@ mod windows_only {
         let app = tauri::Builder::default()
             .manage(shell)
             .setup(move |app| {
-                create_main_window(app.handle())?;
+                // Два окна, как два хранилища (задача 1.3): защитные настройки
+                // — у каждого, процесс браузера и папка данных — общие.
+                let labels = [windows::new_label(), windows::new_label()];
+                for label in &labels {
+                    create_window(app.handle(), label, None)?;
+                }
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    // Окно создано; SmartScreen выключается сразу после создания.
+                    // Окна созданы; SmartScreen выключается сразу после создания.
                     std::thread::sleep(Duration::from_secs(5));
-                    let window = handle
-                        .get_webview_window(MAIN_WINDOW_LABEL)
-                        .expect("главное окно");
-                    // Окно создаётся скрытым и показывается после проверки InPrivate.
-                    let visible = window.is_visible().unwrap_or(false);
-                    let window_to_close = window.clone();
-                    let _ = window.with_webview(move |webview| {
-                        let mut failures = check_live_webview(
-                            &webview.controller(),
-                            &data_dir_for_check,
-                            &browser_args,
-                        );
-                        if visible {
-                            println!("ok: окно показано после проверки InPrivate");
-                        } else {
-                            failures.push("окно не показано после проверки InPrivate".into());
+                    let results: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
+                    let (done_tx, done_rx) = std::sync::mpsc::channel();
+                    for label in &labels {
+                        let window = handle.get_webview_window(label).expect("окно");
+                        // Окно создаётся скрытым и показывается после проверки InPrivate.
+                        let visible = window.is_visible().unwrap_or(false);
+                        let results = results.clone();
+                        let done_tx = done_tx.clone();
+                        let data_dir = data_dir_for_check.clone();
+                        let browser_args = browser_args.clone();
+                        let label = label.clone();
+                        let _ = window.with_webview(move |webview| {
+                            let mut failures =
+                                check_live_webview(&webview.controller(), &data_dir, &browser_args);
+                            if visible {
+                                println!("ok: окно {label} показано после проверки InPrivate");
+                            } else {
+                                failures.push(format!(
+                                    "окно {label} не показано после проверки InPrivate"
+                                ));
+                            }
+                            let pid = security::windows::browser_process_id(&webview.controller())
+                                .unwrap_or(0);
+                            failures.push(format!("pid:{pid}"));
+                            results.lock().unwrap().push(failures);
+                            let _ = done_tx.send(());
+                        });
+                    }
+                    for _ in &labels {
+                        let _ = done_rx.recv_timeout(Duration::from_secs(30));
+                    }
+                    let mut failures = Vec::new();
+                    let mut pids = std::collections::BTreeSet::new();
+                    for result in results.lock().unwrap().iter() {
+                        for line in result {
+                            match line.strip_prefix("pid:") {
+                                Some(pid) => {
+                                    pids.insert(pid.to_owned());
+                                }
+                                None => failures.push(line.clone()),
+                            }
                         }
-                        *outcome_for_check.lock().unwrap() = failures;
-                        // Выход как у пользователя — закрытием окна: WebView
-                        // уничтожается, процесс браузера завершается, затем
-                        // приходит RunEvent::Exit. С `exit(0)` окно и процесс
-                        // браузера ещё живы в момент Exit, папку удалить нельзя.
-                        let _ = window_to_close.close();
-                    });
+                    }
+                    if results.lock().unwrap().len() != labels.len() {
+                        failures.push("проверены не все окна".into());
+                    }
+                    if pids.len() == 1 {
+                        println!("ok: у окон один процесс браузера {pids:?}");
+                    } else {
+                        failures.push(format!("процессы браузера окон: {pids:?}"));
+                    }
+                    *outcome_for_check.lock().unwrap() = failures;
+                    // Выход как у пользователя — закрытием окон: WebView
+                    // уничтожается, процесс браузера завершается, затем
+                    // приходит RunEvent::Exit. С `exit(0)` окна и процесс
+                    // браузера ещё живы в момент Exit, папку удалить нельзя.
+                    for label in &labels {
+                        if let Some(window) = handle.get_webview_window(label) {
+                            let _ = window.close();
+                        }
+                    }
                 });
                 Ok(())
             })

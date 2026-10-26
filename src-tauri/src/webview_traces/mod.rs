@@ -46,7 +46,7 @@ pub fn owner_pid(name: &str) -> Option<u32> {
 }
 
 /// Случайное число из ключей `RandomState` (их стандартная библиотека берёт у ОС).
-fn random_u64() -> u64 {
+pub fn random_u64() -> u64 {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u128(
         std::time::SystemTime::now()
