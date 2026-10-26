@@ -1,10 +1,11 @@
 // Сценарий задачи 2.2: оболочка окна по концепту К2 на настоящем ядре.
-// Окно сценарного теста открывается без хранилища (vault: null): видны лента,
-// боковая панель с переключателем хранилищ и пустое состояние. Снимки — в
+// Окно сценарного теста открывается с пустым хранилищем «Рабочая база»: видны
+// лента, боковая панель с переключателем хранилищ и пустое состояние (окно без
+// хранилища — «Управление хранилищами», задача 2.8а: tests/e2e/vaults.test.ts). Снимки — в
 // светлой и тёмной теме (тема ставится атрибутом data-theme, как её ставит
 // src/theme/theme.ts), сравниваются с кадром Э1 и docs/design/tokens.md.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startApp, type Session } from './driver.ts';
+import { createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 // bg/app, bg/ribbon, bg/sidebar из tokens.md.
@@ -15,14 +16,19 @@ const COLORS = {
 
 describe('оболочка окна', () => {
   let session: Session;
+  let vault: string;
 
   beforeAll(async () => {
-    session = await startApp();
+    // Окно без хранилища — окно «Управление хранилищами» (2.8а): оболочка —
+    // в окне тестового хранилища.
+    vault = createTestVault('Рабочая база');
+    session = await startApp({ vault });
     await session.browser.$('[data-testid="shell"]').waitForDisplayed({ timeout: 20_000 });
   });
 
   afterAll(async () => {
     await session?.stop();
+    if (vault) removeTestVault(vault);
   });
 
   it('каркас К2: лента, боковая панель, строка над заметкой, пустое состояние', async () => {
@@ -31,7 +37,7 @@ describe('оболочка окна', () => {
       for (const label of ['Файлы', 'Быстрый переход (Ctrl+O)', 'Настройки', 'Назад (Alt+←)', 'Вперёд (Alt+→)']) {
         expect(await browser.$(`button[aria-label="${label}"]`).isDisplayed()).toBe(true);
       }
-      expect(await browser.$('button[aria-label="Хранилище не открыто"]').isDisplayed()).toBe(true);
+      expect(await browser.$('button[aria-label="Хранилище «Рабочая база»"]').isDisplayed()).toBe(true);
       expect(await browser.$('aside[aria-label="Боковая панель"] h2').getText()).toBe('ФАЙЛЫ');
       expect(await browser.$('main').getText()).toContain('Нет открытой заметки');
 

@@ -14,13 +14,21 @@
 //!   и не проходят фильтр, `__TAURI_INTERNALS__.metadata` содержит только
 //!   свою метку. Случайная часть метки — второй рубеж: угадать 64 бита нельзя.
 //! - Другое хранилище открывается в новом окне; уже открытое хранилище
-//!   получает фокус, второе окно не создаётся ([`open_vault`]). Окно без
-//!   хранилища (первый запуск) открывает хранилище в себе.
+//!   получает фокус, второе окно не создаётся ([`open_vault`]).
 //! - Каждое окно создаётся защищённой оболочкой 0.3
 //!   ([`crate::create_window`]): InPrivate, общая временная папка данных
 //!   движка этого запуска, флаги, запрет переходов, новых окон, загрузок и
 //!   разрешений. Все окна одного запуска работают в одном процессе браузера
 //!   WebView2 (одна папка данных и одни флаги — иначе WebView2 откажет).
+//! - Окно «Управление хранилищами» (задача 2.8а, решение владельца 58) —
+//!   отдельное окно приложения 920 × 600 без хранилища, одно на программу
+//!   ([`open_manager`]). Оно создаётся той же защищённой оболочкой, с меткой
+//!   `vault-*` и теми же правами, что окна хранилищ. Хранилище к нему не
+//!   привязывается ([`Core::claim_vault`]): выбранное хранилище открывается в
+//!   своём окне, а окно управления закрывается. Интерфейс узнаёт окно
+//!   управления по ответу `vault_current` без хранилища.
+//! - При запуске открывается последнее хранилище; нет его или папка
+//!   недоступна — окно управления (Э11б при пустом списке).
 //! - Размер и положение окна запоминаются в списке хранилищ при закрытии
 //!   окна ([`remember_placement`]); при запуске открывается последнее
 //!   хранилище ([`open_at_startup`]).
@@ -31,7 +39,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime, WebviewWindow};
 
 use crate::commands::{
-    ClaimRefused, Core, CoreError, CoreResult, ErrorCode, VaultOpenOutcome, VaultSummary,
+    ClaimRefused, Core, CoreError, CoreResult, ErrorCode, ManagerSlot, VaultOpenOutcome,
+    VaultSummary,
 };
 use crate::events::WindowEmitter;
 use crate::registry::WindowState;
@@ -47,6 +56,24 @@ pub const DEFAULT_SIZE: (u32, u32) = (1200, 800);
 
 /// Наименьший размер окна.
 pub const MIN_SIZE: (u32, u32) = (640, 480);
+
+/// Размер окна «Управление хранилищами» (docs/design/tokens.md).
+pub const MANAGER_SIZE: (u32, u32) = (920, 600);
+
+/// Заголовок окна «Управление хранилищами» (макет Э11).
+pub fn manager_title() -> String {
+    format!("Управление хранилищами — {}", crate::main_window_title())
+}
+
+/// Как поставить окно управления: 920 × 600, положение выбирает ОС.
+pub fn manager_placement() -> Placement {
+    Placement {
+        width: f64::from(MANAGER_SIZE.0),
+        height: f64::from(MANAGER_SIZE.1),
+        position: None,
+        maximized: false,
+    }
+}
 
 /// Новая уникальная метка окна: `vault-<16 шестнадцатеричных цифр>`.
 pub fn new_label() -> String {
@@ -138,13 +165,30 @@ pub fn focus<R: Runtime>(window: &WebviewWindow<R>) {
 /// `vault_open_folder` и `vault_open`:
 /// - хранилище уже открыто (или открывается) в каком-то окне — фокус на
 ///   него (`focused`), второе окно не создаётся;
-/// - окно вызова без хранилища — хранилище открывается в нём;
+/// - окно вызова без хранилища (не окно управления) — хранилище
+///   открывается в нём;
 /// - иначе — новое окно защищённой оболочки.
+///
+/// Вызов из окна «Управление хранилищами» после открытия или фокуса
+/// закрывает окно управления (как в Obsidian).
 ///
 /// Хранилище привязывается к метке окна **до** создания нового окна:
 /// интерфейс нового окна первой командой (`vault_current`) уже видит своё
 /// хранилище. Не удалось создать окно — хранилище отвязывается.
 pub async fn open_vault<R: Runtime>(
+    app: &AppHandle<R>,
+    caller: &str,
+    vault: VaultSummary,
+) -> CoreResult<VaultOpenOutcome> {
+    let outcome = open_vault_in_window(app, caller, vault).await?;
+    // Окно управления сделало своё дело: хранилище открыто или в фокусе.
+    if app.state::<Core>().is_manager(caller) {
+        close_manager(app, caller);
+    }
+    Ok(outcome)
+}
+
+async fn open_vault_in_window<R: Runtime>(
     app: &AppHandle<R>,
     caller: &str,
     vault: VaultSummary,
@@ -207,9 +251,9 @@ fn bind_vault<R: Runtime>(app: &AppHandle<R>, label: &str, vault: VaultSummary) 
 }
 
 /// Запуск приложения: последнее открытое хранилище — в новом окне с его
-/// размером и положением; нет его или папка недоступна — окно без
-/// хранилища. Обход папки идёт вне главного потока; окно создаётся после
-/// привязки хранилища.
+/// размером и положением; нет его или папка недоступна — окно «Управление
+/// хранилищами» (решение владельца 58). Обход папки идёт вне главного
+/// потока; окно создаётся после привязки хранилища.
 pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -229,16 +273,58 @@ pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
                 crate::commands::blocking(move || bind_vault(&binding_app, &binding_label, vault))
                     .await;
             if bound.is_ok() {
-                saved = core.registry().window(&id);
+                saved = Some(core.registry().window(&id));
             }
         }
-        if let Err(error) = crate::create_window(&app, &label, saved) {
-            eprintln!("Rhizomind: не удалось создать окно: {error}");
-            core.unbind_window(&label);
+        let opened = match saved {
+            Some(saved) => crate::create_window(&app, &label, saved)
+                .map(|_| ())
+                .map_err(|error| {
+                    eprintln!("Rhizomind: не удалось создать окно: {error}");
+                    core.unbind_window(&label);
+                }),
+            None => open_manager(&app).map_err(|_| ()),
+        };
+        if opened.is_err() {
             // Окон нет — приложению нечего показывать.
             app.exit(1);
         }
     });
+}
+
+/// Открывает окно «Управление хранилищами»; уже открытое — получает фокус.
+/// Одна функция для команды `vault_manager_open` (переключатель хранилищ),
+/// запуска без хранилища ([`open_at_startup`]) и повторного запуска
+/// программы (задача 0.5, решение владельца 58). Вызывать можно из любого
+/// потока, в том числе из главного: замков на время создания окна не держит.
+pub fn open_manager<R: Runtime>(app: &AppHandle<R>) -> CoreResult<()> {
+    let core = app.state::<Core>();
+    match core.reserve_manager(&new_label()) {
+        ManagerSlot::Existing(label) => {
+            // Окно ещё создаётся — фокус получит само при показе.
+            if let Some(window) = app.get_webview_window(&label) {
+                focus(&window);
+            }
+            Ok(())
+        }
+        ManagerSlot::New(label) => match crate::create_manager_window(app, &label) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                eprintln!("Rhizomind: не удалось создать окно управления хранилищами: {error}");
+                core.unbind_window(&label);
+                Err(CoreError::new(ErrorCode::IoFailed))
+            }
+        },
+    }
+}
+
+/// Закрывает окно управления `label`: метка снимается сразу (следующий
+/// вызов [`open_manager`] создаст новое окно), окно уничтожается.
+fn close_manager<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    app.state::<Core>().unbind_window(label);
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.destroy();
+    }
 }
 
 /// Запоминает размер и положение окна его хранилища (закрытие окна).
@@ -303,8 +389,19 @@ pub fn remember_placement<R: Runtime>(window: &tauri::Window<R>) {
 pub mod e2e {
     /// Папка, в которой тестовая сборка держит `vaults.json`.
     pub const PROFILE_ENV: &str = "RHIZOMIND_E2E_PROFILE_DIR";
-    /// Папка хранилища, которое тестовая сборка открывает при запуске.
+    /// Папка хранилища, которое тестовая сборка открывает при запуске. Можно
+    /// несколько папок через разделитель путей ОС (`;` на Windows, `:` на
+    /// Linux): все попадают в список хранилищ, последняя открывается.
     pub const VAULT_ENV: &str = "RHIZOMIND_E2E_VAULT";
+    /// Ответ системного окна выбора папки (`vault_create`,
+    /// `vault_open_folder`): папка, которую «выбрал» пользователь. Окно не
+    /// показывается (задача 2.8а: сценарные тесты создания и открытия).
+    pub const PICK_FOLDER_ENV: &str = "RHIZOMIND_E2E_PICK_FOLDER";
+
+    /// Папка из [`PICK_FOLDER_ENV`] вместо системного окна выбора папки.
+    pub fn picked_folder() -> Option<std::path::PathBuf> {
+        std::env::var_os(PICK_FOLDER_ENV).map(std::path::PathBuf::from)
+    }
 
     /// Список хранилищ тестовой сборки: из [`PROFILE_ENV`], иначе — профиль ОС.
     pub fn registry() -> crate::registry::Registry {
@@ -316,11 +413,14 @@ pub mod e2e {
         }
     }
 
-    /// Хранилище из [`VAULT_ENV`] добавляется в список и становится последним
-    /// открытым: при запуске оно открывается обычным путём.
+    /// Хранилища из [`VAULT_ENV`] добавляются в список, последнее становится
+    /// последним открытым: при запуске оно открывается обычным путём.
     pub fn prepare(registry: &crate::registry::Registry) {
-        if let Some(root) = std::env::var_os(VAULT_ENV) {
-            match registry.add(std::path::Path::new(&root)) {
+        let Some(roots) = std::env::var_os(VAULT_ENV) else {
+            return;
+        };
+        for root in std::env::split_paths(&roots) {
+            match registry.add(&root) {
                 Ok(vault) => {
                     let _ = registry.mark_opened(&vault.id);
                 }

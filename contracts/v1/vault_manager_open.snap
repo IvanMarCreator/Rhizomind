@@ -1,0 +1,14 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_manager_open",
+  "errors": [
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
+    }
+  ],
+  "request": null,
+  "response": null
+}

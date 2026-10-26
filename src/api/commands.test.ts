@@ -72,6 +72,7 @@ describe('обёртки команд ядра', () => {
       'vault_open_folder',
       'vault_open',
       'vault_remove_from_list',
+      'vault_manager_open',
       'tree_list',
       'note_create',
       'folder_create',

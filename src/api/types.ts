@@ -307,6 +307,8 @@ export interface CoreCommands {
   vault_open_folder: { request: null; response: VaultChooseOutcome };
   vault_open: { request: VaultIdRequest; response: VaultOpenOutcome };
   vault_remove_from_list: { request: VaultIdRequest; response: null };
+  /** Окно «Управление хранилищами» (задача 2.8а). */
+  vault_manager_open: { request: null; response: null };
   tree_list: { request: null; response: TreeListResponse };
   note_create: { request: NameInDirRequest; response: EntryPathResponse };
   folder_create: { request: NameInDirRequest; response: EntryPathResponse };

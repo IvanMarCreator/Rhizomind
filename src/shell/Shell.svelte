@@ -1,6 +1,7 @@
 <!--
   Оболочка окна по концепту К2 (docs/design/README.md, Э1): лента иконок,
   боковая панель, область заметки со строкой над ней, уведомления внизу.
+  Окно без хранилища — окно «Управление хранилищами» (src/vaults/, Э11).
   Заголовок окна — системный (свой заголовок требует настройки окна в ядре).
 -->
 <script lang="ts">
@@ -15,6 +16,7 @@
   import type { SaveStatus } from '../editor/session.ts';
   import NoteTitle from '../tree/NoteTitle.svelte';
   import { FileTreeState, type TreeHost } from '../tree/tree.svelte.ts';
+  import VaultManager from '../vaults/VaultManager.svelte';
   import EmptyState from './EmptyState.svelte';
   import NoteHeader from './NoteHeader.svelte';
   import Notifications from './Notifications.svelte';
@@ -81,7 +83,7 @@
   $effect(() => applyTheme(model.theme));
 
   function onKeydown(event: KeyboardEvent) {
-    if (model.status.kind !== 'ready') return;
+    if (model.status.kind !== 'ready' || !model.vault) return;
     if (isQuickSwitcherKey(event)) {
       event.preventDefault();
       openSwitcher();
@@ -96,11 +98,14 @@
   }
 </script>
 
-{#if model.status.kind === 'ready'}
+{#if model.status.kind === 'ready' && !model.vault}
+  <!-- Окно без хранилища — окно «Управление хранилищами» (задача 2.8а). -->
+  <VaultManager onNotice={(text) => model.notify(text)} />
+{:else if model.status.kind === 'ready'}
   <div class="shell" data-testid="shell">
     <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} onQuickSwitcher={openSwitcher} />
     {#if model.sidebarOpen}
-      <Sidebar vault={model.vault} {files} />
+      <Sidebar vault={model.vault} {files} onNotice={(text) => model.notify(text)} />
     {/if}
     <main class="note">
       <NoteHeader

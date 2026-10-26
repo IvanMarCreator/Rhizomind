@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { SCREENSHOT_DIR, startApp, type Session } from './driver.ts';
+import { SCREENSHOT_DIR, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
 
 // Адрес своего интерфейса: Windows — http://tauri.localhost, Linux — tauri://localhost.
 // WebView2 отдаёт адрес со слешем (`http://tauri.localhost/`), WebKitGTK — без
@@ -16,10 +16,14 @@ const SHELL = '[data-testid="shell"]';
 
 describe('защищённая оболочка', () => {
   let session: Session;
+  let vault: string;
   let step = 0;
 
   beforeAll(async () => {
-    session = await startApp();
+    // Окно без хранилища — окно «Управление хранилищами» (2.8а): оболочка —
+    // в окне тестового хранилища.
+    vault = createTestVault('Рабочая база');
+    session = await startApp({ vault });
     // Оболочка окна интерфейса (задача 2.2) отрисована.
     await session.browser.$(SHELL).waitForDisplayed({ timeout: 20_000 });
   });
@@ -32,6 +36,7 @@ describe('защищённая оболочка', () => {
 
   afterAll(async () => {
     await session?.stop();
+    if (vault) removeTestVault(vault);
   });
 
   async function expectStillOnOwnPage(): Promise<void> {

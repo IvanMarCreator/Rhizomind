@@ -121,6 +121,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: null,
     errors: [err('vault_not_found')],
   },
+  vault_manager_open: {
+    command: 'vault_manager_open',
+    request: null,
+    response: null,
+    errors: [err('io_failed')],
+  },
   tree_list: {
     command: 'tree_list',
     request: null,
