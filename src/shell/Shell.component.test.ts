@@ -55,7 +55,10 @@ describe('оболочка окна', () => {
     const ribbon = screen.getByRole('toolbar', { name: 'Лента иконок' });
     expect(within(ribbon).getByRole('button', { name: 'Файлы' })).toBeTruthy();
     expect(within(ribbon).getByRole('button', { name: 'Быстрый переход (Ctrl+O)' })).toBeTruthy();
-    expect(within(ribbon).getByRole('button', { name: 'Настройки' })).toBeTruthy();
+    // Окно настроек — после КТ1: кнопка явно неактивна, с подсказкой.
+    const settings = within(ribbon).getByRole('button', { name: 'Настройки' });
+    expect(settings.getAttribute('aria-disabled')).toBe('true');
+    expect(settings.getAttribute('title')).toBe('Настройки появятся в следующей версии');
     expect(screen.getByRole('button', { name: 'Хранилище «Рабочая база»' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Уведомления' })).toBeTruthy();
   });

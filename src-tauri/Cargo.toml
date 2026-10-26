@@ -139,6 +139,10 @@ gen-vault = { version = "=0.1.0", path = "../tools/gen-vault" }
 [target.'cfg(windows)'.dev-dependencies]
 # Точки соединения NTFS в тестах контура хранилища.
 junction = "=2.1.0"
+# Настоящая мышь (SendInput) в tests/webview2_runtime.rs: перетаскивание внутри
+# страницы (исправление КТ1). Тот же крейт, что в [dependencies]; функция —
+# только для тестов, в выпускную сборку не попадает.
+windows = { version = "=0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse"] }
 
 # Профиль выпуска и [patch.crates-io] (своя копия wry) — в корневом Cargo.toml
 # (рабочее пространство): в члене Cargo их молча игнорирует.
