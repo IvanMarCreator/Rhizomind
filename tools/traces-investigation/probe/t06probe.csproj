@@ -1,0 +1,27 @@
+<!--
+  Зонд расследования следов вне хранилища (задача 0.6). Не часть приложения:
+  собирается только в workflow .github/workflows/traces-investigation.yml.
+  - creds: список записей диспетчера учётных данных текущего пользователя;
+  - dialog: системное окно выбора папки (IFileOpenDialog) с теми же
+    опциями, что у rfd 0.16.1 (tauri-plugin-dialog), и опытные варианты;
+  - webview: минимальное окно WebView2 без ядра Rhizomind (InPrivate,
+    папка данных во временной папке, по желанию — флаги Rhizomind).
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <AssemblyName>t06probe</AssemblyName>
+    <RootNamespace>T06Probe</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3179.45" />
+  </ItemGroup>
+</Project>
