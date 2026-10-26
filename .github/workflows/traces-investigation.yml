@@ -22,6 +22,7 @@
 #   oneauth-long — те же окна по 40 с (успевает ли загрузиться OneAuth);
 #   oneauth-close — способы закрытия окна: Close контроллера, выход без него,
 #              уничтожение окна раньше контроллера (C# и wry);
+#   oneauth-dpi — минимальный WebView2 с учётом DPI и/или языком, как wry;
 #   dialog-* — B ×1, затем D: системное окно выбора папки ×3 в варианте:
 #              rfd (как в приложении), rfd-cancel, dontaddtorecent,
 #              clientguid, clientguid-clear, proposal, all.
@@ -48,7 +49,7 @@ jobs:
       matrix:
         # Задания 0.6 (app, app-repeat, mini-*, app-policy-*, dialog-* …) остаются в run.ps1;
         # в матрице — только текущий опыт, чтобы не тратить машины CI.
-        job: [oneauth-close]
+        job: [oneauth-dpi]
     runs-on: windows-latest
     timeout-minutes: 60
     env:

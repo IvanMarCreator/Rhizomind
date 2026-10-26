@@ -285,6 +285,19 @@ try {
       Phase 'mini-graceful#2' { Scenario-Exe 'mini-graceful#2' $Probe @('webview', 'rhizomind-flags', '8') 12 }
       Phase 'wry-exit#2' { Scenario-Exe 'wry-exit#2' $WryProbe @('datadir', 'incognito', 'flags', 'secs=8') 14 }
     }
+    '^oneauth-dpi$' {
+      # Отличие командной строки C# и wry: --embedded-browser-webview-dpi-awareness (0 против 2) и --lang.
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'mini#1' { Scenario-Exe 'mini#1' $Probe @('webview', 'rhizomind-flags', '8') 12 }
+      Phase 'mini-dpi#1' { Scenario-Exe 'mini-dpi#1' $Probe @('webview', 'rhizomind-flags+dpi', '8') 12 }
+      Phase 'mini-lang#1' { Scenario-Exe 'mini-lang#1' $Probe @('webview', 'rhizomind-flags+lang', '8') 12 }
+      Phase 'mini-dpi-lang#1' { Scenario-Exe 'mini-dpi-lang#1' $Probe @('webview', 'rhizomind-flags+dpi+lang', '8') 12 }
+      Phase 'wry#1' { Scenario-Exe 'wry#1' $WryProbe @('datadir', 'incognito', 'flags', 'drop', 'secs=8') 14 }
+      Phase 'mini-dpi#2' { Scenario-Exe 'mini-dpi#2' $Probe @('webview', 'rhizomind-flags+dpi', '8') 12 }
+      Phase 'mini#2' { Scenario-Exe 'mini#2' $Probe @('webview', 'rhizomind-flags', '8') 12 }
+      Phase 'mini-dpi-lang#2' { Scenario-Exe 'mini-dpi-lang#2' $Probe @('webview', 'rhizomind-flags+dpi+lang', '8') 12 }
+      Phase 'app#1' { Scenario-Exe 'app#1' $AppExe @() 8 }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')

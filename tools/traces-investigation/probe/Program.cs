@@ -337,6 +337,9 @@ internal static class MiniWebView
         // раньше контроллера (контроллер не закрывается явно).
         var abrupt = Array.IndexOf(parts, "abrupt") > 0;
         var destroy = Array.IndexOf(parts, "destroy") > 0;
+        // +dpi — процесс с учётом DPI по мониторам (PerMonitorV2), как окно tao/wry.
+        var dpi = Array.IndexOf(parts, "dpi") > 0;
+        if (dpi) Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         var dataDir = Path.Combine(Path.GetTempPath(), "t06-webview-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(dataDir);
         var info = new Dictionary<string, object> { ["mode"] = mode, ["dataDir"] = dataDir };
