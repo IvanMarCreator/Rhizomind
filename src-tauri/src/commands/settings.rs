@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult};
+use super::hotkeys::HotkeyOverrides;
 use super::limits;
 use super::types::VaultPath;
 use super::{Core, blocking, checked_path};
@@ -80,6 +81,9 @@ pub struct Settings {
     pub confirm_delete: bool,
     /// Максимальный размер файла для редактирования, байты (по умолчанию 10 МБ).
     pub max_edit_size_bytes: u64,
+    /// Назначения горячих клавиш поверх сочетаний по умолчанию (решение 72,
+    /// `commands::hotkeys`): команда → сочетания. Пусто — все по умолчанию.
+    pub hotkeys: HotkeyOverrides,
 }
 
 impl Default for Settings {
@@ -95,6 +99,7 @@ impl Default for Settings {
             new_note_location: NewNoteLocation::VaultRoot,
             confirm_delete: true,
             max_edit_size_bytes: 10 * 1024 * 1024,
+            hotkeys: HotkeyOverrides::new(),
         }
     }
 }

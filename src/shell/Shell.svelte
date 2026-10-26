@@ -7,10 +7,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { onCoreEvent } from '../api/index.ts';
-  import { historyKeyAction } from '../core/history/history.ts';
   import { t } from '../i18n/index.ts';
-  import { isQuickSwitcherKey } from '../quick-switcher/keys.ts';
+  import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
+  import { applyTextSettings } from '../settings/apply.ts';
+  import { bindingsOf, chordText, matchCommand, type CommandId } from '../settings/hotkeys.ts';
+  import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import Editor from '../editor/Editor.svelte';
   import SaveIndicator from '../editor/SaveIndicator.svelte';
@@ -45,6 +47,9 @@
       get confirmDelete() {
         return owner.confirmDelete;
       },
+      get hotkeys() {
+        return owner.hotkeys;
+      },
       open: (path) => owner.open(path),
       entryRenamed: (from, to) => {
         // Сначала редактор: смена пути после этого — не уход с заметки.
@@ -73,15 +78,58 @@
 
   /** Окно быстрого перехода (Ctrl+O, задача 2.7) открыто. */
   let switcherOpen = $state(false);
+  /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
+  let settingsSection = $state<SettingsSection | null>(null);
 
   /**
-   * Открыто модальное окно (быстрый переход, подтверждение удаления):
-   * горячие клавиши окна (Ctrl+O, Alt+←/→) под ним не действуют.
+   * Открыто модальное окно (быстрый переход, подтверждение удаления,
+   * настройки): горячие клавиши окна под ним не действуют.
    */
-  const modalOpen = $derived(switcherOpen || files.pendingDelete !== null);
+  const modalOpen = $derived(switcherOpen || settingsSection !== null || files.pendingDelete !== null);
+
+  /** Первое сочетание команды для подсказок; `null` — у команды нет сочетаний. */
+  function shortcutOf(id: CommandId): string | null {
+    const chord = bindingsOf(model.hotkeys, id)[0];
+    return chord ? chordText(chord) : null;
+  }
 
   function openSwitcher() {
     if (model.status.kind === 'ready' && model.vault && !modalOpen) switcherOpen = true;
+  }
+
+  function openSettings(section: SettingsSection = 'general') {
+    if (model.status.kind === 'ready' && model.vault && !modalOpen) settingsSection = section;
+  }
+
+  /** Новая заметка (Ctrl+N): папка — по настройке «где создавать новые заметки». */
+  function createNote() {
+    if (!model.sidebarOpen) model.toggleSidebar();
+    void files.createNote(newNoteDir(model.settings.new_note_location, model.currentPath));
+  }
+
+  function run(command: CommandId) {
+    switch (command) {
+      case 'quick_switcher.open':
+        openSwitcher();
+        return;
+      case 'note.new':
+        createNote();
+        return;
+      case 'editor.toggle-mode':
+        // Режим показывают кнопки над заметкой; запоминание — задача 2.5.
+        model.editorMode = model.editorMode === 'source' ? 'live_preview' : 'source';
+        return;
+      case 'history.back':
+        model.back();
+        return;
+      case 'history.forward':
+        model.forward();
+        return;
+      case 'tree.rename':
+      case 'tree.delete':
+        // Команды дерева: их обрабатывает дерево файлов (FileTree.svelte).
+        return;
+    }
   }
 
   onMount(() => {
@@ -98,20 +146,19 @@
   });
 
   $effect(() => applyTheme(model.theme));
+  $effect(() => applyTextSettings(model.settings));
 
+  /** Горячие клавиши окна — по реестру и назначениям хранилища (src/settings/hotkeys.ts). */
   function onKeydown(event: KeyboardEvent) {
     if (model.status.kind !== 'ready' || !model.vault) return;
-    if (isQuickSwitcherKey(event)) {
-      event.preventDefault();
-      openSwitcher();
-      return;
-    }
-    const action = historyKeyAction(event);
-    if (!action) return;
+    // Нажатие уже обработано (редактор, поле ввода, дерево).
+    if (event.defaultPrevented) return;
+    const command = matchCommand(model.hotkeys, event, 'window');
+    if (!command) return;
     event.preventDefault();
-    // Под модальным окном история не листается.
+    // Под модальным окном команды окна не действуют.
     if (modalOpen) return;
-    model.navigate(action);
+    run(command);
   }
 </script>
 
@@ -120,7 +167,13 @@
   <VaultManager onNotice={(text) => model.notify(text)} />
 {:else if model.status.kind === 'ready'}
   <div class="shell" data-testid="shell">
-    <Ribbon filesOpen={model.sidebarOpen} onToggleFiles={() => model.toggleSidebar()} onQuickSwitcher={openSwitcher} />
+    <Ribbon
+      filesOpen={model.sidebarOpen}
+      onToggleFiles={() => model.toggleSidebar()}
+      onQuickSwitcher={openSwitcher}
+      quickSwitcherShortcut={shortcutOf('quick_switcher.open')}
+      onSettings={() => openSettings()}
+    />
     {#if model.sidebarOpen}
       <Sidebar vault={model.vault} {files} onNotice={(text) => model.notify(text)} />
     {/if}
@@ -152,6 +205,7 @@
           showTitle={false}
           notify={(text) => model.notify(text)}
           onStatus={(status) => (saveStatus = status)}
+          onOpenSettings={() => openSettings('files')}
         />
       </div>
     </main>
@@ -162,6 +216,15 @@
       onOpen={(path) => model.open(path)}
       onClose={() => (switcherOpen = false)}
       onNotice={(text) => model.notify(text)}
+    />
+  {/if}
+  {#if settingsSection !== null && model.vault}
+    <SettingsDialog
+      vault={model.vault}
+      settings={model.settings}
+      section={settingsSection}
+      onChange={(patch) => void model.updateSettings(patch)}
+      onClose={() => (settingsSection = null)}
     />
   {/if}
 {:else if model.status.kind === 'failed'}
@@ -196,6 +259,13 @@
     max-width: var(--note-column-width);
     margin: 0 auto;
     padding: 28px 32px 0;
+  }
+
+  /* Размер шрифта текста заметки (настройка хранилища, src/settings/apply.ts):
+     двойной класс — сильнее правила редактора (src/editor/NoteText.svelte). */
+  .body :global(.cm-editor.cm-editor) {
+    font-size: var(--note-font-size, 16px);
+    line-height: 1.625;
   }
 
   .loading {

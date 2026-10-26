@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NavigationHistory, historyKeyAction } from './history.ts';
+import { NavigationHistory } from './history.ts';
 
 const a = ['Входящие', 'А.md'];
 const b = ['Проекты', 'Б.md'];
@@ -107,27 +107,5 @@ describe('история переходов', () => {
 
     expect(history.current).toEqual(c);
     expect(history.canGoBack).toBe(false);
-  });
-});
-
-describe('горячие клавиши истории', () => {
-  const key = (init: Partial<KeyboardEventInit> & { key: string }) => ({
-    key: init.key,
-    altKey: init.altKey ?? false,
-    ctrlKey: init.ctrlKey ?? false,
-    metaKey: init.metaKey ?? false,
-    shiftKey: init.shiftKey ?? false,
-  });
-
-  it('Alt+← — назад, Alt+→ — вперёд', () => {
-    expect(historyKeyAction(key({ key: 'ArrowLeft', altKey: true }))).toBe('back');
-    expect(historyKeyAction(key({ key: 'ArrowRight', altKey: true }))).toBe('forward');
-  });
-
-  it('стрелки без Alt и с другими модификаторами не трогает', () => {
-    expect(historyKeyAction(key({ key: 'ArrowLeft' }))).toBeNull();
-    expect(historyKeyAction(key({ key: 'ArrowLeft', altKey: true, shiftKey: true }))).toBeNull();
-    expect(historyKeyAction(key({ key: 'ArrowRight', altKey: true, ctrlKey: true }))).toBeNull();
-    expect(historyKeyAction(key({ key: 'a', altKey: true }))).toBeNull();
   });
 });

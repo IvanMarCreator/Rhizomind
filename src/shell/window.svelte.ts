@@ -4,7 +4,7 @@
 // заметки через `open()`. Для дерева файлов окно — TreeHost: оно узнаёт о
 // переименовании и удалении, сделанных в приложении.
 import { ApiVersionMismatch, checkApiVersion, core } from '../api/index.ts';
-import type { CurrentVault, EditorMode, Theme, VaultPath } from '../api/index.ts';
+import type { CurrentVault, EditorMode, HotkeyOverrides, Settings, Theme, VaultPath } from '../api/index.ts';
 import {
   activePane,
   closeNote,
@@ -17,7 +17,7 @@ import {
 import { NavigationHistory, type HistoryAction } from '../core/history/history.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t, type MessageKey } from '../i18n/index.ts';
-import { DEFAULT_THEME } from '../theme/theme.ts';
+import { DEFAULT_SETTINGS } from '../settings/defaults.ts';
 import type { TreeHost } from '../tree/tree.svelte.ts';
 
 export type WindowStatus =
@@ -39,10 +39,12 @@ function isInside(path: VaultPath, prefix: VaultPath): boolean {
 export class WindowModel implements TreeHost {
   status = $state<WindowStatus>({ kind: 'loading' });
   vault = $state<CurrentVault | null>(null);
-  theme = $state<Theme>(DEFAULT_THEME);
-  editorMode = $state<EditorMode>('live_preview');
+  /** Настройки хранилища (С3.1); меняются через `updateSettings`. */
+  settings = $state.raw<Settings>(DEFAULT_SETTINGS);
+  theme = $state<Theme>(DEFAULT_SETTINGS.theme);
+  editorMode = $state<EditorMode>(DEFAULT_SETTINGS.editor_mode);
   /** Настройка хранилища «подтверждение удаления» (С3.1). */
-  confirmDelete = $state(true);
+  confirmDelete = $state(DEFAULT_SETTINGS.confirm_delete);
   layout = $state.raw<Layout>(defaultLayout());
   notices = $state<Notice[]>([]);
   sidebarOpen = $state(true);
@@ -51,6 +53,15 @@ export class WindowModel implements TreeHost {
 
   readonly #history = new NavigationHistory();
   #nextNotice = 1;
+  /** Последние записанные в хранилище настройки: к ним откат, если запись не удалась. */
+  #savedSettings: Settings = DEFAULT_SETTINGS;
+  /** Записи настроек идут по очереди: последняя не обгоняет предыдущую. */
+  #settingsWrite: Promise<void> = Promise.resolve();
+
+  /** Назначения горячих клавиш хранилища (src/settings/hotkeys.ts). */
+  get hotkeys(): HotkeyOverrides {
+    return this.settings.hotkeys;
+  }
 
   /** Путь заметки в активной вкладке; `null` — заметка не открыта. */
   get currentPath(): VaultPath | null {
@@ -128,12 +139,42 @@ export class WindowModel implements TreeHost {
     this.notices = this.notices.filter((notice) => notice.id !== id);
   }
 
+  /**
+   * Меняет настройки хранилища: действуют сразу, в `.rhizomind/settings.json`
+   * записываются в фоне. Пишутся только поля `patch` поверх прочитанных с
+   * диска: поля, которые меняет не окно настроек (режим заметки, задача
+   * 2.5), не затираются. Не записалось — уведомление и откат к записанным.
+   */
+  updateSettings(patch: Partial<Settings>): Promise<void> {
+    const shown: Settings = { ...this.settings, ...patch };
+    this.#showSettings(shown, false);
+    this.#settingsWrite = this.#settingsWrite.then(async () => {
+      try {
+        const { settings: disk } = await core.settingsRead();
+        const next: Settings = { ...disk, ...patch };
+        await core.settingsWrite({ settings: next });
+        this.#savedSettings = next;
+      } catch (error) {
+        this.notify(userMessage(error));
+        if (this.settings === shown) this.#showSettings(this.#savedSettings, false);
+      }
+    });
+    return this.#settingsWrite;
+  }
+
+  /** Показывает настройки; режим заметки — только при чтении (его меняет заметка, а не окно настроек). */
+  #showSettings(settings: Settings, withMode = true): void {
+    this.settings = settings;
+    this.theme = settings.theme;
+    if (withMode) this.editorMode = settings.editor_mode;
+    this.confirmDelete = settings.confirm_delete;
+  }
+
   async #loadSettings(): Promise<void> {
     try {
       const { settings } = await core.settingsRead();
-      this.theme = settings.theme;
-      this.editorMode = settings.editor_mode;
-      this.confirmDelete = settings.confirm_delete;
+      this.#savedSettings = settings;
+      this.#showSettings(settings);
     } catch (error) {
       this.notify(userMessage(error));
     }

@@ -15,6 +15,7 @@ const SETTINGS: Settings = {
   new_note_location: { kind: 'vault_root' },
   confirm_delete: true,
   max_edit_size_bytes: 10 * 1024 * 1024,
+  hotkeys: {},
 };
 
 const WITH_VAULT: CoreMocks = {
@@ -55,10 +56,10 @@ describe('оболочка окна', () => {
     const ribbon = screen.getByRole('toolbar', { name: 'Лента иконок' });
     expect(within(ribbon).getByRole('button', { name: 'Файлы' })).toBeTruthy();
     expect(within(ribbon).getByRole('button', { name: 'Быстрый переход (Ctrl+O)' })).toBeTruthy();
-    // Окно настроек — после КТ1: кнопка явно неактивна, с подсказкой.
+    // Окно настроек (задача 2.8б): шестерёнка активна.
     const settings = within(ribbon).getByRole('button', { name: 'Настройки' });
-    expect(settings.getAttribute('aria-disabled')).toBe('true');
-    expect(settings.getAttribute('title')).toBe('Настройки появятся в следующей версии');
+    expect(settings.getAttribute('aria-disabled')).toBeNull();
+    expect(settings.getAttribute('title')).toBe('Настройки');
     expect(screen.getByRole('button', { name: 'Хранилище «Рабочая база»' })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Уведомления' })).toBeTruthy();
   });

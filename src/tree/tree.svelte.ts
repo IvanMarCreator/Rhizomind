@@ -3,7 +3,15 @@
 // файлами — командами ядра; оболочке окна дерево сообщает только итог
 // (открыть заметку, путь изменился, элемент удалён) через TreeHost.
 import { CoreCallError, core, onCoreEvent } from '../api/index.ts';
-import type { EntryKind, TreeChange, TreeEntry, Unsubscribe, VaultChangedPayload, VaultPath } from '../api/index.ts';
+import type {
+  EntryKind,
+  HotkeyOverrides,
+  TreeChange,
+  TreeEntry,
+  Unsubscribe,
+  VaultChangedPayload,
+  VaultPath,
+} from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { hasMessage, t } from '../i18n/index.ts';
 import {
@@ -31,6 +39,8 @@ export interface TreeHost {
   readonly currentPath: VaultPath | null;
   /** Настройка хранилища «подтверждение удаления». */
   readonly confirmDelete: boolean;
+  /** Назначения горячих клавиш хранилища (F2, Delete в дереве); нет — по умолчанию. */
+  readonly hotkeys?: HotkeyOverrides;
   open(path: VaultPath): void;
   /** Элемент переименован или перемещён в приложении: пути внутри меняются. */
   entryRenamed(from: VaultPath, to: VaultPath): void;

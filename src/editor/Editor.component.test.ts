@@ -106,6 +106,7 @@ const SETTINGS: Settings = {
   new_note_location: { kind: 'vault_root' },
   confirm_delete: true,
   max_edit_size_bytes: LIMIT,
+  hotkeys: {},
 };
 
 function mocksFor(disk: Disk, extra: CoreMocks = {}): CoreMocks {

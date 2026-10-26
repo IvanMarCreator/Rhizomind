@@ -264,6 +264,14 @@ export type NewNoteLocation =
   | { kind: 'current_folder' }
   | { kind: 'folder'; path: VaultPath };
 
+/**
+ * Назначения горячих клавиш поверх сочетаний по умолчанию (решение 72):
+ * команда → сочетания (`Ctrl+KeyO`; правила — src-tauri/src/commands/hotkeys.rs,
+ * реестр команд — src/settings/hotkeys.ts). Пустой список — у команды нет
+ * сочетаний; команды нет — сочетания по умолчанию.
+ */
+export type HotkeyOverrides = { [command: string]: string[] };
+
 /** Настройки хранилища (версию формата файла ставит ядро). */
 export interface Settings {
   theme: Theme;
@@ -273,6 +281,7 @@ export interface Settings {
   new_note_location: NewNoteLocation;
   confirm_delete: boolean;
   max_edit_size_bytes: number;
+  hotkeys: HotkeyOverrides;
 }
 
 export interface SettingsReadResponse {
