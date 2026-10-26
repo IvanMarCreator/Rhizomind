@@ -676,6 +676,13 @@ fn through(applied: &[(Key, Key)], mut key: Key) -> Key {
     key
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Тесты: сколько раз этот поток открывал элемент папки ради его
+    /// идентификатора ([`read_node`]).
+    pub(crate) static ENTRY_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Имя с точки в начале: дерево его не показывает, слежение не учитывает.
 fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
@@ -703,6 +710,8 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
     }
     // Файл исчез между списком папки и открытием (перенесли, удалили) —
     // его здесь уже нет; другая ошибка — идентификатор неизвестен.
+    #[cfg(test)]
+    ENTRY_OPENS.with(|opens| opens.set(opens.get() + 1));
     let id = match file_id::get_file_id(entry.path()) {
         Ok(id) => Some(id),
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1066,5 +1075,31 @@ mod diff_tests {
         let model = BTreeMap::from([(key.clone(), note(Some(7)))]);
         let disk = BTreeMap::from([(key, note(None))]);
         assert!(diff(&disk, &model).changed.is_empty());
+    }
+}
+
+/// Задача 0.10 (красный тест): на Windows папка читается одним списком — её
+/// содержимое не открывается.
+#[cfg(all(test, windows))]
+mod windows_listing_tests {
+    use super::*;
+
+    #[test]
+    fn listing_a_folder_opens_none_of_its_entries() {
+        let dir = tempfile::tempdir().expect("временная папка");
+        let root = dir.path();
+        for n in 0..20 {
+            fs::write(root.join(format!("заметка {n}.md")), "x").expect("запись");
+        }
+        fs::create_dir(root.join("Папка")).expect("папка");
+        fs::write(root.join("Папка/вложенная.md"), "текст").expect("запись");
+        ENTRY_OPENS.with(|opens| opens.set(0));
+        let model = TreeModel::scan(root).expect("обход");
+        assert_eq!(model.entries().len(), 22);
+        assert_eq!(
+            ENTRY_OPENS.with(std::cell::Cell::get),
+            0,
+            "пока папка читается, её содержимое не открывается: иначе папку нельзя перенести"
+        );
     }
 }
