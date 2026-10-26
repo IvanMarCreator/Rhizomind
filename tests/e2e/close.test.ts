@@ -12,7 +12,7 @@
 // протоколу X11 (x11-close.py). Команда WebDriver «закрыть окно» этого не
 // воспроизводит.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, readlinkSync, realpathSync, renameSync } from 'node:fs';
+import { readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { applicationPath, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
@@ -167,37 +167,38 @@ describe.skipIf(!isWindows && !isLinux)('закрытие окна: ввод н�
   // сборке оно уходит в stderr), программа завершается.
   it('внешний носитель вынут: окно закрывается, программа завершается', async () => {
     vault = createTestVault('Флешка', { [`${NOTE}.md`]: 'начало\n' });
-    session = await startApp({ vault, removable: true });
+    const flag = `${vault}.unplugged`;
+    session = await startApp({ vault, removable: true, unplugFlag: flag });
     const row = session.browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
     await row.waitForExist({ timeout: 30_000 });
     await row.click();
     await session.browser.$('[role="textbox"][aria-label="Текст заметки"]').waitForExist({ timeout: 10_000 });
-    const pulled = `${vault}-вынута`;
-    renameSync(vault, pulled);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // «Вынуть носитель»: подмена тестовой сборки (запись отклоняется, папка
+    // считается недоступной) — на Windows папку под наблюдателем не переименовать.
+    writeFileSync(flag, '');
     await typeIntoNote(session.browser, false);
     const pid = appPid();
     try {
       closeLikeUser(pid);
       await waitForExit(pid, 30_000);
     } finally {
-      renameSync(pulled, vault);
+      rmSync(flag, { force: true });
     }
     expect(readFileSync(path.join(vault, `${NOTE}.md`), 'utf8')).toBe('начало\n');
   }, 120_000);
 
-  // Внутренний диск (Windows: том DRIVE_FIXED): папку хранилища переименовали
-  // снаружи — окно возвращается с уведомлением, программа работает.
+  // Внутренний диск (Windows: том DRIVE_FIXED): запись не удалась, носитель
+  // на месте — окно возвращается с уведомлением, программа работает.
   it.skipIf(!isWindows)('внутренний диск: запись не удалась — окно возвращается, программа работает', async () => {
     vault = createTestVault('Внутренний', { [`${NOTE}.md`]: 'начало\n' });
-    session = await startApp({ vault });
+    const flag = `${vault}.unplugged`;
+    session = await startApp({ vault, unplugFlag: flag });
     const row = session.browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
     await row.waitForExist({ timeout: 30_000 });
     await row.click();
     await session.browser.$('[role="textbox"][aria-label="Текст заметки"]').waitForExist({ timeout: 10_000 });
-    const moved = `${vault}-переименована`;
-    renameSync(vault, moved);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // Запись отклоняется подменой, том — несъёмный (C:): носитель не «пропал».
+    writeFileSync(flag, '');
     await typeIntoNote(session.browser, false);
     const pid = appPid();
     try {
@@ -206,7 +207,7 @@ describe.skipIf(!isWindows && !isLinux)('закрытие окна: ввод н�
       expect(isRunning(pid), 'программа работает').toBe(true);
       await waitForText(session.browser, 'Окно не закрыто', 5_000);
     } finally {
-      renameSync(moved, vault);
+      rmSync(flag, { force: true });
     }
   }, 120_000);
 });

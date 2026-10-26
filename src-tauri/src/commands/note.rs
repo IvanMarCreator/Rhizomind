@@ -132,7 +132,12 @@ pub async fn note_write<R: Runtime>(
         // Тестовая сборка: медленный диск для сценарного теста предела
         // ожидания при закрытии окна (задача 0.7).
         #[cfg(feature = "webdriver")]
-        crate::windows::e2e::slow_note_write();
+        {
+            crate::windows::e2e::slow_note_write();
+            if crate::windows::e2e::unplugged() {
+                return Err(super::CoreError::new(super::ErrorCode::VaultUnavailable));
+            }
+        }
         let response =
             open.vault
                 .write_note(&request.path, &request.text, &request.expected_version)?;

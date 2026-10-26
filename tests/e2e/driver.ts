@@ -135,6 +135,11 @@ export interface StartOptions {
    * RHIZOMIND_E2E_REMOVABLE, только в тестовой сборке; решение владельца 66).
    */
   removable?: boolean;
+  /**
+   * Файл-признак «носитель вынут» (RHIZOMIND_E2E_UNPLUG_FLAG, только в
+   * тестовой сборке; решение 66): пока файл есть, запись отклоняется.
+   */
+  unplugFlag?: string;
 }
 
 /**
@@ -168,6 +173,8 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   else delete env.RHIZOMIND_E2E_SLOW_WRITE_MS;
   if (options.removable) env.RHIZOMIND_E2E_REMOVABLE = '1';
   else delete env.RHIZOMIND_E2E_REMOVABLE;
+  if (options.unplugFlag) env.RHIZOMIND_E2E_UNPLUG_FLAG = options.unplugFlag;
+  else delete env.RHIZOMIND_E2E_UNPLUG_FLAG;
   const removeProfile = () => rmSync(profile, { recursive: true, force: true });
   await waitForPortsFree(30_000);
   const args = ['--port', String(PORT)];

@@ -106,7 +106,12 @@ pub fn os_trash(path: &Path) -> Result<(), TrashFailure> {
 /// «диска без корзины» (`DRIVE_FIXED`); на Linux и macOS типа тома нет —
 /// признак один: папка недоступна.
 pub fn storage_lost(root: &Path) -> bool {
-    !root.is_dir() && !volume_is_fixed(root)
+    // Тестовая сборка: «носитель вынут» для сценарного теста (задача 0.7).
+    #[cfg(feature = "webdriver")]
+    let missing = !root.is_dir() || crate::windows::e2e::unplugged();
+    #[cfg(not(feature = "webdriver"))]
+    let missing = !root.is_dir();
+    missing && !volume_is_fixed(root)
 }
 
 fn volume_is_fixed(root: &Path) -> bool {

@@ -453,6 +453,17 @@ pub mod e2e {
         std::env::var_os(KEEP_BROWSER_ENV).is_some()
     }
 
+    /// Файл-признак «носитель вынут»: пока он есть, запись заметки
+    /// отклоняется (`vault_unavailable`), а папка хранилища считается
+    /// недоступной (решение 66). На Windows папку, за которой следит
+    /// наблюдатель, не переименовать — поэтому подмена, а не переименование.
+    pub const UNPLUG_FLAG_ENV: &str = "RHIZOMIND_E2E_UNPLUG_FLAG";
+
+    /// Носитель «вынут»: файл из [`UNPLUG_FLAG_ENV`] существует.
+    pub fn unplugged() -> bool {
+        std::env::var_os(UNPLUG_FLAG_ENV).is_some_and(|flag| std::path::Path::new(&flag).exists())
+    }
+
     /// Задана ли [`REMOVABLE_ENV`].
     pub fn removable_volume() -> bool {
         std::env::var_os(REMOVABLE_ENV).is_some()
