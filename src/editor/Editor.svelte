@@ -8,7 +8,7 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import type { VaultPath } from '../api/index.ts';
+  import { core, type EditorMode, type VaultPath } from '../api/index.ts';
   import { userMessage } from '../i18n/errors.ts';
   import { t } from '../i18n/index.ts';
   import NoteText from './NoteText.svelte';
@@ -18,6 +18,7 @@
 
   let {
     path,
+    mode = 'live_preview',
     notify,
     onStatus,
     store = coreNoteStore,
@@ -26,6 +27,8 @@
     focusOnOpen = false,
   }: {
     path: VaultPath | null;
+    /** Живой предпросмотр или исходный текст (решение 72). */
+    mode?: EditorMode;
     notify: (text: string) => void;
     onStatus: (status: SaveStatus | null) => void;
     store?: NoteStore;
@@ -60,6 +63,14 @@
   $effect(() => {
     sessions.show(path);
   });
+
+  /**
+   * Внешняя ссылка из заметки: только командой ядра — оно показывает
+   * подтверждение и передаёт адрес системному браузеру (С3.4). Отмена — не ошибка.
+   */
+  function openLink(url: string): void {
+    core.openExternal({ url }).catch((error: unknown) => notify(userMessage(error)));
+  }
 
   /**
    * Заметку или папку переименовали (дерево, `note:renamed`). Вызывать до
@@ -111,7 +122,7 @@
         <ReadOnlyNotice reason={session.readOnly} size={session.size} {onOpenSettings} />
       {/if}
       {#key session}
-        <NoteText {session} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
+        <NoteText {session} {mode} onOpenLink={openLink} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
       {/key}
     {:else if pane.kind === 'loading'}
       {#if showTitle}<h1 class="title">{noteName(pane.path)}</h1>{/if}
