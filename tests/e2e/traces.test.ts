@@ -76,6 +76,10 @@ const TEST_HARNESS_PATHS = [
   path.join('AppData', 'Local', 'Microsoft', 'PowerShell') + path.sep,
   // Журнал загрузки .NET для powershell.exe (UI Automation при вводе текста).
   path.join('Microsoft', 'CLR_v4.0', 'UsageLogs') + path.sep,
+  // База кэша WinINet (ESE) — её меняют фоновые задачи Windows и без
+  // приложения (пауза без приложения, задача 0.6); Rhizomind и WebView2 WinINet
+  // не используют.
+  path.join('Microsoft', 'Windows', 'WebCache') + path.sep,
 ];
 
 // Точные пути, которые меняет PowerShell без приложения (например, список
@@ -117,23 +121,31 @@ function typeIntoNote(pid: number, search: string, text: string): string {
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $ws = New-Object -ComObject WScript.Shell
-$p = Get-Process -Id ${pid}
-for ($i = 0; $i -lt 40 -and -not $ws.AppActivate(${pid}); $i++) { Start-Sleep -Milliseconds 250 }
-Start-Sleep -Milliseconds 800
-$ws.SendKeys('^o'); Start-Sleep -Milliseconds 1500
-$ws.SendKeys('${search}'); Start-Sleep -Milliseconds 1500
-$ws.SendKeys('{ENTER}'); Start-Sleep -Milliseconds 2000
-$p.Refresh()
-$root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
-$editor = $null
-for ($i = 0; $i -lt 20 -and -not $editor; $i++) {
+function Find-Editor {
+  $p = Get-Process -Id ${pid}
+  if ($p.MainWindowHandle -eq 0) { return $null }
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
   $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
-  foreach ($e in $all) { if ($e.Current.ClassName -like '*cm-content*') { $editor = $e; break } }
-  if (-not $editor) { Start-Sleep -Milliseconds 500 }
+  foreach ($e in $all) { if ($e.Current.ClassName -like '*cm-content*') { return $e } }
+  return $null
 }
-if (-not $editor) { 'нет редактора'; exit 0 }
+$editor = $null
+for ($attempt = 1; $attempt -le 3 -and -not $editor; $attempt++) {
+  for ($i = 0; $i -lt 40 -and -not $ws.AppActivate(${pid}); $i++) { Start-Sleep -Milliseconds 250 }
+  Start-Sleep -Milliseconds (800 * $attempt)
+  $ws.SendKeys('{ESC}'); Start-Sleep -Milliseconds 300
+  $ws.SendKeys('^o'); Start-Sleep -Milliseconds 1500
+  $ws.SendKeys('${search}'); Start-Sleep -Milliseconds 1500
+  $ws.SendKeys('{ENTER}')
+  for ($i = 0; $i -lt 12 -and -not $editor; $i++) { Start-Sleep -Milliseconds 500; $editor = Find-Editor }
+}
+if (-not $editor) {
+  $p = Get-Process -Id ${pid}
+  "нет редактора; окно: '$($p.MainWindowTitle)'"
+  exit 0
+}
 $editor.SetFocus(); Start-Sleep -Milliseconds 500
-$ws.SendKeys('{END}'); $ws.SendKeys(' ${text}'); Start-Sleep -Milliseconds 3000
+$ws.SendKeys('^{END}'); $ws.SendKeys(' ${text}'); Start-Sleep -Milliseconds 3000
 'введено'
 `;
   return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' }).trim();
