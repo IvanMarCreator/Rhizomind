@@ -97,7 +97,7 @@ jobs:
           "PROBE=$env:RUNNER_TEMP\t06probe\t06probe.exe" >> $env:GITHUB_ENV
 
       - name: Выпускная сборка из CI на main
-        if: startsWith(matrix.job, 'app') || endsWith(matrix.job, '-app')
+        if: ${{ !startsWith(matrix.job, 'dialog-') && matrix.job != 'minimal' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -109,6 +109,18 @@ jobs:
           $exe = Join-Path $dir 'rhizomind.exe'
           Write-Host "rhizomind.exe SHA256: $((Get-FileHash $exe -Algorithm SHA256).Hash)"
           "APP_EXE=$exe" >> $env:GITHUB_ENV
+
+      # Имена функций движка, связанных с OneAuth/WAM, — кандидаты для --disable-features
+      # (только перечень строк из msedge.dll; ничего не включается и не выключается).
+      - name: Строки OneAuth/WAM в msedge.dll
+        if: matrix.job == 'app'
+        run: |
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = (Get-ItemProperty -Path $key).pv
+          $dir = "C:\Program Files (x86)\Microsoft\EdgeWebView\Application\$version"
+          Get-ChildItem $dir -Filter 'oneauth*' -Recurse | ForEach-Object { Write-Host "файл: $($_.FullName) $($_.Length)" }
+          $text = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dir 'msedge.dll')))
+          [regex]::Matches($text, 'ms[A-Z][A-Za-z0-9]*(OneAuth|Wam|WAM|Sso|SSO|ImplicitSignin|PrimaryAccount)[A-Za-z0-9]*') | ForEach-Object Value | Sort-Object -Unique | ForEach-Object { Write-Host "функция: $_" }
 
       - name: Сценарии под Process Monitor
         timeout-minutes: 25
