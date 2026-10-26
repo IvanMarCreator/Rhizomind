@@ -301,7 +301,7 @@
             stem={parts.stem}
             ext={parts.ext}
             renaming={row.node.path}
-            submit={(name) => tree.rename(row.node.path, name)}
+            save={(name) => tree.rename(row.node.path, name)}
             onDone={() => {
               tree.cancelRename();
               focusTree();

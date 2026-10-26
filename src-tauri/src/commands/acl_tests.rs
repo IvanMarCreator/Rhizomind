@@ -15,8 +15,6 @@ use tauri::webview::InvokeRequest;
 use tauri::{App, WebviewWindow, WebviewWindowBuilder};
 
 use super::*;
-use crate::links::Links;
-use crate::switcher::Switcher;
 use crate::vault::Vault;
 
 /// Команда, которой нет в `AppManifest::commands`, но которая есть в
@@ -40,6 +38,9 @@ fn app() -> App<MockRuntime> {
         .build(tauri::generate_context!(test = true))
         .expect("тестовое приложение")
 }
+
+/// Окно хранилища: метка по шаблону `vault-*` из `capabilities/main.json`.
+const MAIN: &str = "vault-0123456789abcdef";
 
 fn window(app: &App<MockRuntime>, label: &str) -> WebviewWindow<MockRuntime> {
     WebviewWindowBuilder::new(app, label, Default::default())
@@ -112,16 +113,15 @@ fn bind_stub_vault(app: &App<MockRuntime>, label: &str) -> tempfile::TempDir {
     let core = app.state::<Core>();
     core.bind_window(
         label,
-        OpenVault {
-            summary: VaultSummary {
+        OpenVault::new(
+            VaultSummary {
                 id: VaultId("test".into()),
                 name: "Тест".into(),
                 path: dir.path().display().to_string(),
             },
-            vault: Vault::open(dir.path()).expect("заглушка хранилища"),
-            links: Links::default().into(),
-            switcher: Switcher::default().into(),
-        },
+            Vault::open(dir.path()).expect("заглушка хранилища"),
+        )
+        .expect("список заметок"),
     );
     dir
 }
@@ -134,7 +134,7 @@ fn core_error(name: &str, error: Value) -> CoreError {
 #[test]
 fn command_outside_app_manifest_is_denied_even_with_handler() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
 
     let error = invoke(&main, "contract_probe", json!({})).expect_err("вызов должен быть отклонён");
 
@@ -144,7 +144,7 @@ fn command_outside_app_manifest_is_denied_even_with_handler() {
 #[test]
 fn listed_command_is_allowed_for_main_window() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
 
     let response = invoke(&main, "vault_current", json!({})).expect("vault_current разрешена");
 
@@ -162,7 +162,7 @@ fn commands_are_denied_for_window_without_capability() {
         error,
         json!(
             "vault_current not allowed on window \"other\", webview \"other\", URL: local\n\n\
-             allowed on: [windows: \"main\", URL: local]\n\n\
+             allowed on: [windows: \"vault-*\", URL: local]\n\n\
              referenced by: capability: main, permission: allow-vault-current"
         )
     );
@@ -173,7 +173,7 @@ fn commands_are_denied_for_window_without_capability() {
 #[test]
 fn commands_are_denied_from_remote_origin() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
 
     let error = invoke_from(&main, "https://evil.example", "vault_current", json!({}))
         .expect_err("сторонний адрес");
@@ -181,8 +181,8 @@ fn commands_are_denied_from_remote_origin() {
     assert_eq!(
         error,
         json!(
-            "vault_current not allowed on window \"main\", webview \"main\", URL: https://evil.example/\n\n\
-             allowed on: [windows: \"main\", URL: local]\n\n\
+            "vault_current not allowed on window \"vault-0123456789abcdef\", webview \"vault-0123456789abcdef\", URL: https://evil.example/\n\n\
+             allowed on: [windows: \"vault-*\", URL: local]\n\n\
              referenced by: capability: main, permission: allow-vault-current"
         )
     );
@@ -193,7 +193,7 @@ fn commands_are_denied_from_remote_origin() {
 #[test]
 fn tauri_and_plugin_commands_are_denied() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
     let cases = [
         (
             "plugin:event|emit",
@@ -247,7 +247,7 @@ fn tauri_and_plugin_commands_are_denied() {
 #[test]
 fn event_listen_passes_acl() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
 
     let error = invoke(&main, "plugin:event|listen", json!({})).expect_err("нет аргументов");
 
@@ -265,8 +265,8 @@ fn event_listen_passes_acl() {
 #[test]
 fn every_listed_command_reaches_core_modules() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
 
     for name in COMMAND_NAMES {
         if let Err(error) = invoke(&main, name, example_args(name)) {
@@ -280,7 +280,7 @@ fn every_listed_command_reaches_core_modules() {
 #[test]
 fn limits_are_checked_before_modules() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
     let long = "я".repeat(256);
     let deep: Vec<&str> = std::iter::repeat_n("a", 65).collect();
     let cases = [
@@ -349,7 +349,7 @@ fn limits_are_checked_before_modules() {
 #[test]
 fn settings_out_of_range_are_rejected() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
     let mut settings = contract("settings_write")["request"]["settings"].clone();
     settings["font_size"] = json!(200);
 
@@ -370,7 +370,7 @@ fn settings_out_of_range_are_rejected() {
 #[test]
 fn vault_create_rejects_bad_name_with_reason() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
 
     let error = invoke(
         &main,
@@ -390,8 +390,8 @@ fn vault_create_rejects_bad_name_with_reason() {
 #[test]
 fn rename_cannot_change_note_extension() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
 
     for (from, to) in [("План.md", "План.txt"), ("схема.png", "схема.md")] {
         let error = invoke(
@@ -423,8 +423,8 @@ fn rename_cannot_change_note_extension() {
 #[test]
 fn create_and_rename_check_name_rules_before_modules() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
 
     for (name, problem) in [
         ("CON.md", NameProblem::ReservedName),
@@ -454,8 +454,8 @@ fn create_and_rename_check_name_rules_before_modules() {
 #[test]
 fn name_check_applies_name_rules_and_renaming() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
     let check = |request: Value| invoke(&main, "name_check", json!({ "request": request }));
 
     assert_eq!(
@@ -477,8 +477,8 @@ fn name_check_applies_name_rules_and_renaming() {
 #[test]
 fn links_resolve_marks_bad_targets_unresolved() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
 
     let response = invoke(
         &main,
@@ -497,8 +497,8 @@ fn links_resolve_marks_bad_targets_unresolved() {
 #[test]
 fn vault_current_has_no_path() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
 
     let response = invoke(&main, "vault_current", json!({})).expect("ответ");
 
@@ -512,8 +512,8 @@ fn vault_current_has_no_path() {
 #[test]
 fn request_with_unknown_field_is_rejected() {
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
-    let _vault_dir = bind_stub_vault(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
 
     let error = invoke(
         &main,
@@ -554,7 +554,7 @@ fn app_manifest_commands_match_handler() {
     // И каждая команда списка действительно есть в обработчике: вызов
     // несуществующей команды дал бы «not found».
     let app = app();
-    let main = window(&app, crate::MAIN_WINDOW_LABEL);
+    let main = window(&app, MAIN);
     for name in COMMAND_NAMES {
         if let Err(error) = invoke(&main, name, example_args(name)) {
             assert!(

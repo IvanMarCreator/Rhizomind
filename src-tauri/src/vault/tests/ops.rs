@@ -332,11 +332,11 @@ fn move_entry_rejects_duplicates_cycles_and_missing_targets() {
 
 /// Подменная корзина: «перемещает» в папку `trash` рядом с хранилищем или
 /// сообщает, что корзины на томе нет.
-fn fake_trash(t: &TestVault, has_trash: bool) -> Arc<Mutex<Vec<PathBuf>>> {
+fn fake_trash(t: &mut TestVault, has_trash: bool) -> Arc<Mutex<Vec<PathBuf>>> {
     let calls: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
     let log = Arc::clone(&calls);
     let bin = t.outside().join("trash");
-    t.vault.set_trash_backend(Box::new(move |path: &Path| {
+    let backend: crate::vault::TrashBackend = Box::new(move |path: &Path| {
         log.lock().expect("журнал").push(path.to_path_buf());
         if !has_trash {
             return Err(TrashFailure::NoTrash);
@@ -344,15 +344,19 @@ fn fake_trash(t: &TestVault, has_trash: bool) -> Arc<Mutex<Vec<PathBuf>>> {
         std::fs::create_dir_all(&bin).expect("корзина");
         std::fs::rename(path, bin.join(path.file_name().expect("имя"))).expect("в корзину");
         Ok(())
-    }));
+    });
+    t.reopen_with(crate::vault::OpenOptions {
+        trash: Some(backend),
+        ..Default::default()
+    });
     calls
 }
 
 #[test]
 fn trash_moves_to_the_os_trash_without_asking() {
-    let t = TestVault::new();
+    let mut t = TestVault::new();
     t.put("Папка/Встреча.md", "в");
-    let calls = fake_trash(&t, true);
+    let calls = fake_trash(&mut t, true);
     let asked = std::cell::Cell::new(false);
 
     let outcome = t
@@ -375,10 +379,10 @@ fn trash_moves_to_the_os_trash_without_asking() {
 
 #[test]
 fn without_trash_deletion_is_permanent_only_after_confirmation() {
-    let t = TestVault::new();
+    let mut t = TestVault::new();
     t.put("Папка/Встреча.md", "в");
     t.put("Архив/Вложенная/x.md", "x");
-    let _calls = fake_trash(&t, false);
+    let _calls = fake_trash(&mut t, false);
     let asked = std::cell::RefCell::new(Vec::new());
 
     let refused = t
@@ -406,8 +410,8 @@ fn without_trash_deletion_is_permanent_only_after_confirmation() {
 
 #[test]
 fn trash_of_missing_entry_is_not_found() {
-    let t = TestVault::new();
-    let _calls = fake_trash(&t, true);
+    let mut t = TestVault::new();
+    let _calls = fake_trash(&mut t, true);
     assert_eq!(
         code(t.vault.trash(&vp("Нет.md"), &|_| true)),
         ErrorCode::NotFound
@@ -443,4 +447,53 @@ fn real_os_trash_never_deletes_silently() {
         TrashOutcome::Trashed,
         "на NTFS-диске C: корзина есть"
     );
+}
+
+/// Переименование, присланное интерфейсом в другом регистре, чем на диске
+/// (пример контракта `name_check`): элемент не совпадает сам с собой.
+#[test]
+fn check_new_name_ignores_renamed_entry_spelled_in_other_case() {
+    let t = TestVault::new();
+    t.put("Проекты/Встреча.md", "в");
+    t.put("Проекты/Другая.md", "д");
+
+    assert_eq!(
+        t.vault
+            .check_new_name(
+                &vp("Проекты"),
+                "Встреча.md",
+                Some(&vp("Проекты/встреча.md"))
+            )
+            .expect("проверка"),
+        NameCheck::Ok { warning: None }
+    );
+    assert_eq!(
+        t.vault
+            .check_new_name(&vp("Проекты"), "другая.md", Some(&vp("Проекты/встреча.md")))
+            .expect("проверка"),
+        NameCheck::rejected(NameProblem::Duplicate),
+        "другой элемент с тем же ключом — совпадение"
+    );
+}
+
+/// Имя служебной папки в любом регистре — одна и та же причина при проверке
+/// при вводе и при создании (задача 1.7).
+#[test]
+fn service_folder_name_is_reserved_in_check_and_create() {
+    let t = TestVault::new();
+    std::fs::create_dir(t.file("Папка")).expect("папка");
+    for name in [".rhizomind", ".Rhizomind"] {
+        assert_eq!(
+            t.vault
+                .check_new_name(&vp("Папка"), name, None)
+                .expect("проверка"),
+            NameCheck::rejected(NameProblem::ReservedName)
+        );
+        assert_eq!(
+            t.vault
+                .create_folder(&vp("Папка"), name)
+                .expect_err("служебное имя"),
+            crate::commands::CoreError::invalid_name(NameProblem::ReservedName)
+        );
+    }
 }

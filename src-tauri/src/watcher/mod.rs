@@ -3,7 +3,7 @@
 //!
 //! Один наблюдатель на хранилище, рекурсивно на корень. Наружу выходят уже
 //! склеенные пачки изменений дерева [`VaultChangedPayload`] — данные события
-//! `vault:changed`; отправку окну делает слой команд (задача 1.7).
+//! `vault:changed`; отправку окну делает модуль `events` (задача 1.7).
 //!
 //! Как устроено:
 //! - при запуске наблюдатель обходит хранилище и строит модель «дерево
@@ -24,7 +24,8 @@
 //!   [`WatcherEvent::Available`] и полная сверка; папка, которая не
 //!   прочиталась, остаётся в модели и сверяется снова через пару секунд;
 //! - паника получателя не останавливает поток: сигнал
-//!   [`WatcherEvent::DeliveryFailed`], следующая пачка — полная сверка.
+//!   [`WatcherEvent::DeliveryFailed`], через [`DELIVERY_RETRY`] (или со
+//!   следующей пачкой, если она раньше) — полная сверка.
 //!
 //! Кэш идентификаторов склейки (`FileIdMap`) не используется: он обходит
 //! дерево по ссылкам и вышел бы через точку соединения за контур.
@@ -43,7 +44,6 @@ use std::time::{Duration, Instant};
 use notify::{EventKindMask, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, NoCache, new_debouncer_opt};
 
-mod own_writes;
 mod tree;
 
 #[cfg(test)]
@@ -55,7 +55,10 @@ mod tree_tests;
 #[cfg(test)]
 mod watcher_tests;
 
-pub use own_writes::OwnWrites;
+// Журнал своих записей — общий с хранилищем, в нейтральном модуле
+// (`src-tauri/src/own_writes.rs`, задача 1.7).
+use crate::own_writes;
+pub use crate::own_writes::OwnWrites;
 
 use crate::commands::{
     CoreError, CoreResult, ErrorCode, FileVersion, VaultChangedPayload, VaultPath,
@@ -104,6 +107,8 @@ enum Message {
 struct Batch {
     paths: Vec<VaultPath>,
     rescan: bool,
+    /// Окончательная проверка отложенных исчезновений: без нового откладывания.
+    final_check: bool,
 }
 
 /// Наблюдатель за одним хранилищем. Слежение останавливается при удалении
@@ -196,6 +201,9 @@ impl VaultWatcher {
                     retry_at: None,
                     retry_attempt: 0,
                     force_rescan: false,
+                    rescan_at: None,
+                    held: Vec::new(),
+                    held_at: None,
                     debouncer: shared,
                     root: watched_root,
                 }
@@ -274,6 +282,16 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// (наблюдение заново, когда корень вернулся).
 type SharedDebouncer = Arc<Mutex<Option<Debouncer<notify::RecommendedWatcher, NoCache>>>>;
 
+/// Через сколько после сбоя получателя пройти полную сверку, даже если
+/// новых событий нет (повторное ревью 1.4, задача 1.7).
+pub(crate) const DELIVERY_RETRY: Duration = Duration::from_secs(2);
+
+/// Сколько ждать нового пути исчезнувшего файла, прежде чем выдать
+/// «исчез»: событие о новом пути переноса может прийти следующей пачкой
+/// (склейка выдаёт события по путям отдельно). Вместе со склейкой удаление
+/// доходит до дерева примерно за секунду.
+const HOLD_VANISHED: Duration = Duration::from_millis(600);
+
 /// Как часто проверять, вернулся ли недоступный корень.
 const UNAVAILABLE_POLL: Duration = Duration::from_secs(1);
 
@@ -295,6 +313,12 @@ struct Worker {
     root: PathBuf,
     /// Получатель упал — следующая пачка будет полной сверкой.
     force_rescan: bool,
+    /// Когда пройти полную сверку после сбоя получателя.
+    rescan_at: Option<Instant>,
+    /// Исчезнувшие файлы, отложенные до окончательной проверки
+    /// ([`TreeModel::reconcile_holding`]), и её срок.
+    held: Vec<VaultPath>,
+    held_at: Option<Instant>,
 }
 
 impl Worker {
@@ -313,6 +337,7 @@ impl Worker {
                 Message::Rescan => Batch {
                     paths: Vec::new(),
                     rescan: true,
+                    final_check: false,
                 },
                 Message::Events(batch) => batch,
             };
@@ -341,7 +366,10 @@ impl Worker {
         let deadline = if self.unavailable {
             Some(Instant::now() + UNAVAILABLE_POLL)
         } else {
-            self.retry_at
+            [self.retry_at, self.rescan_at, self.held_at]
+                .into_iter()
+                .flatten()
+                .min()
         };
         let result = match deadline {
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -355,12 +383,32 @@ impl Worker {
     }
 
     fn on_timer(&mut self) {
+        if !self.unavailable && self.held_at.is_some_and(|at| at <= Instant::now()) {
+            self.held_at = None;
+            let paths = std::mem::take(&mut self.held);
+            self.process(Batch {
+                paths,
+                rescan: false,
+                final_check: true,
+            });
+            return;
+        }
+        if !self.unavailable && self.rescan_at.is_some_and(|at| at <= Instant::now()) {
+            self.rescan_at = None;
+            self.process(Batch {
+                paths: Vec::new(),
+                rescan: true,
+                final_check: false,
+            });
+            return;
+        }
         if self.unavailable {
             // Корень вернулся — полная сверка: пока его не было, события
             // не приходили.
             self.process(Batch {
                 paths: Vec::new(),
                 rescan: true,
+                final_check: false,
             });
         } else if self.retry_at.is_some_and(|at| at <= Instant::now()) {
             let paths = std::mem::take(&mut self.retry);
@@ -369,6 +417,7 @@ impl Worker {
             self.process(Batch {
                 paths,
                 rescan: false,
+                final_check: false,
             });
             if self.retry.is_empty() {
                 self.retry_attempt = 0;
@@ -402,9 +451,11 @@ impl Worker {
             return;
         }
         let result = if batch.rescan || self.unavailable {
-            self.model.rescan(&self.own)
-        } else {
+            self.model.rescan_holding(&self.own)
+        } else if batch.final_check {
             self.model.reconcile(batch.paths, &self.own)
+        } else {
+            self.model.reconcile_holding(batch.paths, &self.own)
         };
         if result.unavailable {
             if !self.unavailable {
@@ -418,6 +469,11 @@ impl Worker {
             self.unavailable = false;
             self.deliver(WatcherEvent::Available);
         }
+        if !result.held.is_empty() {
+            self.held.extend(result.held);
+            self.held_at
+                .get_or_insert_with(|| Instant::now() + HOLD_VANISHED);
+        }
         if !result.retry.is_empty() {
             self.retry.extend(result.retry);
             let delay = retry_delay(self.retry_attempt);
@@ -429,6 +485,9 @@ impl Worker {
                 changes: result.changes,
             }));
             self.force_rescan = !delivered;
+            if delivered && rescan {
+                self.rescan_at = None;
+            }
         }
     }
 
@@ -441,6 +500,7 @@ impl Worker {
             return true;
         }
         self.force_rescan = true;
+        self.rescan_at = Some(Instant::now() + DELIVERY_RETRY);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sink(WatcherEvent::DeliveryFailed)
         }));

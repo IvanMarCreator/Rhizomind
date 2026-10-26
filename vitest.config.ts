@@ -12,7 +12,7 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
-          include: ['tools/**/*.test.ts', 'src/**/*.test.ts'],
+          include: ['tools/**/*.test.ts', 'src/**/*.test.ts', 'src-isolation/**/*.test.ts'],
           exclude: ['src/**/*.component.test.ts'],
           environment: 'node',
         },

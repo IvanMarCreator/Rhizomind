@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CoreError, Settings } from '../api/index.ts';
 import { mockCore, type CoreMocks } from '../api/testing.ts';
+import { FakeVault } from '../tree/fakeVault.ts';
 import Shell from './Shell.svelte';
 import { WindowModel } from './window.svelte.ts';
 
@@ -147,6 +148,83 @@ describe('оболочка окна', () => {
 
     expect(await screen.findByText('Не удалось прочитать или записать файл.')).toBeTruthy();
     expect(screen.getByText('Нет открытой заметки')).toBeTruthy();
+  });
+
+  it('Ctrl+O (и в русской раскладке) открывает быстрый переход; выбор открывает заметку, «назад» возвращает', async () => {
+    const { model } = await renderShell({
+      ...WITH_VAULT,
+      switcher_search: () => ({ items: [{ name: 'Итоги', path: ['Итоги.md'] }] }),
+    });
+    await screen.findByText('Нет открытой заметки');
+    model.open(['А.md']);
+
+    await fireEvent.keyDown(window, { key: 'щ', code: 'KeyO', ctrlKey: true });
+    const input = screen.getByRole('combobox', { name: 'Быстрый переход' });
+    await screen.findByRole('option', { name: /Итоги/ });
+
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(screen.queryByRole('dialog', { name: 'Быстрый переход' })).toBeNull();
+    await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('Итоги');
+    await fireEvent.click(screen.getByRole('button', { name: 'Назад (Alt+←)' }));
+    await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('А');
+  });
+
+  it('кнопка «Быстрый переход» на ленте открывает окно, Esc закрывает', async () => {
+    await renderShell({ ...WITH_VAULT, switcher_search: () => ({ items: [] }) });
+    await fireEvent.click(await screen.findByRole('button', { name: 'Быстрый переход (Ctrl+O)' }));
+
+    const input = screen.getByRole('combobox', { name: 'Быстрый переход' });
+    await fireEvent.keyDown(input, { key: 'Escape' });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('пока открыт быстрый переход, Alt+← не листает историю за ним', async () => {
+    const { model } = await renderShell({ ...WITH_VAULT, switcher_search: () => ({ items: [] }) });
+    await screen.findByText('Нет открытой заметки');
+    model.open(['А.md']);
+    model.open(['Б.md']);
+    await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('Б');
+
+    await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
+    const event = new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true });
+    screen.getByRole('combobox').dispatchEvent(event);
+
+    expect(model.currentPath).toEqual(['Б.md']);
+    // Действие браузера по умолчанию (Alt+← — «назад» в WebView) тоже гасится.
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('пока открыто подтверждение удаления, Ctrl+O и Alt+←/→ не действуют', async () => {
+    const vault = new FakeVault([
+      { path: ['А.md'], kind: 'note' },
+      { path: ['Б.md'], kind: 'note' },
+    ]);
+    const { model } = await renderShell({ ...WITH_VAULT, ...vault.mocks(), switcher_search: () => ({ items: [] }) });
+    await screen.findByText('Нет открытой заметки');
+    model.open(['А.md']);
+    model.open(['Б.md']);
+    await fireEvent.contextMenu(await screen.findByRole('treeitem', { name: 'А' }));
+    await fireEvent.click(screen.getByRole('menuitem', { name: /Удалить/ }));
+    expect(screen.getByRole('dialog', { name: 'Удалить «А»?' })).toBeTruthy();
+
+    await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
+    const back = new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(back);
+
+    expect(screen.queryByRole('dialog', { name: 'Быстрый переход' })).toBeNull();
+    expect(model.currentPath).toEqual(['Б.md']);
+    expect(back.defaultPrevented).toBe(true);
+  });
+
+  it('без хранилища быстрый переход не открывается', async () => {
+    await renderShell({ vault_current: () => ({ api_version: 1, vault: null }) });
+    await screen.findByRole('button', { name: 'Хранилище не открыто' });
+
+    await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
+
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('назад и вперёд: кнопки и Alt+←/Alt+→; переход сохраняет раскладку', async () => {

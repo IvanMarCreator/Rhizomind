@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isWebdriverBuild } from './build-kind.ts';
 
 if (process.platform !== 'win32') {
   console.error('package:portable собирается только на Windows (rhizomind.exe).');
@@ -16,6 +17,10 @@ const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'ut
 const exe = path.join(root, 'src-tauri', 'target', 'release', 'rhizomind.exe');
 if (!existsSync(exe)) {
   console.error(`Нет ${exe}: сначала tauri build --no-bundle`);
+  process.exit(1);
+}
+if (isWebdriverBuild(readFileSync(exe))) {
+  console.error(`${exe} — тестовая сборка (функция webdriver, порт отладки): упаковывать нельзя. Соберите выпускную: npm run build`);
   process.exit(1);
 }
 

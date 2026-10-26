@@ -89,6 +89,20 @@ export const ru = {
   'shell.empty.title': 'Нет открытой заметки',
   'shell.empty.hint': 'Выберите заметку в дереве файлов или откройте быстрый переход: Ctrl+O.',
 
+  // Быстрый переход (Ctrl+O)
+  'quickSwitcher.label': 'Быстрый переход',
+  'quickSwitcher.placeholder': 'Найдите или создайте заметку',
+  'quickSwitcher.shortcut': 'Ctrl+O',
+  'quickSwitcher.results': 'Заметки',
+  'quickSwitcher.create': 'Создать заметку „{name}“',
+  'quickSwitcher.noNotes': 'Заметок пока нет.',
+  'quickSwitcher.key.arrows': '↑ ↓',
+  'quickSwitcher.key.enter': 'Enter',
+  'quickSwitcher.key.esc': 'Esc',
+  'quickSwitcher.hint.select': 'выбрать',
+  'quickSwitcher.hint.open': 'открыть',
+  'quickSwitcher.hint.close': 'закрыть',
+
   // Уведомления внизу окна
   'notifications.label': 'Уведомления',
   'notifications.close': 'Закрыть уведомление',

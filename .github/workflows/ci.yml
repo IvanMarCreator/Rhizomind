@@ -22,6 +22,9 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    # Обычно ~25 мин на Windows с кэшем; запас на холодный кэш. Зависание —
+    # ошибка, а не часы ожидания.
+    timeout-minutes: 45
     steps:
       - name: Получить код
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,8 +52,12 @@ jobs:
       - name: Кэш Rust
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          # Рабочее пространство Cargo в корне; папка сборки — src-tauri/target (.cargo/config.toml).
-          workspaces: ". -> src-tauri/target"
+          # Рабочее пространство Cargo в корне. Выпускная сборка — src-tauri/target
+          # (.cargo/config.toml), тестовая (функция webdriver) — src-tauri/target-e2e
+          # (CARGO_TARGET_DIR в tools/build-e2e).
+          workspaces: |
+            . -> src-tauri/target
+            . -> src-tauri/target-e2e
           cache-bin: true
 
       - name: Инструменты проверки (cargo-deny, tauri-driver)
@@ -59,6 +66,7 @@ jobs:
           cargo install --locked cargo-deny@0.20.2
           cargo install --locked tauri-driver@2.1.0
 
+      # Скрипты установки пакетов не запускаются (.npmrc: ignore-scripts=true).
       - name: Зависимости интерфейса
         run: npm ci
 
@@ -115,20 +123,26 @@ jobs:
           "@`"$driver`" %* --verbose --log-path=`"$dir\msedgedriver.log`"" | Set-Content -Encoding ascii $wrapper
           "MSEDGEDRIVER=$wrapper" >> $env:GITHUB_ENV
 
-      # Сценарный тест идёт на сборке с функцией `webdriver`: она передаёт WebView2
-      # порт отладки от msedgedriver (src-tauri/src/lib.rs). Портативный zip ниже
-      # собирается заново, без этой функции.
+      # Сценарные тесты WebDriver идут на сборке с функцией `webdriver` (порт отладки
+      # для msedgedriver поверх защищённых флагов, src-tauri/src/lib.rs) в отдельной
+      # папке src-tauri/target-e2e. Тест следов и флагов (tests/e2e/traces.test.ts)
+      # идёт на выпускной сборке из шага «Сборка приложения».
       - name: Сборка для сценарного теста
         run: npm run build:e2e
 
       - name: Сценарный тест (Linux)
+        timeout-minutes: 10
         if: runner.os == 'Linux'
         env:
           # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          # Без шины доступности GTK ждёт её по D-Bus (предупреждение AT-SPI) —
+          # это замедляет запуск окна под WebDriver.
+          NO_AT_BRIDGE: "1"
         run: xvfb-run -a npm run test:e2e
 
       - name: Сценарный тест (Windows)
+        timeout-minutes: 10
         if: runner.os == 'Windows'
         run: npm run test:e2e
 

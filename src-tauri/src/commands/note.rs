@@ -19,12 +19,13 @@
 //! С3.6, инвариант 4).
 
 use serde::{Deserialize, Serialize};
-use tauri::{Runtime, State, Window};
+use tauri::{Manager, Runtime, State, Window};
 
-use super::Core;
 use super::error::CoreResult;
+use super::events::{NoteConflictSavedPayload, TreeChange};
 use super::limits;
-use super::types::{FileVersion, VaultPath};
+use super::types::{EntryKind, FileVersion, VaultPath};
+use super::{Core, blocking, checked_path};
 
 /// Почему заметка открыта только для чтения.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,30 +98,58 @@ pub enum NoteWriteResponse {
     },
 }
 
-/// Читает заметку.
+/// Читает заметку. Лимит размера для редактирования — из настроек
+/// хранилища в момент открытия (С3.3: новое значение действует при
+/// следующем открытии файла).
 #[tauri::command]
 pub async fn note_read<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
     request: NoteReadRequest,
 ) -> CoreResult<NoteReadResponse> {
-    limits::path(&request.path, "path")?;
+    checked_path(&request.path, "path")?;
     let open = core.require_vault(window.label())?;
-    open.vault.read_note(&request.path)
+    blocking(move || open.vault.read_note(&request.path)).await
 }
 
-/// Записывает заметку с проверкой ожидаемой версии.
+/// Записывает заметку с проверкой ожидаемой версии. Конфликт решается
+/// только сравнением содержимого на диске с `expected_version` (хэш и
+/// размер; дата изменения не важна), а не по событиям наблюдателя: копия
+/// версии с диска сохраняется рядом, окну уходит `note:conflict-saved`.
 #[tauri::command]
 pub async fn note_write<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
     request: NoteWriteRequest,
 ) -> CoreResult<NoteWriteResponse> {
-    limits::path(&request.path, "path")?;
-    limits::note_text(&request.text, limits::MAX_NOTE_BYTES)?;
+    checked_path(&request.path, "path")?;
     // Лимит из настроек действует при открытии (`read_only`, С3.3), здесь —
     // только жёсткий потолок: снижение лимита не роняет автосохранение.
+    limits::note_text(&request.text, limits::MAX_NOTE_BYTES)?;
     let open = core.require_vault(window.label())?;
-    open.vault
-        .write_note(&request.path, &request.text, &request.expected_version)
+    let path = request.path.clone();
+    let response = blocking(move || {
+        let response =
+            open.vault
+                .write_note(&request.path, &request.text, &request.expected_version)?;
+        if let NoteWriteResponse::ConflictSaved { copy_path, .. } = &response {
+            open.apply_own(&[TreeChange::Created {
+                path: copy_path.clone(),
+                entry_kind: EntryKind::Note,
+            }]);
+        }
+        Ok(response)
+    })
+    .await?;
+    if let NoteWriteResponse::ConflictSaved { copy_path, .. } = &response {
+        crate::events::send(
+            &crate::events::WindowEmitter::new(window.app_handle().clone(), window.label()),
+            super::events::event::NOTE_CONFLICT_SAVED,
+            &NoteConflictSavedPayload {
+                path,
+                copy_path: copy_path.clone(),
+            },
+        );
+    }
+    Ok(response)
 }

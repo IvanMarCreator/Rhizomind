@@ -3,10 +3,10 @@
 use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
-use super::Core;
-use super::error::{CoreError, CoreResult, ErrorCode};
+use super::error::{CoreError, CoreResult};
 use super::limits;
 use super::types::VaultPath;
+use super::{Core, blocking, checked_path};
 
 /// Тема интерфейса.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,9 +163,12 @@ pub async fn settings_read<R: Runtime>(
     core: State<'_, Core>,
 ) -> CoreResult<SettingsReadResponse> {
     let open = core.require_vault(window.label())?;
-    Ok(SettingsReadResponse {
-        settings: open.vault.read_settings()?,
+    blocking(move || {
+        Ok(SettingsReadResponse {
+            settings: open.vault.read_settings()?,
+        })
     })
+    .await
 }
 
 /// Записывает настройки хранилища окна.
@@ -176,8 +179,19 @@ pub async fn settings_write<R: Runtime>(
     request: SettingsWriteRequest,
 ) -> CoreResult<()> {
     limits::settings(&request.settings)?;
+    if let NewNoteLocation::Folder { path } = &request.settings.new_note_location {
+        checked_path(path, "settings.new_note_location.path")?;
+        // Новые заметки — не в служебную папку (в любом регистре).
+        if path
+            .components()
+            .iter()
+            .any(|c| crate::vault::is_service_dir(c))
+        {
+            return Err(CoreError::new(super::error::ErrorCode::InvalidPath));
+        }
+    }
     let open = core.require_vault(window.label())?;
-    open.vault.write_settings(&request.settings)
+    blocking(move || open.vault.write_settings(&request.settings)).await
 }
 
 /// Раскладка окна.
@@ -187,9 +201,12 @@ pub async fn workspace_read<R: Runtime>(
     core: State<'_, Core>,
 ) -> CoreResult<WorkspaceReadResponse> {
     let open = core.require_vault(window.label())?;
-    Ok(WorkspaceReadResponse {
-        workspace: open.vault.read_workspace()?,
+    blocking(move || {
+        Ok(WorkspaceReadResponse {
+            workspace: open.vault.read_workspace()?,
+        })
     })
+    .await
 }
 
 /// Записывает раскладку окна.
@@ -203,7 +220,7 @@ pub async fn workspace_write<R: Runtime>(
         .map_err(|_| CoreError::invalid_argument("workspace"))?;
     limits::workspace_bytes(bytes.len())?;
     let open = core.require_vault(window.label())?;
-    open.vault.write_workspace(&request.workspace)
+    blocking(move || open.vault.write_workspace(&request.workspace)).await
 }
 
 /// Открывает внешнюю ссылку после подтверждения в окне ядра.
@@ -214,9 +231,5 @@ pub async fn open_external<R: Runtime>(
 ) -> CoreResult<OpenExternalOutcome> {
     limits::url(&request.url)?;
     // Окно подтверждения блокирует поток до ответа — не рабочий поток async.
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::external_links::open_with_confirmation(&window, &request.url)
-    })
-    .await
-    .map_err(|_| CoreError::new(ErrorCode::IoFailed))?
+    blocking(move || crate::external_links::open_with_confirmation(&window, &request.url)).await
 }
