@@ -335,6 +335,17 @@ try {
       Phase 'wry-drop#2' { Scenario-Exe 'wry-drop#2' $WryProbe (@($w) + @('drop', 'secs=8')) 14 }
       Phase 'wry-kill#3' { Scenario-Exe 'wry-kill#3' $WryProbe (@($w) + @('kill', 'secs=8')) 14 }
     }
+    '^oneauth-kill-first(-2)?$' {
+      # Первый запуск движка на машине — с завершением браузера до закрытия: нет ли
+      # записи кэша и выхода wlidsvc в сеть; затем обычное закрытие (кэш пуст —
+      # запись и сеть должны появиться).
+      $w = @('datadir', 'incognito', 'flags', 'protocol')
+      Phase 'idle#1' { Scenario-Idle 'idle#1' }
+      Phase 'wry-kill#1' { Scenario-Exe 'wry-kill#1' $WryProbe (@($w) + @('kill', 'secs=8')) 14 }
+      Phase 'wry-kill#2' { Scenario-Exe 'wry-kill#2' $WryProbe (@($w) + @('kill', 'secs=8')) 14 }
+      Phase 'idle#2' { Scenario-Idle 'idle#2' }
+      Phase 'wry-drop#1' { Scenario-Exe 'wry-drop#1' $WryProbe (@($w) + @('drop', 'secs=8')) 14 }
+    }
     '^mini(-nav|-lang|-nav-lang)$' {
       $tag = $Matches[1]
       $mode = 'rhizomind-flags' + ($tag -replace '-', '+')
