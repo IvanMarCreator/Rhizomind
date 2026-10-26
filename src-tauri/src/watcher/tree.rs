@@ -70,6 +70,8 @@ pub(crate) struct Reconciled {
     /// Корня хранилища нет или он недоступен: изменений нет, модель не
     /// тронута.
     pub(crate) unavailable: bool,
+    /// Исчезнувшие файлы, отложенные до окончательной проверки.
+    pub(crate) held: Vec<VaultPath>,
 }
 
 /// Путь, который не удалось прочитать.
@@ -87,6 +89,21 @@ pub(crate) struct TreeModel {
     nodes: BTreeMap<Key, Node>,
     #[cfg(test)]
     failing: HashSet<Key>,
+    /// Тестовый шов: действие сразу после чтения списка папки.
+    #[cfg(test)]
+    hooks: Hooks,
+}
+
+/// Действия тестового шва по папкам.
+#[cfg(test)]
+#[derive(Default)]
+struct Hooks(std::sync::Mutex<HashMap<Key, Box<dyn FnOnce() + Send>>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for Hooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hooks")
+    }
 }
 
 impl PartialEq for TreeModel {
@@ -103,6 +120,8 @@ impl TreeModel {
             nodes: BTreeMap::new(),
             #[cfg(test)]
             failing: HashSet::new(),
+            #[cfg(test)]
+            hooks: Hooks::default(),
         };
         if !fs::metadata(root)?.is_dir() {
             return Err(io::Error::new(io::ErrorKind::NotADirectory, "не папка"));
@@ -135,12 +154,42 @@ impl TreeModel {
         self.failing.insert(path.components().to_vec());
     }
 
+    /// Тестовый шов: `action` выполняется один раз сразу после чтения
+    /// списка папки `dir` (например, перенос файла посреди обхода).
+    #[cfg(test)]
+    pub(crate) fn after_listing(&mut self, dir: VaultPath, action: Box<dyn FnOnce() + Send>) {
+        self.hooks
+            .0
+            .lock()
+            .expect("шов")
+            .insert(dir.components().to_vec(), action);
+    }
+
     /// Тестовый шов: ошибки чтения папок прошли.
     #[cfg(test)]
     pub(crate) fn clear_failures(&mut self) {
         self.failing.clear();
     }
 
+    /// Сверка, в которой исчезнувший файл с идентификатором (его папка на
+    /// месте) не выдаётся сразу: он остаётся в модели и возвращается в
+    /// [`Reconciled::held`]. Если в следующей пачке он появится по новому
+    /// пути, это будет перенос; окончательная проверка — обычной сверкой
+    /// этих путей ([`TreeModel::reconcile`]).
+    pub(crate) fn reconcile_holding(
+        &mut self,
+        paths: impl IntoIterator<Item = VaultPath>,
+        own: &OwnWrites,
+    ) -> Reconciled {
+        self.reconcile_inner(paths, own, true)
+    }
+
+    /// Полная сверка с отложенными исчезновениями.
+    pub(crate) fn rescan_holding(&mut self, own: &OwnWrites) -> Reconciled {
+        self.reconcile_inner([VaultPath::root()], own, true)
+    }
+
+    #[cfg(test)]
     pub(crate) fn rescan(&mut self, own: &OwnWrites) -> Reconciled {
         self.reconcile([VaultPath::root()], own)
     }
@@ -155,6 +204,15 @@ impl TreeModel {
         paths: impl IntoIterator<Item = VaultPath>,
         own: &OwnWrites,
     ) -> Reconciled {
+        self.reconcile_inner(paths, own, false)
+    }
+
+    fn reconcile_inner(
+        &mut self,
+        paths: impl IntoIterator<Item = VaultPath>,
+        own: &OwnWrites,
+        hold: bool,
+    ) -> Reconciled {
         // Нет корня (флешку вынули, папку переименовали) или нет доступа к
         // нему — это не «удалено всё»: изменений нет, модель как была.
         if !fs::metadata(&self.root).is_ok_and(|m| m.is_dir()) {
@@ -164,25 +222,15 @@ impl TreeModel {
             };
         }
         let mut targets = self.targets(paths);
-        let (mut disk, mut model, mut unreadable) = self.collect(&targets);
-        // Появился элемент с идентификатором, который модель знает под другим
-        // путём: возможно, это перенос, а событие о старом пути потерялось
-        // (переполнение буфера) или придёт позже. Старый путь сверяется в
-        // этой же пачке — тогда перенос распознаётся.
-        // Повторный обход может найти ещё перенесённые за это время —
-        // повторяется, пока новые старые пути находятся (с пределом).
-        for _ in 0..MAX_ORIGIN_ROUNDS {
-            let origins = self.known_elsewhere(&disk, &model, &targets);
-            if origins.is_empty() {
-                break;
-            }
-            targets = self.targets(
-                targets
-                    .into_iter()
-                    .chain(origins)
-                    .map(VaultPath::from_components),
-            );
-            (disk, model, unreadable) = self.collect(&targets);
+        let (mut disk, mut model, mut unreadable) = self.collect_settled(&mut targets);
+        // Исчезло что-то с идентификатором: возможно, его перенесли в папку,
+        // которую обход уже прошёл (файла не оказалось ни там, ни там).
+        // Второй взгляд: перенос к этому моменту закончен.
+        let gone_with_id = model
+            .iter()
+            .any(|(key, node)| node.id.is_some() && !disk.contains_key(key));
+        if gone_with_id {
+            (disk, model, unreadable) = self.collect_settled(&mut targets);
         }
         if unreadable.iter().any(|u| u.key.is_empty()) {
             return Reconciled {
@@ -210,7 +258,23 @@ impl TreeModel {
             retry.push(VaultPath::from_components(u.key.clone()));
         }
         let diff = diff(&disk, &model);
-        let changes = self.resolve(diff, &disk, own);
+        let (changes, held) = self.resolve(diff, &disk, own, hold);
+        // Неизвестный идентификатор при том же содержимом — прежний.
+        for (key, node) in disk.iter_mut() {
+            if node.id.is_none()
+                && let Some(old) = self.nodes.get(key)
+                && old.kind == node.kind
+                && old.same_content(node)
+            {
+                node.id = old.id;
+            }
+        }
+        // Отложенные остаются в модели как были.
+        for key in &held {
+            if let Some(node) = self.nodes.get(key) {
+                disk.insert(key.clone(), node.clone());
+            }
+        }
 
         // Модель на этих путях становится равной диску.
         for target in &targets {
@@ -224,7 +288,37 @@ impl TreeModel {
             changes,
             retry,
             unavailable: false,
+            held: held.into_iter().map(VaultPath::from_components).collect(),
         }
+    }
+
+    /// Снимок диска на путях сверки, дополненный старыми путями переносов.
+    fn collect_settled(
+        &self,
+        targets: &mut BTreeSet<Key>,
+    ) -> (BTreeMap<Key, Node>, BTreeMap<Key, Node>, Vec<Unreadable>) {
+        let (mut disk, mut model, mut unreadable) = self.collect(targets);
+        // Появился элемент с идентификатором, который модель знает под другим
+        // путём: возможно, это перенос, а событие о старом пути потерялось
+        // (переполнение буфера) или придёт позже. Старый путь сверяется в
+        // этой же пачке — тогда перенос распознаётся. Читаются только старые
+        // пути, а уже прочитанное заново не обходится: иначе за время
+        // повторного обхода находились новые перенесённые, и при пределе
+        // кругов последние из них оставались без пары.
+        for _ in 0..MAX_ORIGIN_ROUNDS {
+            let origins = self.known_elsewhere(&disk, &model, targets);
+            if origins.is_empty() {
+                break;
+            }
+            let extra = self.targets(origins.into_iter().map(VaultPath::from_components));
+            let (more_disk, more_model, more_unreadable) = self.collect(&extra);
+            disk.extend(more_disk);
+            model.extend(more_model);
+            unreadable.extend(more_unreadable);
+            targets.extend(extra);
+        }
+        self.drop_stale_duplicates(&mut disk);
+        (disk, model, unreadable)
     }
 
     /// Пути модели вне путей сверки с идентификатором элемента, который на
@@ -312,11 +406,65 @@ impl TreeModel {
                 }
             }
         }
+        self.drop_stale_duplicates(&mut disk);
         (disk, model, unreadable)
     }
 
+    /// Обход не мгновенный: если элемент перенесли, пока шёл обход, он
+    /// может оказаться в снимке дважды — в старой папке (прочитана раньше)
+    /// и в новой. Пути с одинаковым идентификатором перепроверяются после
+    /// обхода; исчезнувшие (со всем, что под ними) из снимка убираются, и
+    /// перенос распознаётся как перенос. Жёсткие ссылки (оба пути есть)
+    /// остаются.
+    fn drop_stale_duplicates(&self, disk: &mut BTreeMap<Key, Node>) {
+        let mut by_id: HashMap<FileId, Vec<&Key>> = HashMap::new();
+        for (key, node) in disk.iter() {
+            if let Some(id) = node.id {
+                by_id.entry(id).or_default().push(key);
+            }
+        }
+        let suspects: Vec<Key> = by_id
+            .into_values()
+            .filter(|keys| keys.len() > 1)
+            .flatten()
+            .cloned()
+            .collect();
+        // Список каждой папки — один раз на проверку.
+        let mut listings: HashMap<Key, Option<HashMap<String, Node>>> = HashMap::new();
+        for key in suspects {
+            let Some((name, parent)) = key.split_last() else {
+                continue;
+            };
+            let listing = listings
+                .entry(parent.to_vec())
+                .or_insert_with(|| self.list(parent).ok());
+            // Папка не прочиталась — путь не трогаем.
+            let still_there = listing.as_ref().is_none_or(|listing| {
+                listing
+                    .get(name)
+                    .is_some_and(|node| node.id == disk.get(&key).and_then(|n| n.id))
+            });
+            if !still_there {
+                let stale: Vec<Key> = disk
+                    .range(key.clone()..)
+                    .take_while(|(k, _)| k.starts_with(&key))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in stale {
+                    disk.remove(&k);
+                }
+            }
+        }
+    }
+
     /// Изменения из разницы диска и модели: свои записи, переименования.
-    fn resolve(&self, diff: Diff, disk: &BTreeMap<Key, Node>, own: &OwnWrites) -> Vec<TreeChange> {
+    fn resolve(
+        &self,
+        diff: Diff,
+        disk: &BTreeMap<Key, Node>,
+        own: &OwnWrites,
+        hold: bool,
+    ) -> (Vec<TreeChange>, Vec<Key>) {
         let Diff {
             mut removed,
             mut created,
@@ -330,11 +478,7 @@ impl TreeModel {
 
         for (key, old) in changed {
             let new = &disk[&key];
-            if own.is_own(
-                &VaultPath::from_components(key.clone()),
-                &self.abs(&key),
-                new.size,
-            ) {
+            if own.is_own(&VaultPath::from_components(key.clone()), &self.abs(&key)) {
                 continue;
             }
             match (old.id, new.id) {
@@ -378,6 +522,28 @@ impl TreeModel {
             }
         }
         modified.extend(displaced.into_keys());
+
+        // Исчезнувший без пары файл с идентификатором, чья папка не исчезла, —
+        // возможно, перенос, о новом пути которого событие ещё не пришло.
+        let mut held = Vec::new();
+        if hold {
+            held = removed
+                .iter()
+                .filter(|(key, node)| {
+                    !node.is_folder()
+                        && node.id.is_some()
+                        && key
+                            .split_last()
+                            .is_some_and(|(_, parent)| !removed.contains_key(parent))
+                        // Папка не уехала: иначе путь в модели повис бы.
+                        && !renamed.iter().any(|(from, _)| key.starts_with(from))
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in &held {
+                removed.remove(key);
+            }
+        }
 
         for key in removed.keys() {
             own.forget(&VaultPath::from_components(key.clone()));
@@ -425,7 +591,7 @@ impl TreeModel {
                 .into_iter()
                 .map(|key| TreeChange::Modified { path: path(key) }),
         );
-        changes
+        (changes, held)
     }
 
     /// Элементы модели: путь и всё под ним.
@@ -467,6 +633,10 @@ impl TreeModel {
                 out.insert(name, node);
             }
         }
+        #[cfg(test)]
+        if let Some(action) = self.hooks.0.lock().expect("шов").remove(dir) {
+            action();
+        }
         Ok(out)
     }
 
@@ -480,6 +650,9 @@ impl TreeModel {
             });
             return;
         };
+        // По порядку имён: обход воспроизводим.
+        let mut listing: Vec<_> = listing.into_iter().collect();
+        listing.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, node) in listing {
             let mut key = dir.clone();
             key.push(name);
@@ -528,7 +701,13 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
     if file_type.is_symlink() {
         return Ok(None);
     }
-    let id = file_id::get_file_id(entry.path()).ok();
+    // Файл исчез между списком папки и открытием (перенесли, удалили) —
+    // его здесь уже нет; другая ошибка — идентификатор неизвестен.
+    let id = match file_id::get_file_id(entry.path()) {
+        Ok(id) => Some(id),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => None,
+    };
     if file_type.is_dir() {
         return Ok(Some(Node {
             kind: EntryKind::Folder,
@@ -576,7 +755,11 @@ fn diff(disk: &BTreeMap<Key, Node>, model: &BTreeMap<Key, Node>) -> Diff {
     for (key, old) in model {
         match disk.get(key) {
             Some(new) if new.kind == old.kind => {
-                if !old.is_folder() && (!old.same_content(new) || old.id != new.id) {
+                // Идентификатор сравнивается, только если известен с обеих
+                // сторон: неизвестный (файл ушёл между списком и открытием)
+                // правкой не считается.
+                let other_id = matches!((old.id, new.id), (Some(a), Some(b)) if a != b);
+                if !old.is_folder() && (!old.same_content(new) || other_id) {
                     out.changed.push((key.clone(), old.clone()));
                 }
             }
@@ -742,6 +925,8 @@ mod tests {
             nodes: BTreeMap::new(),
             #[cfg(test)]
             failing: HashSet::new(),
+            #[cfg(test)]
+            hooks: Hooks::default(),
         }
     }
 
@@ -752,7 +937,7 @@ mod tests {
             changed: Vec::new(),
         };
         let disk = created.iter().map(|(k, n)| (key(k), n.clone())).collect();
-        model().resolve(diff, &disk, &OwnWrites::new())
+        model().resolve(diff, &disk, &OwnWrites::new(), false).0
     }
 
     fn vp(path: &str) -> VaultPath {
@@ -855,5 +1040,31 @@ mod tests {
                 },
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn note(id: Option<u64>) -> Node {
+        Node {
+            kind: EntryKind::Note,
+            size: 5,
+            modified: Some(UNIX_EPOCH + Duration::from_secs(1)),
+            id: id.map(|n| FileId::new_inode(1, n)),
+        }
+    }
+
+    #[test]
+    fn unknown_file_id_on_disk_is_not_a_change() {
+        // Файл перенесли между чтением списка папки и открытием для
+        // идентификатора (Windows): идентификатор неизвестен, а размер и
+        // дата из списка — прежние. Это не правка файла.
+        let key: Key = vec!["a.md".into()];
+        let model = BTreeMap::from([(key.clone(), note(Some(7)))]);
+        let disk = BTreeMap::from([(key, note(None))]);
+        assert!(diff(&disk, &model).changed.is_empty());
     }
 }

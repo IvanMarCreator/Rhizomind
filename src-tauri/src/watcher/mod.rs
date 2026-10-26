@@ -107,6 +107,8 @@ enum Message {
 struct Batch {
     paths: Vec<VaultPath>,
     rescan: bool,
+    /// Окончательная проверка отложенных исчезновений: без нового откладывания.
+    final_check: bool,
 }
 
 /// Наблюдатель за одним хранилищем. Слежение останавливается при удалении
@@ -200,6 +202,8 @@ impl VaultWatcher {
                     retry_attempt: 0,
                     force_rescan: false,
                     rescan_at: None,
+                    held: Vec::new(),
+                    held_at: None,
                     debouncer: shared,
                     root: watched_root,
                 }
@@ -282,6 +286,12 @@ type SharedDebouncer = Arc<Mutex<Option<Debouncer<notify::RecommendedWatcher, No
 /// новых событий нет (повторное ревью 1.4, задача 1.7).
 pub(crate) const DELIVERY_RETRY: Duration = Duration::from_secs(2);
 
+/// Сколько ждать нового пути исчезнувшего файла, прежде чем выдать
+/// «исчез»: событие о новом пути переноса может прийти следующей пачкой
+/// (склейка выдаёт события по путям отдельно). Вместе со склейкой удаление
+/// доходит до дерева примерно за секунду.
+const HOLD_VANISHED: Duration = Duration::from_millis(600);
+
 /// Как часто проверять, вернулся ли недоступный корень.
 const UNAVAILABLE_POLL: Duration = Duration::from_secs(1);
 
@@ -305,6 +315,10 @@ struct Worker {
     force_rescan: bool,
     /// Когда пройти полную сверку после сбоя получателя.
     rescan_at: Option<Instant>,
+    /// Исчезнувшие файлы, отложенные до окончательной проверки
+    /// ([`TreeModel::reconcile_holding`]), и её срок.
+    held: Vec<VaultPath>,
+    held_at: Option<Instant>,
 }
 
 impl Worker {
@@ -323,6 +337,7 @@ impl Worker {
                 Message::Rescan => Batch {
                     paths: Vec::new(),
                     rescan: true,
+                    final_check: false,
                 },
                 Message::Events(batch) => batch,
             };
@@ -351,10 +366,10 @@ impl Worker {
         let deadline = if self.unavailable {
             Some(Instant::now() + UNAVAILABLE_POLL)
         } else {
-            match (self.retry_at, self.rescan_at) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            }
+            [self.retry_at, self.rescan_at, self.held_at]
+                .into_iter()
+                .flatten()
+                .min()
         };
         let result = match deadline {
             None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -368,11 +383,22 @@ impl Worker {
     }
 
     fn on_timer(&mut self) {
+        if !self.unavailable && self.held_at.is_some_and(|at| at <= Instant::now()) {
+            self.held_at = None;
+            let paths = std::mem::take(&mut self.held);
+            self.process(Batch {
+                paths,
+                rescan: false,
+                final_check: true,
+            });
+            return;
+        }
         if !self.unavailable && self.rescan_at.is_some_and(|at| at <= Instant::now()) {
             self.rescan_at = None;
             self.process(Batch {
                 paths: Vec::new(),
                 rescan: true,
+                final_check: false,
             });
             return;
         }
@@ -382,6 +408,7 @@ impl Worker {
             self.process(Batch {
                 paths: Vec::new(),
                 rescan: true,
+                final_check: false,
             });
         } else if self.retry_at.is_some_and(|at| at <= Instant::now()) {
             let paths = std::mem::take(&mut self.retry);
@@ -390,6 +417,7 @@ impl Worker {
             self.process(Batch {
                 paths,
                 rescan: false,
+                final_check: false,
             });
             if self.retry.is_empty() {
                 self.retry_attempt = 0;
@@ -423,9 +451,11 @@ impl Worker {
             return;
         }
         let result = if batch.rescan || self.unavailable {
-            self.model.rescan(&self.own)
-        } else {
+            self.model.rescan_holding(&self.own)
+        } else if batch.final_check {
             self.model.reconcile(batch.paths, &self.own)
+        } else {
+            self.model.reconcile_holding(batch.paths, &self.own)
         };
         if result.unavailable {
             if !self.unavailable {
@@ -438,6 +468,11 @@ impl Worker {
         if self.unavailable {
             self.unavailable = false;
             self.deliver(WatcherEvent::Available);
+        }
+        if !result.held.is_empty() {
+            self.held.extend(result.held);
+            self.held_at
+                .get_or_insert_with(|| Instant::now() + HOLD_VANISHED);
         }
         if !result.retry.is_empty() {
             self.retry.extend(result.retry);
