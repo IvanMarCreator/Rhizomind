@@ -9,9 +9,11 @@ import path from 'node:path';
 import { remote } from 'webdriverio';
 
 const ROOT = path.join(import.meta.dirname, '..', '..');
-const PORT = 4444;
-// Порт драйвера движка за tauri-driver (--native-port, по умолчанию 4445).
-const NATIVE_PORT = 4445;
+// Порт tauri-driver; RHIZOMIND_E2E_DRIVER_PORT — чтобы сценарные тесты двух
+// рабочих копий на одной машине не делили порты.
+const PORT = Number(process.env.RHIZOMIND_E2E_DRIVER_PORT ?? 4444);
+// Порт драйвера движка за tauri-driver (--native-port; по умолчанию 4445).
+const NATIVE_PORT = PORT + 1;
 // Создание сессии в CI на Linux занимает ~30 с (холодный запуск WebKitGTK в
 // Xvfb): предел с запасом, но меньше hookTimeout (120 с).
 const SESSION_TIMEOUT_MS = 100_000;
@@ -140,6 +142,18 @@ export interface StartOptions {
    * тестовой сборке; решение 66): пока файл есть, запись отклоняется.
    */
   unplugFlag?: string;
+  /**
+   * Папка профиля (список хранилищ `vaults.json`) из прошлого запуска —
+   * сценарий «перезапуск с последним хранилищем» (задача 3.1). Без неё у
+   * каждого запуска своя пустая временная папка. Переданную папку `stop()`
+   * не удаляет: её удаляет тест.
+   */
+  profile?: string;
+}
+
+/** Новая папка профиля для [`StartOptions.profile`]; удаляет тест. */
+export function createTestProfile(): string {
+  return mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-profile-'));
 }
 
 /**
@@ -162,7 +176,7 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   mkdirSync(SCREENSHOT_DIR, { recursive: true });
   // Список хранилищ тестовой сборки — во временной папке, а не в
   // %LOCALAPPDATA%\Rhizomind пользователя (RHIZOMIND_E2E_PROFILE_DIR).
-  const profile = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-profile-'));
+  const profile = options.profile ?? createTestProfile();
   const env: NodeJS.ProcessEnv = { ...process.env, RHIZOMIND_E2E_PROFILE_DIR: profile };
   const vaults = typeof options.vault === 'string' ? [options.vault] : (options.vault ?? []);
   if (vaults.length > 0) env.RHIZOMIND_E2E_VAULT = vaults.join(path.delimiter);
@@ -175,9 +189,11 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   else delete env.RHIZOMIND_E2E_REMOVABLE;
   if (options.unplugFlag) env.RHIZOMIND_E2E_UNPLUG_FLAG = options.unplugFlag;
   else delete env.RHIZOMIND_E2E_UNPLUG_FLAG;
-  const removeProfile = () => rmSync(profile, { recursive: true, force: true });
+  const removeProfile = () => {
+    if (!options.profile) rmSync(profile, { recursive: true, force: true });
+  };
   await waitForPortsFree(30_000);
-  const args = ['--port', String(PORT)];
+  const args = ['--port', String(PORT), '--native-port', String(NATIVE_PORT)];
   if (process.env.MSEDGEDRIVER) args.push('--native-driver', process.env.MSEDGEDRIVER);
   // Журнал tauri-driver и драйвера движка — рядом со снимками (артефакт CI).
   const driverLog = path.join(SCREENSHOT_DIR, `tauri-driver-${process.platform}.log`);
