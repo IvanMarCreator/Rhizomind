@@ -4,6 +4,7 @@
 -->
 <script lang="ts">
   import { EditorView } from '@codemirror/view';
+  import './codemirror-base.css';
   import { onMount, untrack } from 'svelte';
   import type { EditorMode } from '../api/index.ts';
   import { createEditorState, setMode, setReadOnly } from './codemirror.ts';
