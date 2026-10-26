@@ -130,6 +130,11 @@ export interface StartOptions {
    * предел ожидания при закрытии окна).
    */
   slowWriteMs?: number;
+  /**
+   * Папки хранилищ считаются лежащими на внешнем носителе (переменная
+   * RHIZOMIND_E2E_REMOVABLE, только в тестовой сборке; решение владельца 66).
+   */
+  removable?: boolean;
 }
 
 /**
@@ -161,6 +166,8 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   else delete env.RHIZOMIND_E2E_PICK_FOLDER;
   if (options.slowWriteMs !== undefined) env.RHIZOMIND_E2E_SLOW_WRITE_MS = String(options.slowWriteMs);
   else delete env.RHIZOMIND_E2E_SLOW_WRITE_MS;
+  if (options.removable) env.RHIZOMIND_E2E_REMOVABLE = '1';
+  else delete env.RHIZOMIND_E2E_REMOVABLE;
   const removeProfile = () => rmSync(profile, { recursive: true, force: true });
   await waitForPortsFree(30_000);
   const args = ['--port', String(PORT)];

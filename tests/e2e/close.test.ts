@@ -3,12 +3,16 @@
 // записан на диск; ожидание ограничено (10 с — CLOSE_TIMEOUT в
 // src-tauri/src/windows/closing.rs).
 //
+// Предел ожидания ядра (окно уничтожается без ответа интерфейса) проверяют
+// модульные тесты src-tauri/src/windows/tests.rs: интерфейс сам укладывается
+// в свой крайний срок 7 с и возвращает окно (тест «медленный диск»).
+//
 // Окно закрывается так же, как пользователь кнопкой «×»: Windows — WM_CLOSE
 // главному окну процесса (CloseMainWindow), Linux — WM_DELETE_WINDOW по
 // протоколу X11 (x11-close.py). Команда WebDriver «закрыть окно» этого не
 // воспроизводит.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, readlinkSync, realpathSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { applicationPath, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
@@ -87,15 +91,25 @@ async function waitForExit(pid: number, timeoutMs: number): Promise<number> {
 }
 
 /** Открыть заметку в дереве и набрать текст в конце, без пауз. */
-async function typeIntoNote(browser: WebdriverIO.Browser): Promise<void> {
-  const row = browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
-  await row.waitForExist({ timeout: 30_000 });
-  await row.click();
+async function typeIntoNote(browser: WebdriverIO.Browser, open = true): Promise<void> {
+  if (open) {
+    const row = browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
+    await row.waitForExist({ timeout: 30_000 });
+    await row.click();
+  }
   const text = browser.$('[role="textbox"][aria-label="Текст заметки"]');
   await text.waitForExist({ timeout: 10_000 });
   await text.click();
   await browser.keys(['Control', 'End']);
   await browser.keys(TYPED);
+}
+
+/** Ждёт текста на странице (уведомление внизу окна). */
+async function waitForText(browser: WebdriverIO.Browser, text: string, timeout: number): Promise<void> {
+  await browser.waitUntil(() => browser.execute((wanted) => document.body.innerText.includes(wanted), text), {
+    timeout,
+    timeoutMsg: `нет текста «${text}»`,
+  });
 }
 
 /** Сессия WebDriver после выхода программы уже недействительна. */
@@ -126,19 +140,73 @@ describe.skipIf(!isWindows && !isLinux)('закрытие окна: ввод н�
     expect(readFileSync(path.join(vault, `${NOTE}.md`), 'utf8')).toContain(TYPED);
   });
 
-  it('запись зависла («медленный диск») — программа всё равно завершается после предела ожидания', async () => {
+  it('запись зависла («медленный диск»): окно возвращается к крайнему сроку, повторное закрытие закрывает без сохранения', async () => {
     vault = createTestVault('Медленный диск', { [`${NOTE}.md`]: 'начало\n' });
     session = await startApp({ vault, slowWriteMs: 120_000 });
     await typeIntoNote(session.browser);
     const pid = appPid();
 
+    const started = Date.now();
     closeLikeUser(pid);
-    const waited = await waitForExit(pid, 60_000);
+    // Интерфейс ждёт записи не дольше 7 с (до предела ядра 10 с), потом
+    // возвращает окно с причиной «диск не отвечает», программа работает.
+    await waitForText(session.browser, 'диск не отвечает', 15_000);
+    const waited = Date.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(6_000);
+    expect(isRunning(pid)).toBe(true);
 
-    // Предел — 10 с: раньше программа не выходит (запись ещё идёт), позже —
-    // только на время уничтожения окна и удаления временной папки движка.
-    expect(waited).toBeGreaterThanOrEqual(9_000);
-    expect(waited).toBeLessThan(40_000);
+    // Осознанное повторное закрытие (через ≥ 2 с) — без сохранения.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    closeLikeUser(pid);
+    await waitForExit(pid, 30_000);
     expect(readFileSync(path.join(vault, `${NOTE}.md`), 'utf8')).toBe('начало\n');
+  }, 120_000);
+
+  // Решение владельца 66: хранилище на внешнем носителе пропало — ввод
+  // записать некуда, окно закрывается (с системным сообщением; в тестовой
+  // сборке оно уходит в stderr), программа завершается.
+  it('внешний носитель вынут: окно закрывается, программа завершается', async () => {
+    vault = createTestVault('Флешка', { [`${NOTE}.md`]: 'начало\n' });
+    session = await startApp({ vault, removable: true });
+    const row = session.browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
+    await row.waitForExist({ timeout: 30_000 });
+    await row.click();
+    await session.browser.$('[role="textbox"][aria-label="Текст заметки"]').waitForExist({ timeout: 10_000 });
+    const pulled = `${vault}-вынута`;
+    renameSync(vault, pulled);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await typeIntoNote(session.browser, false);
+    const pid = appPid();
+    try {
+      closeLikeUser(pid);
+      await waitForExit(pid, 30_000);
+    } finally {
+      renameSync(pulled, vault);
+    }
+    expect(readFileSync(path.join(vault, `${NOTE}.md`), 'utf8')).toBe('начало\n');
+  }, 120_000);
+
+  // Внутренний диск (Windows: том DRIVE_FIXED): папку хранилища переименовали
+  // снаружи — окно возвращается с уведомлением, программа работает.
+  it.skipIf(!isWindows)('внутренний диск: запись не удалась — окно возвращается, программа работает', async () => {
+    vault = createTestVault('Внутренний', { [`${NOTE}.md`]: 'начало\n' });
+    session = await startApp({ vault });
+    const row = session.browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
+    await row.waitForExist({ timeout: 30_000 });
+    await row.click();
+    await session.browser.$('[role="textbox"][aria-label="Текст заметки"]').waitForExist({ timeout: 10_000 });
+    const moved = `${vault}-переименована`;
+    renameSync(vault, moved);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await typeIntoNote(session.browser, false);
+    const pid = appPid();
+    try {
+      closeLikeUser(pid);
+      await new Promise((resolve) => setTimeout(resolve, 12_000));
+      expect(isRunning(pid), 'программа работает').toBe(true);
+      await waitForText(session.browser, 'Окно не закрыто', 5_000);
+    } finally {
+      renameSync(moved, vault);
+    }
   }, 120_000);
 });

@@ -100,6 +100,66 @@ pub fn os_trash(path: &Path) -> Result<(), TrashFailure> {
     }
 }
 
+/// Хранилище на внешнем носителе стало недоступно (решение владельца 66):
+/// папки хранилища нет, и она не на несъёмном локальном томе — флешку
+/// вынули, внешний или сетевой диск отключился. Тот же признак тома, что у
+/// «диска без корзины» (`DRIVE_FIXED`); на Linux и macOS типа тома нет —
+/// признак один: папка недоступна.
+pub fn storage_lost(root: &Path) -> bool {
+    !root.is_dir() && !volume_is_fixed(root)
+}
+
+fn volume_is_fixed(root: &Path) -> bool {
+    #[cfg(test)]
+    if test_volume::is_removable(root) {
+        return false;
+    }
+    // Тестовая сборка: «внешний носитель» для сценарного теста (задача 0.7).
+    #[cfg(feature = "webdriver")]
+    if crate::windows::e2e::removable_volume() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        // Том — по ближайшей существующей папке (сама папка хранилища
+        // пропала). Нет ни одной (буква диска исчезла) или том не определился —
+        // не несъёмный: несъёмные тома не пропадают.
+        root.ancestors()
+            .find(|path| path.is_dir())
+            .is_some_and(|existing| volume_has_recycle_bin(existing) == Some(true))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = root;
+        false
+    }
+}
+
+/// Подмена типа тома в тестах: папки «на внешнем носителе».
+#[cfg(test)]
+pub(crate) mod test_volume {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, PoisonError};
+
+    static REMOVABLE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// Папка `root` считается лежащей на внешнем носителе.
+    pub fn set_removable(root: &Path) {
+        REMOVABLE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(root.to_path_buf());
+    }
+
+    pub(super) fn is_removable(root: &Path) -> bool {
+        REMOVABLE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|path| path == root)
+    }
+}
+
 /// Том несъёмный локальный (`DRIVE_FIXED`): у таких томов есть корзина.
 /// `None` — том не определился (`GetVolumePathNameW` отказал).
 #[cfg(windows)]
@@ -149,5 +209,37 @@ pub fn take_crash_after_first_step() -> bool {
     #[cfg(not(test))]
     {
         false
+    }
+}
+
+#[cfg(test)]
+mod storage_lost_tests {
+    use super::{storage_lost, test_volume};
+
+    /// Решение 66: папка на месте — не «пропавший носитель» ни на каком томе.
+    #[test]
+    fn present_vault_is_never_lost() {
+        let dir = tempfile::tempdir().expect("папка");
+        test_volume::set_removable(dir.path());
+        assert!(!storage_lost(dir.path()));
+    }
+
+    /// Папки нет на внешнем носителе — носитель пропал.
+    #[test]
+    fn missing_vault_on_removable_volume_is_lost() {
+        let dir = tempfile::tempdir().expect("папка");
+        let root = dir.path().join("Хранилище");
+        test_volume::set_removable(&root);
+        assert!(storage_lost(&root));
+    }
+
+    /// Папки нет на несъёмном томе Windows (переименовали, удалили) — не
+    /// «пропавший носитель»: окно возвращается, как на внутреннем диске. На
+    /// Linux и macOS типа тома нет — признак только «папка недоступна».
+    #[test]
+    fn missing_vault_on_fixed_volume_depends_on_os() {
+        let dir = tempfile::tempdir().expect("папка");
+        let root = dir.path().join("Переименовано");
+        assert_eq!(storage_lost(&root), !cfg!(windows));
     }
 }

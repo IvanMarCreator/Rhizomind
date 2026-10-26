@@ -273,6 +273,16 @@ fn finish<R: Runtime>(
         Err(RecvTimeoutError::Disconnected) => Answer::Ready,
     };
     match (answer, window) {
+        (Answer::Cancel, Some(window)) if let Some(name) = lost_storage(app, label) => {
+            // Решение владельца 66: хранилище на внешнем носителе пропало —
+            // окно не возвращается (ввод записать некуда), а закрывается с
+            // системным сообщением; сначала сообщение, потом закрытие.
+            crate::dialogs::tell_closed_unsaved(app, label, &name);
+            closing.mark_destroying(label);
+            if window.destroy().is_err() {
+                closing.finished(label);
+            }
+        }
         (Answer::Cancel, Some(window)) => {
             // Сначала — вне цикла закрытия: показанное окно сразу можно
             // закрыть снова (ревью 0.7, W5).
@@ -291,6 +301,13 @@ fn finish<R: Runtime>(
     }
 }
 
+/// Имя хранилища окна `label`, если оно было на внешнем носителе и стало
+/// недоступно (решение владельца 66, `vault::fsops::storage_lost`).
+fn lost_storage<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> Option<String> {
+    let open = app.try_state::<Core>()?.window_vault(label)?;
+    crate::vault::fsops::storage_lost(open.vault.root()).then(|| open.summary.name.clone())
+}
+
 /// Ответ интерфейса окна `window` (команды `window_close_ready`,
 /// `window_close_cancel`): действует только на своё окно и только пока оно
 /// ждёт ответа.
@@ -300,7 +317,7 @@ pub fn answer<R: Runtime>(window: &tauri::Window<R>, answer: Answer) {
     }
 }
 
-/// Окно `label` с хранилищем `vault` закрывается (скрыто, пишет ввод)?
+/// Окно `label` закрывается (скрыто, пишет ввод)?
 pub fn is_closing<R: Runtime>(app: &tauri::AppHandle<R>, label: &str) -> bool {
     app.try_state::<Closing>()
         .is_some_and(|closing| closing.phase(label).is_some())

@@ -617,4 +617,18 @@ describe('ревью 0.7: ожидание при закрытии ограни�
     expect(CLOSE_FLUSH_DEADLINE_MS).toBeLessThanOrEqual(8000);
     expect(MISSING_GRACE_MS).toBeLessThan(CLOSE_FLUSH_DEADLINE_MS);
   });
+
+  it('решение 67: всё уже записано — ответ сразу, без записей и без ожидания', async () => {
+    const store = new FakeStore();
+    const { sessions } = setup(store);
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+
+    let unsaved: unknown = null;
+    void sessions.flushForClose().then((result) => (unsaved = result));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(unsaved).toEqual([]);
+    expect(store.writes).toEqual([]);
+  });
 });

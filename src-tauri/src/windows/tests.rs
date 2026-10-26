@@ -796,3 +796,62 @@ fn opening_a_vault_whose_close_was_cancelled_focuses_its_window() {
         Some(first.label())
     );
 }
+
+// ---- Решение владельца 66: внешний носитель недоступен при закрытии ----------
+
+/// Запись не удалась, папка хранилища на месте (внутренний диск) — окно
+/// возвращается, сообщения нет.
+#[test]
+fn failed_save_with_vault_in_place_returns_the_window() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&first, "window_close_cancel", json!({})).expect("ответ");
+    wait_for("окно вернулось", || phase(&app, &first).is_none());
+    assert!(crate::dialogs::test_answers::closed_unsaved(first.label()).is_none());
+}
+
+/// Запись не удалась, потому что папка хранилища на внешнем носителе
+/// пропала, — окно закрывается, пользователь получает системное сообщение.
+#[test]
+fn failed_save_on_lost_external_storage_closes_the_window_with_message() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let root = app
+        .state::<Core>()
+        .window_vault(first.label())
+        .expect("А открыто")
+        .vault
+        .root()
+        .to_path_buf();
+    crate::vault::fsops::test_volume::set_removable(&root);
+    std::fs::remove_dir_all(&root).expect("носитель вынут");
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&first, "window_close_cancel", json!({})).expect("ответ");
+    wait_for("окно закрывается", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert_eq!(
+        crate::dialogs::test_answers::closed_unsaved(first.label()).as_deref(),
+        Some("Хранилище «А» недоступно. Окно закрыто, несохранённый ввод не записан.")
+    );
+}
+
+/// Решение 67: всё записано — окно закрывается сразу по ответу, без ожидания
+/// предела.
+#[test]
+fn ready_answer_closes_at_once() {
+    let (app, temp) = app_with(Closing::new(Duration::from_secs(60)));
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    assert!(on_close_requested(&first.as_ref().window()));
+    let started = Instant::now();
+    call(&first, "window_close_ready", json!({})).expect("ответ");
+    wait_for("уничтожение", || phase(&app, &first) == Some(Phase::Destroying));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}

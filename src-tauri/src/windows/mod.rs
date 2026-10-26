@@ -439,6 +439,15 @@ pub mod e2e {
     /// окна (задача 0.7).
     pub const SLOW_WRITE_ENV: &str = "RHIZOMIND_E2E_SLOW_WRITE_MS";
 
+    /// Любая папка хранилища считается лежащей на внешнем носителе (флешка):
+    /// сценарный тест решения владельца 66 (задача 0.7).
+    pub const REMOVABLE_ENV: &str = "RHIZOMIND_E2E_REMOVABLE";
+
+    /// Задана ли [`REMOVABLE_ENV`].
+    pub fn removable_volume() -> bool {
+        std::env::var_os(REMOVABLE_ENV).is_some()
+    }
+
     /// Пауза из [`SLOW_WRITE_ENV`] перед записью заметки.
     pub fn slow_note_write() {
         let delay = std::env::var(SLOW_WRITE_ENV)
