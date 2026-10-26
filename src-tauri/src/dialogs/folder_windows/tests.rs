@@ -280,12 +280,15 @@ enum Preset {
     FullPathInName,
     /// Родитель — папкой по умолчанию (`SetDefaultFolder`), имя — в поле имени.
     DefaultFolder,
+    /// Путь с `\` в конце: первая кнопка — переход в папку, вторая — выбор.
+    Navigate,
 }
 
 impl Preset {
     fn from_env() -> Self {
         match std::env::var("RHIZOMIND_T08_PRESET").as_deref() {
             Ok("default-folder") => Self::DefaultFolder,
+            Ok("navigate") => Self::Navigate,
             _ => Self::FullPathInName,
         }
     }
@@ -310,6 +313,11 @@ fn pick_temp_folder(settings: Settings, label: &str) -> (tempfile::TempDir, Stri
         // SAFETY: вызов из потока окна с инициализированным COM.
         match preset {
             Preset::FullPathInName => dialog.SetFileName(&HSTRING::from(target.as_os_str())),
+            Preset::Navigate => {
+                let mut text = target.as_os_str().to_owned();
+                text.push("\\");
+                dialog.SetFileName(&HSTRING::from(text))
+            }
             Preset::DefaultFolder => {
                 let parent: IShellItem = windows::Win32::UI::Shell::SHCreateItemFromParsingName(
                     &HSTRING::from(target.parent().expect("родитель").as_os_str()),

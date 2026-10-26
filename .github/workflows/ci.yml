@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [full-path, default-folder]
+        preset: [navigate]
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
