@@ -13,12 +13,12 @@
 // (закрытие окна сразу после ввода — close.test.ts, повторный запуск —
 // vaults.test.ts и single-instance.test.ts, настоящее перетаскивание мышью —
 // src-tauri/tests/webview2_runtime.rs) здесь не повторяется.
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { applicationPath, createTestProfile, startApp, type Session } from './driver.ts';
+import { applicationPath, createTestProfile, startApp, waitForAppExit, type Session } from './driver.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const MANAGER = '[data-testid="vault-manager"]';
@@ -35,46 +35,6 @@ const switcherLabel = (name: string) => `button[aria-label="Хранилище �
 const row = (browser: WebdriverIO.Browser, name: string) => browser.$(`[role="treeitem"][aria-label="${name}"]`);
 
 let step = 0;
-
-/** Процессы тестовой сборки (их запускает драйвер движка, а не тест). */
-function appPids(): number[] {
-  const exe = applicationPath('webdriver');
-  if (isWindows) {
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `@(Get-Process -Name rhizomind -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${exe.replace(/'/g, "''")}' } | ForEach-Object { $_.Id }) -join ','`,
-      ],
-      { encoding: 'utf8' },
-    ).trim();
-    return out === '' ? [] : out.split(',').map(Number);
-  }
-  const target = realpathSync(exe);
-  return readdirSync('/proc')
-    .filter((name) => /^\d+$/.test(name))
-    .filter((name) => {
-      try {
-        if (/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${name}/stat`, 'utf8'))) return false;
-        return readlinkSync(`/proc/${name}/exe`) === target;
-      } catch {
-        return false;
-      }
-    })
-    .map(Number);
-}
-
-/** Ждёт выхода программы; возвращает, сколько ждали (мс), или -1, если не вышла. */
-async function waitForAppExit(timeoutMs: number): Promise<number> {
-  const started = Date.now();
-  while (appPids().length > 0) {
-    if (Date.now() - started > timeoutMs) return -1;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  return Date.now() - started;
-}
 
 /** Снимок шага после загрузки шрифтов: `release-NN-<имя>`. */
 async function shot(browser: WebdriverIO.Browser, name: string): Promise<void> {

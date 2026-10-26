@@ -1,8 +1,8 @@
 // Запуск приложения под tauri-driver и подключение клиента WebDriver (WebdriverIO).
 // tauri-driver запускает собранный исполняемый файл и передаёт команды движку:
 // на Windows — msedgedriver (путь в MSEDGEDRIVER или в PATH), на Linux — WebKitWebDriver.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -251,4 +251,44 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
       }
     },
   };
+}
+
+/** Процессы тестовой сборки (их запускает драйвер движка, а не тест). */
+export function appPids(): number[] {
+  const exe = applicationPath('webdriver');
+  if (process.platform === 'win32') {
+    const out = execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `@(Get-Process -Name rhizomind -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq '${exe.replace(/'/g, "''")}' } | ForEach-Object { $_.Id }) -join ','`,
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+    return out === '' ? [] : out.split(',').map(Number);
+  }
+  const target = realpathSync(exe);
+  return readdirSync('/proc')
+    .filter((name) => /^\d+$/.test(name))
+    .filter((name) => {
+      try {
+        if (/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${name}/stat`, 'utf8'))) return false;
+        return readlinkSync(`/proc/${name}/exe`) === target;
+      } catch {
+        return false;
+      }
+    })
+    .map(Number);
+}
+
+/** Ждёт выхода программы; возвращает, сколько ждали (мс), или -1, если не вышла. */
+export async function waitForAppExit(timeoutMs: number): Promise<number> {
+  const started = Date.now();
+  while (appPids().length > 0) {
+    if (Date.now() - started > timeoutMs) return -1;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return Date.now() - started;
 }
