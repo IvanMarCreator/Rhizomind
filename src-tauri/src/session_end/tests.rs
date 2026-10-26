@@ -68,8 +68,13 @@ fn vault_window(app: &App<MockRuntime>, parent: &Path, name: &str) -> WebviewWin
         .add(&root)
         .expect("в списке")
         .id;
-    let window =
-        crate::create_window(app.handle(), &crate::windows::new_label(), None).expect("окно");
+    let window = crate::create_window(
+        app.handle(),
+        &crate::windows::new_label(),
+        &crate::main_window_title(),
+        None,
+    )
+    .expect("окно");
     call(&window, "vault_open", json!({ "request": { "id": id.0 } })).expect("vault_open");
     window
 }

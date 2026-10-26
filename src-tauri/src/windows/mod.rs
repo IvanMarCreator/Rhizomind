@@ -77,6 +77,96 @@ pub fn manager_title() -> String {
     format!("Управление хранилищами — {}", crate::main_window_title())
 }
 
+/// Наибольшая длина имени хранилища в заголовке окна (символов, вместе с
+/// многоточием).
+pub const VAULT_TITLE_MAX_CHARS: usize = 120;
+
+/// Заголовок окна хранилища: «<имя хранилища> — Rhizomind» (задача 2.11,
+/// находка QA Н2, вопрос 82 вариант А). Имя открытой заметки в заголовок
+/// **не** попадает: заголовок видит Windows (панель задач, Alt+Tab,
+/// журнал действий, специальные возможности), а имена заметок вне хранилища
+/// не уходят (инвариант 2, docs/SECURITY.md). Имя хранилища — то, что
+/// показывает интерфейс (`VaultSummary::name`, имя папки). Из него убраны
+/// управляющие символы (Cc), невидимые знаки форматирования (Cf: направление
+/// текста, нулевая ширина, мягкий перенос, BOM, теги) и разделители строк и
+/// абзацев (U+2028, U+2029); длина ограничена [`VAULT_TITLE_MAX_CHARS`],
+/// обрезка не отрывает комбинирующие метки от буквы. Пустое имя — просто
+/// «Rhizomind».
+pub fn vault_title(name: &str) -> String {
+    let clean: String = name.chars().filter(|c| !is_hidden_in_title(*c)).collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return crate::main_window_title();
+    }
+    let chars: Vec<char> = clean.chars().collect();
+    let shown = if chars.len() > VAULT_TITLE_MAX_CHARS {
+        // Первый отброшенный символ продолжает предыдущий (метка, селектор,
+        // оттенок кожи) — отбросить и его основу.
+        let mut keep = VAULT_TITLE_MAX_CHARS - 1;
+        while keep > 0 && extends_previous(chars[keep]) {
+            keep -= 1;
+        }
+        let mut cut: String = chars[..keep]
+            .iter()
+            .collect::<String>()
+            .trim_end()
+            .to_owned();
+        cut.push('…');
+        cut
+    } else {
+        clean.to_owned()
+    };
+    format!("{shown} — {}", crate::main_window_title())
+}
+
+/// Символ, которого не должно быть в заголовке: управляющий (Cc), невидимый
+/// знак форматирования (Cf, таблица Unicode 15.1) или разделитель строк и
+/// абзацев (Zl, Zp). Невидимые знаки меняют вид и порядок текста в
+/// заголовке (подмена), переводы строк ломают его в одну строку.
+fn is_hidden_in_title(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{0600}'..='\u{0605}'
+                | '\u{061c}'
+                | '\u{06dd}'
+                | '\u{070f}'
+                | '\u{0890}'..='\u{0891}'
+                | '\u{08e2}'
+                | '\u{180e}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206f}'
+                | '\u{feff}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{110bd}'
+                | '\u{110cd}'
+                | '\u{13430}'..='\u{1343f}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0001}'
+                | '\u{e0020}'..='\u{e007f}'
+        )
+}
+
+/// Символ, который рисуется вместе с предыдущим: комбинирующая метка
+/// (основные блоки Mn/Me), вариационный селектор, оттенок кожи эмодзи.
+fn extends_previous(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036f}'
+            | '\u{1ab0}'..='\u{1aff}'
+            | '\u{1dc0}'..='\u{1dff}'
+            | '\u{20d0}'..='\u{20ff}'
+            | '\u{fe00}'..='\u{fe0f}'
+            | '\u{fe20}'..='\u{fe2f}'
+            | '\u{1f3fb}'..='\u{1f3ff}'
+            | '\u{e0100}'..='\u{e01ef}'
+    )
+}
+
 /// Как поставить окно управления: 920 × 600, положение выбирает ОС.
 pub fn manager_placement() -> Placement {
     Placement {
@@ -251,6 +341,7 @@ async fn open_vault_in_window<R: Runtime>(
     let opening_app = app.clone();
     let opening_label = label.clone();
     let opening_vault = vault.clone();
+    let title = vault_title(&vault.name);
     crate::commands::blocking(move || {
         bind_vault(&opening_app, &opening_label, opening_vault)?;
         drop(claim);
@@ -261,7 +352,7 @@ async fn open_vault_in_window<R: Runtime>(
         return Ok(VaultOpenOutcome::Opened);
     }
     let saved = core.registry().window(&vault.id);
-    if let Err(error) = crate::create_window(app, &label, saved) {
+    if let Err(error) = crate::create_window(app, &label, &title, saved) {
         eprintln!("Rhizomind: не удалось создать окно: {error}");
         core.unbind_window(&label);
         return Err(CoreError::new(ErrorCode::IoFailed));
@@ -298,19 +389,22 @@ pub fn open_at_startup<R: Runtime>(app: &AppHandle<R>) {
             .ok()
             .flatten();
         let mut saved = None;
+        let mut title = crate::main_window_title();
         if let Some(vault) = last {
             let id = vault.id.clone();
+            let name = vault.name.clone();
             let binding_app = app.clone();
             let binding_label = label.clone();
             let bound =
                 crate::commands::blocking(move || bind_vault(&binding_app, &binding_label, vault))
                     .await;
             if bound.is_ok() {
+                title = vault_title(&name);
                 saved = Some(core.registry().window(&id));
             }
         }
         let opened = match saved {
-            Some(saved) => crate::create_window(&app, &label, saved)
+            Some(saved) => crate::create_window(&app, &label, &title, saved)
                 .map(|_| ())
                 .map_err(|error| {
                     eprintln!("Rhizomind: не удалось создать окно: {error}");
