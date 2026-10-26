@@ -24,7 +24,7 @@
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
@@ -33,9 +33,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Shell::{
     FILEOPENDIALOGOPTIONS, FOS_DONTADDTORECENT, FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST,
-    FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName,
-    SIGDN_FILESYSPATH,
+    FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem, SIGDN_FILESYSPATH,
 };
+use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 use windows::core::{GUID, HSTRING};
 
 /// GUID клиента окна выбора папки Rhizomind. Постоянный: по нему ОС хранит
@@ -64,76 +64,103 @@ pub(super) const PRIVATE: Settings = Settings {
 };
 
 /// Окно выбора папки, модальное к окну `owner` (HWND как число: `HWND` не
-/// передаётся между потоками). `None` — отмена или окно не удалось показать.
+/// передаётся между потоками). `None` — отмена, окно-владелец уже закрыто или
+/// окно не удалось показать (сбой пишется в stderr с HRESULT, без пути).
 /// В тестах крейта вместо окна — подмена ответов (`dialogs::test_answers`).
 #[cfg_attr(test, allow(dead_code))]
 pub fn pick_folder(owner: Option<isize>, title: &str) -> Option<PathBuf> {
-    show(owner, title, PRIVATE, None)
+    show(owner, title, PRIVATE, |_| Ok(()))
 }
 
-/// Показывает окно в отдельном STA-потоке и ждёт ответа. `preset` — только
-/// для теста: окно открывается в родительской папке с именем выбранной папки
-/// в поле ввода, как если бы пользователь до неё дошёл.
+/// Подготовка окна перед показом. В программе — ничего; в тесте — ввод пути
+/// в поле имени, как это сделал бы пользователь.
+type Prepare = dyn FnOnce(&IFileOpenDialog) -> windows::core::Result<()> + Send;
+
+/// Показывает окно в отдельном STA-потоке и ждёт ответа.
 fn show(
     owner: Option<isize>,
     title: &str,
     settings: Settings,
-    preset: Option<&Path>,
+    prepare: impl FnOnce(&IFileOpenDialog) -> windows::core::Result<()> + Send + 'static,
 ) -> Option<PathBuf> {
     let title = HSTRING::from(title);
-    let preset = preset.map(Path::to_path_buf);
-    std::thread::Builder::new()
+    let prepare: Box<Prepare> = Box::new(prepare);
+    let answer = std::thread::Builder::new()
         .name("rhizomind-folder-dialog".into())
         .spawn(move || {
             // SAFETY: COM инициализируется в этом потоке и снимается в нём же,
             // после того как все объекты COM внутри `show_sta` освобождены.
             unsafe {
-                if CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_err()
-                {
-                    return None;
-                }
-                let chosen = show_sta(owner, &title, settings, preset.as_deref());
+                CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+                    .ok()
+                    .map_err(|e| Failure("CoInitializeEx", e))?;
+                let chosen = show_sta(owner, &title, settings, prepare);
                 CoUninitialize();
                 chosen
             }
         })
         .ok()?
         .join()
-        .ok()
-        .flatten()
+        .ok()?;
+    match answer {
+        Ok(chosen) => chosen,
+        Err(failure) => {
+            eprintln!("Rhizomind: окно выбора папки не показано: {failure}");
+            None
+        }
+    }
 }
+
+/// Сбой COM: шаг и HRESULT (без пути и имён).
+#[derive(Debug)]
+pub(super) struct Failure(&'static str, windows::core::Error);
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: HRESULT {:#010x}", self.0, self.1.code().0 as u32)
+    }
+}
+
+/// Ответ окна «Отмена» (`HRESULT_FROM_WIN32(ERROR_CANCELLED)`).
+const CANCELLED: windows::core::HRESULT = windows::core::HRESULT(0x8007_04C7_u32 as i32);
 
 /// Показ окна в потоке с инициализированным STA.
 unsafe fn show_sta(
     owner: Option<isize>,
     title: &HSTRING,
     settings: Settings,
-    preset: Option<&Path>,
-) -> Option<PathBuf> {
-    // SAFETY: вызывается из `show` в потоке с инициализированным COM.
+    prepare: Box<Prepare>,
+) -> Result<Option<PathBuf>, Failure> {
+    let owner = owner.map(|raw| HWND(raw as *mut core::ffi::c_void));
+    // SAFETY: вызывается из `show` в потоке с инициализированным COM;
+    // IsWindow только проверяет описатель.
     unsafe {
-        let dialog: IFileOpenDialog =
-            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        if let Some(owner) = owner
+            && !IsWindow(Some(owner)).as_bool()
+        {
+            // Окно-владелец закрыли, пока шёл запрос: выбор не показываем.
+            return Ok(None);
+        }
+        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| Failure("CoCreateInstance", e))?;
         if let Some(guid) = settings.client_guid {
-            dialog.SetClientGuid(&guid).ok()?;
+            dialog
+                .SetClientGuid(&guid)
+                .map_err(|e| Failure("SetClientGuid", e))?;
         }
-        dialog.SetOptions(settings.options).ok()?;
-        dialog.SetTitle(title).ok()?;
-        if let Some(folder) = preset {
-            let parent = folder.parent()?;
-            let leaf = folder.file_name()?;
-            let item: IShellItem =
-                SHCreateItemFromParsingName(&HSTRING::from(parent.as_os_str()), None).ok()?;
-            dialog.SetFolder(&item).ok()?;
-            dialog.SetFileName(&HSTRING::from(leaf)).ok()?;
-        }
-        let owner = owner.map(|raw| HWND(raw as *mut core::ffi::c_void));
-        let chosen = match dialog.Show(owner) {
+        dialog
+            .SetOptions(settings.options)
+            .map_err(|e| Failure("SetOptions", e))?;
+        dialog.SetTitle(title).map_err(|e| Failure("SetTitle", e))?;
+        prepare(&dialog).map_err(|e| Failure("подготовка", e))?;
+        let shown = dialog.Show(owner);
+        let chosen = match shown {
             Ok(()) => dialog
                 .GetResult()
-                .ok()
+                .map_err(|e| Failure("GetResult", e))
                 .and_then(|item| file_system_path(&item)),
-            Err(_) => None,
+            Err(e) if e.code() == CANCELLED => Ok(None),
+            Err(e) => Err(Failure("Show", e)),
         };
         if settings.clear_client_data {
             // Возвращает E_FAIL, но запись LastVisitedPidlMRU стирает
@@ -145,13 +172,15 @@ unsafe fn show_sta(
 }
 
 /// Путь в файловой системе для элемента оболочки.
-unsafe fn file_system_path(item: &IShellItem) -> Option<PathBuf> {
+unsafe fn file_system_path(item: &IShellItem) -> Result<Option<PathBuf>, Failure> {
     // SAFETY: строку выделяет оболочка (CoTaskMemAlloc); освобождаем после копии.
     unsafe {
-        let raw = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let raw = item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|e| Failure("GetDisplayName", e))?;
         let path = PathBuf::from(OsString::from_wide(raw.as_wide()));
         CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void));
-        Some(path)
+        Ok(Some(path))
     }
 }
 
