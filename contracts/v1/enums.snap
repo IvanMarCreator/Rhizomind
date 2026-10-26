@@ -25,7 +25,8 @@ source: src/commands/contract_tests.rs
     "not_a_note",
     "read_only",
     "scheme_not_allowed",
-    "io_failed"
+    "io_failed",
+    "nested_vault"
   ],
   "NameCheck.status": [
     "ok",

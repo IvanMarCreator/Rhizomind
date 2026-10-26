@@ -1,0 +1,21 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "folder_pick",
+  "errors": [
+    {
+      "code": "nested_vault",
+      "message_key": "errors.nested_vault"
+    },
+    {
+      "code": "vault_unavailable",
+      "message_key": "errors.vault_unavailable"
+    }
+  ],
+  "request": null,
+  "response": {
+    "outcome": "picked",
+    "path": "C:\\Users\\ivan\\Documents"
+  }
+}

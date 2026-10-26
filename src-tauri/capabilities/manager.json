@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "manager",
+  "description": "Окно «Управление хранилищами» (метка manager-<16 шестнадцатеричных цифр>, src/windows/mod.rs; задача 2.8б): только команды группы «Хранилища» — список, своё окно, открытие, создание с выбором родительской папки, открытие папки как хранилища, «Убрать из списка». Без команд файлов и заметок, без подписки на события и без прав Tauri и плагинов (ADR 0009). Состав проверяет тест src/commands/acl_tests.rs.",
+  "windows": [
+    "manager-*"
+  ],
+  "permissions": [
+    "allow-vault-list",
+    "allow-vault-current",
+    "allow-vault-open",
+    "allow-vault-create",
+    "allow-vault-open-folder",
+    "allow-vault-remove-from-list",
+    "allow-folder-pick"
+  ]
+}
