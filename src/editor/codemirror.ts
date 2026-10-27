@@ -17,7 +17,7 @@ import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
-import { livePreview, sourceLinks } from './live-preview/index.ts';
+import { blockTracking, livePreview, sourceLinks } from './live-preview/index.ts';
 import { wikilinkCompletion } from './wikilinks/autocomplete.ts';
 import { wikiHost, type WikiHost } from './wikilinks/host.ts';
 import { revealPlugin } from './wikilinks/reveal.ts';
@@ -76,6 +76,8 @@ export interface EditorOptions {
 export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink, wiki, onChange }: EditorOptions = {}): Extension[] {
   return [
     wiki ? wikiHost.of(wiki) : [],
+    // Блоки кода — в обоих режимах: автодополнение вики-ссылок не открывается в коде (2.6а).
+    blockTracking(),
     revealPlugin,
     wikilinkCompletion(),
     EditorState.lineSeparator.of('\n'),

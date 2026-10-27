@@ -64,15 +64,17 @@
     },
   );
 
-  $effect(() => {
-    sessions.show(path);
-  });
-
   /** Вики-ссылки открытой заметки (С3.4): только заметки хранилища, не `open_external`. */
   const wiki = new WindowWikiHost({
     from: () => (pane.kind === 'open' ? pane.session.path : null),
     openNote: (next) => onOpenNote?.(next),
     notify: (text) => notify(text),
+  });
+
+  $effect(() => {
+    sessions.show(path);
+    // Ждущий переход по ссылке — только к заметке из ссылки (решение 86).
+    wiki.shown(path);
   });
 
   /**
