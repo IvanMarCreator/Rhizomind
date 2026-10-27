@@ -8,9 +8,11 @@
 //   следующей строке абзаца, остаётся исходным текстом;
 // - заголовок «текст + строка `===`/`---`» (setext), код отступом в 4 пробела,
 //   картинки, таблицы, HTML не оформляются (показываются как исходный текст);
-// - вики-ссылки `[[…]]` пропускаются — их оформление в задаче 2.6.
+// - вики-ссылки `[[…]]` — части от `wikiPieces` (src/editor/wikilinks,
+//   задача 2.6); пары `[[` → `]]` находятся одним проходом по строке.
 // Блоки кода с оградой (```` ``` ````, `~~~`) и блок свойств в начале заметки
 // находит `scanBlocks`: они зависят от строк выше.
+import { wikiPieces } from '../wikilinks/display.ts';
 
 /** Участок строки: смещения от начала строки. */
 export interface Span {
@@ -18,7 +20,23 @@ export interface Span {
   to: number;
 }
 
-export type WidgetKind = 'bullet' | 'checkbox' | 'checkbox-checked' | 'rule';
+/** `wiki-heading` — « › » вместо `#` в «Встреча › Итоги» (С3.4). */
+export type WidgetKind = 'bullet' | 'checkbox' | 'checkbox-checked' | 'rule' | 'wiki-heading';
+
+/**
+ * Оформляемый участок. У ссылки `[текст](адрес)` — `url`; у вики-ссылки —
+ * `wiki` (текст между `[[` и `]]`) и `key` (цель для разрешения ядром).
+ * `link` — вся ссылка в строке, со скобками: по ней находится ссылка под
+ * Ctrl+щелчком в режиме исходного текста.
+ */
+export interface MarkPiece extends Span {
+  kind: 'mark';
+  cls: string;
+  url?: string;
+  wiki?: string;
+  key?: string;
+  link?: Span;
+}
 
 /**
  * Что сделать с участком строки:
@@ -30,7 +48,7 @@ export type WidgetKind = 'bullet' | 'checkbox' | 'checkbox-checked' | 'rule';
 export type Piece =
   | ({ kind: 'hide' } & Span)
   | ({ kind: 'widget'; widget: WidgetKind } & Span)
-  | ({ kind: 'mark'; cls: string; url?: string } & Span);
+  | MarkPiece;
 
 export interface LineMarkup {
   /** Классы строки (заголовок, цитата, выполненная задача). */
@@ -184,10 +202,12 @@ interface InlineContext {
   destinationEnd: Int32Array | null;
   /** Последний поиск по символу: от `from` первое вхождение — `at` (`to` — не найдено). */
   next: Map<string, { from: number; at: number }>;
+  /** `[[` → её `]]` (вики-ссылки строки). */
+  wiki: Map<number, number> | null;
 }
 
 function inlineContext(text: string, from: number, to: number): InlineContext {
-  return { text, from, to, brackets: null, destinationEnd: null, next: new Map() };
+  return { text, from, to, brackets: null, destinationEnd: null, next: new Map(), wiki: null };
 }
 
 /**
@@ -298,14 +318,60 @@ function brackets(ctx: InlineContext): Map<number, number> {
   return pairs;
 }
 
+/**
+ * Пары `[[` → `]]` во всей строке за один проход, по правилам `findWikilinks`
+ * (src/core/wikilinks): ссылку открывает последняя `[[` перед первой `]]`.
+ * Внутри уже открытой ссылки `[[` ищется с каждой позиции (`[[[[a]]` — `[[a]]`).
+ */
+function wikiPairs(ctx: InlineContext): Map<number, number> {
+  if (ctx.wiki) return ctx.wiki;
+  const pairs = new Map<number, number>();
+  const { text } = ctx;
+  let open = -1;
+  for (let i = ctx.from; i + 1 < ctx.to; ) {
+    if (text[i] === '[' && text[i + 1] === '[') {
+      const fresh = open < 0;
+      open = i;
+      i += fresh ? 2 : 1;
+    } else if (open >= 0 && text[i] === ']' && text[i + 1] === ']') {
+      pairs.set(open, i);
+      open = -1;
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+  ctx.wiki = pairs;
+  return pairs;
+}
+
+/** Код в строке начинается внутри `[from, to)`: серия обратных апострофов, у которой есть пара дальше. */
+function codeStartsIn(ctx: InlineContext, from: number, to: number): boolean {
+  let at = nextOf(ctx, '`', from, false);
+  while (at < to) {
+    let end = at;
+    while (end < ctx.to && ctx.text[end] === '`') end++;
+    if (closingRun(ctx, end, end - at) < ctx.to) return true;
+    at = nextOf(ctx, '`', end, false);
+  }
+  return false;
+}
+
+/** Вики-ссылка `[[…]]` с позиции `start`. Возвращает, где продолжать. */
+function wikiLink(ctx: InlineContext, start: number, to: number, out: Piece[]): number {
+  const close = wikiPairs(ctx).get(start);
+  if (close === undefined || close + 2 > to || codeStartsIn(ctx, start + 2, close)) return start + 2;
+  // Встраивание `![[…]]` — выпуск 0.3: исходный текст.
+  const embed = start > ctx.from && ctx.text[start - 1] === '!';
+  const pieces = embed ? null : wikiPieces(ctx.text, start, close);
+  if (pieces) out.push(...pieces);
+  return close + 2;
+}
+
 /** Ссылка `[текст](адрес "заголовок")`. Возвращает, где продолжать. */
 function link(ctx: InlineContext, start: number, to: number, out: Piece[]): number {
   const { text } = ctx;
-  // Вики-ссылка — задача 2.6: пропустить целиком, не разбирая.
-  if (text[start + 1] === '[') {
-    const close = text.indexOf(']]', start + 2);
-    return close >= 0 && close + 2 <= to ? close + 2 : start + 2;
-  }
+  if (text[start + 1] === '[') return wikiLink(ctx, start, to, out);
   // Картинка `![…](…)` — выпуск 0.3: исходный текст.
   if (start > 0 && text[start - 1] === '!' && text[start - 2] !== '\\') return start + 1;
 
@@ -316,7 +382,7 @@ function link(ctx: InlineContext, start: number, to: number, out: Piece[]): numb
   if (!target) return start + 1;
   out.push({ kind: 'hide', from: start, to: start + 1 });
   if (close > start + 1) {
-    out.push({ kind: 'mark', cls: 'cm-rz-link', url: target.url, from: start + 1, to: close });
+    out.push({ kind: 'mark', cls: 'cm-rz-link', url: target.url, link: { from: start, to: target.end }, from: start + 1, to: close });
     parseInline(ctx, start + 1, close, out);
   }
   out.push({ kind: 'hide', from: close, to: target.end });
