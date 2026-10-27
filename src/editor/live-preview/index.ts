@@ -118,6 +118,17 @@ const blocksField = StateField.define<BlockState>({
   },
 });
 
+/**
+ * Пошаговый разбор блоков кода и блока свойств без оформления. Подключён в
+ * обоих режимах редактора (codemirror.ts): в исходном тексте по нему
+ * автодополнение и Ctrl+щелчок узнают, не в коде ли ссылка, — без разбора
+ * оград от начала текста на каждое нажатие (задача 2.6а). Живой предпросмотр
+ * подключает то же поле — CodeMirror не дублирует одно расширение.
+ */
+export function blockTracking(): Extension {
+  return blocksField;
+}
+
 function anyLine(doc: Text, from: number, to: number, test: (text: string) => boolean): boolean {
   for (let n = doc.lineAt(from).number, last = doc.lineAt(to).number; n <= last; n++) {
     if (test(doc.line(n).text)) return true;
@@ -465,9 +476,9 @@ function revealedAt(state: EditorState, pos: number): boolean {
 export type LinkHit = { url: string } | { wiki: string };
 
 /**
- * Строка с номером `n` внутри блока кода или блока свойств. В живом
- * предпросмотре — по уже найденным блокам; без него (исходный текст) —
- * разбором оград от начала текста до строки (только по Ctrl+щелчку).
+ * Строка с номером `n` внутри блока кода или блока свойств — по полю блоков
+ * (в редакторе оно есть в обоих режимах, `blockTracking`). Без поля
+ * (состояние без расширений редактора) — разбором оград от начала текста.
  */
 function inBlock(state: EditorState, n: number): boolean {
   const line = state.doc.line(n);

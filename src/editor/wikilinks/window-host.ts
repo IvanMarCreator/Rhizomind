@@ -79,6 +79,16 @@ export class WindowWikiHost implements WikiHost {
     }
   }
 
+  /**
+   * Окно показывает заметку `path` (или ничего). Ждущий переход к другой
+   * заметке сбрасывается: переход не завершился (сразу открыли другую,
+   * Ctrl+O, «назад»), и при случайном открытии той заметки позже он не
+   * сработает.
+   */
+  shown(path: VaultPath | null): void {
+    if (this.#pending && (!path || !samePath(this.#pending.path, path))) this.#pending = null;
+  }
+
   /** Дерево хранилища изменилось (`vault:changed`): разрешение ссылок — заново. */
   refresh(): void {
     this.#emit({ kind: 'refresh' });
@@ -90,8 +100,10 @@ export class WindowWikiHost implements WikiHost {
     queueMicrotask(() => {
       const from = this.#options.from();
       const pending = this.#pending;
-      if (!pending || !from || !samePath(pending.path, from)) return;
+      if (!pending || !from) return;
+      // Ждущий переход — только для заметки из ссылки; открылась другая — сброс.
       this.#pending = null;
+      if (!samePath(pending.path, from)) return;
       this.#emit({ kind: 'arrive', heading: pending.heading });
     });
     return () => this.#listeners.delete(listener);

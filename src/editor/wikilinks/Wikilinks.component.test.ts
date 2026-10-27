@@ -201,6 +201,57 @@ describe('после перехода можно сразу печатать (р
   });
 });
 
+describe('решение 86: заметка только для чтения и незавершённый переход', () => {
+  it('в заметке только для чтения фокус после перехода не ставится, курсор — на заголовке', async () => {
+    const { view } = await openHome({
+      extra: {
+        note_read: ({ path }): NoteReadResponse =>
+          path.join('/') === MEETING.join('/')
+            ? { text: MEETING_TEXT, version: VERSION, read_only: { reason: 'too_large', limit_bytes: 1 } }
+            : { text: HOME_TEXT, version: VERSION, read_only: null },
+      },
+    });
+    cursorToEnd(view);
+    await fireEvent.mouseDown(wikiLink(view, 'Альфа/Встреча#Итоги|итоги'), { button: 0 });
+    const meeting = await nextView(view);
+    await waitFor(() => expect(meeting.state.doc.lineAt(meeting.state.selection.main.head).text).toBe('## Итоги'));
+    expect(meeting.state.readOnly).toBe(true);
+    expect(meeting.hasFocus).toBe(false);
+  });
+
+  it('другое открытие до конца перехода (Ctrl+O) сбрасывает его: позже заметка открывается без перехода', async () => {
+    let release: (() => void) | null = null;
+    let meetingReads = 0;
+    const OTHER: VaultPath = ['Проекты', 'Другая.md'];
+    const { view, model } = await openHome({
+      extra: {
+        note_read: ({ path }): NoteReadResponse | Promise<NoteReadResponse> => {
+          const text = path.join('/') === MEETING.join('/') ? MEETING_TEXT : path.join('/') === HOME.join('/') ? HOME_TEXT : '';
+          const response = { text, version: VERSION, read_only: null };
+          if (path.join('/') === MEETING.join('/') && ++meetingReads === 1) {
+            return new Promise((resolve) => (release = () => resolve(response)));
+          }
+          return response;
+        },
+      },
+    });
+    cursorToEnd(view);
+    await fireEvent.mouseDown(wikiLink(view, 'Альфа/Встреча#Итоги|итоги'), { button: 0 });
+    await waitFor(() => expect(model.currentPath).toEqual(MEETING));
+    // Заметка из ссылки ещё читается — пользователь открыл другую.
+    model.open(OTHER);
+    const other = await nextView(view);
+    expect(model.currentPath).toEqual(OTHER);
+    (release as (() => void) | null)?.();
+    // Позже ту заметку открыли просто так: курсор в начале, фокус не тронут.
+    model.open(MEETING);
+    const meeting = await nextView(other);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(meeting.state.selection.main.head).toBe(0);
+    expect(meeting.hasFocus).toBe(false);
+  });
+});
+
 describe('неразрешённая ссылка', () => {
   it('выглядит иначе; щелчок создаёт заметку в папке текущей и открывает её; вид обновляется по vault:changed', async () => {
     const { view, model, calls } = await openHome();
