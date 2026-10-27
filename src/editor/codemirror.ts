@@ -17,6 +17,7 @@ import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
+import { hugeLines } from './huge-lines.ts';
 import { blockTracking, livePreview, sourceLinks } from './live-preview/index.ts';
 import { wikilinkCompletion } from './wikilinks/autocomplete.ts';
 import { wikiHost, type WikiHost } from './wikilinks/host.ts';
@@ -88,6 +89,7 @@ export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink
     // Одиночный `\r`, NUL и другие невидимые символы видны значком.
     highlightSpecialChars(),
     EditorView.lineWrapping,
+    hugeLines,
     EditorView.clipboardInputFilter.of(normalizePastedText),
     EditorView.contentAttributes.of({
       spellcheck: 'false',
