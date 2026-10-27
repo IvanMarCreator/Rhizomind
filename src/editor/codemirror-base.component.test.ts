@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createEditorState } from './codemirror.ts';
+import { HUGE_LINE } from './huge-lines.ts';
 
 const baseCss = readFileSync(path.join(import.meta.dirname, 'codemirror-base.css'), 'utf8');
 
@@ -62,6 +63,29 @@ describe('базовые стили CodeMirror — статический CSS, �
     expect(getComputedStyle(current().contentDOM).display).toBe('block');
     const line = current().contentDOM.querySelector('.cm-line');
     expect(line && getComputedStyle(line).display).toBe('block');
+  });
+
+  it('NoteText.svelte подключает этот файл (без него правила не попадут в окно)', () => {
+    const source = readFileSync(path.join(import.meta.dirname, 'NoteText.svelte'), 'utf8');
+    expect(source).toMatch(/^\s*import '\.\/codemirror-base\.css';$/m);
+  });
+
+  it('колонка не растягивается по самому длинному слову (Е1): min-width 0', () => {
+    expect(getComputedStyle(current().contentDOM).minWidth).toBe('0px');
+  });
+
+  it('длинные слова переносятся (решение 83), кроме строк длиннее порога', () => {
+    const content = getComputedStyle(current().contentDOM);
+    expect(content.getPropertyValue('overflow-wrap')).toBe('anywhere');
+    expect(content.getPropertyValue('word-break')).toBe('break-word');
+    current().dispatch({ changes: { from: 0, insert: `${'x'.repeat(HUGE_LINE + 1)}\n${'y'.repeat(HUGE_LINE)}\n` } });
+    const lines = [...current().contentDOM.querySelectorAll('.cm-line')];
+    const huge = lines.filter((line) => line.classList.contains('cm-rz-hugeLine'));
+    expect(huge).toHaveLength(1);
+    expect(huge[0]?.textContent?.startsWith('x')).toBe(true);
+    const style = getComputedStyle(huge[0] as Element);
+    expect(style.getPropertyValue('overflow-wrap')).toBe('normal');
+    expect(style.getPropertyValue('word-break')).toBe('normal');
   });
 
   it('рамки фокуса вокруг всей области текста нет (Н3)', () => {

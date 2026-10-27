@@ -49,6 +49,12 @@ const SAMPLE = [
   '',
 ].join('\n');
 
+/** Заметка со ссылкой длиннее колонки (находка Е1, решение 83). */
+const LONG_NOTE = 'Длинная ссылка';
+// Без дефисов и других мест переноса: переносится только посреди слова.
+const LONG_URL = `https://example.com/?q=${'abcdefghij'.repeat(32)}`;
+const LONG_SAMPLE = ['Обычный абзац перед ссылкой.', '', `Адрес: ${LONG_URL}`, '', 'Обычный абзац после ссылки.', ''].join('\n');
+
 let step = 0;
 
 async function shotThemes(browser: WebdriverIO.Browser, name: string): Promise<void> {
@@ -103,6 +109,36 @@ function modeChecked(browser: WebdriverIO.Browser): Promise<string> {
   return browser.execute(
     () => document.querySelector('[role="radiogroup"] [role="radio"][aria-checked="true"]')?.getAttribute('aria-label') ?? '',
   );
+}
+
+/**
+ * Нарушения CSP по стилям в окне (задача 2.10): слушатель ставится до открытия
+ * заметки. Ожидаемые — два элемента <style>, которые вставляют библиотеки и
+ * которые CSP запрещает, а их правила повторены в нашем статическом CSS:
+ * базовая тема CodeMirror (пакет style-mod, классы «ͼ…») —
+ * src/editor/codemirror-base.css; стиль изолированного iframe Tauri
+ * (`#__tauri_isolation__`, tauri/scripts/isolation.js) — src/shell/base.css.
+ * Любое другое нарушение — ошибка.
+ */
+const KNOWN = ' [известный: правила в статическом CSS]';
+
+async function watchCsp(browser: WebdriverIO.Browser): Promise<void> {
+  await browser.execute((KNOWN) => {
+    const log: string[] = [];
+    (window as unknown as { rzCsp: string[] }).rzCsp = log;
+    document.addEventListener('securitypolicyviolation', (event) => {
+      const target = event.target;
+      const text = target instanceof HTMLStyleElement ? (target.textContent ?? '') : '';
+      const known = text.includes('\u037c') || text.trimStart().startsWith('#__tauri_isolation__');
+      const where = target instanceof Element ? target.tagName : String(target);
+      log.push(`${event.effectiveDirective} ${event.blockedURI} ${where} ${event.sourceFile}:${event.lineNumber} ${text.slice(0, 60)}${known ? KNOWN : ''}`);
+    });
+  }, KNOWN);
+}
+
+async function unexpectedStyleViolations(browser: WebdriverIO.Browser): Promise<string[]> {
+  const log = await browser.execute(() => (window as unknown as { rzCsp?: string[] }).rzCsp ?? ['слушатель не установлен']);
+  return log.filter((entry) => !entry.endsWith(KNOWN));
 }
 
 /**
@@ -164,11 +200,13 @@ describe('живой предпросмотр и режим исходного �
   let file = '';
 
   beforeAll(async () => {
-    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE });
+    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE, [`${LONG_NOTE}.md`]: LONG_SAMPLE });
     profile = createTestProfile();
     file = path.join(vault, `${NOTE}.md`);
     session = await startApp({ vault, profile });
     const { browser } = session;
+    await browser.$(`[role="treeitem"][aria-label="${NOTE}"]`).waitForExist({ timeout: 20_000 });
+    await watchCsp(browser);
     const row = browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
     await row.waitForDisplayed({ timeout: 20_000 });
     await row.click();
@@ -259,6 +297,10 @@ describe('живой предпросмотр и режим исходного �
     await expectIndentsVisible(browser(), 'indents-source');
   });
 
+  it('нарушений CSP по стилям нет, кроме стилей, которые вставляет сам CodeMirror (задача 2.10)', async () => {
+    expect(await unexpectedStyleViolations(browser())).toEqual([]);
+  });
+
   it('выбранный режим помнится после перезапуска (С3.3, решение 72)', async () => {
     await session?.stop();
     session = undefined;
@@ -266,6 +308,7 @@ describe('живой предпросмотр и режим исходного �
     expect(await waitForAppExit(20_000), 'программа не завершилась').toBeGreaterThanOrEqual(0);
     session = await startApp({ profile });
     const b = browser();
+    await watchCsp(b);
     await b.$(TEXT).waitForDisplayed({ timeout: 30_000 });
     await b.waitUntil(async () => (await modeChecked(b)).includes('Исходный текст'), {
       timeout: 10_000,
@@ -288,5 +331,29 @@ describe('живой предпросмотр и режим исходного �
     });
     expect(readFileSync(file, 'utf8')).toBe(SAMPLE.replace('- [ ] Открытая задача', '- [x] Открытая задача'));
     await shotThemes(b, 'checkbox-toggled');
+  });
+
+  it('ссылка длиннее колонки переносится, абзацы не шире колонки (Е1, решение 83); нарушений CSP по стилям нет', async () => {
+    const b = browser();
+    const row = b.$(`[role="treeitem"][aria-label="${LONG_NOTE}"]`);
+    await row.click();
+    await b.waitUntil(async () => (await lineText(b, 'Адрес:')).startsWith('Адрес:'), { timeout: 10_000 });
+    const look = await b.execute((selector) => {
+      const content = document.querySelector(selector) as HTMLElement;
+      const column = content.getBoundingClientRect();
+      const lines = [...content.querySelectorAll('.cm-line')].map((line) => {
+        const rect = line.getBoundingClientRect();
+        return { text: (line.textContent ?? '').slice(0, 12), right: Math.round(rect.right), height: Math.round(rect.height) };
+      });
+      return { column: Math.round(column.right), width: Math.round(column.width), lines };
+    }, TEXT);
+    const detail = JSON.stringify(look);
+    expect(LONG_URL.length, 'длина ссылки').toBeGreaterThan(300);
+    expect(look.width, detail).toBeLessThan(1000);
+    for (const line of look.lines) expect(line.right, detail).toBeLessThanOrEqual(look.column + 1);
+    const address = look.lines.find((line) => line.text.startsWith('Адрес:'));
+    expect(address?.height ?? 0, detail).toBeGreaterThan(60);
+    await shotThemes(b, 'long-link');
+    expect(await unexpectedStyleViolations(b)).toEqual([]);
   });
 });

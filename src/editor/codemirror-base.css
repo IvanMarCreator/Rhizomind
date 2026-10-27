@@ -54,27 +54,35 @@
   padding: 4px 0;
   /* Рамку движок рисует у самого contenteditable (Н3). */
   outline: none;
-  /* CodeMirror ставит tab-size атрибутом style — CSP его тоже не пускает. */
+  /* Ширина таба, как у CodeMirror (он ставит её через style.cssText; на
+     случай, если движок такой стиль не применит, — здесь же). */
   tab-size: 4;
+  /* Колонка не растягивается по самому длинному слову (Е1): у элемента
+     flex-раскладки min-width по умолчанию — ширина неразрывного слова. */
+  min-width: 0;
 }
 
 .cm-editor .cm-content[contenteditable='true'] {
   -webkit-user-modify: read-write-plaintext-only;
 }
 
-/*
-  EditorView.lineWrapping: пробелы в начале строки и подряд видны (Н7),
-  строки переносятся по пробелам.
-  Отличие от базовой темы: без `overflow-wrap: anywhere` и
-  `word-break: break-word` — слово без пробелов не разрывается (как было до
-  задачи 2.10). С ними WebKitGTK раскладывает строку в мегабайты без пробелов
-  дольше минуты, окно не отвечает (файл больше лимита в сценарии выпуска,
-  tests/e2e/release.test.ts).
-*/
+/* EditorView.lineWrapping: пробелы в начале строки и подряд видны (Н7). */
 .cm-editor .cm-lineWrapping {
   white-space: pre-wrap;
   white-space: break-spaces;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   flex-shrink: 1;
+}
+
+/*
+  Строка длиннее 10 000 символов (src/editor/huge-lines.ts, решение 83) — без
+  переноса посреди слова: WebKitGTK раскладывает строку в мегабайты без
+  пробелов с `anywhere` дольше минуты, окно не отвечает.
+*/
+.cm-editor .cm-line.cm-rz-hugeLine {
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 .cm-editor .cm-line {

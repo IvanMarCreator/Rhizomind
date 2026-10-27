@@ -15,6 +15,7 @@ import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
+import { hugeLines } from './huge-lines.ts';
 import { livePreview } from './live-preview/index.ts';
 
 /** Переносы из буфера обмена и перетаскивания — в `\n`, как в остальном тексте. */
@@ -75,6 +76,7 @@ export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink
     // Одиночный `\r`, NUL и другие невидимые символы видны значком.
     highlightSpecialChars(),
     EditorView.lineWrapping,
+    hugeLines,
     EditorView.clipboardInputFilter.of(normalizePastedText),
     EditorView.contentAttributes.of({
       spellcheck: 'false',
