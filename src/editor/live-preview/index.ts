@@ -11,6 +11,7 @@
 // Ctrl+щелчок (решение 76); в режиме исходного текста — Ctrl+щелчок
 // (`sourceLinks`).
 import {
+  Facet,
   RangeSet,
   RangeValue,
   StateField,
@@ -117,6 +118,9 @@ const blocksField = StateField.define<BlockState>({
     return from < 0 ? mapped : rescanFences(doc, mapped, Math.min(from, doc.length), Math.min(to, doc.length), fencesFrom);
   },
 });
+
+/** Включён ли живой предпросмотр (его расширение в состоянии). */
+const livePreviewOn = Facet.define<boolean, boolean>({ combine: (values) => values.some(Boolean) });
 
 /**
  * Пошаговый разбор блоков кода и блока свойств без оформления. Подключён в
@@ -368,7 +372,8 @@ export function previewDecorations(
   ranges: readonly { from: number; to: number }[] = [{ from: 0, to: state.doc.length }],
 ): DecorationSet {
   const blocks = state.field(blocksField, false);
-  if (!blocks) return Decoration.none;
+  // Поле блоков есть и в исходном тексте (`blockTracking`): оформление — только в живом предпросмотре.
+  if (!blocks || !state.facet(livePreviewOn)) return Decoration.none;
   const active = activeLines(state);
   const out: Range<Decoration>[] = [];
   const { doc } = state;
@@ -662,6 +667,7 @@ const resolverPlugin = ViewPlugin.fromClass(
 /** Расширение живого предпросмотра. */
 export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension {
   return [
+    livePreviewOn.of(true),
     blocksField,
     resolutionField,
     previewPlugin,
