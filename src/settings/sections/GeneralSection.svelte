@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { core, type CurrentVault } from '../../api/index.ts';
   import { t } from '../../i18n/index.ts';
+  import Icon from '../../shell/Icon.svelte';
   import Row from '../Row.svelte';
 
   let { vault }: { vault: CurrentVault } = $props();
@@ -26,7 +27,10 @@
 />
 <Row title={t('settings.language.title')} hint={t('settings.language.hint')}>
   <span class="badge">{t('settings.language.badge')}</span>
-  <span class="fixed" aria-disabled="true">{t('settings.language.russian')}</span>
+  <span class="fixed" aria-disabled="true">
+    <span>{t('settings.language.russian')}</span>
+    <Icon name="chevron-down" size={14} />
+  </span>
 </Row>
 
 <style>
@@ -39,10 +43,17 @@
   }
 
   .fixed {
-    min-width: 120px;
-    padding: 5px 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 140px;
+    height: 28px;
+    padding: 0 8px;
+    box-sizing: border-box;
     border: 1px solid var(--border-default);
     border-radius: 5px;
     color: var(--text-secondary);
+    cursor: default;
   }
 </style>

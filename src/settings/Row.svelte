@@ -7,6 +7,7 @@
     hint,
     badge,
     disabled = false,
+    singleLine = false,
     id,
     children,
   }: {
@@ -15,13 +16,15 @@
     /** Метка отложенного параметра: «с 0.2», «в следующем выпуске». */
     badge?: string | undefined;
     disabled?: boolean;
+    /** Название в одну строку (метка выпуска — сразу после текста). */
+    singleLine?: boolean;
     /** id названия: управление ссылается на него через aria-labelledby. */
     id?: string | undefined;
     children?: Snippet;
   } = $props();
 </script>
 
-<div class="row" class:disabled>
+<div class="row" class:disabled class:single-line={singleLine}>
   <div class="text">
     <div class="title">
       <span {id}>{title}</span>
@@ -54,6 +57,10 @@
     gap: 8px;
     color: var(--text-primary);
     font-weight: 500;
+  }
+
+  .single-line .title {
+    white-space: nowrap;
   }
 
   .disabled .title,

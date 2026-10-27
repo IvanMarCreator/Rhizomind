@@ -5,6 +5,7 @@
     options,
     labelledby,
     disabled = false,
+    compact = false,
     onChange,
   }: {
     value: T | null;
@@ -12,11 +13,13 @@
     /** id названия строки (aria-labelledby). */
     labelledby: string;
     disabled?: boolean;
+    /** Мелкие кнопки (отложенный параметр в узкой строке). */
+    compact?: boolean;
     onChange?: (value: T) => void;
   } = $props();
 </script>
 
-<div class="segmented" role="radiogroup" aria-labelledby={labelledby} aria-disabled={disabled ? 'true' : undefined}>
+<div class="segmented" class:compact role="radiogroup" aria-labelledby={labelledby} aria-disabled={disabled ? 'true' : undefined}>
   {#each options as option (option.value)}
     <button
       type="button"
@@ -45,6 +48,11 @@
     color: var(--text-secondary);
     font-size: var(--font-size-caption);
     white-space: nowrap;
+  }
+
+  .compact .option {
+    padding: 3px 7px;
+    font-size: 11px;
   }
 
   .option[aria-checked='true'] {

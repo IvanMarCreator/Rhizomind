@@ -99,6 +99,41 @@ export function chordFromEvent(event: KeyLike): string | null {
   return parts.join('+');
 }
 
+/** Клавиши перемещения и удаления в тексте (решение 81). */
+const TEXT_EDIT_CODES: ReadonlySet<string> = new Set([
+  'Delete',
+  'Backspace',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+]);
+
+/** Правка текста в поле ввода: Ctrl+A/C/V/X/Z. */
+const TEXT_EDIT_CHORDS: ReadonlySet<string> = new Set(['Ctrl+KeyA', 'Ctrl+KeyC', 'Ctrl+KeyV', 'Ctrl+KeyX', 'Ctrl+KeyZ']);
+
+/**
+ * Клавиша правки текста (решение 81): Delete, Backspace, стрелки, Home/End
+ * без Alt (с Ctrl и Shift — тоже), Ctrl+A/C/V/X/Z. В полях ввода и в тексте
+ * заметки окно такие нажатия не перехватывает, даже если они назначены.
+ */
+export function isTextEditingKey(event: KeyLike): boolean {
+  const chord = chordFromEvent(event);
+  if (!chord) return false;
+  const key = chord.split('+').at(-1) ?? '';
+  return (TEXT_EDIT_CODES.has(key) && !event.altKey) || TEXT_EDIT_CHORDS.has(chord);
+}
+
+/**
+ * Команда окна для нажатия в поле ввода или тексте заметки: `null` — нажатие
+ * остаётся полю (не команда или клавиша правки текста).
+ */
+export function windowCommandInText(overrides: HotkeyOverrides, event: KeyLike): CommandId | null {
+  return isTextEditingKey(event) ? null : matchCommand(overrides, event, 'window');
+}
+
 export type ChordProblem = 'reserved' | 'needs_modifier';
 
 /** Можно ли назначить сочетание: те же правила, что в ядре. */

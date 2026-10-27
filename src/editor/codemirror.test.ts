@@ -54,10 +54,8 @@ describe('только чтение', () => {
 });
 
 describe('клавиши', () => {
-  it('Alt+← и Alt+→ остаются за историей переходов окна', () => {
+  it('жёсткого списка сочетаний окна нет: Alt+←/→ решает реестр (решение 80)', () => {
     const keys = editorKeymap.map((binding) => binding.key);
-    expect(keys).not.toContain('Alt-ArrowLeft');
-    expect(keys).not.toContain('Alt-ArrowRight');
-    expect(keys).toContain('Mod-z');
+    expect(keys).toContain('Alt-ArrowLeft');
   });
 });

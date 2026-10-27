@@ -50,6 +50,6 @@ export const LIMITS = {
   /** Системные сочетания и сочетания правки: не назначаются. */
   hotkey_reserved: [
     'Alt+F4', 'Alt+Space', 'Ctrl+Alt+Delete', 'Shift+F10', 'Ctrl+KeyA', 'Ctrl+KeyC', 'Ctrl+KeyV', 'Ctrl+KeyX',
-    'Ctrl+KeyY', 'Ctrl+KeyZ', 'Ctrl+Shift+KeyZ',
+    'Ctrl+KeyY', 'Ctrl+KeyZ', 'Ctrl+Shift+KeyZ', 'Shift+Delete', 'Shift+Insert', 'Ctrl+Insert',
   ],
 } as const;

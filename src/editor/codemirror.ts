@@ -22,13 +22,13 @@ export function normalizePastedText(text: string): string {
   return text.replace(/\r\n?/g, '\n');
 }
 
-/** Alt+← и Alt+→ — история переходов окна (src/core/history), не редактор. */
-const WINDOW_KEYS = new Set(['Alt-ArrowLeft', 'Alt-ArrowRight']);
-
-export const editorKeymap: readonly KeyBinding[] = [
-  ...defaultKeymap.filter((binding) => !binding.key || !WINDOW_KEYS.has(binding.key)),
-  ...historyKeymap,
-];
+/**
+ * Сочетания редактора. Команды окна из реестра горячих клавиш (Alt+←/→ и
+ * др.) важнее их (решение 80): окно перехватывает такие нажатия раньше
+ * редактора (Shell.svelte, фаза перехвата); освобождённое сочетание снова
+ * работает здесь.
+ */
+export const editorKeymap: readonly KeyBinding[] = [...defaultKeymap, ...historyKeymap];
 
 /** Только чтение переключается на ходу: заметку удалили, пока она открыта. */
 const lock = new Compartment();
