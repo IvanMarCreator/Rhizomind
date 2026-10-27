@@ -72,17 +72,23 @@ impl OpenVault {
     /// Запоминает заметку, показанную в окне, и ставит заголовок окна
     /// (`set_title`). `path` должен быть заметкой из списка заметок этого
     /// хранилища: иначе отказ, и ни показанная заметка, ни заголовок не
-    /// меняются. Имя заметки в заголовке — из пути (имя файла без `.md`).
+    /// меняются. Путь сравнивается по ключам имён (регистр, нормализация), а
+    /// запоминается и показывается в написании списка заметок: имя заметки в
+    /// заголовке (имя файла без `.md`) — как в хранилище, а не как в запросе.
     pub fn show_note(&self, path: Option<VaultPath>, set_title: &dyn Fn(&str)) -> CoreResult<()> {
         let index = self.read_index();
-        if let Some(path) = &path {
-            if !path.file_name().is_some_and(crate::names::is_note) {
-                return Err(CoreError::new(ErrorCode::NotANote));
+        let path = match path {
+            None => None,
+            Some(path) => {
+                if !path.file_name().is_some_and(crate::names::is_note) {
+                    return Err(CoreError::new(ErrorCode::NotANote));
+                }
+                let Some(listed) = index.note(&path) else {
+                    return Err(CoreError::new(ErrorCode::NotFound));
+                };
+                Some(listed.clone())
             }
-            if !index.contains(path) {
-                return Err(CoreError::new(ErrorCode::NotFound));
-            }
-        }
+        };
         let mut shown = self.shown_note();
         *shown = path;
         set_title(&self.title_for(shown.as_ref()));
@@ -115,16 +121,14 @@ impl OpenVault {
         }
         // Переименование в не-заметку (`.md` → `.md~`) — уже не заметка, даже
         // если список заметок ещё держит путь.
-        let is_shown = |path: &VaultPath| {
-            path.file_name().is_some_and(crate::names::is_note) && index.contains(path)
+        // Путь — в написании списка заметок.
+        let listed = |path: &VaultPath| {
+            path.file_name()
+                .is_some_and(crate::names::is_note)
+                .then(|| index.note(path).cloned())
+                .flatten()
         };
-        let after = if is_shown(&moved) {
-            Some(moved)
-        } else if is_shown(&before) {
-            Some(before.clone())
-        } else {
-            None
-        };
+        let after = listed(&moved).or_else(|| listed(&before));
         let old_title = self.title_for(Some(&before));
         let new_title = self.title_for(after.as_ref());
         *shown = after;

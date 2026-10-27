@@ -80,8 +80,38 @@ describe('показанная заметка → ядро (заголовок �
     await answer();
 
     expect(sent).toEqual([['А.md'], ['Удалена.md'], null]);
-    // Повтор того же пути после отказа не зацикливается.
-    shown.report(['Удалена.md']);
+  });
+
+  it('путь после отказа не считается отправленным: явный повтор уходит снова, без зацикливания', async () => {
+    const { sent, send, answer } = fakeSend();
+    const shown = new ShownNote(send);
+    const notFound = { code: 'not_found', message_key: 'errors.not_found' };
+
+    shown.report(['Ещё не в списке.md']);
+    await answer(notFound);
+    await answer();
+    expect(sent).toEqual([['Ещё не в списке.md'], null]);
+
+    // Явный повтор — тот же путь уходит снова (заметка уже появилась в списке).
+    shown.report(['Ещё не в списке.md']);
+    await answer();
+    expect(sent).toEqual([['Ещё не в списке.md'], null, ['Ещё не в списке.md']]);
+    // Теперь отправлен успешно — повтор не шлётся.
+    shown.report(['Ещё не в списке.md']);
     expect(sent).toHaveLength(3);
+  });
+
+  it('после отказа другой путь и возврат к отказанному — оба уходят', async () => {
+    const { sent, send, answer } = fakeSend();
+    const shown = new ShownNote(send);
+
+    shown.report(['А.md']);
+    await answer({ code: 'not_found', message_key: 'errors.not_found' });
+    await answer();
+    shown.report(null);
+    shown.report(['А.md']);
+    await answer();
+
+    expect(sent).toEqual([['А.md'], null, ['А.md']]);
   });
 });

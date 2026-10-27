@@ -392,3 +392,28 @@ fn shown_note_replaced_in_place_keeps_title() {
     ]));
     assert_eq!(titles(&f.recorder), Vec::<String>::new());
 }
+
+#[test]
+fn shown_note_name_is_spelled_as_in_the_vault() {
+    // Путь от интерфейса сравнивается по ключу имени (регистр, нормализация),
+    // а имя в заголовке — в написании из списка заметок, не из запроса.
+    let f = fixture(&["Архив/Итоги года.md"]);
+    assert_eq!(
+        show(&f, Some("АРХИВ/ИТОГИ ГОДА.md")).expect("заметка"),
+        vec![format!("Итоги года — t — {}", app_title())]
+    );
+    // Переименование снаружи находит заметку и по пути в написании хранилища.
+    std::fs::rename(
+        f.dir.path().join("Архив").join("Итоги года.md"),
+        f.dir.path().join("Архив").join("Итоги.md"),
+    )
+    .expect("переименование");
+    f.events.handle(changed(vec![TreeChange::Renamed {
+        from: vp("Архив/Итоги года.md"),
+        to: vp("Архив/Итоги.md"),
+    }]));
+    assert_eq!(
+        titles(&f.recorder),
+        vec![format!("Итоги — t — {}", app_title())]
+    );
+}
