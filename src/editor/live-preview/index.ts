@@ -507,6 +507,20 @@ export function linkAt(state: EditorState, pos: number): LinkHit | null {
   return null;
 }
 
+/**
+ * Позиция `pos` — в коде (в строке `` `…` `` или в блоке с оградой) или в
+ * блоке свойств: разметка там не действует (по разбору предпросмотра).
+ */
+export function inCodeAt(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  if (inBlock(state, line.number)) return true;
+  const previous = line.number > 1 ? state.doc.line(line.number - 1).text : null;
+  const offset = pos - line.from;
+  return parseLine(line.text, previous).pieces.some(
+    (piece) => piece.kind === 'mark' && piece.cls === 'cm-rz-code' && offset >= piece.from && offset < piece.to,
+  );
+}
+
 /** Открыть ссылку: внешнюю — через ядро с подтверждением, вики — переходом к заметке хранилища. */
 function follow(view: EditorView, hit: LinkHit, onOpenLink: ((url: string) => void) | undefined): boolean {
   if ('wiki' in hit) {
@@ -615,7 +629,8 @@ const resolverPlugin = ViewPlugin.fromClass(
       const generation = this.#generation;
       host.resolve(wanted).then(
         (answers) => {
-          if (this.#destroyed) return;
+          // Ответ о прежнем дереве (до vault:changed) не затирает свежий: его спросили заново.
+          if (this.#destroyed || generation !== this.#view.state.field(resolutionField).generation) return;
           this.#view.dispatch({ effects: resolvedEffect.of(answers) });
         },
         () => {

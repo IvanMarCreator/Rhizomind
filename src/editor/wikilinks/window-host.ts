@@ -31,8 +31,8 @@ export class WindowWikiHost implements WikiHost {
   readonly #options: WindowWikiOptions;
   readonly #deps: FollowDeps;
   readonly #listeners = new Set<(event: WikiEvent) => void>();
-  /** Заголовок, к которому перейти, когда откроется заметка `path`. */
-  #pending: { path: VaultPath; heading: string } | null = null;
+  /** Переход (заголовок или начало), когда откроется заметка `path`. */
+  #pending: { path: VaultPath; heading: string | null } | null = null;
 
   constructor(options: WindowWikiOptions, deps: FollowDeps = coreDeps) {
     this.#options = options;
@@ -69,10 +69,10 @@ export class WindowWikiHost implements WikiHost {
       const result = await followWikilink(inner, from, this.#deps);
       if (!result) return;
       if (samePath(result.path, from)) {
-        if (result.heading) this.#emit({ kind: 'reveal', heading: result.heading });
+        this.#emit({ kind: 'arrive', heading: result.heading });
         return;
       }
-      this.#pending = result.heading ? { path: result.path, heading: result.heading } : null;
+      this.#pending = { path: result.path, heading: result.heading };
       this.#options.openNote(result.path);
     } catch (error) {
       this.#options.notify(t('editor.wikilink.openFailed', { message: userMessage(error) }));
@@ -92,7 +92,7 @@ export class WindowWikiHost implements WikiHost {
       const pending = this.#pending;
       if (!pending || !from || !samePath(pending.path, from)) return;
       this.#pending = null;
-      this.#emit({ kind: 'reveal', heading: pending.heading });
+      this.#emit({ kind: 'arrive', heading: pending.heading });
     });
     return () => this.#listeners.delete(listener);
   }

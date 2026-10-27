@@ -1,16 +1,18 @@
-// Переход к заголовку по ссылке `[[Заметка#Заголовок]]` (С3.4): после
-// открытия заметки курсор встаёт в начало строки заголовка, строка
-// прокручивается вверх видимой части. Заголовок не найден — ничего не
-// происходит. Сравнение — без учёта регистра, с нормализацией Unicode.
+// Переход по вики-ссылке к открытой заметке (С3.4, решения 85, 86): курсор
+// встаёт в начало строки заголовка `[[Заметка#Заголовок]]` (без заголовка
+// или если его нет — в начало заметки), строка прокручивается вверх видимой
+// части, фокус — в тексте: можно сразу печатать. Сравнение заголовков — без
+// учёта регистра (ключ имени ядра), с нормализацией Unicode.
 import { EditorSelection, type Text } from '@codemirror/state';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { MAX_BLOCK_TEXT, fenceStep, findProperties, type CodeBlock, type OpenFence } from '../live-preview/markdown.ts';
+import { nameKey } from '../../core/names/index.ts';
 import { wikiHost } from './host.ts';
 
 const HEADING = /^ {0,3}#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 
 function headingKey(text: string): string {
-  return text.trim().normalize('NFC').toLocaleLowerCase('ru').normalize('NFC');
+  return nameKey(text.trim());
 }
 
 /** Начало строки заголовка `heading` вне блоков кода и блока свойств; `null` — нет такого. */
@@ -32,18 +34,21 @@ export function findHeading(doc: Text, heading: string): number | null {
   return null;
 }
 
-/** Курсор к заголовку и прокрутка к нему; `false` — заголовка нет. */
-export function revealHeading(view: EditorView, heading: string): boolean {
-  const at = findHeading(view.state.doc, heading);
-  if (at === null) return false;
+/**
+ * Курсор к заголовку `heading` (нет его или `null` — в начало заметки),
+ * прокрутка к нему и фокус в текст: можно сразу печатать (решение 86). В
+ * заметке только для чтения фокус не ставится, как при открытии (NoteText).
+ */
+export function arriveAt(view: EditorView, heading: string | null): void {
+  const at = (heading === null ? null : findHeading(view.state.doc, heading)) ?? 0;
   view.dispatch({
     selection: EditorSelection.cursor(at),
     effects: EditorView.scrollIntoView(at, { y: 'start', yMargin: 24 }),
   });
-  return true;
+  if (!view.state.readOnly) view.focus();
 }
 
-/** Переход к заголовку по событию окна (в обоих режимах редактора). */
+/** Переход по ссылке к открытой заметке — по событию окна (в обоих режимах редактора). */
 export const revealPlugin = ViewPlugin.fromClass(
   class {
     #unsubscribe: (() => void) | null = null;
@@ -54,9 +59,9 @@ export const revealPlugin = ViewPlugin.fromClass(
       // Событие может прийти сразу при подписке, пока редактор создаётся: переход — после.
       this.#unsubscribe =
         host?.subscribe((event) => {
-          if (event.kind !== 'reveal') return;
+          if (event.kind !== 'arrive') return;
           setTimeout(() => {
-            if (!this.#destroyed) revealHeading(view, event.heading);
+            if (!this.#destroyed) arriveAt(view, event.heading);
           }, 0);
         }) ?? null;
     }

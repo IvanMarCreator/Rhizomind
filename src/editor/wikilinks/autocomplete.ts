@@ -21,6 +21,7 @@ import {
 import type { LinkSuggestion } from '../../api/index.ts';
 import { LIMITS } from '../../api/limits.ts';
 import { t } from '../../i18n/index.ts';
+import { inCodeAt } from '../live-preview/index.ts';
 import { wikiHost } from './host.ts';
 
 /** Набираемая ссылка: `from` — сразу после `[[`, `to` — курсор. */
@@ -59,6 +60,8 @@ export function findTrigger(state: EditorState): Trigger | null {
   if (open < 0 || (open > 0 && before[open - 1] === '!')) return null;
   const query = before.slice(open + 2);
   if (/[\]|#]/.test(query) || [...query].length > LIMITS.max_query_chars) return null;
+  // В коде (в строке и в блоке) и в блоке свойств `[[` — текст, как в предпросмотре.
+  if (inCodeAt(state, line.from + open)) return null;
   return { from: line.from + open + 2, to: main.head, query };
 }
 
@@ -112,17 +115,38 @@ export function activeCompletion(state: EditorState): Completion | null {
   return state.field(completionField, false)?.active ?? null;
 }
 
-/** Вставить подсказку `index`: текст ссылки и `]]` (если их ещё нет), курсор — после `]]`. */
+/**
+ * Что заменяет подсказка после курсора: остаток цели до `]]` (или одной `]`
+ * — она становится `]]`), до `|` или `#` (подпись и заголовок остаются, `]]`
+ * уже есть). Без них на строке — слово после курсора (до пробела или `[`):
+ * дальнейший текст строки не трогается.
+ */
+export function targetEnd(state: EditorState, pos: number): { to: number; closing: string } {
+  const line = state.doc.lineAt(pos);
+  const after = line.text.slice(pos - line.from);
+  const stop = after.search(/[\]|#[]/);
+  if (stop >= 0 && after[stop] === ']') {
+    return { to: pos + stop + (after.startsWith(']]', stop) ? 2 : 1), closing: ']]' };
+  }
+  if (stop >= 0 && after[stop] !== '[') return { to: pos + stop, closing: '' };
+  return { to: pos + (/^[^\s[]*/.exec(after)?.[0].length ?? 0), closing: ']]' };
+}
+
+/**
+ * Вставить подсказку `index` вместо набранной цели (и её остатка после
+ * курсора, `targetEnd`) с закрывающими `]]`; курсор — после `]]`, а перед
+ * `|` или `#` — сразу после имени.
+ */
 export function acceptSuggestion(view: EditorView, index: number): boolean {
   const active = activeCompletion(view.state);
   const item = active?.items?.[index];
   if (!active || !item) return false;
   if (!item.linkable || item.insert === null) return true;
-  const closed = view.state.sliceDoc(active.to, active.to + 2) === ']]';
-  const insert = closed ? item.insert : `${item.insert}]]`;
+  const { to, closing } = targetEnd(view.state, active.to);
+  const insert = `${item.insert}${closing}`;
   view.dispatch({
-    changes: { from: active.from, to: active.to, insert },
-    selection: { anchor: active.from + item.insert.length + 2 },
+    changes: { from: active.from, to, insert },
+    selection: { anchor: active.from + insert.length },
     userEvent: 'input.complete',
     scrollIntoView: true,
   });

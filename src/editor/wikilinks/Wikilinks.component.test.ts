@@ -12,6 +12,16 @@ import Shell from '../../shell/Shell.svelte';
 import { WindowModel } from '../../shell/window.svelte.ts';
 import { activeCompletion } from './autocomplete.ts';
 
+// В jsdom нет раскладки: у Range нет размеров, а CodeMirror меряет текст,
+// когда редактор получает фокус (переход по ссылке, решение 86).
+if (typeof Range.prototype.getClientRects !== 'function') {
+  const empty = { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, toJSON: () => ({}) };
+  Object.assign(Range.prototype, {
+    getClientRects: () => Object.assign([], { item: () => null }) as unknown as DOMRectList,
+    getBoundingClientRect: () => empty as DOMRect,
+  });
+}
+
 const SETTINGS: Settings = {
   theme: 'system',
   editor_mode: 'live_preview',
@@ -158,6 +168,39 @@ describe('щелчок по вики-ссылке (С3.4, решение 76)', (
   });
 });
 
+describe('после перехода можно сразу печатать (решение 86)', () => {
+  it('переход к заголовку другой заметки: фокус в тексте, курсор на заголовке', async () => {
+    const { view } = await openHome();
+    cursorToEnd(view);
+    await fireEvent.mouseDown(wikiLink(view, 'Альфа/Встреча#Итоги|итоги'), { button: 0 });
+    const meeting = await nextView(view);
+    await waitFor(() => expect(meeting.hasFocus).toBe(true));
+    expect(meeting.state.doc.lineAt(meeting.state.selection.main.head).text).toBe('## Итоги');
+    expect(meeting.state.selection.main.head).toBe(MEETING_TEXT.indexOf('## Итоги'));
+  });
+
+  it('переход без заголовка и созданная по ссылке заметка: фокус в тексте, курсор в начале', async () => {
+    const { view, model } = await openHome();
+    cursorToEnd(view);
+    await fireEvent.mouseDown(wikiLink(view, 'Новая'), { button: 0 });
+    await waitFor(() => expect(model.currentPath).toEqual(['Проекты', 'Новая.md']));
+    const created = await nextView(view);
+    await waitFor(() => expect(created.hasFocus).toBe(true));
+    expect(created.state.selection.main.head).toBe(0);
+  });
+
+  it('переход к заголовку своей заметки: фокус в тексте, курсор на заголовке', async () => {
+    const { view } = await openHome();
+    const end = view.state.doc.length;
+    view.dispatch({ changes: { from: end, insert: '\n\n# Конец\n\n[[Дневник#Конец]]\n\nпоследняя' } });
+    cursorToEnd(view);
+    expect(view.hasFocus).toBe(false);
+    await fireEvent.mouseDown(wikiLink(view, 'Дневник#Конец'), { button: 0 });
+    await waitFor(() => expect(view.hasFocus).toBe(true));
+    expect(view.state.doc.lineAt(view.state.selection.main.head).text).toBe('# Конец');
+  });
+});
+
 describe('неразрешённая ссылка', () => {
   it('выглядит иначе; щелчок создаёт заметку в папке текущей и открывает её; вид обновляется по vault:changed', async () => {
     const { view, model, calls } = await openHome();
@@ -239,6 +282,39 @@ describe('автодополнение после [[', () => {
     await fireEvent.keyDown(view.contentDOM, { key: 'Escape' });
     expect(activeCompletion(view.state)).toBeNull();
     expect(view.dom.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  /** Строка с курсором `¦` в середине набираемого имени. */
+  async function typingAt(marked: string) {
+    const pos = marked.indexOf('¦');
+    const setup = await openHome({ extra: { links_suggest: ({ query }) => ({ items: query.length > 0 ? ITEMS : [] }) } });
+    const { view } = setup;
+    const at = view.state.doc.length;
+    view.dispatch({
+      changes: { from: at, insert: `\n${marked.slice(0, pos)}${marked.slice(pos + 1)}` },
+      selection: { anchor: at + 1 + pos },
+      userEvent: 'input.type',
+    });
+    await waitFor(() => expect(view.dom.querySelectorAll('[role="option"]')).toHaveLength(3));
+    return setup;
+  }
+
+  // Курсор посреди имени: заменяется вся цель до `]]`, `]`, `|`, `#`; без
+  // закрывающих скобок — слово после курсора. Скобки не удваиваются.
+  it.each([
+    ['[[Пл¦ан]]', '[[Альфа/Встреча]]', '[[Альфа/Встреча]]'],
+    ['[[Пл¦]', '[[Альфа/Встреча]]', '[[Альфа/Встреча]]'],
+    ['[[Пл¦ан', '[[Альфа/Встреча]]', '[[Альфа/Встреча]]'],
+    ['[[Пл¦ан потом', '[[Альфа/Встреча]] потом', '[[Альфа/Встреча]]'],
+    ['[[Пл¦ан дальше]] и [[Б]]', '[[Альфа/Встреча]] и [[Б]]', '[[Альфа/Встреча]]'],
+    ['[[Пл¦ан|подпись]]', '[[Альфа/Встреча|подпись]]', '[[Альфа/Встреча'],
+    ['[[Пл¦ан#Итоги]]', '[[Альфа/Встреча#Итоги]]', '[[Альфа/Встреча'],
+  ])('курсор посреди имени: %s → %s', async (marked, expected, beforeCursor) => {
+    const { view } = await typingAt(marked);
+    await fireEvent.keyDown(view.contentDOM, { key: 'Enter' });
+    expect(lastLine(view)).toBe(expected);
+    const line = view.state.doc.line(view.state.doc.lines);
+    expect(view.state.sliceDoc(line.from, view.state.selection.main.head)).toBe(beforeCursor);
   });
 
   it('щелчок по пункту вставляет его', async () => {
