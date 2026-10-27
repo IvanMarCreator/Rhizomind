@@ -127,6 +127,12 @@
   vertical-align: bottom;
 }
 
+/* Подсказки (список вики-ссылок, src/editor/wikilinks/): рамка и поля
+   входят в размер. Слой и оформление — в wikilinks.css. */
+.cm-editor .cm-tooltip {
+  box-sizing: border-box;
+}
+
 /* Пустые картинки рядом с виджетами: держат курсор, места не занимают. */
 .cm-editor .cm-widgetBuffer {
   vertical-align: baseline;

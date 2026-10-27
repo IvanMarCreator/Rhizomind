@@ -316,7 +316,7 @@ const requestPlugin = ViewPlugin.fromClass(
 /** Автодополнение вики-ссылок (в обоих режимах редактора). */
 export function wikilinkCompletion(): Extension {
   // Список — относительно редактора (`.cm-editor { position: relative }` в
-  // wikilinks.css): базовые стили CodeMirror в окне не действуют (Н7), и
-  // без этого список оказывался у левого края окна.
+  // src/editor/codemirror-base.css: вставленные стили CodeMirror в окне не
+  // действуют, Н7); без этого список оказывался у левого края окна.
   return [tooltips({ position: 'absolute' }), completionField, listKeymap, requestPlugin];
 }
