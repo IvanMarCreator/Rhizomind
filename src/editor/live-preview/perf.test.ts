@@ -94,75 +94,55 @@ describe('заметка больше 10 МБ (решение 77)', { timeout: 1
   });
 
   // Открытие заметки 30 МБ: прежний код (main 12c7f4f) и код без порога 10 МБ
-  // разбирают весь текст — открытие в 4–5 раз дольше исходного текста.
+  // разбирают весь текст.
   const text = dense(30 * MB);
-  const open = (mode: 'source' | 'live_preview') => () => {
-    const state = createEditorState(text, { mode });
-    previewDecorations(state, [{ from: 0, to: state.doc.line(60).to }]);
-  };
 
   it('открывается в живом предпросмотре без чтения всего текста', () => {
     // Счётчик работы, а не время: не зависит от нагрузки на машину. Сейчас
-    // читается ~2,5 КБ (видимая часть), при разборе всего текста — 30 МБ.
-    expect(charsRead(open('live_preview'))).toBeLessThan(text.length / 100);
-  });
-
-  it('открывается в живом предпросмотре не дольше исходного текста × 2', () => {
-    // Запасная проверка временем — на случай, если весь текст прочитан мимо
-    // счётчика. Под нагрузкой (параллельные тесты, 2 ядра) отношение двух
-    // замеров по ~200 мс гуляет от ×0,5 до ×1,5 (предел ×1,2 «мигал»), возврат
-    // к разбору всего текста — ×4–5. Медиана отношений в парах соседних
-    // замеров: оба замера пары идут при одной и той же нагрузке.
-    const ratios: number[] = [];
-    for (let k = 0; k < 7; k++) {
-      const [first, second] = k % 2 === 0 ? (['source', 'live_preview'] as const) : (['live_preview', 'source'] as const);
-      const a = once(open(first));
-      const b = once(open(second));
-      ratios.push(first === 'source' ? b / a : a / b);
-    }
-    ratios.sort((x, y) => x - y);
-    expect(ratios[3]).toBeLessThan(2);
+    // читается видимая часть (единицы КБ), при разборе всего текста — 30 МБ.
+    // Проверки временем нет: счётчик видит любое чтение текста, а с решения
+    // 87 поле блоков работает и в исходном тексте — сравнивать не с чем.
+    const read = charsRead(() => {
+      const state = createEditorState(text, { mode: 'live_preview' });
+      previewDecorations(state, [{ from: 0, to: state.doc.line(60).to }]);
+    });
+    expect(read).toBeGreaterThan(0);
+    expect(read).toBeLessThan(text.length / 100);
   });
 });
 
-function once(fn: () => void): number {
-  const start = performance.now();
-  fn();
-  return performance.now() - start;
-}
-
 /**
- * Сколько символов текста прочитано построчно (`line`, `lineAt`, `iterLines` —
- * всё, чем живой предпросмотр читает документ CodeMirror) за время `fn`.
+ * Сколько символов текста прочитано за время `fn` — любым путём: `line`,
+ * `sliceString`, `toString`, `iter`, `iterRange`, `iterLines` и прочее в
+ * CodeMirror в итоге берут строки из массивов `text` листьев документа.
+ * Документ, созданный за это время (`Text.of`), получает листья, у которых
+ * массив строк считает каждое чтение строки по номеру.
  */
 function charsRead(fn: () => void): number {
-  const proto = Text.prototype;
-  const { line, lineAt, iterLines } = proto;
+  const of = Text.of.bind(Text);
   let read = 0;
-  proto.line = function (this: Text, n: number) {
-    const result = line.call(this, n);
-    read += result.length + 1;
-    return result;
+  const counting = (lines: string[]) =>
+    new Proxy(lines, {
+      get(target, key, receiver) {
+        const value: unknown = Reflect.get(target, key, receiver);
+        if (typeof key === 'string' && typeof value === 'string' && /^\d+$/.test(key)) read += value.length + 1;
+        return value;
+      },
+    });
+  const wrap = (node: Text) => {
+    const tree = node as unknown as { children: readonly Text[] | null; text?: string[] };
+    if (tree.children) tree.children.forEach(wrap);
+    else if (tree.text) tree.text = counting(tree.text);
   };
-  proto.lineAt = function (this: Text, pos: number) {
-    const result = lineAt.call(this, pos);
-    read += result.length + 1;
-    return result;
-  };
-  proto.iterLines = function (this: Text, from?: number, to?: number) {
-    const lines = iterLines.call(this, from, to);
-    const next = lines.next.bind(lines);
-    lines.next = (skip?: number) => {
-      const result = next(skip);
-      if (!result.done) read += result.value.length + 1;
-      return result;
-    };
-    return lines;
+  Text.of = (lines: readonly string[]) => {
+    const doc = of(lines);
+    wrap(doc);
+    return doc;
   };
   try {
     fn();
   } finally {
-    Object.assign(proto, { line, lineAt, iterLines });
+    Text.of = of;
   }
   return read;
 }
@@ -192,13 +172,44 @@ describe('неудобная строка ~10 000 символов: оформл
     ['[[a#b|c]]', fill('[[a#b|c]]')],
     ['![[a', fill('![[a')],
   ])('%s', (_name, line) => {
-    const state = createEditorState(`курсор\n${line}\n`, { mode: 'live_preview' });
-    const moves = [0, state.doc.length - 3];
-    let k = 0;
-    const time = best(() => {
-      const next = state.update({ selection: EditorSelection.cursor(moves[k++ % 2] ?? 0) }).state;
-      previewDecorations(next);
-    });
-    expect(time).toBeLessThan(LIMIT_MS);
+    // Под сильной нагрузкой (параллельные тесты на 2 ядрах) лучший из 15
+    // замеров бывал 16–26 мс при обычных ≤ 4,4. Поэтому рядом, попеременно,
+    // замеряется строка той же длины из вики-ссылок `[[a]] ` (~3,5 мс, разбор
+    // линейный, нагрузка та же): падение — только если и время выше предела,
+    // и отношение к ней больше ×3. Сейчас худшее отношение ×1,2 (`[[a]]`);
+    // квадратичный разбор — 16–245 мс, то есть ×4,5 и больше.
+    const { time, ratio } = bestVersus(cursorMoves(line), cursorMoves(fill('[[a]] ')));
+    const note = `${time.toFixed(1)} мс, ×${ratio.toFixed(1)} к строке вики-ссылок`;
+    expect(time < LIMIT_MS || ratio < 3, note).toBe(true);
   });
 });
+
+/** Движение курсора между первой и второй строкой и оформление всей заметки. */
+function cursorMoves(line: string): () => void {
+  const state = createEditorState(`курсор\n${line}\n`, { mode: 'live_preview' });
+  const moves = [0, state.doc.length - 3];
+  let k = 0;
+  return () => {
+    const next = state.update({ selection: EditorSelection.cursor(moves[k++ % 2] ?? 0) }).state;
+    previewDecorations(next);
+  };
+}
+
+/** Лучшие из попеременных замеров `fn` и `base`: время `fn` и его отношение к `base`. */
+function bestVersus(fn: () => void, base: () => void, runs = 15): { time: number; ratio: number } {
+  fn();
+  fn();
+  base();
+  base();
+  let time = Infinity;
+  let baseTime = Infinity;
+  for (let k = 0; k < runs; k++) {
+    let start = performance.now();
+    fn();
+    time = Math.min(time, performance.now() - start);
+    start = performance.now();
+    base();
+    baseTime = Math.min(baseTime, performance.now() - start);
+  }
+  return { time, ratio: time / Math.max(baseTime, 0.01) };
+}
