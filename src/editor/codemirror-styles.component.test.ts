@@ -12,11 +12,20 @@
 // `&`, `&light`, `&dark`) должен быть в таблице COVERAGE: либо у него есть
 // правило в нашем CSS, либо названа причина, почему оно не нужно. Новый
 // селектор роняет тест — его нужно разобрать и внести в таблицу.
-import { EditorView } from '@codemirror/view';
+import { EditorState, type Extension } from '@codemirror/state';
+import {
+  drawSelection,
+  EditorView,
+  highlightActiveLine,
+  highlightTrailingWhitespace,
+  highlightWhitespace,
+  lineNumbers,
+  placeholder,
+} from '@codemirror/view';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { createEditorState } from './codemirror.ts';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { editorExtensions } from './codemirror.ts';
 import type { WikiHost } from './wikilinks/host.ts';
 
 const OUR_CSS = {
@@ -25,42 +34,47 @@ const OUR_CSS = {
   wiki: 'wikilinks/wikilinks.css',
 } as const;
 
-type Coverage = { file: keyof typeof OUR_CSS; rule: string } | { skip: string };
+/**
+ * Чем закрыт селектор: правило в нашем CSS с ключевым свойством (`prop` —
+ * текст объявления в блоке правила) либо причина, почему не нужен, и признак
+ * в DOM редакторов, которого при этой причине быть не должно (`absent`).
+ */
+type Coverage = { file: keyof typeof OUR_CSS; rule: string; prop: string } | { skip: string; absent: string };
 
-const css = (file: keyof typeof OUR_CSS, rule: string): Coverage => ({ file, rule });
-const skip = (reason: string): Coverage => ({ skip: reason });
+const css = (file: keyof typeof OUR_CSS, rule: string, prop: string): Coverage => ({ file, rule, prop });
+const skip = (reason: string, absent: string): Coverage => ({ skip: reason, absent });
 
-const NO_DRAW_SELECTION = skip('drawSelection не подключён: курсор и выделение рисует движок');
-const NO_GUTTERS = skip('полей номеров строк нет');
-const NO_PANELS = skip('панелей и диалогов CodeMirror (поиск и т. п.) нет');
-const NO_SPACE_MARKS = skip('подсветки пробелов и табов нет');
-const NO_ACTIVE_LINE = skip('highlightActiveLine не подключён');
-const NO_ARROW = skip('подсказки без стрелки');
+const NO_DRAW_SELECTION = skip('drawSelection не подключён: курсор и выделение рисует движок', '.cm-cursorLayer, .cm-selectionLayer, .cm-dropCursor');
+const NO_GUTTERS = skip('полей номеров строк нет', '.cm-gutters, .cm-gutter');
+const NO_PANELS = skip('панелей и диалогов CodeMirror (поиск и т. п.) нет', '.cm-panels, .cm-dialog');
+const NO_SPACE_MARKS = skip('подсветки пробелов и табов нет', '.cm-highlightSpace, .cm-highlightTab, .cm-trailingSpace');
+const NO_ACTIVE_LINE = skip('highlightActiveLine не подключён', '.cm-activeLine, .cm-activeLineGutter');
+const NO_ARROW = skip('подсказки без стрелки', '.cm-tooltip-arrow');
 
 /** Каждый селектор тем CodeMirror в окне — и чем он закрыт. */
 const COVERAGE: Record<string, Coverage> = {
-  '&': css('base', '.cm-editor {'),
-  '&.cm-focused': css('base', '.cm-editor.cm-focused {'),
-  '& .cm-scroller': css('base', '.cm-editor .cm-scroller {'),
-  '& .cm-content': css('base', '.cm-editor .cm-content {'),
-  '& .cm-content[contenteditable=true]': css('base', ".cm-editor .cm-content[contenteditable='true'] {"),
-  '& .cm-lineWrapping': css('base', '.cm-editor .cm-lineWrapping {'),
-  '& .cm-line': css('base', '.cm-editor .cm-line {'),
-  '& .cm-layer': css('base', '.cm-editor .cm-layer {'),
-  '& .cm-layer > *': css('base', '.cm-editor .cm-layer > * {'),
-  '& .cm-cursorLayer': css('base', '.cm-editor .cm-cursorLayer {'),
-  '& .cm-iso': css('base', '.cm-editor .cm-iso {'),
-  '& .cm-announced': css('base', '.cm-editor .cm-announced {'),
-  '@media print & .cm-announced': css('base', '@media print'),
-  '& .cm-tab': css('base', '.cm-editor .cm-tab {'),
-  '& .cm-widgetBuffer': css('base', '.cm-editor .cm-widgetBuffer {'),
-  '& .cm-tooltip': css('base', '.cm-editor .cm-tooltip {'),
-  '&light .cm-content': css('note', ':global(.cm-content) {'),
-  '&dark .cm-content': css('note', ':global(.cm-content) {'),
-  '&light .cm-specialChar': css('note', ':global(.cm-specialChar) {'),
-  '&dark .cm-specialChar': css('note', ':global(.cm-specialChar) {'),
-  '&light .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {'),
-  '&dark .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {'),
+  '&': css('base', '.cm-editor {', 'display: flex !important'),
+  '&.cm-focused': css('base', '.cm-editor.cm-focused {', 'outline: none'),
+  '& .cm-scroller': css('base', '.cm-editor .cm-scroller {', 'align-items: flex-start !important'),
+  '& .cm-content': css('base', '.cm-editor .cm-content {', 'white-space: pre'),
+  '& .cm-content[contenteditable=true]': css('base', ".cm-editor .cm-content[contenteditable='true'] {", '-webkit-user-modify: read-write-plaintext-only'),
+  '& .cm-lineWrapping': css('base', '.cm-editor .cm-lineWrapping {', 'white-space: break-spaces'),
+  '& .cm-line': css('base', '.cm-editor .cm-line {', 'display: block'),
+  '& .cm-layer': css('base', '.cm-editor .cm-layer {', 'contain: size style'),
+  '& .cm-layer > *': css('base', '.cm-editor .cm-layer > * {', 'position: absolute'),
+  '& .cm-cursorLayer': css('base', '.cm-editor .cm-cursorLayer {', 'pointer-events: none'),
+  '& .cm-iso': css('base', '.cm-editor .cm-iso {', 'unicode-bidi: isolate'),
+  '& .cm-announced': css('base', '.cm-editor .cm-announced {', 'top: -10000px'),
+  '@media print & .cm-announced': css('base', '@media print', 'display: none'),
+  '& .cm-tab': css('base', '.cm-editor .cm-tab {', 'display: inline-block'),
+  '& .cm-widgetBuffer': css('base', '.cm-editor .cm-widgetBuffer {', 'width: 0'),
+  '& .cm-tooltip': css('base', '.cm-editor .cm-tooltip {', 'box-sizing: border-box'),
+  '&light .cm-content': css('note', ':global(.cm-content) {', 'caret-color: var(--accent)'),
+  '&dark .cm-content': css('note', ':global(.cm-content) {', 'caret-color: var(--accent)'),
+  '&light .cm-specialChar': css('note', ':global(.cm-specialChar) {', 'color: var(--status-error)'),
+  '&dark .cm-specialChar': css('note', ':global(.cm-specialChar) {', 'color: var(--status-error)'),
+  '&light .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {', 'background: var(--bg-popover)'),
+  '&dark .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {', 'background: var(--bg-popover)'),
 
   '& .cm-cursor': NO_DRAW_SELECTION,
   '& .cm-dropCursor': NO_DRAW_SELECTION,
@@ -112,7 +126,7 @@ const COVERAGE: Record<string, Coverage> = {
   '& .cm-highlightSpace': NO_SPACE_MARKS,
   '& .cm-highlightTab': NO_SPACE_MARKS,
   '& .cm-trailingSpace': NO_SPACE_MARKS,
-  '& .cm-placeholder': skip('placeholder не подключён'),
+  '& .cm-placeholder': skip('placeholder не подключён', '.cm-placeholder'),
   '&light .cm-activeLine': NO_ACTIVE_LINE,
   '&dark .cm-activeLine': NO_ACTIVE_LINE,
 
@@ -127,7 +141,7 @@ const COVERAGE: Record<string, Coverage> = {
   '& .cm-tooltip-below .cm-tooltip-arrow:after': NO_ARROW,
   '&dark .cm-tooltip .cm-tooltip-arrow:before': NO_ARROW,
   '&dark .cm-tooltip .cm-tooltip-arrow:after': NO_ARROW,
-  '&light .cm-tooltip-section:not(:first-child)': skip('в списке подсказок одна секция'),
+  '&light .cm-tooltip-section:not(:first-child)': skip('в списке подсказок одна секция', '.cm-tooltip-section'),
 };
 
 const host: WikiHost = {
@@ -139,21 +153,56 @@ const host: WikiHost = {
 
 const views: EditorView[] = [];
 
-afterAll(() => {
-  for (const view of views) view.destroy();
+// jsdom не считает раскладку: без заглушки CodeMirror пишет в журнал
+// TypeError из измерения (Range.getClientRects).
+const originalRects = Range.prototype.getClientRects;
+const originalRect = Range.prototype.getBoundingClientRect;
+
+beforeAll(() => {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
 });
 
-/** Редактор как в окне; `[[` открывает список подсказок. */
-async function mountAll(): Promise<void> {
+afterAll(() => {
+  for (const view of views) view.destroy();
+  Range.prototype.getClientRects = originalRects;
+  Range.prototype.getBoundingClientRect = originalRect;
+});
+
+/** Текст с пробелами подряд, табом и пробелом в конце строки — для подсветки пробелов. */
+const TEXT = '# Заголовок\n**жирный** [[Цель]] `код`\n- [ ] задача\n\tтаб  и  пробелы \n';
+
+/**
+ * Редакторы как в окне, в `container`: оба режима, `[[` открывает список
+ * подсказок; третий — с пустым документом (там появился бы placeholder).
+ */
+async function mountEditors(container: HTMLElement, extra: Extension = []): Promise<void> {
   for (const mode of ['source', 'live_preview'] as const) {
-    const state = createEditorState('# Заголовок\n**жирный** [[Цель]] `код`\n- [ ] задача\n', { mode, wiki: host });
-    const view = new EditorView({ parent: document.body, state });
+    const state = EditorState.create({ doc: TEXT, extensions: [editorExtensions({ mode, wiki: host }), extra] });
+    const view = new EditorView({ parent: container, state });
     views.push(view);
     view.focus();
     const at = view.state.doc.length;
     view.dispatch({ changes: { from: at, insert: '[[П' }, selection: { anchor: at + 3 }, userEvent: 'input.type' });
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+  const empty = EditorState.create({ doc: '', extensions: [editorExtensions({ mode: 'live_preview', wiki: host }), extra] });
+  views.push(new EditorView({ parent: container, state: empty }));
+}
+
+/** Причины «не нужен», которые DOM редакторов опровергает. */
+function absentViolations(container: HTMLElement): string[] {
+  const found = new Set<string>();
+  for (const [selector, coverage] of Object.entries(COVERAGE)) {
+    if ('absent' in coverage && container.querySelector(coverage.absent)) found.add(`${coverage.absent} (${selector}: ${coverage.skip})`);
+  }
+  return [...found];
+}
+
+function newContainer(): HTMLElement {
+  const container = document.createElement('div');
+  document.body.append(container);
+  return container;
 }
 
 /** Классы базовой темы: общий, светлый и тёмный (по редакторам с тёмной темой и без). */
@@ -204,31 +253,63 @@ function insertedSelectors(ids: Map<string, string>): string[] {
 }
 
 describe('темы CodeMirror в окне закрыты нашим статическим CSS (З1)', () => {
-  it('набор селекторов, которые вставляет CodeMirror, совпадает с таблицей', async () => {
-    await mountAll();
-    expect(document.querySelectorAll('.cm-tooltip.cm-rz-suggest').length, 'список подсказок открыт').toBeGreaterThan(0);
+  let main: HTMLElement;
+
+  beforeAll(async () => {
+    main = newContainer();
+    await mountEditors(main);
+  });
+
+  it('набор селекторов, которые вставляет CodeMirror, совпадает с таблицей', () => {
+    expect(main.querySelectorAll('.cm-tooltip.cm-rz-suggest').length, 'список подсказок открыт').toBeGreaterThan(0);
     const selectors = insertedSelectors(themeIds());
     // Новый селектор — разобрать: правило в нашем CSS или причина, почему не нужно.
     expect(selectors).toEqual(Object.keys(COVERAGE).sort());
   });
 
-  it('для каждого закрытого селектора правило есть в нашем CSS', () => {
+  it('причины «не нужен» верны: признаков этих возможностей в редакторах нет (Р1)', () => {
+    expect(absentViolations(main)).toEqual([]);
+  });
+
+  it.each([
+    ['highlightActiveLine()', highlightActiveLine()],
+    ['lineNumbers()', lineNumbers()],
+    ['placeholder()', placeholder('Пусто')],
+    ['highlightWhitespace()', highlightWhitespace()],
+    ['highlightTrailingWhitespace()', highlightTrailingWhitespace()],
+    ['drawSelection()', drawSelection()],
+  ])('подключённое %s опровергает причину — проверка падает', async (_name, extension) => {
+    const container = newContainer();
+    await mountEditors(container, extension);
+    expect(absentViolations(container).length).toBeGreaterThan(0);
+  });
+
+  it('для каждого закрытого селектора правило с ключевым свойством есть в нашем CSS (Р2)', () => {
     const sources = Object.fromEntries(
       Object.entries(OUR_CSS).map(([key, file]) => [key, readFileSync(path.join(import.meta.dirname, file), 'utf8')]),
     ) as Record<keyof typeof OUR_CSS, string>;
-    const missing = Object.entries(COVERAGE).filter(
-      ([, coverage]) => 'file' in coverage && !sources[coverage.file].includes(coverage.rule),
-    );
+    const missing: string[] = [];
+    for (const [selector, coverage] of Object.entries(COVERAGE)) {
+      if (!('file' in coverage)) continue;
+      const source = sources[coverage.file];
+      const at = source.indexOf(coverage.rule);
+      // Блок правила — до первой «}» (у @media — первое вложенное правило).
+      const block = at < 0 ? '' : source.slice(at, source.indexOf('}', at));
+      if (!block.includes(`${coverage.prop};`)) missing.push(`${selector}: ${OUR_CSS[coverage.file]} «${coverage.rule}» без «${coverage.prop}»`);
+    }
     expect(missing).toEqual([]);
   });
 
   it('новая тема (EditorView.theme) роняет проверку набора', () => {
+    // Темы расширений из проверок выше тоже уже в элементе — сравнивается прирост.
+    const before = new Set(insertedSelectors(themeIds()));
     const view = new EditorView({
-      parent: document.body,
+      parent: newContainer(),
       extensions: EditorView.theme({ '.cm-rz-new': { color: 'red' } }),
     });
     views.push(view);
-    const extra = insertedSelectors(themeIds()).filter((selector) => !(selector in COVERAGE));
+    const extra = insertedSelectors(themeIds()).filter((selector) => !before.has(selector));
     expect(extra).toEqual(['&theme .cm-rz-new']);
+    expect(extra.filter((selector) => !(selector in COVERAGE))).toEqual(extra);
   });
 });
