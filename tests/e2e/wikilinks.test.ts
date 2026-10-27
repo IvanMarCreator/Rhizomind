@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
+import { unexpectedStyleViolations, watchCsp } from './csp.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const TEXT = '[role="textbox"][aria-label="Текст заметки"]';
@@ -84,6 +85,7 @@ describe('вики-ссылки', () => {
     const { browser } = session;
     const folder = browser.$('[role="treeitem"][aria-label="Дневник"]');
     await folder.waitForDisplayed({ timeout: 20_000 });
+    await watchCsp(browser);
     await folder.click();
     const row = browser.$('[role="treeitem"][aria-label="Сегодня"]');
     await row.waitForDisplayed({ timeout: 10_000 });
@@ -189,5 +191,9 @@ describe('вики-ссылки', () => {
     expect(await lineText(b, 'См.')).toBe('См. [[План]]');
     const file = path.join(vault, 'Проекты', 'Альфа', 'Встреча.md');
     await b.waitUntil(() => readFileSync(file, 'utf8').includes('См. [[План]]'), { timeout: 5_000, timeoutMsg: 'вставка не записана' });
+  });
+
+  it('нарушений CSP по стилям нет, в том числе от списка автодополнения (задача 2.10)', async () => {
+    expect(await unexpectedStyleViolations(browser())).toEqual([]);
   });
 });

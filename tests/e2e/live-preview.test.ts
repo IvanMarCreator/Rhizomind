@@ -7,6 +7,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, waitForAppExit, type Session } from './driver.ts';
+import { unexpectedStyleViolations, watchCsp } from './csp.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const TEXT = '[role="textbox"][aria-label="Текст заметки"]';
@@ -109,36 +110,6 @@ function modeChecked(browser: WebdriverIO.Browser): Promise<string> {
   return browser.execute(
     () => document.querySelector('[role="radiogroup"] [role="radio"][aria-checked="true"]')?.getAttribute('aria-label') ?? '',
   );
-}
-
-/**
- * Нарушения CSP по стилям в окне (задача 2.10): слушатель ставится до открытия
- * заметки. Ожидаемые — два элемента <style>, которые вставляют библиотеки и
- * которые CSP запрещает, а их правила повторены в нашем статическом CSS:
- * базовая тема CodeMirror (пакет style-mod, классы «ͼ…») —
- * src/editor/codemirror-base.css; стиль изолированного iframe Tauri
- * (`#__tauri_isolation__`, tauri/scripts/isolation.js) — src/shell/base.css.
- * Любое другое нарушение — ошибка.
- */
-const KNOWN = ' [известный: правила в статическом CSS]';
-
-async function watchCsp(browser: WebdriverIO.Browser): Promise<void> {
-  await browser.execute((KNOWN) => {
-    const log: string[] = [];
-    (window as unknown as { rzCsp: string[] }).rzCsp = log;
-    document.addEventListener('securitypolicyviolation', (event) => {
-      const target = event.target;
-      const text = target instanceof HTMLStyleElement ? (target.textContent ?? '') : '';
-      const known = text.includes('\u037c') || text.trimStart().startsWith('#__tauri_isolation__');
-      const where = target instanceof Element ? target.tagName : String(target);
-      log.push(`${event.effectiveDirective} ${event.blockedURI} ${where} ${event.sourceFile}:${event.lineNumber} ${text.slice(0, 60)}${known ? KNOWN : ''}`);
-    });
-  }, KNOWN);
-}
-
-async function unexpectedStyleViolations(browser: WebdriverIO.Browser): Promise<string[]> {
-  const log = await browser.execute(() => (window as unknown as { rzCsp?: string[] }).rzCsp ?? ['слушатель не установлен']);
-  return log.filter((entry) => !entry.endsWith(KNOWN));
 }
 
 /**
