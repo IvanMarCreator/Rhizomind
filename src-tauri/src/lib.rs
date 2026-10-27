@@ -154,6 +154,9 @@ fn webdriver_overrides_from_env() -> (String, Option<std::path::PathBuf>) {
 /// временная папка данных и одни флаги движка, поэтому они работают в одном
 /// процессе браузера WebView2.
 ///
+/// `title` — заголовок окна ([`windows::vault_title`]: имя хранилища, без
+/// имён заметок).
+///
 /// `saved` — размер и положение окна хранилища из списка хранилищ:
 /// положение задаётся, только если заголовок окна виден на одном из
 /// экранов (`windows::placement`); экраны известны только у созданного
@@ -161,10 +164,11 @@ fn webdriver_overrides_from_env() -> (String, Option<std::path::PathBuf>) {
 pub fn create_window<R: Runtime>(
     app: &AppHandle<R>,
     label: &str,
+    title: &str,
     saved: Option<registry::WindowState>,
 ) -> tauri::Result<WebviewWindow<R>> {
     let size = windows::placement(saved, &[]);
-    build_window(app, label, &main_window_title(), size, saved)
+    build_window(app, label, title, size, saved)
 }
 
 /// Создаёт окно «Управление хранилищами» (920 × 600, без хранилища) той же
@@ -418,7 +422,7 @@ mod tests {
     fn window_is_created_in_rust_with_label_from_capabilities() {
         let app = mock_app();
         let label = windows::new_label();
-        let window = create_window(app.handle(), &label, None).expect("окно");
+        let window = create_window(app.handle(), &label, &main_window_title(), None).expect("окно");
 
         // Подменный runtime Tauri не хранит заголовок и настройки движка: их
         // проверяют сценарные тесты и тест следов (tests/e2e/).
