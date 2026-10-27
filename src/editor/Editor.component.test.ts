@@ -7,7 +7,7 @@ import { EditorView } from '@codemirror/view';
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteResponse, Settings, VaultPath } from '../api/index.ts';
 import { emitCoreEvent, mockCore, type CoreMocks, type RecordedCall } from '../api/testing.ts';
 import Shell from '../shell/Shell.svelte';
@@ -152,6 +152,17 @@ afterEach(() => {
   clearMocks();
   delete document.documentElement.dataset.theme;
 });
+
+// Первое открытие окна в процессе тестов — в несколько раз дольше следующих
+// (первый запуск кода окна, CodeMirror, jsdom). Под нагрузкой параллельных
+// тестов первый тест файла («LF без BOM.md», ещё и ждущий 1,2 с) упирался в
+// предел 5 с. Прогрев — отдельно, со своим пределом.
+beforeAll(async () => {
+  await openWindow(new Disk(SAMPLES), ['LF без BOM.md']);
+  cleanup();
+  clearMocks();
+  delete document.documentElement.dataset.theme;
+}, 60_000);
 
 // ---- Тесты ----------------------------------------------------------------------
 

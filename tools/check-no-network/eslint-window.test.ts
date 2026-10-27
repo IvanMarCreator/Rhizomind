@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const eslint = new ESLint({ cwd: root });
@@ -12,7 +12,16 @@ async function restricted(code: string, file: string): Promise<number> {
   return (result?.messages ?? []).filter((m) => m.ruleId === 'no-restricted-syntax').length;
 }
 
-describe('ESLint: окно через .defaultView и .win', () => {
+// Первый вызов ESLint загружает настройки и парсеры (секунды; под нагрузкой
+// параллельных тестов — больше 5 с, тест «мигал»). Прогрев — отдельно, со своим
+// пределом; сами проверки после него быстрые.
+beforeAll(async () => {
+  await restricted('export {};\n', 'src/x.ts');
+  await restricted('export {};\n', 'src-isolation/x.js');
+  await restricted('export {};\n', 'tools/x.ts');
+}, 60_000);
+
+describe('ESLint: окно через .defaultView и .win', { timeout: 15_000 }, () => {
   it.each([
     ['export const w = document.body.ownerDocument.defaultView;\n', 'src/x.ts'],
     ['export const f = (v: { win: Window }) => v.win;\n', 'src/editor/x.ts'],

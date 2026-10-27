@@ -23,6 +23,10 @@ export default defineConfig({
           name: 'components',
           include: ['src/**/*.component.test.ts'],
           environment: 'jsdom',
+          // Окно в jsdom под нагрузкой параллельных тестов: первый тест файла
+          // платит за первый запуск кода окна (секунды), 5 с по умолчанию мало.
+          // Ожидания внутри тестов — по состоянию (waitFor/findBy).
+          testTimeout: 15_000,
         },
       },
     ],
