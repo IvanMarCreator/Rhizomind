@@ -7,6 +7,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, waitForAppExit, type Session } from './driver.ts';
+import { unexpectedStyleViolations, watchCsp } from './csp.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const TEXT = '[role="textbox"][aria-label="Текст заметки"]';
@@ -38,7 +39,9 @@ const SAMPLE = [
   '---',
   '',
   '```',
-  'const ответ = 42;',
+  'function ответ() {',
+  '    return 42;',
+  '}',
   '```',
   '',
   'Ссылка: [портал регламентов](https://example.com/reglament).',
@@ -46,6 +49,12 @@ const SAMPLE = [
   'Последняя строка.',
   '',
 ].join('\n');
+
+/** Заметка со ссылкой длиннее колонки (находка Е1, решение 83). */
+const LONG_NOTE = 'Длинная ссылка';
+// Без дефисов и других мест переноса: переносится только посреди слова.
+const LONG_URL = `https://example.com/?q=${'abcdefghij'.repeat(32)}`;
+const LONG_SAMPLE = ['Обычный абзац перед ссылкой.', '', `Адрес: ${LONG_URL}`, '', 'Обычный абзац после ссылки.', ''].join('\n');
 
 let step = 0;
 
@@ -103,6 +112,58 @@ function modeChecked(browser: WebdriverIO.Browser): Promise<string> {
   );
 }
 
+/**
+ * Отступы и рамка фокуса текста (находки Н7, Н3; задача 2.10). Базовая тема
+ * CodeMirror вставляется элементом <style>, а CSP окна (`style-src 'self'`)
+ * его запрещает — у текста был `white-space: normal`, пробелы в начале строки
+ * и подряд схлопывались. Правила базовой темы теперь в статическом
+ * src/editor/codemirror-base.css, CSP та же.
+ */
+async function expectIndentsVisible(browser: WebdriverIO.Browser, name: string): Promise<void> {
+  await cursorTo(browser, 'Последняя строка.');
+  const look = await browser.execute((selector) => {
+    const lines = [...document.querySelectorAll(`${selector} .cm-line`)];
+    /** Левый край первого видимого символа строки (не пробела). */
+    const start = (fragment: string) => {
+      const line = lines.find((item) => (item.textContent ?? '').includes(fragment));
+      if (!line) return -1;
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent ?? '';
+        const at = text.search(/\S/);
+        if (at < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + 1);
+        return Math.round(range.getBoundingClientRect().left);
+      }
+      return -1;
+    };
+    const content = document.querySelector(selector) as HTMLElement;
+    return {
+      whiteSpace: getComputedStyle(content).whiteSpace,
+      outline: getComputedStyle(content).outlineStyle,
+      focused: document.activeElement === content,
+      nested: start('Вложенный пункт'),
+      top: start('Второй пункт'),
+      codeInner: start('return 42;'),
+      codeOuter: start('function ответ'),
+    };
+  }, TEXT);
+  const detail = JSON.stringify(look);
+  expect(['pre-wrap', 'break-spaces'], detail).toContain(look.whiteSpace);
+  // Два пробела перед «- Вложенный пункт», четыре перед «return».
+  expect(look.nested - look.top, detail).toBeGreaterThanOrEqual(4);
+  expect(look.codeInner - look.codeOuter, detail).toBeGreaterThanOrEqual(8);
+  expect(look.focused, detail).toBe(true);
+  expect(look.outline, detail).toBe('none');
+  await browser.execute(() => {
+    const line = [...document.querySelectorAll('.cm-line')].find((item) => (item.textContent ?? '').includes('Пункт списка'));
+    line?.scrollIntoView({ block: 'start' });
+  });
+  await shotThemes(browser, name);
+}
+
 describe('живой предпросмотр и режим исходного текста', () => {
   let session: Session | undefined;
   let vault = '';
@@ -110,11 +171,13 @@ describe('живой предпросмотр и режим исходного �
   let file = '';
 
   beforeAll(async () => {
-    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE });
+    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE, [`${LONG_NOTE}.md`]: LONG_SAMPLE });
     profile = createTestProfile();
     file = path.join(vault, `${NOTE}.md`);
     session = await startApp({ vault, profile });
     const { browser } = session;
+    await browser.$(`[role="treeitem"][aria-label="${NOTE}"]`).waitForExist({ timeout: 20_000 });
+    await watchCsp(browser);
     const row = browser.$(`[role="treeitem"][aria-label="${NOTE}"]`);
     await row.waitForDisplayed({ timeout: 20_000 });
     await row.click();
@@ -179,6 +242,10 @@ describe('живой предпросмотр и режим исходного �
     await shotThemes(b, 'cursor-on-heading');
   });
 
+  it('живой предпросмотр: пробелы в начале строки видны — вложенный пункт и код сдвинуты (Н7), рамки фокуса нет (Н3)', async () => {
+    await expectIndentsVisible(browser(), 'indents-preview');
+  });
+
   it('Ctrl+E — режим исходного текста: разметка как есть, без оформления; файл не меняется', async () => {
     const b = browser();
     await b.keys(['Control', 'e']);
@@ -197,31 +264,12 @@ describe('живой предпросмотр и режим исходного �
     expect(readFileSync(file, 'utf8')).toBe(SAMPLE);
   });
 
-  // Находка Н7 (docs/reviews/2026-10-26-task-3.1.md): базовые стили CodeMirror
-  // вставляются элементом <style>, а CSP окна (`style-src 'self'`) его
-  // запрещает. Тогда у текста `white-space: normal`: пробелы в начале строки
-  // и подряд не видны. Подтверждено на Windows и Linux — it.fails
-  // (покраснеет, когда исправят; тогда снять пометку).
-  it.fails('пробелы в начале строки видны: вложенный пункт сдвинут (стили CodeMirror применены)', async () => {
-    const b = browser();
-    const look = await b.execute((selector) => {
-      const lines = [...document.querySelectorAll(`${selector} .cm-line`)];
-      const start = (fragment: string) => {
-        const line = lines.find((item) => (item.textContent ?? '').includes(fragment));
-        if (!line) return -1;
-        const range = document.createRange();
-        range.selectNodeContents(line);
-        return Math.round(range.getClientRects()[0]?.left ?? -1);
-      };
-      return {
-        whiteSpace: getComputedStyle(document.querySelector(selector) as Element).whiteSpace,
-        nested: start('Вложенный пункт'),
-        top: start('Второй пункт'),
-      };
-    }, TEXT);
-    expect(look.whiteSpace).toBe('pre-wrap');
-    // Два пробела в режиме исходного текста — заметный сдвиг.
-    expect(look.nested - look.top).toBeGreaterThanOrEqual(4);
+  it('исходный текст: пробелы в начале строки видны (Н7), рамки фокуса нет (Н3)', async () => {
+    await expectIndentsVisible(browser(), 'indents-source');
+  });
+
+  it('нарушений CSP по стилям нет, кроме стилей, которые вставляет сам CodeMirror (задача 2.10)', async () => {
+    expect(await unexpectedStyleViolations(browser())).toEqual([]);
   });
 
   it('выбранный режим помнится после перезапуска (С3.3, решение 72)', async () => {
@@ -231,6 +279,7 @@ describe('живой предпросмотр и режим исходного �
     expect(await waitForAppExit(20_000), 'программа не завершилась').toBeGreaterThanOrEqual(0);
     session = await startApp({ profile });
     const b = browser();
+    await watchCsp(b);
     await b.$(TEXT).waitForDisplayed({ timeout: 30_000 });
     await b.waitUntil(async () => (await modeChecked(b)).includes('Исходный текст'), {
       timeout: 10_000,
@@ -253,5 +302,29 @@ describe('живой предпросмотр и режим исходного �
     });
     expect(readFileSync(file, 'utf8')).toBe(SAMPLE.replace('- [ ] Открытая задача', '- [x] Открытая задача'));
     await shotThemes(b, 'checkbox-toggled');
+  });
+
+  it('ссылка длиннее колонки переносится, абзацы не шире колонки (Е1, решение 83); нарушений CSP по стилям нет', async () => {
+    const b = browser();
+    const row = b.$(`[role="treeitem"][aria-label="${LONG_NOTE}"]`);
+    await row.click();
+    await b.waitUntil(async () => (await lineText(b, 'Адрес:')).startsWith('Адрес:'), { timeout: 10_000 });
+    const look = await b.execute((selector) => {
+      const content = document.querySelector(selector) as HTMLElement;
+      const column = content.getBoundingClientRect();
+      const lines = [...content.querySelectorAll('.cm-line')].map((line) => {
+        const rect = line.getBoundingClientRect();
+        return { text: (line.textContent ?? '').slice(0, 12), right: Math.round(rect.right), height: Math.round(rect.height) };
+      });
+      return { column: Math.round(column.right), width: Math.round(column.width), lines };
+    }, TEXT);
+    const detail = JSON.stringify(look);
+    expect(LONG_URL.length, 'длина ссылки').toBeGreaterThan(300);
+    expect(look.width, detail).toBeLessThan(1000);
+    for (const line of look.lines) expect(line.right, detail).toBeLessThanOrEqual(look.column + 1);
+    const address = look.lines.find((line) => line.text.startsWith('Адрес:'));
+    expect(address?.height ?? 0, detail).toBeGreaterThan(60);
+    await shotThemes(b, 'long-link');
+    expect(await unexpectedStyleViolations(b)).toEqual([]);
   });
 });

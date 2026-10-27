@@ -522,9 +522,14 @@ describe('сценарий выпуска 0.1: от первого запуск�
     const b = browser();
     writeFileSync(path.join(work, 'Большой.md'), 'x'.repeat(11 * 1024 * 1024));
     await row(b, 'Большой').waitForExist({ timeout: 5_000 });
+    const opened = Date.now();
     await row(b, 'Большой').click();
     await b.waitUntil(async () => (await statusText(b)) === 'Только чтение', { timeout: 15_000 });
     expect(await b.$('main .notice .title').getText()).toContain('Только чтение: файл');
+    // Строка в 11 МБ без пробелов — без переноса посреди слова (решение 83,
+    // src/editor/huge-lines.ts): с ним WebKitGTK раскладывал её дольше минуты.
+    await b.waitUntil(async () => (await b.$$('main .cm-line.cm-rz-hugeLine')).length > 0, { timeout: 15_000 });
+    expect(Date.now() - opened, 'открытие файла 11 МБ, мс').toBeLessThan(15_000);
     await shot(b, 'read-only');
   });
 
