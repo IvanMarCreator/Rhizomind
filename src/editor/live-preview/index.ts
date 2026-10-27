@@ -5,8 +5,13 @@
 //
 // Ссылки `[текст](адрес)` — без элементов `<a>` и переходов в окне: щелчок
 // передаёт адрес наверх, окно открывает его командой ядра `open_external`
-// с подтверждением (С3.4, docs/SECURITY.md).
+// с подтверждением (С3.4, docs/SECURITY.md). Вики-ссылки (задача 2.6) —
+// только переход к заметке хранилища через `WikiHost`, никогда не
+// `open_external`. Щелчок открывает ссылку вне строки с курсором, на ней —
+// Ctrl+щелчок (решение 76); в режиме исходного текста — Ctrl+щелчок
+// (`sourceLinks`).
 import {
+  Facet,
   RangeSet,
   RangeValue,
   StateField,
@@ -26,6 +31,8 @@ import {
   type ViewUpdate,
 } from '@codemirror/view';
 import { t } from '../../i18n/index.ts';
+import { wikiHost } from '../wikilinks/host.ts';
+import { isUnresolved, resolutionField, resolvedEffect, staleEffect, type Resolution } from '../wikilinks/resolve.ts';
 import {
   MAX_BLOCK_TEXT,
   PROPERTIES_CLOSE,
@@ -38,6 +45,8 @@ import {
   scanBlocks,
   type Blocks,
   type CodeBlock,
+  type LineSource,
+  type MarkPiece,
   type OpenFence,
   type Span,
   type WidgetKind,
@@ -109,6 +118,20 @@ const blocksField = StateField.define<BlockState>({
     return from < 0 ? mapped : rescanFences(doc, mapped, Math.min(from, doc.length), Math.min(to, doc.length), fencesFrom);
   },
 });
+
+/** Включён ли живой предпросмотр (его расширение в состоянии). */
+const livePreviewOn = Facet.define<boolean, boolean>({ combine: (values) => values.some(Boolean) });
+
+/**
+ * Пошаговый разбор блоков кода и блока свойств без оформления. Подключён в
+ * обоих режимах редактора (codemirror.ts): в исходном тексте по нему
+ * автодополнение и Ctrl+щелчок узнают, не в коде ли ссылка, — без разбора
+ * оград от начала текста на каждое нажатие (задача 2.6а). Живой предпросмотр
+ * подключает то же поле — CodeMirror не дублирует одно расширение.
+ */
+export function blockTracking(): Extension {
+  return blocksField;
+}
 
 function anyLine(doc: Text, from: number, to: number, test: (text: string) => boolean): boolean {
   for (let n = doc.lineAt(from).number, last = doc.lineAt(to).number; n <= last; n++) {
@@ -245,12 +268,18 @@ function blockAt(state: EditorState, blocks: BlockState, pos: number): CodeBlock
 
 // ---- Значки ------------------------------------------------------------------
 
+/** Разделитель имени и заголовка вики-ссылки: «Встреча › Итоги». */
+const WIKI_HEADING_SEPARATOR = ' \u203a ';
+
 class MarkWidget extends WidgetType {
   readonly kind: WidgetKind;
+  /** Текст значка (для «Имя › Заголовок»); у остальных — пусто. */
+  readonly text: string;
 
   constructor(kind: WidgetKind) {
     super();
     this.kind = kind;
+    this.text = kind === 'wiki-heading' ? WIKI_HEADING_SEPARATOR : '';
   }
 
   override eq(other: MarkWidget): boolean {
@@ -259,6 +288,11 @@ class MarkWidget extends WidgetType {
 
   toDOM(view: EditorView): HTMLElement {
     const element = document.createElement('span');
+    if (this.kind === 'wiki-heading') {
+      element.className = 'cm-rz-wikilink-separator';
+      element.textContent = this.text;
+      return element;
+    }
     if (this.kind === 'bullet') {
       element.className = 'cm-rz-bullet';
     } else if (this.kind === 'rule') {
@@ -285,6 +319,7 @@ const WIDGETS: Record<WidgetKind, MarkWidget> = {
   checkbox: new MarkWidget('checkbox'),
   'checkbox-checked': new MarkWidget('checkbox-checked'),
   rule: new MarkWidget('rule'),
+  'wiki-heading': new MarkWidget('wiki-heading'),
 };
 
 const HIDE = Decoration.replace({ rz: 'hide' });
@@ -337,10 +372,12 @@ export function previewDecorations(
   ranges: readonly { from: number; to: number }[] = [{ from: 0, to: state.doc.length }],
 ): DecorationSet {
   const blocks = state.field(blocksField, false);
-  if (!blocks) return Decoration.none;
+  // Поле блоков есть и в исходном тексте (`blockTracking`): оформление — только в живом предпросмотре.
+  if (!blocks || !state.facet(livePreviewOn)) return Decoration.none;
   const active = activeLines(state);
   const out: Range<Decoration>[] = [];
   const { doc } = state;
+  const resolution = state.field(resolutionField, false);
 
   for (const range of ranges) {
     let n = doc.lineAt(range.from).number;
@@ -365,10 +402,7 @@ export function previewDecorations(
         const to = line.from + piece.to;
         if (from >= to) continue;
         if (piece.kind === 'mark') {
-          const decoration = piece.url === undefined
-            ? markDecoration(piece.cls)
-            : Decoration.mark({ class: piece.cls, attributes: { 'data-rz-url': piece.url } });
-          out.push(decoration.range(from, to));
+          out.push(pieceMark(piece, resolution).range(from, to));
         } else if (revealed) {
           out.push(MARKUP.range(from, to));
         } else {
@@ -378,6 +412,19 @@ export function previewDecorations(
     }
   }
   return Decoration.set(out, true);
+}
+
+/** Оформление участка: ссылка несёт адрес или цель для щелчка, неразрешённая вики-ссылка — свой класс. */
+function pieceMark(piece: MarkPiece, resolution: Resolution | undefined): Decoration {
+  if (piece.wiki !== undefined) {
+    const unresolved = isUnresolved(resolution, piece.key ?? '');
+    return Decoration.mark({
+      class: unresolved ? `${piece.cls} cm-rz-wikilink-unresolved` : piece.cls,
+      attributes: { 'data-rz-wiki': piece.wiki },
+    });
+  }
+  if (piece.url !== undefined) return Decoration.mark({ class: piece.cls, attributes: { 'data-rz-url': piece.url } });
+  return markDecoration(piece.cls);
 }
 
 function codeLine(
@@ -430,6 +477,79 @@ function revealedAt(state: EditorState, pos: number): boolean {
   return touches(activeLines(state), line.from, line.to);
 }
 
+/** Ссылка под щелчком: внешний адрес или текст вики-ссылки между `[[` и `]]`. */
+export type LinkHit = { url: string } | { wiki: string };
+
+/**
+ * Строка с номером `n` внутри блока кода или блока свойств — по полю блоков
+ * (в редакторе оно есть в обоих режимах, `blockTracking`). Без поля
+ * (состояние без расширений редактора) — разбором оград от начала текста.
+ */
+function inBlock(state: EditorState, n: number): boolean {
+  const line = state.doc.line(n);
+  const blocks = state.field(blocksField, false);
+  if (blocks) {
+    const { properties } = blocks;
+    if (properties && line.from >= properties.from && line.to <= properties.to) return true;
+    return blockAt(state, blocks, line.from) !== null;
+  }
+  const doc: LineSource = state.doc;
+  if (doc.length > MAX_BLOCK_TEXT) return false;
+  const properties = findProperties(doc);
+  if (properties && line.from >= properties.from && line.to <= properties.to) return true;
+  let open: OpenFence | null = null;
+  const closed: CodeBlock[] = [];
+  const first = properties ? state.doc.lineAt(properties.to).number + 1 : 1;
+  for (let k = first; k < n; k++) {
+    const above = state.doc.line(k);
+    open = fenceStep(open, above.text, above.from, above.to, closed);
+  }
+  if (open) return true;
+  // Сама строка — ограда, открывающая блок.
+  return isFenceLike(line.text) && fenceStep(null, line.text, line.from, line.to, closed) !== null;
+}
+
+/** Ссылка (Markdown или вики) в позиции `pos` текста; `null` — там не ссылка. */
+export function linkAt(state: EditorState, pos: number): LinkHit | null {
+  const line = state.doc.lineAt(pos);
+  if (inBlock(state, line.number)) return null;
+  const previous = line.number > 1 ? state.doc.line(line.number - 1).text : null;
+  const offset = pos - line.from;
+  for (const piece of parseLine(line.text, previous).pieces) {
+    if (piece.kind !== 'mark' || !piece.link || offset < piece.link.from || offset >= piece.link.to) continue;
+    if (piece.wiki !== undefined) return { wiki: piece.wiki };
+    if (piece.url !== undefined) return { url: piece.url };
+  }
+  return null;
+}
+
+/**
+ * Позиция `pos` — в коде (в строке `` `…` `` или в блоке с оградой) или в
+ * блоке свойств: разметка там не действует (по разбору предпросмотра).
+ */
+export function inCodeAt(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  if (inBlock(state, line.number)) return true;
+  const previous = line.number > 1 ? state.doc.line(line.number - 1).text : null;
+  const offset = pos - line.from;
+  return parseLine(line.text, previous).pieces.some(
+    (piece) => piece.kind === 'mark' && piece.cls === 'cm-rz-code' && offset >= piece.from && offset < piece.to,
+  );
+}
+
+/** Открыть ссылку: внешнюю — через ядро с подтверждением, вики — переходом к заметке хранилища. */
+function follow(view: EditorView, hit: LinkHit, onOpenLink: ((url: string) => void) | undefined): boolean {
+  if ('wiki' in hit) {
+    const host = view.state.facet(wikiHost);
+    if (!host) return false;
+    host.open(hit.wiki);
+    return true;
+  }
+  if (!onOpenLink || !isExternalUrl(hit.url)) return false;
+  onOpenLink(hit.url);
+  return true;
+}
+
 const previewPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
@@ -443,7 +563,8 @@ const previewPlugin = ViewPlugin.fromClass(
         update.docChanged ||
         update.viewportChanged ||
         update.selectionSet ||
-        update.startState.readOnly !== update.state.readOnly
+        update.startState.readOnly !== update.state.readOnly ||
+        update.startState.field(resolutionField, false) !== update.state.field(resolutionField, false)
       ) {
         this.decorations = previewDecorations(update.state, update.view.visibleRanges);
       }
@@ -452,11 +573,105 @@ const previewPlugin = ViewPlugin.fromClass(
   { decorations: (plugin) => plugin.decorations },
 );
 
+/** Ключи вики-ссылок в участках текста (вне блоков кода и блока свойств). */
+export function wikiKeys(state: EditorState, ranges: readonly { from: number; to: number }[]): Set<string> {
+  const keys = new Set<string>();
+  const blocks = state.field(blocksField, false) ?? NO_BLOCKS;
+  const { doc } = state;
+  for (const range of ranges) {
+    for (let n = doc.lineAt(range.from).number, last = doc.lineAt(range.to).number; n <= last; n++) {
+      const line = doc.line(n);
+      if (!line.text.includes('[[')) continue;
+      const { properties } = blocks;
+      if (properties && line.from >= properties.from && line.to <= properties.to) continue;
+      if (blockAt(state, blocks, line.from)) continue;
+      for (const piece of parseLine(line.text, null).pieces) {
+        if (piece.kind === 'mark' && piece.key !== undefined) keys.add(piece.key);
+      }
+    }
+  }
+  return keys;
+}
+
+/** Пауза после ввода или прокрутки перед вопросом ядру: не на каждое нажатие. */
+export const RESOLVE_DELAY_MS = 150;
+
+/**
+ * Разрешение ссылок видимой части: ядро спрашивается о ключах, ответа на
+ * которые нет, после паузы. После изменения дерева хранилища (`refresh`) —
+ * обо всех видимых заново; до ответа ссылки выглядят как прежде.
+ */
+const resolverPlugin = ViewPlugin.fromClass(
+  class {
+    #view: EditorView;
+    #timer: ReturnType<typeof setTimeout> | null = null;
+    #asked = new Set<string>();
+    #generation = 0;
+    #unsubscribe: (() => void) | null = null;
+    #destroyed = false;
+
+    constructor(view: EditorView) {
+      this.#view = view;
+      const host = view.state.facet(wikiHost);
+      if (!host) return;
+      this.#unsubscribe = host.subscribe((event) => {
+        if (event.kind === 'refresh' && !this.#destroyed) this.#view.dispatch({ effects: staleEffect.of(null) });
+      });
+      this.#schedule();
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) this.#schedule();
+      else if (update.state.field(resolutionField).generation !== this.#generation) this.#schedule();
+    }
+
+    #schedule() {
+      if (this.#timer !== null) clearTimeout(this.#timer);
+      this.#timer = setTimeout(() => this.#ask(), RESOLVE_DELAY_MS);
+    }
+
+    #ask() {
+      this.#timer = null;
+      const host = this.#view.state.facet(wikiHost);
+      if (!host || this.#destroyed) return;
+      const resolution = this.#view.state.field(resolutionField);
+      if (resolution.generation !== this.#generation) {
+        this.#generation = resolution.generation;
+        this.#asked.clear();
+      }
+      const wanted = [...wikiKeys(this.#view.state, this.#view.visibleRanges)].filter((key) => !this.#asked.has(key));
+      if (wanted.length === 0) return;
+      for (const key of wanted) this.#asked.add(key);
+      const generation = this.#generation;
+      host.resolve(wanted).then(
+        (answers) => {
+          // Ответ о прежнем дереве (до vault:changed) не затирает свежий: его спросили заново.
+          if (this.#destroyed || generation !== this.#view.state.field(resolutionField).generation) return;
+          this.#view.dispatch({ effects: resolvedEffect.of(answers) });
+        },
+        () => {
+          // Нет ответа — ссылки выглядят разрешёнными; спросить снова при следующей правке.
+          if (generation === this.#generation) for (const key of wanted) this.#asked.delete(key);
+        },
+      );
+    }
+
+    destroy() {
+      this.#destroyed = true;
+      if (this.#timer !== null) clearTimeout(this.#timer);
+      this.#unsubscribe?.();
+    }
+  },
+);
+
 /** Расширение живого предпросмотра. */
 export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension {
   return [
+    livePreviewOn.of(true),
     blocksField,
+    resolutionField,
     previewPlugin,
+    resolverPlugin,
     EditorView.domEventHandlers({
       mousedown(event, view) {
         if (event.button !== 0 || !(event.target instanceof Element)) return false;
@@ -467,16 +682,36 @@ export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension 
           if (spec) view.dispatch(spec);
           return true;
         }
-        const linkText = event.target.closest('[data-rz-url]');
-        if (!linkText || !onOpenLink) return false;
-        const url = linkText.getAttribute('data-rz-url') ?? '';
-        if (!isExternalUrl(url)) return false;
-        // На строке с курсором ссылка — текст для правки; открыть — Ctrl+щелчок.
+        const wikiText = event.target.closest('[data-rz-wiki]');
+        const linkText = wikiText ?? event.target.closest('[data-rz-url]');
+        if (!linkText) return false;
+        const hit: LinkHit = wikiText
+          ? { wiki: wikiText.getAttribute('data-rz-wiki') ?? '' }
+          : { url: linkText.getAttribute('data-rz-url') ?? '' };
+        // На строке с курсором ссылка — текст для правки; открыть — Ctrl+щелчок (решение 76).
         if (!event.ctrlKey && !event.metaKey && revealedAt(view.state, view.posAtDOM(linkText))) return false;
+        if (!follow(view, hit, onOpenLink)) return false;
         event.preventDefault();
-        onOpenLink(url);
         return true;
       },
     }),
   ];
+}
+
+/**
+ * Режим исходного текста: ссылки (Markdown и вики) открываются только
+ * Ctrl+щелчком (С3.4, решение 76); обычный щелчок ставит курсор.
+ */
+export function sourceLinks({ onOpenLink }: LivePreviewOptions = {}): Extension {
+  return EditorView.domEventHandlers({
+    mousedown(event, view) {
+      if (event.button !== 0 || (!event.ctrlKey && !event.metaKey)) return false;
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos === null) return false;
+      const hit = linkAt(view.state, pos);
+      if (!hit || !follow(view, hit, onOpenLink)) return false;
+      event.preventDefault();
+      return true;
+    },
+  });
 }

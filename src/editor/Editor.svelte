@@ -8,13 +8,14 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { core, type EditorMode, type VaultPath } from '../api/index.ts';
+  import { core, onCoreEvent, type EditorMode, type VaultPath } from '../api/index.ts';
   import { userMessage } from '../i18n/errors.ts';
   import { t } from '../i18n/index.ts';
   import NoteText from './NoteText.svelte';
   import ReadOnlyNotice from './ReadOnlyNotice.svelte';
   import { coreNoteStore, type NoteStore, type SaveStatus } from './session.ts';
   import { EditorSessions, noteName, type EditorPane, type UnsavedNote } from './sessions.ts';
+  import { WindowWikiHost } from './wikilinks/window-host.ts';
 
   let {
     path,
@@ -25,6 +26,7 @@
     onOpenSettings,
     showTitle = true,
     focusOnOpen = false,
+    onOpenNote,
   }: {
     path: VaultPath | null;
     /** Живой предпросмотр или исходный текст (решение 72). */
@@ -43,6 +45,8 @@
      * быть у поля имени новой заметки в дереве (2.3) — его нельзя отнимать.
      */
     focusOnOpen?: boolean;
+    /** Переход по вики-ссылке: открыть заметку в окне (история переходов). */
+    onOpenNote?: (path: VaultPath) => void;
   } = $props();
 
   let pane = $state.raw<EditorPane>({ kind: 'empty' });
@@ -60,8 +64,17 @@
     },
   );
 
+  /** Вики-ссылки открытой заметки (С3.4): только заметки хранилища, не `open_external`. */
+  const wiki = new WindowWikiHost({
+    from: () => (pane.kind === 'open' ? pane.session.path : null),
+    openNote: (next) => onOpenNote?.(next),
+    notify: (text) => notify(text),
+  });
+
   $effect(() => {
     sessions.show(path);
+    // Ждущий переход по ссылке — только к заметке из ссылки (решение 86).
+    wiki.shown(path);
   });
 
   /**
@@ -101,6 +114,17 @@
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') flush();
     };
+    // Дерево изменилось — разрешение вики-ссылок заново (созданная по ссылке заметка и т.п.).
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    onCoreEvent('vault:changed', () => {
+      if (!disposed) wiki.refresh();
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
     window.addEventListener('pagehide', flush);
     window.addEventListener('beforeunload', flush);
     document.addEventListener('visibilitychange', onVisibility);
@@ -108,6 +132,8 @@
       window.removeEventListener('pagehide', flush);
       window.removeEventListener('beforeunload', flush);
       document.removeEventListener('visibilitychange', onVisibility);
+      disposed = true;
+      unlisten?.();
       sessions.close();
     };
   });
@@ -122,7 +148,7 @@
         <ReadOnlyNotice reason={session.readOnly} size={session.size} {onOpenSettings} />
       {/if}
       {#key session}
-        <NoteText {session} {mode} onOpenLink={openLink} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
+        <NoteText {session} {mode} onOpenLink={openLink} {wiki} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
       {/key}
     {:else if pane.kind === 'loading'}
       {#if showTitle}<h1 class="title">{noteName(pane.path)}</h1>{/if}
