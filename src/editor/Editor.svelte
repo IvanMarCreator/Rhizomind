@@ -8,7 +8,7 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { core, onCoreEvent, type EditorMode, type VaultPath } from '../api/index.ts';
+  import { core, onCoreEvent, type EditorMode, type FileVersion, type VaultPath } from '../api/index.ts';
   import { userMessage } from '../i18n/errors.ts';
   import { t } from '../i18n/index.ts';
   import NoteText from './NoteText.svelte';
@@ -97,6 +97,19 @@
   /** Заметку или папку удалили: несохранённый ввод не пишется (решение владельца). */
   export function removed(removedPath: VaultPath): void {
     sessions.removed(removedPath);
+  }
+
+  /**
+   * Заметку изменили снаружи (`note:changed`, задача 2.9): без ввода — текст с
+   * диска (курсор на месте), с вводом — ввод пишется, ядро сохраняет обе версии.
+   */
+  export function changed(changedPath: VaultPath, version: FileVersion): void {
+    sessions.changed(changedPath, version);
+  }
+
+  /** Полная сверка с диском (`vault:changed` с `rescan`): открытые заметки сверяются с диском. */
+  export function rescanned(): void {
+    sessions.rescanned();
   }
 
   /**

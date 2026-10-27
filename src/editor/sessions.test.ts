@@ -28,6 +28,8 @@ class FakeStore implements NoteStore {
   reads: string[] = [];
   writes: NoteWriteRequest[] = [];
   failWrites: CoreError | null = null;
+  /** Ответ чтения «только для чтения» (задача 2.9: файл стал не UTF-8). */
+  readOnly: NoteReadResponse['read_only'] = null;
   pendingReads = new Map<string, () => void>();
   holdReads = false;
   /** Поколение файла: растёт с каждой записью; нет записи — 1 (v1). */
@@ -42,7 +44,7 @@ class FakeStore implements NoteStore {
     const answer = (): NoteReadResponse => {
       const text = this.files.get(key(path));
       if (text === undefined) throw new CoreCallError('note_read', { code: 'not_found', message_key: 'errors.not_found' });
-      return { text, version: versionOf(this.#generation(key(path))), read_only: null };
+      return { text, version: versionOf(this.#generation(key(path))), read_only: this.readOnly };
     };
     if (!this.holdReads) return Promise.resolve().then(answer);
     return new Promise((resolve, reject) =>
@@ -630,5 +632,163 @@ describe('ревью 0.7: ожидание при закрытии ограни�
 
     expect(unsaved).toEqual([]);
     expect(store.writes).toEqual([]);
+  });
+});
+
+describe('внешнее изменение (задача 2.9, С3.6)', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+
+  /** Правка «снаружи»: новый текст и следующее поколение файла. */
+  function external(store: FakeStore, path: VaultPath, text: string): FileVersion {
+    const name = key(path);
+    store.files.set(name, text);
+    const generation = (store.generations.get(name) ?? 1) + 1;
+    store.generations.set(name, generation);
+    return versionOf(generation);
+  }
+
+  it('открытая заметка без ввода: текст обновлён, та же сессия (курсор сохраняет редактор), записей нет', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const session = (pane() as Open).session;
+
+    sessions.changed(A, external(store, A, 'снаружи'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect((pane() as Open).session).toBe(session);
+    expect(session.text).toBe('снаружи');
+    expect(store.writes).toEqual([]);
+  });
+
+  it('открытая заметка с вводом: обе версии на «диске», уведомление о конфликте', async () => {
+    const { sessions, pane, store, notices } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('моё');
+
+    sessions.changed(A, external(store, A, 'снаружи'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.files.get(key(A))).toBe('моё');
+    expect(store.files.get('А (внешняя версия).md')).toBe('снаружи');
+    expect(notices.some((text) => text.includes('Сохранены обе версии'))).toBe(true);
+  });
+
+  it('событие о другой заметке не трогает открытую', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+
+    sessions.changed(B, external(store, B, 'снаружи'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(openText(pane())).toBe('текст А');
+    expect(store.reads).toEqual(['А.md']);
+  });
+
+  it('заметка, с которой ушли, но ввод ещё пишется: ввод не теряется — обе версии', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('моё');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+    sessions.show(B);
+    await vi.advanceTimersByTimeAsync(0);
+    store.failWrites = null;
+
+    sessions.changed(A, external(store, A, 'снаружи'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.files.get(key(A))).toBe('моё');
+    expect(store.files.get('А (внешняя версия).md')).toBe('снаружи');
+  });
+
+  it('изменение пришло, пока заметка открывалась: после открытия текст сверяется с диском', async () => {
+    const { sessions, pane, store } = setup();
+    store.holdReads = true;
+    sessions.show(A);
+    // Чтение уже прочитало старое содержимое, потом файл изменили снаружи.
+    const resolveOld = store.pendingReads.get(key(A));
+    resolveOld?.();
+    sessions.changed(A, external(store, A, 'снаружи'));
+    store.holdReads = false;
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(openText(pane())).toBe('снаружи');
+  });
+
+  it('заметка не открылась — после изменения снаружи открывается снова', async () => {
+    const { sessions, pane, store } = setup();
+    store.files.delete(key(A));
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pane().kind).toBe('failed');
+
+    sessions.changed(A, external(store, A, 'появилась'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(openText(pane())).toBe('появилась');
+  });
+
+  it('файл стал только для чтения — заметка открывается заново, с причиной', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    const before = (pane() as Open).session;
+    store.readOnly = { reason: 'invalid_utf8' };
+
+    sessions.changed(A, external(store, A, '�'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    const after = (pane() as Open).session;
+    expect(after).not.toBe(before);
+    expect(after.readOnly).toEqual({ reason: 'invalid_utf8' });
+    expect(after.text).toBe('�');
+  });
+
+  it('полная сверка (rescanned): открытая заметка без ввода сверяется с диском', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    external(store, A, 'после сверки');
+
+    sessions.rescanned();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(openText(pane())).toBe('после сверки');
+    expect(store.writes).toEqual([]);
+  });
+
+  it('полная сверка при вводе: ввод остаётся в редакторе, запись — как обычно, по таймеру', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('моё');
+    external(store, A, 'снаружи');
+
+    sessions.rescanned();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(openText(pane())).toBe('моё');
+    expect(store.files.get(key(A))).toBe('моё');
+    expect(store.files.get('А (внешняя версия).md')).toBe('снаружи');
+  });
+
+  it('закрытие окна во время внешней правки: ввод записан, версия с диска — копией (0.7)', async () => {
+    const { sessions, pane, store } = setup();
+    sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    (pane() as Open).session.edit('моё');
+
+    const changed = external(store, A, 'снаружи');
+    const unsaved = sessions.flushForClose();
+    sessions.changed(A, changed);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(await unsaved).toEqual([]);
+    expect(store.files.get(key(A))).toBe('моё');
+    expect(store.files.get('А (внешняя версия).md')).toBe('снаружи');
   });
 });

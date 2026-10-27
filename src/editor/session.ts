@@ -63,6 +63,26 @@ export interface SessionHooks {
   onSaveFailed?(error: unknown): void;
 }
 
+/**
+ * Итог внешнего изменения (`NoteSession.external`):
+ * - `none` — ничего не изменилось (своя запись, тот же файл, сессия закрыта);
+ * - `reloaded` — текст обновлён с диска, ввода не было;
+ * - `flushed` — был несохранённый ввод: он записан сразу со старой
+ *   ожидаемой версией, и ядро сохранило обе версии (конфликт, С3.6);
+ * - `reopen` — файл стал только для чтения или перестал им быть: сессию
+ *   надо открыть заново ответом `opened`.
+ */
+export type ExternalOutcome =
+  | { kind: 'none' }
+  | { kind: 'reloaded' }
+  | { kind: 'flushed' }
+  | { kind: 'reopen'; opened: NoteReadResponse };
+
+/** Та же версия файла: хэш и размер, как сравнивает ядро (дата не важна). */
+export function sameVersion(a: FileVersion, b: FileVersion): boolean {
+  return a.hash === b.hash && a.size === b.size;
+}
+
 function isNotFound(error: unknown): boolean {
   return error instanceof CoreCallError && error.error.code === 'not_found';
 }
@@ -86,6 +106,10 @@ export class NoteSession {
   #inFlight: Promise<SaveOutcome> | null = null;
   #failing = false;
   #disposed = false;
+  /** Подписчики на текст, пришедший с диска (редактор на экране). */
+  readonly #externalText = new Set<(text: string) => void>();
+  /** Внешние изменения обрабатываются по одному, в порядке прихода. */
+  #externalQueue: Promise<unknown> = Promise.resolve();
 
   constructor(path: VaultPath, opened: NoteReadResponse, store: NoteStore, hooks: SessionHooks = {}) {
     this.#path = path;
@@ -191,6 +215,77 @@ export class NoteSession {
   dispose(): void {
     this.#disposed = true;
     this.#cancelTimer();
+    this.#externalText.clear();
+  }
+
+  /**
+   * Подписка на текст, пришедший с диска после внешнего изменения: редактор
+   * заменяет им документ. Возвращает отписку.
+   */
+  onExternalText(listener: (text: string) => void): () => void {
+    this.#externalText.add(listener);
+    return () => this.#externalText.delete(listener);
+  }
+
+  /**
+   * Файл заметки изменился снаружи (событие `note:changed` с версией с
+   * диска; без версии — после полной сверки, `vault:changed` с `rescan`).
+   * Инвариант 4, С3.6:
+   * - сначала дожидаемся записей в полёте: событие могло прийти о своей же
+   *   записи, а версия — ответом на неё;
+   * - версия совпала с известной — ничего;
+   * - есть несохранённый ввод — он записывается сразу со старой ожидаемой
+   *   версией: ядро видит конфликт и сохраняет обе версии (ваша — в
+   *   заметке, с диска — копией рядом);
+   * - ввода нет — текст и версия с диска; если, пока шло чтение, появился
+   *   ввод, прочитанное не показывается, а ввод пишется (снова обе версии).
+   * Вызовы выполняются по одному, в порядке прихода.
+   */
+  external(version?: FileVersion): Promise<ExternalOutcome> {
+    const run = this.#externalQueue.then(() => this.#external(version));
+    this.#externalQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  async #external(version: FileVersion | undefined): Promise<ExternalOutcome> {
+    if (this.#gone()) return { kind: 'none' };
+    await this.idle();
+    if (this.#gone()) return { kind: 'none' };
+    if (version && sameVersion(version, this.#version)) return { kind: 'none' };
+    if (this.hasUnsavedChanges) return this.#flushBoth();
+    const before = this.#current;
+    let opened: NoteReadResponse;
+    try {
+      opened = await this.#store.read(this.#path);
+    } catch {
+      // Файла уже нет или он недоступен: об удалении и переименовании
+      // скажут свои события; текст в редакторе остаётся.
+      return { kind: 'none' };
+    }
+    // Пока шло чтение, заметку могли удалить или закрыть.
+    if (this.#gone()) return { kind: 'none' };
+    // Ввод, пока шло чтение: он важнее прочитанного — пишем, ядро сохранит обе версии.
+    if (this.#current !== before || this.hasUnsavedChanges) return this.#flushBoth();
+    if (sameVersion(opened.version, this.#version)) return { kind: 'none' };
+    if (JSON.stringify(opened.read_only) !== JSON.stringify(this.readOnly)) return { kind: 'reopen', opened };
+    this.#version = opened.version;
+    this.#saved = opened.text;
+    this.#current = opened.text;
+    for (const listener of [...this.#externalText]) listener(opened.text);
+    return { kind: 'reloaded' };
+  }
+
+  /**
+   * Сессия закрыта, заметку удалили или файла по пути нет (`missing`: ждём
+   * сигнала о переименовании) — внешнее изменение её не касается.
+   */
+  #gone(): boolean {
+    return this.#disposed || this.#status.kind === 'deleted' || this.#status.kind === 'missing';
+  }
+
+  async #flushBoth(): Promise<ExternalOutcome> {
+    await this.flush();
+    return { kind: 'flushed' };
   }
 
   #schedule(ms: number): void {

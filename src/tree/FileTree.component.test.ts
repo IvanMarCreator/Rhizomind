@@ -539,6 +539,24 @@ describe('решение 47: Ctrl+Z', () => {
     expect(commands(calls, 'entry_rename')).toHaveLength(1);
   });
 
+  it('ревью 2.3 (задача 2.9): элемент удалили снаружи, на его месте новый с тем же именем — Ctrl+Z его не трогает', async () => {
+    const { vault, calls, host, tree } = await setup();
+    await renameTo(tree, 'Заметка 2', 'Итоги');
+    vault.entries.set('Итоги.md', note('Итоги.md'));
+    await emitCoreEvent('vault:changed', {
+      rescan: false,
+      changes: [
+        { kind: 'removed', path: ['Итоги.md'] },
+        { kind: 'created', path: ['Итоги.md'], entry_kind: 'note' },
+      ],
+    });
+    await fireEvent.keyDown(tree, ctrlZ);
+    await waitFor(() =>
+      expect(host.notify).toHaveBeenCalledWith('Не удалось отменить переименование: элемента уже нет.'),
+    );
+    expect(commands(calls, 'entry_rename')).toHaveLength(1);
+  });
+
   it('Ctrl+Z вне дерева (редактор, окно) дерево не перехватывает', async () => {
     const { calls, tree } = await setup();
     await renameTo(tree, 'Заметка 2', 'Итоги');

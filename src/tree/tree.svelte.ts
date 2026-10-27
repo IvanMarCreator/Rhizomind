@@ -76,10 +76,14 @@ export class FileTreeState {
 
   readonly host: TreeHost;
   #loadSeq = 0;
-  /** Последнее переименование в этом окне — для Ctrl+Z (решение 47); стека нет. */
-  #lastRename: { from: VaultPath; to: VaultPath } | null = null;
+  /**
+   * Последнее переименование в этом окне — для Ctrl+Z (решение 47); стека нет.
+   * `gone` — элемент с тех пор удалили (в том числе снаружи): новый файл с тем
+   * же именем — уже другой, его отмена не трогает (ревью 2.3, задача 2.9).
+   */
+  #lastRename: { from: VaultPath; to: VaultPath; gone?: boolean } | null = null;
   /** Элементы, удаление которых уже идёт: повторный Delete их не трогает. */
-  readonly #deleting: string[] = [];
+  readonly #deleting: VaultPath[] = [];
 
   constructor(host: TreeHost) {
     this.host = host;
@@ -238,7 +242,7 @@ export class FileTreeState {
     if (!last) return;
     this.#lastRename = null;
     const oldName = last.from.at(-1) ?? '';
-    if (!this.entry(last.to)) {
+    if (last.gone || !this.entry(last.to)) {
       this.host.notify(t('tree.undo.missing'));
       return;
     }
@@ -279,10 +283,18 @@ export class FileTreeState {
 
   // ---- Удаление ------------------------------------------------------------
 
+  /**
+   * Удаление `path` (или папки над ним) идёт в этом окне: событие ядра об
+   * удалении может прийти раньше ответа команды — это не удаление «на диске».
+   */
+  isDeleting(path: VaultPath): boolean {
+    return this.#deleting.some((deleting) => isInside(path, deleting));
+  }
+
   /** Delete или пункт меню: подтверждение по настройке, затем в корзину. */
   requestDelete(path: VaultPath): void {
     const entry = this.entry(path);
-    if (!entry || this.#deleting.includes(pathKey(entry.path))) return;
+    if (!entry || this.#deleting.some((deleting) => samePath(deleting, entry.path))) return;
     if (this.host.confirmDelete) this.pendingDelete = entry;
     else void this.#trash(entry);
   }
@@ -302,9 +314,9 @@ export class FileTreeState {
    * удалении своим окном (инвариант 4): ответ `cancelled` — ничего не удалено.
    */
   async #trash(entry: TreeEntry): Promise<void> {
-    const key = pathKey(entry.path);
-    if (this.#deleting.includes(key)) return;
-    this.#deleting.push(key);
+    if (this.#deleting.some((deleting) => samePath(deleting, entry.path))) return;
+    const deleting = entry.path;
+    this.#deleting.push(deleting);
     try {
       const result = await core.entryTrash({ path: entry.path });
       if (result.outcome === 'cancelled') return;
@@ -316,7 +328,7 @@ export class FileTreeState {
     } catch (error) {
       this.host.notify(userMessage(error));
     } finally {
-      this.#deleting.splice(this.#deleting.indexOf(key), 1);
+      this.#deleting.splice(this.#deleting.indexOf(deleting), 1);
     }
   }
 
@@ -326,6 +338,9 @@ export class FileTreeState {
   #apply(changes: readonly TreeChange[]): boolean {
     const { entries, stale } = applyChanges(this.entries, changes);
     for (const change of changes) {
+      if (change.kind === 'removed' && this.#lastRename && isInside(this.#lastRename.to, change.path)) {
+        this.#lastRename = { ...this.#lastRename, gone: true };
+      }
       if (change.kind !== 'renamed') continue;
       this.expanded = remapKeys(this.expanded, change.from, change.to);
       if (this.selected && isInside(this.selected, change.from)) {
