@@ -81,42 +81,72 @@ pub fn manager_title() -> String {
 /// многоточием).
 pub const VAULT_TITLE_MAX_CHARS: usize = 120;
 
-/// Заголовок окна хранилища: «<имя хранилища> — Rhizomind» (задача 2.11,
-/// находка QA Н2, вопрос 82 вариант А). Имя открытой заметки в заголовок
-/// **не** попадает: заголовок видит Windows (панель задач, Alt+Tab,
-/// журнал действий, специальные возможности), а имена заметок вне хранилища
-/// не уходят (инвариант 2, docs/SECURITY.md). Имя хранилища — то, что
-/// показывает интерфейс (`VaultSummary::name`, имя папки). Из него убраны
-/// управляющие символы (Cc), невидимые знаки форматирования (Cf: направление
-/// текста, нулевая ширина, мягкий перенос, BOM, теги) и разделители строк и
-/// абзацев (U+2028, U+2029); длина ограничена [`VAULT_TITLE_MAX_CHARS`],
-/// обрезка не отрывает комбинирующие метки от буквы. Пустое имя — просто
-/// «Rhizomind».
+/// Наибольшая длина всего заголовка окна хранилища (символов): длинное имя
+/// заметки обрезается первым (задача 2.12).
+pub const WINDOW_TITLE_MAX_CHARS: usize = 200;
+
+/// Разделитель частей заголовка.
+const TITLE_SEPARATOR: &str = " — ";
+
+/// Заголовок окна хранилища без открытой заметки: «<имя хранилища> —
+/// Rhizomind» ([`window_title`] без заметки). Ставится при создании окна.
 pub fn vault_title(name: &str) -> String {
+    window_title(name, None)
+}
+
+/// Заголовок окна хранилища (решение владельца 82, как в Obsidian):
+/// «<заметка> — <хранилище> — Rhizomind»; без заметки — «<хранилище> —
+/// Rhizomind» (задача 2.11). Имя хранилища — то, что показывает интерфейс
+/// (`VaultSummary::name`, имя папки); имя заметки — имя файла без `.md`,
+/// без папки (его берёт из пути ядро, [`crate::commands::OpenVault::show_note`]).
+///
+/// Из обоих имён убраны управляющие символы (Cc), невидимые знаки
+/// форматирования (Cf: направление текста, нулевая ширина, мягкий перенос,
+/// BOM, теги) и разделители строк и абзацев (U+2028, U+2029), пробелы по
+/// краям. Имя хранилища — не длиннее [`VAULT_TITLE_MAX_CHARS`], весь
+/// заголовок — не длиннее [`WINDOW_TITLE_MAX_CHARS`]: длинное имя заметки
+/// обрезается первым. Обрезка — с «…», не отрывает комбинирующие метки от
+/// буквы. Пустое имя хранилища — просто «Rhizomind»; пустое имя заметки —
+/// заголовок без заметки.
+pub fn window_title(vault_name: &str, note_name: Option<&str>) -> String {
+    let app = crate::main_window_title();
+    let base = match title_part(vault_name, VAULT_TITLE_MAX_CHARS) {
+        Some(vault) => format!("{vault}{TITLE_SEPARATOR}{app}"),
+        None => app,
+    };
+    let room = WINDOW_TITLE_MAX_CHARS
+        .saturating_sub(base.chars().count() + TITLE_SEPARATOR.chars().count());
+    match note_name.and_then(|note| title_part(note, room)) {
+        Some(note) => format!("{note}{TITLE_SEPARATOR}{base}"),
+        None => base,
+    }
+}
+
+/// Имя для заголовка: без невидимых символов и пробелов по краям, не
+/// длиннее `max` символов (вместе с «…»). Пустое — `None`.
+fn title_part(name: &str, max: usize) -> Option<String> {
     let clean: String = name.chars().filter(|c| !is_hidden_in_title(*c)).collect();
     let clean = clean.trim();
-    if clean.is_empty() {
-        return crate::main_window_title();
+    if clean.is_empty() || max == 0 {
+        return None;
     }
     let chars: Vec<char> = clean.chars().collect();
-    let shown = if chars.len() > VAULT_TITLE_MAX_CHARS {
-        // Первый отброшенный символ продолжает предыдущий (метка, селектор,
-        // оттенок кожи) — отбросить и его основу.
-        let mut keep = VAULT_TITLE_MAX_CHARS - 1;
-        while keep > 0 && extends_previous(chars[keep]) {
-            keep -= 1;
-        }
-        let mut cut: String = chars[..keep]
-            .iter()
-            .collect::<String>()
-            .trim_end()
-            .to_owned();
-        cut.push('…');
-        cut
-    } else {
-        clean.to_owned()
-    };
-    format!("{shown} — {}", crate::main_window_title())
+    if chars.len() <= max {
+        return Some(clean.to_owned());
+    }
+    // Первый отброшенный символ продолжает предыдущий (метка, селектор,
+    // оттенок кожи) — отбросить и его основу.
+    let mut keep = max - 1;
+    while keep > 0 && extends_previous(chars[keep]) {
+        keep -= 1;
+    }
+    let mut cut: String = chars[..keep]
+        .iter()
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
+    cut.push('…');
+    Some(cut)
 }
 
 /// Символ, которого не должно быть в заголовке: управляющий (Cc), невидимый

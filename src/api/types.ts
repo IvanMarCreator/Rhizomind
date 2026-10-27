@@ -311,6 +311,13 @@ export interface OpenExternalRequest {
 
 export type OpenExternalOutcome = { outcome: 'opened' } | { outcome: 'cancelled' };
 
+// ---- Окно -------------------------------------------------------------------
+
+/** Заметка, показанная в окне (`null` — не открыта): по ней ядро ставит заголовок окна (задача 2.12). */
+export interface WindowShownNoteRequest {
+  path: VaultPath | null;
+}
+
 // ---- Карта команд и событий -----------------------------------------------
 
 /**
@@ -349,6 +356,8 @@ export interface CoreCommands {
   window_close_ready: { request: null; response: null };
   /** Ответ на `window:close-requested`: запись не удалась, окно показывается снова. */
   window_close_cancel: { request: null; response: null };
+  /** Показанная заметка: заголовок окна «<заметка> — <хранилище> — Rhizomind» ставит ядро (задача 2.12). */
+  window_shown_note: { request: WindowShownNoteRequest; response: null };
 }
 
 export type CommandName = keyof CoreCommands;

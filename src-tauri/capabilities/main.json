@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Окна хранилищ (метка vault-<16 шестнадцатеричных цифр>, src/windows/mod.rs): свои команды ядра API v1 (список — src/commands/list.rs, он же AppManifest::commands в build.rs) без команд только окна управления (vault_create, vault_open_folder, vault_remove_from_list, folder_pick — capabilities/manager.json, задача 2.8б) и подписка на события ядра (listen/unlisten). Отправка событий из интерфейса (emit) не выдаётся. Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009). Состав проверяет тест src/commands/acl_tests.rs.",
+  "description": "Окна хранилищ (метка vault-<16 шестнадцатеричных цифр>, src/windows/mod.rs): свои команды ядра API v1 (список — src/commands/list.rs, он же AppManifest::commands в build.rs) без команд только окна управления (vault_create, vault_open_folder, vault_remove_from_list, folder_pick — capabilities/manager.json, задача 2.8б) и подписка на события ядра (listen/unlisten). Заголовок окна ставит только ядро: интерфейс сообщает путь показанной заметки командой window_shown_note (задача 2.12), права core:window:allow-set-title нет. Отправка событий из интерфейса (emit) не выдаётся. Права fs:*, opener:*, shell:*, dialog:*, http:* интерфейсу не выдаются (ADR 0009). Состав проверяет тест src/commands/acl_tests.rs.",
   "windows": [
     "vault-*"
   ],
@@ -29,6 +29,7 @@
     "allow-open-external",
     "allow-window-close-ready",
     "allow-window-close-cancel",
+    "allow-window-shown-note",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

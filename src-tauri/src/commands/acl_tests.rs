@@ -266,6 +266,13 @@ fn tauri_and_plugin_commands_are_denied() {
             "window.close",
             "Permissions associated with this command: core:window:allow-close",
         ),
+        // Заголовок окна ставит только ядро (задача 2.12, решение 82):
+        // интерфейс сообщает лишь путь заметки (`window_shown_note`).
+        (
+            "plugin:window|set_title",
+            "window.set_title",
+            "Permissions associated with this command: core:window:allow-set-title",
+        ),
         (
             "plugin:webview|create_webview_window",
             "webview.create_webview_window",
