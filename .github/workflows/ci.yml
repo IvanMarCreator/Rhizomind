@@ -174,7 +174,8 @@ jobs:
         run: npm run build:e2e
 
       - name: Сценарный тест (Linux)
-        timeout-minutes: 10
+        # Сценарии идут ~10 мин и растут с задачами (2.6: на Linux 601 с при пределе 10 мин).
+        timeout-minutes: 20
         if: runner.os == 'Linux'
         env:
           # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
@@ -198,7 +199,8 @@ jobs:
           $vctip | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
 
       - name: Сценарный тест (Windows)
-        timeout-minutes: 10
+        # Сценарии идут ~10 мин и растут с задачами (2.6: на Linux 601 с при пределе 10 мин).
+        timeout-minutes: 20
         if: runner.os == 'Windows'
         env:
           # Тест следов подменяет vaults.json тестовым хранилищем (машина CI одноразовая).
