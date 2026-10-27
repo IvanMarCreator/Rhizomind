@@ -7,7 +7,10 @@
  * базовая тема CodeMirror (пакет style-mod, классы «ͼ…») —
  * src/editor/codemirror-base.css; стиль изолированного iframe Tauri
  * (`#__tauri_isolation__`, tauri/scripts/isolation.js) — src/shell/base.css.
- * Любое другое нарушение — ошибка.
+ * Любое другое нарушение — ошибка. Что именно лежит в элементе CodeMirror и
+ * чем закрыт каждый его селектор, сверяет
+ * src/editor/codemirror-styles.component.test.ts (задача 2.10а): новая тема
+ * роняет тот тест, а не проходит здесь как «известная».
  */
 const KNOWN = ' [известный: правила в статическом CSS]';
 
