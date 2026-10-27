@@ -88,6 +88,20 @@ describe('базовые стили CodeMirror — статический CSS, �
     expect(style.getPropertyValue('word-break')).toBe('normal');
   });
 
+  it('граница порога (З2): строка ровно HUGE_LINE символов — без класса, HUGE_LINE + 1 — с классом', () => {
+    const firstLine = (length: number) => {
+      // Строка первой — в видимой части редактора и в jsdom.
+      current().dispatch({ changes: { from: 0, to: current().state.doc.length, insert: `${'z'.repeat(length)}\nкороткая\n` } });
+      const line = current().contentDOM.querySelector('.cm-line');
+      expect(line?.textContent?.length, 'первая строка в DOM целиком').toBe(length);
+      return line?.classList.contains('cm-rz-hugeLine');
+    };
+    expect(HUGE_LINE).toBe(10_000);
+    expect(firstLine(HUGE_LINE)).toBe(false);
+    expect(firstLine(HUGE_LINE + 1)).toBe(true);
+    expect(firstLine(HUGE_LINE - 1)).toBe(false);
+  });
+
   it('рамки фокуса вокруг всей области текста нет (Н3)', () => {
     current().focus();
     expect(document.activeElement).toBe(current().contentDOM);
