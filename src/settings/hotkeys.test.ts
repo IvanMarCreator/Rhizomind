@@ -4,6 +4,7 @@ import {
   assignChord,
   bindingsOf,
   checkChord,
+  isTextEditingKey,
   chordFromEvent,
   chordParts,
   chordText,
@@ -72,6 +73,10 @@ describe('проверка сочетания', () => {
     expect(checkChord('Alt+F4')).toBe('reserved');
     expect(checkChord('Ctrl+KeyC')).toBe('reserved');
     expect(checkChord('Ctrl+KeyZ')).toBe('reserved');
+    // Решение 81: вырезать и вставить старыми сочетаниями.
+    expect(checkChord('Shift+Delete')).toBe('reserved');
+    expect(checkChord('Shift+Insert')).toBe('reserved');
+    expect(checkChord('Ctrl+Insert')).toBe('reserved');
   });
 
   it('буква без Ctrl или Alt мешала бы вводу', () => {
@@ -79,7 +84,7 @@ describe('проверка сочетания', () => {
     expect(checkChord('Shift+KeyN')).toBe('needs_modifier');
     expect(checkChord('ArrowLeft')).toBe('needs_modifier');
     expect(checkChord('F5')).toBeNull();
-    expect(checkChord('Shift+Delete')).toBeNull();
+    expect(checkChord('Ctrl+Delete')).toBeNull();
   });
 });
 
@@ -135,5 +140,28 @@ describe('показ сочетания', () => {
     expect(chordParts('Ctrl+Shift+KeyE')).toEqual(['Ctrl', 'Shift', 'E']);
     expect(chordParts('Alt+ArrowLeft')).toEqual(['Alt', '←']);
     expect(chordText('Ctrl+KeyO')).toBe('Ctrl+O');
+  });
+});
+
+describe('клавиши правки текста (решение 81)', () => {
+  it('Delete, Backspace, стрелки, Home/End — с Ctrl и Shift, но не с Alt; Ctrl+A/C/V/X/Z', () => {
+    for (const init of [
+      { code: 'Delete', key: 'Delete' },
+      { code: 'Backspace', key: 'Backspace', ctrlKey: true },
+      { code: 'Delete', key: 'Delete', ctrlKey: true },
+      { code: 'ArrowLeft', key: 'ArrowLeft', ctrlKey: true, shiftKey: true },
+      { code: 'Home', key: 'Home', shiftKey: true },
+      { code: 'End', key: 'End' },
+      { code: 'KeyA', key: 'ф', ctrlKey: true },
+      { code: 'KeyZ', key: 'я', ctrlKey: true },
+    ]) {
+      expect(isTextEditingKey(key(init)), JSON.stringify(init)).toBe(true);
+    }
+  });
+
+  it('Alt+стрелки, F2, Ctrl+O — не правка текста', () => {
+    expect(isTextEditingKey(key({ code: 'ArrowLeft', key: 'ArrowLeft', altKey: true }))).toBe(false);
+    expect(isTextEditingKey(key({ code: 'F2', key: 'F2' }))).toBe(false);
+    expect(isTextEditingKey(key({ code: 'KeyO', key: 'щ', ctrlKey: true }))).toBe(false);
   });
 });

@@ -173,9 +173,10 @@ jobs:
       - name: Сборка для сценарного теста
         run: npm run build:e2e
 
-      # ~9,5 мин после сценариев выпуска (задача 3.1) — запас до 15 мин.
+      # Предел 20 мин: после сценариев выпуска (задача 3.1) набор идёт ~9–10 мин
+      # и на медленном раннере упирался в прежние 10 мин при всех тестах зелёных.
       - name: Сценарный тест (Linux)
-        timeout-minutes: 15
+        timeout-minutes: 20
         if: runner.os == 'Linux'
         env:
           # Без GPU в Xvfb WebKitGTK со своим DMA-BUF-отрисовщиком даёт пустой снимок.
@@ -199,7 +200,7 @@ jobs:
           $vctip | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
 
       - name: Сценарный тест (Windows)
-        timeout-minutes: 10
+        timeout-minutes: 20
         if: runner.os == 'Windows'
         env:
           # Тест следов подменяет vaults.json тестовым хранилищем (машина CI одноразовая).
