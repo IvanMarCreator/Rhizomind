@@ -43,6 +43,7 @@
     'open_external',
     'window_close_ready',
     'window_close_cancel',
+    'window_shown_note',
   ]);
 
   // События ядра API v1 — ровно модуль `event` в src-tauri/src/commands/events.rs

@@ -76,6 +76,12 @@ impl NoteIndex {
         self.notes.contains_key(&path_key(path))
     }
 
+    /// Путь заметки в написании списка (как на диске или как прислала
+    /// команда), найденный по ключам имён; `None` — такой заметки нет.
+    pub fn note(&self, path: &VaultPath) -> Option<&VaultPath> {
+        self.notes.get(&path_key(path)).map(|(path, _)| path)
+    }
+
     /// Заметки по пути `path` и под ним (путь заметки или папки), в
     /// написании индекса.
     pub fn notes_under(&self, path: &VaultPath) -> Vec<VaultPath> {

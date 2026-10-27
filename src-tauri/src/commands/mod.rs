@@ -121,6 +121,11 @@ pub struct OpenVault {
     pub vault: Vault,
     /// Список заметок, разрешение ссылок и быстрый переход.
     index: RwLock<NoteIndex>,
+    /// Заметка, показанная в окне (`window_shown_note`, задача 2.12): по ней
+    /// ядро ставит заголовок окна. Меняется под замком списка заметок
+    /// (чтение — команда, запись — наблюдатель): порядок «команда ↔
+    /// наблюдатель» один и тот же.
+    shown: Mutex<Option<VaultPath>>,
 }
 
 impl OpenVault {
@@ -131,6 +136,7 @@ impl OpenVault {
             summary,
             vault,
             index: RwLock::new(index),
+            shown: Mutex::new(None),
         })
     }
 
@@ -368,6 +374,7 @@ impl Core {
             summary,
             vault,
             index: RwLock::default(),
+            shown: Mutex::default(),
         });
         let mut index = open.write_index();
         let watcher = match VaultWatcher::start_with(

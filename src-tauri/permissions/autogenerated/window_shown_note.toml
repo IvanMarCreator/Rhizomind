@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-shown-note"
+description = "Enables the window_shown_note command without any pre-configured scope."
+commands.allow = ["window_shown_note"]
+
+[[permission]]
+identifier = "deny-window-shown-note"
+description = "Denies the window_shown_note command without any pre-configured scope."
+commands.deny = ["window_shown_note"]

@@ -278,6 +278,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   },
   window_close_ready: { command: 'window_close_ready', request: null, response: null, errors: [] },
   window_close_cancel: { command: 'window_close_cancel', request: null, response: null, errors: [] },
+  window_shown_note: {
+    command: 'window_shown_note',
+    request: { path: ['Проекты', 'Встреча.md'] },
+    response: null,
+    errors: [err('not_found'), err('not_a_note'), err('invalid_path'), err('no_vault_open')],
+  },
 };
 
 const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {

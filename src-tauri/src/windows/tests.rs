@@ -932,8 +932,8 @@ fn no_manager_window_after_exit_has_begun() {
     assert!(app.state::<Core>().manager_label().is_none());
 }
 
-// Заголовок окна хранилища (задача 2.11, находка QA Н2, вопрос 82 вариант А):
-// «<имя хранилища> — Rhizomind», без имени заметки.
+// Заголовок окна хранилища без открытой заметки (задача 2.11, находка QA Н2):
+// «<имя хранилища> — Rhizomind». С заметкой — ниже (задача 2.12, решение 82).
 
 #[test]
 fn vault_title_is_vault_name_then_app_title() {
@@ -1008,4 +1008,72 @@ fn vault_title_cut_keeps_combining_marks_with_their_letter() {
     );
     // Пробел перед многоточием не остаётся.
     assert_eq!(cut_at_119(" ж"), format!("{}…", "а".repeat(118)));
+}
+
+// ---- Имя открытой заметки в заголовке (задача 2.12, решение владельца 82) ----
+
+#[test]
+fn window_title_is_note_then_vault_then_app_title() {
+    assert_eq!(
+        window_title("Архив", Some("Итоги года")),
+        format!("Итоги года — Архив — {}", crate::main_window_title())
+    );
+    // Без заметки — как у `vault_title`.
+    assert_eq!(window_title("Архив", None), vault_title("Архив"));
+}
+
+#[test]
+fn window_title_cleans_note_name_like_vault_name() {
+    assert_eq!(
+        window_title(
+            "Архив",
+            Some("  Ито\nги\u{202e}\u{200b} го\u{2028}да\u{feff}\u{e0041} ")
+        ),
+        format!("Итоги года — Архив — {}", crate::main_window_title())
+    );
+    // Имя заметки из одних невидимых знаков — заголовок без заметки.
+    assert_eq!(
+        window_title("Архив", Some(" \u{200b}\n\u{2029} ")),
+        vault_title("Архив")
+    );
+}
+
+#[test]
+fn window_title_cuts_note_name_first() {
+    let vault = "я".repeat(VAULT_TITLE_MAX_CHARS);
+    let title = window_title(&vault, Some(&"ж".repeat(500)));
+    assert!(
+        title.chars().count() <= WINDOW_TITLE_MAX_CHARS,
+        "заголовок длиннее предела: {}",
+        title.chars().count()
+    );
+    // Имя хранилища целиком (на своём пределе), обрезано имя заметки.
+    let note = title
+        .strip_suffix(&format!(" — {vault} — {}", crate::main_window_title()))
+        .expect("хвост заголовка");
+    assert!(note.ends_with('…'), "имя заметки не обрезано: {note}");
+    assert!(note.starts_with("жжж"));
+    assert_eq!(title.chars().count(), WINDOW_TITLE_MAX_CHARS);
+    // Короткое хранилище — имени заметки достаётся больше, предел общий.
+    let long = window_title("Архив", Some(&"ж".repeat(500)));
+    assert_eq!(long.chars().count(), WINDOW_TITLE_MAX_CHARS);
+    // Ровно на пределе — без многоточия.
+    let suffix = format!(" — Архив — {}", crate::main_window_title());
+    let exact = "ё".repeat(WINDOW_TITLE_MAX_CHARS - suffix.chars().count());
+    assert_eq!(
+        window_title("Архив", Some(&exact)),
+        format!("{exact}{suffix}")
+    );
+}
+
+#[test]
+fn window_title_note_cut_keeps_combining_marks() {
+    let suffix = format!(" — Архив — {}", crate::main_window_title());
+    let room = WINDOW_TITLE_MAX_CHARS - suffix.chars().count();
+    // Обрезка приходится на «е» + U+0308: метка не отрывается от буквы.
+    let note = format!("{}е\u{308}{}", "а".repeat(room - 2), "ж".repeat(10));
+    assert_eq!(
+        window_title("Архив", Some(&note)),
+        format!("{}…{suffix}", "а".repeat(room - 2))
+    );
 }
