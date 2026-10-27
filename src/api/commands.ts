@@ -62,4 +62,7 @@ export const core = {
   windowCloseReady: withoutRequest('window_close_ready'),
   /** Запись не удалась: окно показывается снова и не закрывается. */
   windowCloseCancel: withoutRequest('window_close_cancel'),
+  // Заголовок окна (задача 2.12)
+  /** Какая заметка показана: заголовок окна ставит ядро, интерфейс сообщает только путь. */
+  windowShownNote: withRequest('window_shown_note'),
 } as const;

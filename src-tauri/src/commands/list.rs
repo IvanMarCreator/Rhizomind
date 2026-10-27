@@ -46,7 +46,9 @@ macro_rules! with_core_commands {
             open_external,
             // Окно, задача 0.7
             window_close_ready,
-            window_close_cancel
+            window_close_cancel,
+            // Заголовок окна, задача 2.12
+            window_shown_note
         )
     };
 }

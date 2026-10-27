@@ -352,6 +352,11 @@ fn contract_examples_pass_on_real_core() {
     );
 
     // Внешняя ссылка: в тестах окно подтверждения отвечает «отмена».
+    // Показанная заметка (задача 2.12): заголовок ставит ядро, ответ пустой.
+    assert_eq!(
+        call(&w, "window_shown_note", example("window_shown_note")).expect("window_shown_note"),
+        Value::Null
+    );
     assert_eq!(
         call(&w, "open_external", example("open_external")).expect("open_external"),
         json!({ "outcome": "cancelled" })
@@ -636,6 +641,76 @@ fn window_cannot_reach_the_vault_of_another_window() {
     app.state::<Core>().unbind_window("vault-a");
     let error = invoke(&a, "tree_list", json!({})).expect_err("отвязано");
     assert_eq!(core_error("tree_list", error).code, ErrorCode::NoVaultOpen);
+}
+
+/// `window_shown_note` (задача 2.12, решение 82): только заметка хранилища
+/// своего окна; окно без хранилища (окно управления) — отказ.
+#[test]
+fn shown_note_is_checked_against_the_vault_of_the_window() {
+    let app = app();
+    let b = window(&app, "vault-shown-b");
+    let dir = tempfile::tempdir().expect("папка");
+    let (root_a, root_b) = (dir.path().join("А"), dir.path().join("Б"));
+    put(&root_a, "Только в А.md", b"a");
+    put(&root_b, "Папка/Только в Б.md", b"b");
+    open_vault(
+        &app,
+        "vault-shown-a",
+        "a",
+        &root_a,
+        trash_into(dir.path().join("bin"), true),
+    );
+    open_vault(
+        &app,
+        "vault-shown-b",
+        "b",
+        &root_b,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let shown = |w: &WebviewWindow<MockRuntime>, request: Value| {
+        call(w, "window_shown_note", request)
+            .map_err(|error| core_error("window_shown_note", error).code)
+    };
+
+    assert_eq!(
+        shown(&b, json!({ "path": ["Папка", "Только в Б.md"] })),
+        Ok(Value::Null)
+    );
+    assert_eq!(shown(&b, json!({ "path": null })), Ok(Value::Null));
+    // Заметка другого хранилища, папка, путь за контуром.
+    assert_eq!(
+        shown(&b, json!({ "path": ["Только в А.md"] })),
+        Err(ErrorCode::NotFound)
+    );
+    assert_eq!(
+        shown(&b, json!({ "path": ["Папка"] })),
+        Err(ErrorCode::NotANote)
+    );
+    assert_eq!(shown(&b, json!({ "path": [] })), Err(ErrorCode::NotANote));
+    assert_eq!(
+        shown(&b, json!({ "path": ["..", "А", "Только в А.md"] })),
+        Err(ErrorCode::InvalidPath)
+    );
+    // Лишнее поле (например, готовый заголовок) отклоняется мостом.
+    assert!(
+        call(
+            &b,
+            "window_shown_note",
+            json!({ "path": null, "title": "Чужой текст" })
+        )
+        .is_err()
+    );
+    // Окно управления и окно без хранилища.
+    let m = manager_window(&app, "manager-c0ffee0000000002");
+    assert_eq!(
+        shown(&m, json!({ "path": ["Только в А.md"] })),
+        Err(ErrorCode::NoVaultOpen)
+    );
+    let none = window(&app, "vault-shown-none");
+    assert_eq!(
+        shown(&none, json!({ "path": null })),
+        Err(ErrorCode::NoVaultOpen)
+    );
 }
 
 #[test]

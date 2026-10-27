@@ -244,6 +244,37 @@ async function windowTitles(b: WebdriverIO.Browser, count: number, step: string)
   return titles;
 }
 
+/**
+ * Ждёт, пока заголовки окон ОС станут `expected` (по алфавиту): заголовок с
+ * заметкой ядро ставит после того, как окно сообщило показанную заметку
+ * (задача 2.12, решение 82).
+ */
+async function waitForWindowTitles(b: WebdriverIO.Browser, expected: string[], step: string): Promise<void> {
+  let titles: string[] = [];
+  await b.waitUntil(
+    async () => {
+      titles = appWindowTitles();
+      return JSON.stringify(titles) === JSON.stringify(expected);
+    },
+    { timeout: 10_000, timeoutMsg: `${step}: заголовки окон ${JSON.stringify(titles)}, ожидались ${JSON.stringify(expected)}` },
+  );
+  process.stderr.write(`заголовки окон ОС (${process.platform}, ${step}): ${JSON.stringify(titles)}\n`);
+}
+
+/** Ctrl+O, запрос — имя заметки, Enter: открыта заметка с путём `header` над текстом. */
+async function openBySwitcher(b: WebdriverIO.Browser, name: string, header: string): Promise<void> {
+  await b.keys(['Control', 'o']);
+  await b.$(SWITCHER).waitForDisplayed({ timeout: 5_000 });
+  await b.keys(name);
+  await b.waitUntil(
+    async () => (await b.execute(() => document.querySelector('[role="option"] .name')?.textContent)) === name,
+    { timeout: 5_000, timeoutMsg: `быстрый переход не нашёл «${name}» первым` },
+  );
+  await b.keys('Enter');
+  await b.$(SWITCHER).waitForExist({ reverse: true, timeout: 5_000 });
+  await b.waitUntil(async () => (await headerPath(b)) === header, { timeout: 5_000 });
+}
+
 describe('сценарий выпуска 0.1: от первого запуска до перезапуска', () => {
   let session: Session | undefined;
   let parent = '';
@@ -666,11 +697,24 @@ describe('сценарий выпуска 0.1: от первого запуск�
     await shot(b, 'archive-note');
   });
 
-  it('Н2, вопрос 82 (А): заголовки окон — «<хранилище> — Rhizomind», без имени открытой заметки', async () => {
-    const titles = await windowTitles(browser(), 2, 'два хранилища');
-    expect(titles).toEqual([`Архив${TITLE_SUFFIX}`, `Рабочая база${TITLE_SUFFIX}`]);
-    // Открытая заметка «Итоги года» в заголовок не попадает (инвариант 2).
-    expect(titles.some((title) => title.includes('Итоги года'))).toBe(false);
+  it('Н2, решение 82: заголовок окна — «<заметка> — <хранилище> — Rhizomind», следует за переходом', async () => {
+    const b = browser();
+    // Архив: открыта «Итоги года»; Рабочая база: открытую заметку удалили — без заметки.
+    await waitForWindowTitles(b, [`Итоги года — Архив${TITLE_SUFFIX}`, `Рабочая база${TITLE_SUFFIX}`], 'два хранилища');
+    // Переход к другой заметке в окне «Рабочая база» — заголовок меняется.
+    await switchToWindowWith(b, switcherLabel('Рабочая база'), 2);
+    await openBySwitcher(b, 'Новая идея', 'Новая идея');
+    await waitForWindowTitles(
+      b,
+      [`Итоги года — Архив${TITLE_SUFFIX}`, `Новая идея — Рабочая база${TITLE_SUFFIX}`],
+      'открыта заметка',
+    );
+    await openBySwitcher(b, 'Встреча команды', 'Проекты / Встреча команды');
+    await waitForWindowTitles(
+      b,
+      [`Встреча команды — Рабочая база${TITLE_SUFFIX}`, `Итоги года — Архив${TITLE_SUFFIX}`],
+      'переход к другой заметке',
+    );
   });
 
   // ---- С3.1: перезапуск ---------------------------------------------------------------
@@ -698,8 +742,8 @@ describe('сценарий выпуска 0.1: от первого запуск�
     expect(menu).toContain('Рабочая база');
     expect(menu).toContain('Архив');
     await shotThemes(b, 'restarted');
-    // Заголовок окна, открытого при запуске (`open_at_startup`), — без заметки.
-    expect(await windowTitles(b, 1, 'перезапуск')).toEqual([`Архив${TITLE_SUFFIX}`]);
+    // Заголовок окна после перезапуска — с последней открытой заметкой (решение 82).
+    await waitForWindowTitles(b, [`Итоги года — Архив${TITLE_SUFFIX}`], 'перезапуск');
     await b.keys('Escape');
     await b.$('[role="menu"]').waitForDisplayed({ reverse: true, timeout: 5_000 });
   }, 150_000);

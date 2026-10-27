@@ -2,7 +2,8 @@
   Оболочка окна по концепту К2 (docs/design/README.md, Э1): лента иконок,
   боковая панель, область заметки со строкой над ней, уведомления внизу.
   Окно без хранилища — окно «Управление хранилищами» (src/vaults/, Э11).
-  Заголовок окна — системный (свой заголовок требует настройки окна в ядре).
+  Заголовок окна — системный; его текст ставит ядро: оболочка сообщает только,
+  какая заметка показана (ShownNote, задача 2.12, решение 82).
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -27,6 +28,7 @@
   import Sidebar from './Sidebar.svelte';
   import StartupError from './StartupError.svelte';
   import { WindowClosing, coreClosing } from './closing.ts';
+  import { ShownNote } from './shownNote.ts';
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
@@ -150,6 +152,11 @@
   });
 
   $effect(() => applyTheme(model.theme));
+  /** Заголовок окна (решение 82): ядру — путь показанной заметки; ввод текста путь не меняет. */
+  const shownNote = new ShownNote();
+  $effect(() => {
+    if (model.status.kind === 'ready' && model.vault) shownNote.report(model.currentPath);
+  });
   $effect(() => applyTextSettings(model.settings));
 
   /** Поле формы: поиск, быстрый переход, переименование, числа в настройках. */

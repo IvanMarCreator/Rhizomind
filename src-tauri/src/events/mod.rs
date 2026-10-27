@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, EventTarget, Runtime};
+use tauri::{AppHandle, Emitter, EventTarget, Manager, Runtime};
 
 use crate::commands::{
     NoteChangedPayload, NoteDeletedPayload, NoteRenamedPayload, OpenVault, TreeChange,
@@ -32,10 +32,15 @@ use crate::commands::{
 };
 use crate::watcher::{ChangeSink, WatcherEvent};
 
-/// Куда уходят события одного хранилища. Подменяется в тестах.
+/// Окно одного хранилища: куда уходят события и чей заголовок ведёт
+/// наблюдатель. Подменяется в тестах.
 pub trait Emit: Send + Sync + 'static {
     /// Отправляет событие `event` с данными `payload` окну хранилища.
     fn emit(&self, event: &str, payload: serde_json::Value);
+
+    /// Ставит заголовок окна хранилища: показанную заметку переименовали или
+    /// удалили снаружи (задача 2.12). По умолчанию — ничего.
+    fn set_title(&self, _title: &str) {}
 }
 
 /// Отправка событий одному окну приложения по его метке.
@@ -62,6 +67,13 @@ impl<R: Runtime> Emit for WindowEmitter<R> {
             event,
             payload,
         );
+    }
+
+    fn set_title(&self, title: &str) {
+        // Окно могло закрыться — заголовок никому не нужен.
+        if let Some(window) = self.app.get_webview_window(&self.label) {
+            let _ = window.set_title(title);
+        }
     }
 }
 
@@ -177,6 +189,12 @@ impl VaultEvents {
             if let Some(all) = all_notes {
                 index.replace(all);
             }
+            // Заголовок окна — под тем же замком, что и проверка
+            // `window_shown_note`: команда и наблюдатель не обгоняют друг друга.
+            self.open
+                .follow_shown(&index, &payload.changes, &|title: &str| {
+                    self.emit.set_title(title);
+                });
         }
         // Версии изменённых заметок — с диска, вне замка списка заметок.
         for path in modified {

@@ -274,6 +274,26 @@ fn window_close_cancel() {
 }
 
 #[test]
+fn window_shown_note() {
+    command_with(
+        "window_shown_note",
+        &WindowShownNoteRequest {
+            path: Some(path(&["Проекты", "Встреча.md"])),
+        },
+        &(),
+        &[
+            err(ErrorCode::NotFound),
+            err(ErrorCode::NotANote),
+            err(ErrorCode::InvalidPath),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+    // «Заметка не открыта» — `path: null`.
+    let none = round_trip(&WindowShownNoteRequest { path: None });
+    assert_eq!(none, json!({ "path": null }));
+}
+
+#[test]
 fn tree_list() {
     command(
         "tree_list",

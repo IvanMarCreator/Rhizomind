@@ -1,0 +1,31 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "window_shown_note",
+  "errors": [
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    },
+    {
+      "code": "not_a_note",
+      "message_key": "errors.not_a_note"
+    },
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ]
+  },
+  "response": null
+}
