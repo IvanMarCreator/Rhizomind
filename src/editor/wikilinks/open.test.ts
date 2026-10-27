@@ -97,6 +97,24 @@ describe('неразрешённая ссылка создаёт заметку'
     expect(calls).not.toContain('folder_create работа');
   });
 
+  it.each([
+    ['Straße', 'STRASSE'],
+    ['STRASSE', 'straße'],
+    ['ΌΣΟΣ', 'όσος'],
+    ['ﬁle', 'FILE'],
+    ['Мои\u0306 план', 'МОЙ ПЛАН'],
+  ])('регистр — по ключу имени ядра (names::key): папка «%s», в ссылке «%s»', async (disk, link) => {
+    const { deps, calls } = fake({}, [{ path: [disk], kind: 'folder' }]);
+    expect((await followWikilink(`/${link}/Новая`, FROM, deps))?.path).toEqual([disk, 'Новая.md']);
+    expect(calls.filter((c) => c.startsWith('folder_create'))).toEqual([]);
+  });
+
+  it('ё и е — разные папки (как в ядре)', async () => {
+    const { deps, calls } = fake({}, [{ path: ['Ёлка'], kind: 'folder' }]);
+    await followWikilink('/Елка/Новая', FROM, deps);
+    expect(calls).toContain('folder_create Елка');
+  });
+
   it('`.md` в конце не удваивается', async () => {
     const { deps } = fake();
     expect((await followWikilink('Новая.md', FROM, deps))?.path).toEqual(['Проекты', 'Новая.md']);

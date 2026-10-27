@@ -11,6 +11,7 @@
 // Ctrl+щелчок (решение 76); в режиме исходного текста — Ctrl+щелчок
 // (`sourceLinks`).
 import {
+  Facet,
   RangeSet,
   RangeValue,
   StateField,
@@ -117,6 +118,20 @@ const blocksField = StateField.define<BlockState>({
     return from < 0 ? mapped : rescanFences(doc, mapped, Math.min(from, doc.length), Math.min(to, doc.length), fencesFrom);
   },
 });
+
+/** Включён ли живой предпросмотр (его расширение в состоянии). */
+const livePreviewOn = Facet.define<boolean, boolean>({ combine: (values) => values.some(Boolean) });
+
+/**
+ * Пошаговый разбор блоков кода и блока свойств без оформления. Подключён в
+ * обоих режимах редактора (codemirror.ts): в исходном тексте по нему
+ * автодополнение и Ctrl+щелчок узнают, не в коде ли ссылка, — без разбора
+ * оград от начала текста на каждое нажатие (задача 2.6а). Живой предпросмотр
+ * подключает то же поле — CodeMirror не дублирует одно расширение.
+ */
+export function blockTracking(): Extension {
+  return blocksField;
+}
 
 function anyLine(doc: Text, from: number, to: number, test: (text: string) => boolean): boolean {
   for (let n = doc.lineAt(from).number, last = doc.lineAt(to).number; n <= last; n++) {
@@ -357,7 +372,8 @@ export function previewDecorations(
   ranges: readonly { from: number; to: number }[] = [{ from: 0, to: state.doc.length }],
 ): DecorationSet {
   const blocks = state.field(blocksField, false);
-  if (!blocks) return Decoration.none;
+  // Поле блоков есть и в исходном тексте (`blockTracking`): оформление — только в живом предпросмотре.
+  if (!blocks || !state.facet(livePreviewOn)) return Decoration.none;
   const active = activeLines(state);
   const out: Range<Decoration>[] = [];
   const { doc } = state;
@@ -465,9 +481,9 @@ function revealedAt(state: EditorState, pos: number): boolean {
 export type LinkHit = { url: string } | { wiki: string };
 
 /**
- * Строка с номером `n` внутри блока кода или блока свойств. В живом
- * предпросмотре — по уже найденным блокам; без него (исходный текст) —
- * разбором оград от начала текста до строки (только по Ctrl+щелчку).
+ * Строка с номером `n` внутри блока кода или блока свойств — по полю блоков
+ * (в редакторе оно есть в обоих режимах, `blockTracking`). Без поля
+ * (состояние без расширений редактора) — разбором оград от начала текста.
  */
 function inBlock(state: EditorState, n: number): boolean {
   const line = state.doc.line(n);
@@ -505,6 +521,20 @@ export function linkAt(state: EditorState, pos: number): LinkHit | null {
     if (piece.url !== undefined) return { url: piece.url };
   }
   return null;
+}
+
+/**
+ * Позиция `pos` — в коде (в строке `` `…` `` или в блоке с оградой) или в
+ * блоке свойств: разметка там не действует (по разбору предпросмотра).
+ */
+export function inCodeAt(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  if (inBlock(state, line.number)) return true;
+  const previous = line.number > 1 ? state.doc.line(line.number - 1).text : null;
+  const offset = pos - line.from;
+  return parseLine(line.text, previous).pieces.some(
+    (piece) => piece.kind === 'mark' && piece.cls === 'cm-rz-code' && offset >= piece.from && offset < piece.to,
+  );
 }
 
 /** Открыть ссылку: внешнюю — через ядро с подтверждением, вики — переходом к заметке хранилища. */
@@ -615,7 +645,8 @@ const resolverPlugin = ViewPlugin.fromClass(
       const generation = this.#generation;
       host.resolve(wanted).then(
         (answers) => {
-          if (this.#destroyed) return;
+          // Ответ о прежнем дереве (до vault:changed) не затирает свежий: его спросили заново.
+          if (this.#destroyed || generation !== this.#view.state.field(resolutionField).generation) return;
           this.#view.dispatch({ effects: resolvedEffect.of(answers) });
         },
         () => {
@@ -636,6 +667,7 @@ const resolverPlugin = ViewPlugin.fromClass(
 /** Расширение живого предпросмотра. */
 export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension {
   return [
+    livePreviewOn.of(true),
     blocksField,
     resolutionField,
     previewPlugin,

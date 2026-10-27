@@ -9,6 +9,7 @@
 // ядро проверяет их ещё раз (контур хранилища). Внешние адреса здесь не
 // открываются никогда: это не `open_external`.
 import { CoreCallError, type TreeEntry, type VaultPath } from '../../api/index.ts';
+import { nameKey } from '../../core/names/index.ts';
 import { parseTarget } from '../../core/wikilinks/index.ts';
 import { targetKey } from './display.ts';
 
@@ -28,11 +29,6 @@ export interface FollowResult {
   created: boolean;
 }
 
-/** Ключ имени для сравнения папок: NFC, без учёта регистра (окончательно сравнивает ядро). */
-function nameKey(name: string): string {
-  return name.normalize('NFC').toLocaleLowerCase('ru').normalize('NFC');
-}
-
 /**
  * Папки пути от корня: существующие — с именем как на диске, недостающие
  * создаются по одной (`folder_create`).
@@ -47,6 +43,7 @@ async function ensureFolders(folders: readonly string[], deps: FollowDeps): Prom
         entry.kind === 'folder' &&
         entry.path.length === dir.length + 1 &&
         dir.every((part, i) => entry.path[i] === part) &&
+        // Без учёта регистра — ключом имени ядра (names::key).
         nameKey(entry.path[dir.length] ?? '') === nameKey(folder),
     );
     dir = existing ? [...existing.path] : await deps.folderCreate(dir, folder);
