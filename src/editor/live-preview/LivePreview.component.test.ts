@@ -4,7 +4,7 @@
 import { EditorView } from '@codemirror/view';
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { NoteReadResponse, Settings } from '../../api/index.ts';
 import { mockCore, type CoreMocks, type RecordedCall } from '../../api/testing.ts';
 import Shell from '../../shell/Shell.svelte';
@@ -80,6 +80,17 @@ afterEach(() => {
   clearMocks();
   delete document.documentElement.dataset.theme;
 });
+
+// Первое открытие окна в процессе тестов — в 5–6 раз дольше следующих
+// (~250 мс против ~45 мс: первый запуск кода окна, CodeMirror, jsdom). Под
+// нагрузкой параллельных тестов это секунды, и первый тест файла упирался в
+// предел 5 с. Прогрев — отдельно, со своим пределом.
+beforeAll(async () => {
+  await openNote();
+  cleanup();
+  clearMocks();
+  delete document.documentElement.dataset.theme;
+}, 60_000);
 
 describe('режим редактора', () => {
   it('заметка открывается в режиме из настроек хранилища: живой предпросмотр оформляет текст', async () => {

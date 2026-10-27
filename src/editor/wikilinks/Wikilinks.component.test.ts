@@ -250,6 +250,41 @@ describe('решение 86: заметка только для чтения и 
     expect(meeting.state.selection.main.head).toBe(0);
     expect(meeting.hasFocus).toBe(false);
   });
+
+  it('Ctrl+O до показа другой заметки тоже сбрасывает переход (Editor вызывает wiki.shown)', async () => {
+    // Ни заметка из ссылки, ни другая не успели показаться — редактора другой
+    // заметки нет, сбросить переход может только смена открытой заметки окна.
+    const OTHER: VaultPath = ['Проекты', 'Другая.md'];
+    const held: Array<() => void> = [];
+    let meetingReads = 0;
+    const { view, model, calls } = await openHome({
+      extra: {
+        note_read: ({ path }): NoteReadResponse | Promise<NoteReadResponse> => {
+          const key = path.join('/');
+          const text = key === MEETING.join('/') ? MEETING_TEXT : key === HOME.join('/') ? HOME_TEXT : '';
+          const response = { text, version: VERSION, read_only: null };
+          if ((key === MEETING.join('/') && ++meetingReads === 1) || key === OTHER.join('/')) {
+            return new Promise((resolve) => held.push(() => resolve(response)));
+          }
+          return response;
+        },
+      },
+    });
+    cursorToEnd(view);
+    await fireEvent.mouseDown(wikiLink(view, 'Альфа/Встреча#Итоги|итоги'), { button: 0 });
+    await waitFor(() => expect(model.currentPath).toEqual(MEETING));
+    model.open(OTHER);
+    // Окно перешло к другой заметке (её чтение запрошено), но показать её ещё нечего.
+    await waitFor(() => expect(called(calls, 'note_read').some(([, args]) => JSON.stringify(args).includes('Другая.md'))).toBe(true));
+    model.open(MEETING);
+    for (const release of held) release();
+    const meeting = await nextView(view);
+    // Ждущий переход сработал бы в микрозадаче после создания редактора.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(model.currentPath).toEqual(MEETING);
+    expect(meeting.state.selection.main.head).toBe(0);
+    expect(meeting.hasFocus).toBe(false);
+  });
 });
 
 describe('неразрешённая ссылка', () => {
