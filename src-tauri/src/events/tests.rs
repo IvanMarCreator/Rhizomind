@@ -250,6 +250,44 @@ fn modified_note_gets_note_changed_with_disk_version() {
     assert_eq!(events[1].1["version"]["size"], json!("снаружи".len()));
 }
 
+/// Задача 1.9, решение 89: переименована и изменена в одной склейке —
+/// окну сначала `note:renamed`, потом `note:changed` по новому пути.
+#[test]
+fn renamed_and_modified_note_gets_note_renamed_then_note_changed() {
+    let f = fixture(&["a.md"]);
+    std::fs::create_dir(f.dir.path().join("Архив")).expect("папка");
+    std::fs::rename(
+        f.dir.path().join("a.md"),
+        f.dir.path().join("Архив").join("b.md"),
+    )
+    .expect("перенос");
+    std::fs::write(f.dir.path().join("Архив").join("b.md"), "снаружи").expect("правка");
+
+    f.events.handle(changed(vec![
+        TreeChange::Renamed {
+            from: vp("a.md"),
+            to: vp("Архив/b.md"),
+        },
+        TreeChange::Modified {
+            path: vp("Архив/b.md"),
+        },
+    ]));
+
+    let events = f.recorder.take();
+    let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["vault:changed", "note:renamed", "note:changed"]);
+    assert_eq!(
+        events[1].1,
+        json!({ "from": ["a.md"], "to": ["Архив", "b.md"] })
+    );
+    assert_eq!(events[2].1["path"], json!(["Архив", "b.md"]));
+    assert_eq!(
+        events[2].1["version"]["hash"],
+        json!(blake3::hash("снаружи".as_bytes()).to_hex().to_string())
+    );
+    assert!(f.open.read_index().contains(&vp("Архив/b.md")));
+}
+
 #[test]
 fn new_note_from_outside_becomes_resolvable() {
     let f = fixture(&["Дневник.md"]);

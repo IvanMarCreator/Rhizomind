@@ -50,6 +50,8 @@ pub(super) struct Entry {
     pub kind: Kind,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// Дата создания (задача 1.9: тот же файл после переименования и правки).
+    pub created: Option<SystemTime>,
     /// Идентификатор файла; 0 у файловой системы без идентификаторов — `None`.
     pub id: Option<FileId>,
 }
@@ -222,6 +224,7 @@ fn entry(name: &[u16], info: &FILE_ID_EXTD_DIR_INFO, volume: u64) -> Option<Entr
         kind,
         size: u64::try_from(info.EndOfFile).unwrap_or(0),
         modified: filetime(info.LastWriteTime),
+        created: filetime(info.CreationTime),
         // 0 — у файловой системы нет идентификаторов: неизвестен.
         id: match u128::from_le_bytes(info.FileId.Identifier) {
             0 => None,
@@ -276,6 +279,7 @@ mod tests {
         info.FileNameLength = name_bytes.unwrap_or((wide.len() * 2) as u32);
         info.EndOfFile = 5;
         info.LastWriteTime = UNIX_EPOCH_FILETIME;
+        info.CreationTime = UNIX_EPOCH_FILETIME + 10_000_000;
         info.FileId.Identifier = id.to_le_bytes();
         // SAFETY: запись помещается в буфер теста (проверено ниже срезом).
         unsafe {
@@ -307,6 +311,10 @@ mod tests {
         assert_eq!(entries[0].id, Some(FileId::new_high_res(1, 7)));
         assert_eq!(entries[0].size, 5);
         assert_eq!(entries[0].modified, Some(UNIX_EPOCH));
+        assert_eq!(
+            entries[0].created,
+            Some(UNIX_EPOCH + Duration::from_secs(1))
+        );
     }
 
     #[test]

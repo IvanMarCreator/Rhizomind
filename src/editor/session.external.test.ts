@@ -294,6 +294,28 @@ describe('ревью QA 2.9: «файла нет на диске», потом �
     expect(conflicts).toEqual([COPY]);
   });
 
+  it('файл вернулся с тем же содержимым, note:changed с той же версией: ввод всё равно записан', async () => {
+    // Ревью QA 2.9: «нет файла» проверяется раньше сравнения версий — иначе
+    // версия совпала бы с известной, и ввод остался бы незаписанным навсегда
+    // (в состоянии «нет файла» автосохранения нет).
+    const disk = new Removable();
+    const { s, conflicts } = open(disk);
+    const known = version(disk.generation);
+    s.edit('с диска\nввод\n');
+    disk.unplugged = true;
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+    expect(s.status.kind).toBe('missing');
+
+    disk.unplugged = false;
+    expect(await s.external(known)).toEqual({ kind: 'flushed' });
+
+    expect(disk.text).toBe('с диска\nввод\n');
+    expect(disk.copies).toEqual([]);
+    expect(conflicts).toEqual([]);
+    expect(s.status.kind).toBe('saved');
+    expect(s.hasUnsavedChanges).toBe(false);
+  });
+
   it('файла всё ещё нет — состояние «нет файла», без повторов по таймеру', async () => {
     const disk = new Removable();
     const { s } = open(disk);

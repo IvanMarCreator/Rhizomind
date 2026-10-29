@@ -250,6 +250,70 @@ fn renames_of_files_and_folders() {
     );
 }
 
+/// Задача 1.9 (решение 89): каждую пятую заметку переносят и сразу дописывают
+/// — это переименования и правки, а не исчезновения и появления.
+#[test]
+#[ignore = "нагрузочный: отдельный шаг CI"]
+fn renames_with_edits_in_one_go() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    let out = generate(dir.path(), FILES);
+    let mut mirror = Mirror::from_disk(dir.path());
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(dir.path(), collector.sink()).expect("слежение");
+    let started = Instant::now();
+
+    let notes = notes_under(&out);
+    let target = out.join("Перенесённые и изменённые");
+    fs::create_dir(&target).expect("папка");
+    let mut moved = Vec::new();
+    for (n, note) in notes.iter().enumerate().filter(|(n, _)| n % 5 == 0) {
+        let new = target.join(format!("перенесённая {n}.md"));
+        fs::rename(note, &new).expect("перенос");
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&new)
+            .expect("открыть на запись");
+        std::io::Write::write_all(&mut file, "\nдописано после переноса\n".as_bytes())
+            .expect("запись");
+        moved.push((rel(dir.path(), note), rel(dir.path(), &new)));
+    }
+
+    let settled = collector
+        .settle(&mut mirror, dir.path(), QUIET, TIMEOUT)
+        .expect("после переносов с правкой дерево совпадает с диском");
+    report("переносы с правкой", started, settled, &collector);
+
+    let changes = collector.changes();
+    let renamed: std::collections::HashSet<(Vec<String>, Vec<String>)> = changes
+        .iter()
+        .filter_map(|c| match c {
+            TreeChange::Renamed { from, to } => {
+                Some((from.components().to_vec(), to.components().to_vec()))
+            }
+            _ => None,
+        })
+        .collect();
+    let modified: std::collections::HashSet<Vec<String>> = changes
+        .iter()
+        .filter_map(|c| match c {
+            TreeChange::Modified { path } => Some(path.components().to_vec()),
+            _ => None,
+        })
+        .collect();
+    let lost: Vec<_> = moved
+        .iter()
+        .filter(|(from, to)| {
+            !renamed.contains(&(from.clone(), to.clone())) || !modified.contains(to)
+        })
+        .take(3)
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "каждый перенос с правкой — переименование и правка: из {} не так, например, {lost:?}",
+        moved.len()
+    );
+}
+
 #[test]
 #[ignore = "нагрузочный: отдельный шаг CI"]
 fn overflow_rescan_restores_tree() {
