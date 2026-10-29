@@ -1,0 +1,282 @@
+/* Живой предпросмотр (С3.3): вид по макету Э1 и docs/design/tokens.md.
+   Отдельный статический файл, а не EditorView.theme: CSP окна
+   (`style-src 'self'`) запрещает вставку <style> (находка Н7). Подключается
+   в src/editor/codemirror.ts; проверки — LivePreview.look.component.test.ts.
+
+   Размеры — от размера шрифта текста (настройка хранилища,
+   `--note-font-size` на .cm-editor, src/editor/NoteText.svelte): заголовки и
+   блок кода в `em`, отступы над заголовками — `calc` от него же. Числа в
+   комментариях — при размере 16 px, как в макете.
+
+   Правила строк — с `.cm-content`: они сильнее `.cm-line { padding: 0 }`
+   в NoteText.svelte и базовой темы в codemirror-base.css. */
+
+/* Разметка на строке с курсором. */
+.cm-editor .cm-rz-markup {
+  color: var(--text-faint);
+}
+
+/* ---- Заголовки: H1 меньше имени заметки над текстом (28 px, Bold) ---- */
+
+.cm-editor .cm-content .cm-line.cm-rz-heading {
+  /* 12 px над заголовком (tokens.md «Заголовок 2», Э1 перед «Решения»). */
+  padding-top: calc(var(--note-font-size, 16px) * 0.75);
+  font-weight: 600;
+}
+
+/* 24 / 32, Bold, 16 px над ним. */
+.cm-editor .cm-content .cm-line.cm-rz-h1 {
+  padding-top: var(--note-font-size, 16px);
+  font-size: 1.5em;
+  font-weight: 700;
+  line-height: 1.3333;
+}
+
+/* 21 / 27. */
+.cm-editor .cm-content .cm-line.cm-rz-h2 {
+  font-size: 1.3125em;
+  line-height: 1.2857;
+}
+
+/* 18 / 26. */
+.cm-editor .cm-content .cm-line.cm-rz-h3 {
+  font-size: 1.125em;
+  line-height: 1.4444;
+}
+
+/* 17; заголовки 5 и 6 — размером текста (16), Semi Bold. */
+.cm-editor .cm-content .cm-line.cm-rz-h4 {
+  font-size: 1.0625em;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-h5,
+.cm-editor .cm-content .cm-line.cm-rz-h6 {
+  font-size: 1em;
+}
+
+/* ---- Выделение и код в строке ---- */
+
+.cm-editor .cm-rz-strong {
+  font-weight: 600;
+}
+
+.cm-editor .cm-rz-em {
+  font-style: italic;
+}
+
+.cm-editor .cm-rz-strike {
+  text-decoration: line-through;
+}
+
+.cm-editor .cm-rz-code {
+  padding: 1px 3px;
+  border-radius: 4px;
+  background: var(--bg-code);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+}
+
+/* ---- Блок кода: отступы 12 / 16, скругление 6, 13 / 20 ---- */
+
+.cm-editor .cm-content .cm-line.cm-rz-codeblock {
+  padding: 0 16px;
+  background: var(--bg-code);
+  font-family: var(--font-mono);
+  font-size: 0.8125em;
+  line-height: 1.5385;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-codeblock-first {
+  padding-top: 12px;
+  border-radius: 6px 6px 0 0;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-codeblock-last {
+  padding-bottom: 12px;
+  border-radius: 0 0 6px 6px;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-codeblock-first.cm-rz-codeblock-last {
+  border-radius: 6px;
+}
+
+/* Скрытая ограда (курсор вне блока): строка без высоты, остаётся отступ 12 px —
+   блок как в Э1: 12 + строки кода + 12. */
+.cm-editor .cm-content .cm-line.cm-rz-codeblock-fence {
+  font-size: 0;
+  line-height: 0;
+}
+
+/* ---- Цитата: полоса 3 px `border/strong` и зазор 14 на каждый уровень ---- */
+
+.cm-editor .cm-content .cm-line.cm-rz-quote {
+  padding-left: 17px;
+  background-image: linear-gradient(var(--border-strong), var(--border-strong));
+  background-position: 0 0;
+  background-size: 3px 100%;
+  background-repeat: no-repeat;
+  color: var(--text-secondary);
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-quote-2 {
+  padding-left: 34px;
+  background-image:
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong));
+  background-position:
+    0 0,
+    17px 0;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-quote-3 {
+  padding-left: 51px;
+  background-image:
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong));
+  background-position:
+    0 0,
+    17px 0,
+    34px 0;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-quote-4 {
+  padding-left: 68px;
+  background-image:
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong));
+  background-position:
+    0 0,
+    17px 0,
+    34px 0,
+    51px 0;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-quote-5 {
+  padding-left: 85px;
+  background-image:
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong));
+  background-position:
+    0 0,
+    17px 0,
+    34px 0,
+    51px 0,
+    68px 0;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-quote-6 {
+  padding-left: 102px;
+  background-image:
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong)),
+    linear-gradient(var(--border-strong), var(--border-strong));
+  background-position:
+    0 0,
+    17px 0,
+    34px 0,
+    51px 0,
+    68px 0,
+    85px 0;
+}
+
+/* ---- Списки: маркер в колонке 20 × 26, зазор 6, точка 5 × 5 ---- */
+
+.cm-editor .cm-rz-list-number {
+  color: var(--text-secondary);
+}
+
+/* Значок заменяет маркер с пробелом за ним: текст пункта — ровно в 26 px. */
+.cm-editor .cm-rz-bullet {
+  display: inline-block;
+  width: 20px;
+  margin-right: 6px;
+  text-align: center;
+  vertical-align: middle;
+  line-height: 0;
+}
+
+.cm-editor .cm-rz-bullet::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+/* Чекбокс 16 × 16 по центру колонки 20 (2 + 16 + 2), зазор 6 до текста. */
+.cm-editor .cm-rz-checkbox {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  margin: 0 8px 0 2px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 4px;
+  vertical-align: -2px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.cm-editor .cm-rz-checkbox-checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* Галочка рисуется рамкой: без картинок и data:-адресов. */
+.cm-editor .cm-rz-checkbox-checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--text-on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.cm-editor .cm-rz-checkbox[aria-disabled='true'] {
+  cursor: default;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-task-done {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+/* ---- Ссылки `[текст](адрес)`: вид 5Б — акцентный цвет без линии ---- */
+
+.cm-editor .cm-rz-link {
+  color: var(--accent-text);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* «↗» у внешней ссылки (http, https, mailto) через пробел, как в Э1. */
+.cm-editor .cm-rz-link-external {
+  margin-left: 0.25em;
+  color: var(--accent-text);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+/* ---- Горизонтальная линия ---- */
+
+.cm-editor .cm-rz-rule {
+  display: inline-block;
+  width: 100%;
+  height: 1px;
+  background: var(--border-strong);
+  vertical-align: middle;
+}

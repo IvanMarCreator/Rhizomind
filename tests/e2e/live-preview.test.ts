@@ -215,7 +215,8 @@ describe('живой предпросмотр и режим исходного �
     expect(await count(b, 'cm-rz-checkbox-checked')).toBe(1);
     expect(await count(b, 'cm-rz-rule')).toBe(1);
     expect(await count(b, 'cm-rz-codeblock')).toBeGreaterThanOrEqual(1);
-    expect(await lineText(b, 'Ссылка:')).toBe('Ссылка: портал регламентов.');
+    // «↗» за внешней ссылкой (Э1) — значок, текст заметки тот же.
+    expect(await lineText(b, 'Ссылка:')).toBe('Ссылка: портал регламентов↗.');
     expect(await count(b, 'cm-rz-link')).toBe(1);
     expect(await count(b, 'cm-rz-markup')).toBe(0);
     await shotThemes(b, 'cursor-outside-bottom');
@@ -225,6 +226,86 @@ describe('живой предпросмотр и режим исходного �
       if (body) body.scrollTop = 0;
     });
     await shotThemes(b, 'cursor-outside-top');
+  });
+
+  it('вид по макету Э1 (задача 2.13, Н8): цитаты, списки, «↗», заголовки, блок кода', async () => {
+    const b = browser();
+    await cursorTo(b, 'Последняя строка.');
+    const look = await b.execute((selector) => {
+      const content = document.querySelector(selector) as HTMLElement;
+      const left = content.getBoundingClientRect().left;
+      const lines = [...content.querySelectorAll<HTMLElement>('.cm-line')];
+      const find = (fragment: string) => lines.find((item) => (item.textContent ?? '').includes(fragment));
+      /** Левый край первого символа текста строки от края колонки. */
+      const textStart = (fragment: string) => {
+        const line = find(fragment);
+        if (!line) return -1;
+        const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const at = (node.textContent ?? '').search(/\S/);
+          if (at < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + 1);
+          return Math.round(range.getBoundingClientRect().left - left);
+        }
+        return -1;
+      };
+      const size = (fragment: string) => Number.parseFloat(getComputedStyle(find(fragment) ?? content).fontSize);
+      const pad = (fragment: string) => Number.parseFloat(getComputedStyle(find(fragment) ?? content).paddingTop);
+      const fences = [...content.querySelectorAll<HTMLElement>('.cm-rz-codeblock-fence')];
+      const link = content.querySelector('.cm-rz-link')?.getBoundingClientRect();
+      const arrow = content.querySelector('.cm-rz-link-external');
+      const title = document.querySelector('main h1');
+      const measure = () => ({ h1: size('Заголовок 1'), h2: size('Заголовок 2'), h6: size('Заголовок 6'), text: size('Последняя строка') });
+      const at16 = measure();
+      // Размер шрифта из настроек (src/settings/apply.ts): заголовки — вместе с текстом.
+      const root = document.documentElement.style;
+      const setting = root.getPropertyValue('--note-font-size');
+      root.setProperty('--note-font-size', '20px');
+      const at20 = measure();
+      if (setting) root.setProperty('--note-font-size', setting);
+      else root.removeProperty('--note-font-size');
+      return {
+        quote1: textStart('Цитата первого уровня'),
+        quote2: textStart('Вложенная цитата'),
+        quote2Class: find('Вложенная цитата')?.className ?? '',
+        bullet: textStart('Пункт списка'),
+        task: textStart('Открытая задача'),
+        arrow: arrow?.textContent ?? '',
+        arrowAfterLink: Math.round((arrow?.getBoundingClientRect().left ?? 0) - (link?.right ?? 0)),
+        title: title ? Number.parseFloat(getComputedStyle(title).fontSize) : 0,
+        at16,
+        at20,
+        padH2: pad('Заголовок 2'),
+        padH3: pad('Заголовок 3'),
+        fences: fences.length,
+        codeBlock: fences.length === 2 ? Math.round((fences[1]?.getBoundingClientRect().bottom ?? 0) - (fences[0]?.getBoundingClientRect().top ?? 0)) : -1,
+      };
+    }, TEXT);
+    const detail = JSON.stringify(look);
+    // Цитата: полоса 3 + зазор 14 на уровень.
+    expect(look.quote1, detail).toBe(17);
+    expect(look.quote2, detail).toBe(34);
+    expect(look.quote2Class, detail).toContain('cm-rz-quote-2');
+    // Списки: колонка маркера 20 + зазор 6.
+    expect(look.bullet, detail).toBe(26);
+    expect(look.task, detail).toBe(26);
+    expect(look.arrow, detail).toBe('↗');
+    expect(look.arrowAfterLink, detail).toBeGreaterThanOrEqual(2);
+    // Заголовки: H1 меньше имени заметки; размеры и отступы — от размера шрифта.
+    expect(look.at16, detail).toEqual({ h1: 24, h2: 21, h6: 16, text: 16 });
+    expect(look.at16.h1, detail).toBeLessThan(look.title);
+    expect(look.at20, detail).toEqual({ h1: 30, h2: 26.25, h6: 20, text: 20 });
+    expect([look.padH2, look.padH3], detail).toEqual([12, 12]);
+    // Блок кода из трёх строк: 12 + 3 × 20 + 12, ограды не занимают строк.
+    expect(look.fences, detail).toBe(2);
+    expect(look.codeBlock, detail).toBe(84);
+    await b.execute(() => {
+      const line = [...document.querySelectorAll('.cm-line')].find((item) => (item.textContent ?? '').includes('Цитата первого'));
+      line?.scrollIntoView({ block: 'start' });
+    });
+    await shotThemes(b, 'look-e1');
   });
 
   it('курсор на строке с разметкой: разметка этой строки видна, остальные — нет', async () => {

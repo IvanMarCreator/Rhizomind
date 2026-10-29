@@ -204,27 +204,23 @@
     font-size: 12px;
   }
 
-  /* «Открыть» и «…» поверх правого края строки при наведении и фокусе:
-     в покое имя и путь занимают всю ширину. */
+  /* «Открыть» и «…» у правого края строки при наведении и фокусе: в покое
+     имя и путь занимают всю ширину. Кнопки — в общем ряду строки, а не
+     поверх текста: путь сжимается и обрезается многоточием перед ними
+     (находка Н4, Э11а). С клавиатуры: Tab на строку показывает кнопки,
+     следующий Tab — на «Открыть». */
   .tools {
-    position: absolute;
-    top: 0;
-    right: 8px;
-    bottom: 0;
-    display: flex;
+    display: none;
+    flex: none;
     align-items: center;
     gap: 8px;
-    padding-left: 8px;
-    background: var(--bg-hover);
-    opacity: 0;
-    pointer-events: none;
+    padding-right: 8px;
   }
 
   .row:hover .tools,
   .row:focus-within .tools,
   .row.menu-open .tools {
-    opacity: 1;
-    pointer-events: auto;
+    display: flex;
   }
 
   .open-button {

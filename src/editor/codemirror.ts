@@ -22,6 +22,7 @@ import { blockTracking, livePreview, sourceLinks } from './live-preview/index.ts
 import { wikilinkCompletion } from './wikilinks/autocomplete.ts';
 import { wikiHost, type WikiHost } from './wikilinks/host.ts';
 import { revealPlugin } from './wikilinks/reveal.ts';
+import './live-preview/live-preview.css';
 import './wikilinks/wikilinks.css';
 
 /** Переносы из буфера обмена и перетаскивания — в `\n`, как в остальном тексте. */

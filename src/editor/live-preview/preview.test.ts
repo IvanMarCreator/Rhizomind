@@ -74,10 +74,13 @@ describe('разметка прячется вне строки с курсор�
     ['код в строке двойными', 'а ``ко`д`` б', ['``', '``']],
     ['цитата', '> цитата', ['> ']],
     ['вложенная цитата', '> > глубже', ['> ', '> ']],
-    ['маркированный список', '- пункт', ['-']],
-    ['маркированный список *', '* пункт', ['*']],
-    ['чекбокс', '- [ ] задача', ['- ', '[ ]']],
-    ['отмеченный чекбокс', '- [x] сделано', ['- ', '[x]']],
+    ['маркированный список: значок вместе с пробелом за маркером', '- пункт', ['- ']],
+    ['маркированный список *', '* пункт', ['* ']],
+    ['маркированный список с табом', '-\tпункт', ['-\t']],
+    ['пустой пункт', '-', ['-']],
+    ['чекбокс: значок вместе с пробелом за ним', '- [ ] задача', ['- ', '[ ] ']],
+    ['отмеченный чекбокс', '- [x] сделано', ['- ', '[x] ']],
+    ['чекбокс без текста', '- [ ]', ['- ', '[ ]']],
     ['горизонтальная линия', '\n---', ['---']],
     ['горизонтальная линия ***', '\n* * *', ['* * *']],
     ['ссылка', 'см. [текст](https://example.org) тут', ['[', '](https://example.org)']],
@@ -127,22 +130,22 @@ describe('оформление', () => {
   it('блок кода: строки моноширинные, текст внутри не разбирается', () => {
     const state = away('```\n**не жирный**\n```');
     expect(lineClasses(state)).toEqual([
-      '2: cm-rz-codeblock cm-rz-codeblock-first',
+      '2: cm-rz-codeblock cm-rz-codeblock-first cm-rz-codeblock-fence',
       '3: cm-rz-codeblock',
-      '4: cm-rz-codeblock cm-rz-codeblock-last',
+      '4: cm-rz-codeblock cm-rz-codeblock-last cm-rz-codeblock-fence',
     ]);
     expect(marks(state)).toEqual([]);
   });
 
   it('незакрытый блок кода идёт до конца текста', () => {
     expect(lineClasses(away('```\n# не заголовок'))).toEqual([
-      '2: cm-rz-codeblock cm-rz-codeblock-first',
+      '2: cm-rz-codeblock cm-rz-codeblock-first cm-rz-codeblock-fence',
       '3: cm-rz-codeblock',
     ]);
   });
 
   it('цитата и список — классы строк', () => {
-    expect(lineClasses(away('> ц'))).toEqual(['2: cm-rz-quote']);
+    expect(lineClasses(away('> ц'))).toEqual(['2: cm-rz-quote cm-rz-quote-1']);
     expect(lineClasses(away('- [x] сделано'))).toEqual(['2: cm-rz-task-done']);
   });
 
@@ -160,6 +163,53 @@ describe('оформление', () => {
       if (spec.class === 'cm-rz-link') found.push(`${state.sliceDoc(from, to)} → ${spec.attributes?.['data-rz-url']}`);
     });
     expect(found).toEqual(['текст → https://example.org']);
+  });
+});
+
+describe('вид по макету Э1 (задача 2.13, находка Н8)', () => {
+  /** Значки-вставки (без замены текста): `текст строки до значка| ↗ → адрес`; вид значка — LivePreview.look.component.test.ts. */
+  function inserted(state: EditorState): string[] {
+    const out: string[] = [];
+    previewDecorations(state).between(0, state.doc.length, (from, to, value) => {
+      if (from !== to || !(value.spec as { widget?: unknown }).widget) return;
+      const widget = (value.spec as { widget: { url?: string } }).widget;
+      out.push(`${state.sliceDoc(0, from).split('\n').pop() ?? ''}| ↗ → ${widget.url}`);
+    });
+    return out;
+  }
+
+  it('вложенная цитата — класс по уровню: по полосе на каждый `>`', () => {
+    expect(lineClasses(away('> > глубже'))).toEqual(['2: cm-rz-quote cm-rz-quote-2']);
+    expect(lineClasses(away('> > > три'))).toEqual(['2: cm-rz-quote cm-rz-quote-3']);
+    expect(lineClasses(away('>>>>>>>> восемь'))).toEqual(['2: cm-rz-quote cm-rz-quote-6']);
+  });
+
+  it('внешняя ссылка (http, https, mailto) — «↗» за текстом; на строке с курсором его нет', () => {
+    expect(inserted(away('см. [портал](https://example.com/r) тут'))).toEqual([
+      'см. [портал| ↗ → https://example.com/r',
+    ]);
+    expect(inserted(away('[почта](mailto:a@b.c)'))).toEqual(['[почта| ↗ → mailto:a@b.c']);
+    expect(inserted(away('[**т**](http://a.b)'))).toEqual(['[**т**| ↗ → http://a.b']);
+    expect(inserted(on('[портал](https://example.com/r)'))).toEqual([]);
+  });
+
+  it('у вики-ссылок и ссылок не наружу «↗» нет', () => {
+    expect(inserted(away('[[Встреча]] и [[Альфа/Встреча|встречи]]'))).toEqual([]);
+    expect(inserted(away('[файл](file:///C:/x) [заметка](Заметка.md)'))).toEqual([]);
+  });
+
+  it('скрытые ограды блока кода не занимают строку; курсор в блоке — ограды обычные', () => {
+    const block = '```js\nlet a = 1;\n```';
+    expect(lineClasses(away(block))).toEqual([
+      '2: cm-rz-codeblock cm-rz-codeblock-first cm-rz-codeblock-fence',
+      '3: cm-rz-codeblock',
+      '4: cm-rz-codeblock cm-rz-codeblock-last cm-rz-codeblock-fence',
+    ]);
+    expect(lineClasses(on(block))).toEqual([
+      '2: cm-rz-codeblock cm-rz-codeblock-first',
+      '3: cm-rz-codeblock',
+      '4: cm-rz-codeblock cm-rz-codeblock-last',
+    ]);
   });
 });
 
@@ -220,7 +270,7 @@ describe('блоки кода после правок', () => {
     const end = state.doc.length;
     state = edit(state, 7, 7, '```\n');
     expect(lineClasses(state)).toEqual([
-      '2: cm-rz-codeblock cm-rz-codeblock-first',
+      '2: cm-rz-codeblock cm-rz-codeblock-first cm-rz-codeblock-fence',
       '3: cm-rz-codeblock',
       '4: cm-rz-codeblock',
     ]);
@@ -234,9 +284,9 @@ describe('блоки кода после правок', () => {
     state = edit(state, 0, 0, 'новая строка\n');
     state = edit(state, state.doc.toString().indexOf('код'), state.doc.toString().indexOf('код'), 'ещё ');
     expect(lineClasses(state)).toEqual([
-      '3: cm-rz-codeblock cm-rz-codeblock-first',
+      '3: cm-rz-codeblock cm-rz-codeblock-first cm-rz-codeblock-fence',
       '4: cm-rz-codeblock',
-      '5: cm-rz-codeblock cm-rz-codeblock-last',
+      '5: cm-rz-codeblock cm-rz-codeblock-last cm-rz-codeblock-fence',
       '6: cm-rz-heading cm-rz-h1',
     ]);
   });
@@ -247,7 +297,7 @@ describe('незакрытый блок кода после правок', () =>
     let state = away('```\nкод');
     state = state.update({ changes: { from: state.doc.length, insert: '\nещё\n# тоже код' } }).state;
     expect(lineClasses(state)).toEqual([
-      '2: cm-rz-codeblock cm-rz-codeblock-first',
+      '2: cm-rz-codeblock cm-rz-codeblock-first cm-rz-codeblock-fence',
       '3: cm-rz-codeblock',
       '4: cm-rz-codeblock',
       '5: cm-rz-codeblock',

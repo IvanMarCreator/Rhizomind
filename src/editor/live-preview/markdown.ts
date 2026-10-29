@@ -56,6 +56,9 @@ export interface LineMarkup {
   pieces: Piece[];
 }
 
+/** Полос у вложенной цитаты не больше этого: глубже — как у шестого уровня (классы `cm-rz-quote-1…6`). */
+export const MAX_QUOTE_BARS = 6;
+
 /** Строки длиннее не разбираются внутри: так оформление строки не дольше нескольких миллисекунд. */
 export const MAX_INLINE_LINE = 10_000;
 
@@ -83,7 +86,8 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
   const classes: string[] = [];
   let pos = 0;
 
-  // Цитата, в том числе вложенная: `> > текст`.
+  // Цитата, в том числе вложенная: `> > текст` — по полосе на уровень.
+  let depth = 0;
   for (;;) {
     QUOTE_AT.lastIndex = pos;
     const m = QUOTE_AT.exec(text);
@@ -91,8 +95,9 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
     const indent = m[0].indexOf('>');
     pieces.push({ kind: 'hide', from: pos + indent, to: pos + m[0].length });
     pos += m[0].length;
-    if (!classes.includes('cm-rz-quote')) classes.push('cm-rz-quote');
+    depth++;
   }
+  if (depth > 0) classes.push(`cm-rz-quote cm-rz-quote-${Math.min(depth, MAX_QUOTE_BARS)}`);
   const rest = text.slice(pos);
 
   const rule = RULE.exec(rest);
@@ -129,15 +134,18 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
       const checked = task[1] !== ' ';
       if (ordered) pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
       else pieces.push({ kind: 'hide', from: markerFrom, to: boxFrom });
-      pieces.push({ kind: 'widget', widget: checked ? 'checkbox-checked' : 'checkbox', from: boxFrom, to: boxFrom + 3 });
+      // Значок с пробелом за ним: зазор до текста задаёт значок (tokens.md «Списки»).
+      const boxTo = boxFrom + 3 + (isBlank(text[boxFrom + 3]) ? 1 : 0);
+      pieces.push({ kind: 'widget', widget: checked ? 'checkbox-checked' : 'checkbox', from: boxFrom, to: boxTo });
       if (checked) classes.push('cm-rz-task-done');
-      contentFrom = boxFrom + 3;
+      contentFrom = boxTo;
     } else if (ordered) {
       pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
       contentFrom = markerTo;
     } else {
-      pieces.push({ kind: 'widget', widget: 'bullet', from: markerFrom, to: markerTo });
-      contentFrom = markerTo;
+      const bulletTo = markerTo + (isBlank(text[markerTo]) ? 1 : 0);
+      pieces.push({ kind: 'widget', widget: 'bullet', from: markerFrom, to: bulletTo });
+      contentFrom = bulletTo;
     }
   }
 

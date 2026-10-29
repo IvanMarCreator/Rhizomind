@@ -234,6 +234,22 @@ describe('«Открыть папку как хранилище» и перек�
     const more = browser.$('button[aria-label="Действия с хранилищем «Рабочая база»"]');
     await (await browser.$$('li'))[1]?.moveTo();
     await more.waitForClickable();
+    // Н4 (Э11а): путь под наведением кончается до кнопок и обрезается многоточием, а не кнопками.
+    const look = await browser.execute(() => {
+      const row = document.querySelectorAll('li')[1];
+      const pathText = row?.querySelector('.path') as HTMLElement | null;
+      const tools = row?.querySelector('.open-button') as HTMLElement | null;
+      if (!pathText || !tools) return null;
+      return {
+        pathRight: Math.round(pathText.getBoundingClientRect().right),
+        toolsLeft: Math.round(tools.getBoundingClientRect().left),
+        overflow: getComputedStyle(pathText).textOverflow,
+        clipped: pathText.scrollWidth > pathText.clientWidth,
+      };
+    });
+    expect(look, 'путь и кнопки строки').not.toBeNull();
+    expect(look?.pathRight ?? 0, JSON.stringify(look)).toBeLessThanOrEqual(look?.toolsLeft ?? 0);
+    expect(look?.overflow).toBe('ellipsis');
     await more.click();
     const menu = browser.$('[role="menu"]');
     await menu.waitForDisplayed();
