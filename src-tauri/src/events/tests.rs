@@ -170,6 +170,52 @@ fn renamed_folder_renames_every_note_under_it_and_repeat_is_ignored() {
 }
 
 #[test]
+fn note_renamed_to_a_non_note_is_deleted_for_the_window() {
+    // Решение оркестратора 90: `a.md` → `a.txt` — заметка ушла из заметок,
+    // как удаление; новый путь в списке заметок не держится.
+    let f = fixture(&["Папка/a.md", "b.md"]);
+    std::fs::rename(
+        f.dir.path().join("Папка").join("a.md"),
+        f.dir.path().join("Папка").join("a.txt"),
+    )
+    .expect("переименование");
+
+    f.events.handle(changed(vec![TreeChange::Renamed {
+        from: vp("Папка/a.md"),
+        to: vp("Папка/a.txt"),
+    }]));
+
+    let events = f.recorder.take();
+    assert_eq!(events[0].0, "vault:changed");
+    assert_eq!(
+        events[1..].to_vec(),
+        vec![(
+            "note:deleted".to_owned(),
+            json!({ "path": ["Папка", "a.md"] })
+        )]
+    );
+    let index = f.open.read_index();
+    assert!(!index.contains(&vp("Папка/a.txt")));
+    assert!(!index.contains(&vp("Папка/a.md")));
+    assert!(index.contains(&vp("b.md")));
+}
+
+#[test]
+fn non_note_renamed_back_to_a_note_becomes_a_note_again() {
+    let f = fixture(&["a.txt"]);
+    std::fs::rename(f.dir.path().join("a.txt"), f.dir.path().join("a.md")).expect("переименование");
+
+    f.events.handle(changed(vec![TreeChange::Renamed {
+        from: vp("a.txt"),
+        to: vp("a.md"),
+    }]));
+
+    let events = f.recorder.take();
+    assert_eq!(events.len(), 1, "только vault:changed: {events:?}");
+    assert!(f.open.read_index().contains(&vp("a.md")));
+}
+
+#[test]
 fn created_existing_note_is_not_an_error() {
     let f = fixture(&["Есть.md"]);
     let created = || {

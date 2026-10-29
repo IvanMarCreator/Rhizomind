@@ -3,7 +3,8 @@
 // Ядро следит за папкой хранилища и сообщает окну (src-tauri/src/events/):
 // - `note:changed` — заметка изменилась снаружи (с версией с диска);
 // - `note:renamed` — заметка переименована или перемещена снаружи;
-// - `note:deleted` — заметка удалена снаружи;
+// - `note:deleted` — заметка удалена снаружи или переименована в не-заметку
+//   (`a.md` → `a.txt`, решение 90: уход из заметок — как удаление);
 // - `vault:changed` с `rescan: true` — была полная сверка с диском (переполнение
 //   буфера ОС, хранилище снова доступно): отдельного `note:changed` могло не быть.
 // Свои записи окна ядро событиями не считает (журнал своих записей,
@@ -16,7 +17,7 @@
 // (src/editor/sessions.ts, session.ts): без ввода — текст с диска, с вводом —
 // обе версии (ядро), удаление — заметка закрывается, ввод отбрасывается
 // (решение владельца: внешнее действие — действие пользователя).
-import { onCoreEvent, type FileVersion, type Unsubscribe, type VaultPath } from '../api/index.ts';
+import { onCoreEvent, type FileVersion, type TreeChange, type Unsubscribe, type VaultPath } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
 
 /** Что маршрут событий ждёт от окна (оболочка — src/shell/Shell.svelte). */
@@ -46,8 +47,17 @@ function noteName(path: VaultPath): string {
   return (path.at(-1) ?? '').replace(/\.md$/i, '');
 }
 
+const isNote = (path: VaultPath) => /\.md$/i.test(path.at(-1) ?? '');
+const keyOf = (path: VaultPath) => JSON.stringify(path);
+
 export class ExternalChanges {
   readonly #host: ExternalChangesHost;
+  /**
+   * Заметки, переименованные снаружи в не-заметку (`a.md` → `a.txt`), из
+   * последней пачки `vault:changed`: ядро присылает за ней `note:deleted`
+   * (решение 90), уведомление называет новое имя файла.
+   */
+  #leftNotes = new Map<string, VaultPath>();
 
   constructor(host: ExternalChangesHost) {
     this.#host = host;
@@ -76,7 +86,8 @@ export class ExternalChanges {
     subscribe(
       onCoreEvent(
         'vault:changed',
-        live(({ rescan }) => {
+        live(({ rescan, changes }) => {
+          this.treeChanged(changes);
           if (rescan) this.#host.rescanned();
         }),
       ),
@@ -85,6 +96,17 @@ export class ExternalChanges {
       disposed = true;
       for (const stop of stops.splice(0)) stop();
     };
+  }
+
+  /** Пачка изменений дерева: запомнить переименования заметок в не-заметки. */
+  treeChanged(changes: readonly TreeChange[]): void {
+    this.#leftNotes = new Map(
+      changes.flatMap((change) =>
+        change.kind === 'renamed' && isNote(change.from) && !isNote(change.to)
+          ? [[keyOf(change.from), change.to] as const]
+          : [],
+      ),
+    );
   }
 
   changed(path: VaultPath, version: FileVersion): void {
@@ -103,7 +125,12 @@ export class ExternalChanges {
     const current = this.#host.currentPath;
     const shown = current !== null && within(current, path);
     if (shown && !this.#host.deletingHere(path)) {
-      this.#host.notify(t('editor.deletedOnDisk', { name: noteName(current) }));
+      const renamedTo = this.#leftNotes.get(keyOf(path));
+      this.#host.notify(
+        renamedTo
+          ? t('editor.noLongerNote', { name: noteName(current), file: renamedTo.at(-1) ?? '' })
+          : t('editor.deletedOnDisk', { name: noteName(current) }),
+      );
     }
     this.#host.removed(path);
   }

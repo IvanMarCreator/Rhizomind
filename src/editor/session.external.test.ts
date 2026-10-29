@@ -5,7 +5,10 @@
 // ожидаемой версией — `conflict_saved`, версия с диска уходит в копию.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FileVersion, NoteReadResponse, NoteWriteRequest, NoteWriteResponse, VaultPath } from '../api/index.ts';
+import { CoreCallError } from '../api/index.ts';
 import { AUTOSAVE_DELAY_MS, NoteSession, type NoteStore } from './session.ts';
+
+const notFound = () => new CoreCallError('note_write', { code: 'not_found', message_key: 'errors.not_found' });
 
 const PATH: VaultPath = ['Встреча.md'];
 const COPY: VaultPath = ['Встреча (внешняя версия 2026-10-27 10-00).md'];
@@ -232,5 +235,78 @@ describe('удалённая или закрытая сессия', () => {
     await s.external(disk.external('снаружи\n'));
     expect(shown).toEqual([]);
     expect(s.text).toBe('снаружи\n');
+  });
+});
+
+describe('ревью QA 2.9: «файла нет на диске», потом файл снова есть', () => {
+  /** Диск, который можно «вынуть»: запись и чтение — not_found. */
+  class Removable extends Disk {
+    unplugged = false;
+
+    override read(): Promise<NoteReadResponse> {
+      if (this.unplugged) return Promise.reject(notFound());
+      return super.read();
+    }
+
+    override write(request: NoteWriteRequest): Promise<NoteWriteResponse> {
+      if (this.unplugged) {
+        this.writes.push(request);
+        return Promise.reject(notFound());
+      }
+      return super.write(request);
+    }
+  }
+
+  it('флешку вынули и вставили (полная сверка): ввод записан', async () => {
+    const disk = new Removable();
+    const { s } = open(disk);
+    s.edit('с диска\nввод\n');
+    disk.unplugged = true;
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+    expect(s.status.kind).toBe('missing');
+
+    disk.unplugged = false;
+    expect(await s.external()).toEqual({ kind: 'flushed' });
+
+    expect(disk.text).toBe('с диска\nввод\n');
+    expect(disk.copies).toEqual([]);
+    expect(s.status.kind).toBe('saved');
+    // Дальше автосохранение работает как обычно.
+    s.edit('с диска\nввод\nещё\n');
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+    expect(disk.text).toBe('с диска\nввод\nещё\n');
+  });
+
+  it('внешний редактор убрал файл и положил новый (note:changed): ввод в заметке, новый файл — копией', async () => {
+    const disk = new Removable();
+    const { s, conflicts } = open(disk);
+    s.edit('мой набор\n');
+    disk.unplugged = true;
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+    expect(s.status.kind).toBe('missing');
+
+    disk.unplugged = false;
+    const changed = disk.external('новый файл\n');
+    expect(await s.external(changed)).toEqual({ kind: 'flushed' });
+
+    expect(disk.text).toBe('мой набор\n');
+    expect(disk.copies).toEqual(['новый файл\n']);
+    expect(conflicts).toEqual([COPY]);
+  });
+
+  it('файла всё ещё нет — состояние «нет файла», без повторов по таймеру', async () => {
+    const disk = new Removable();
+    const { s } = open(disk);
+    s.edit('ввод');
+    disk.unplugged = true;
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+
+    await s.external();
+    const writes = disk.writes.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(s.status.kind).toBe('missing');
+    expect(disk.writes.length).toBe(writes);
+    expect(s.text).toBe('ввод');
   });
 });

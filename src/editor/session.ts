@@ -24,6 +24,11 @@ import type {
 
 /** Пауза ввода перед автосохранением (С3.3). */
 export const AUTOSAVE_DELAY_MS = 1000;
+/**
+ * Предельный срок автосохранения при непрерывном вводе (решение 91): от
+ * первой несохранённой правки — не дольше этого, даже если пауз ≥ 1 с нет.
+ */
+export const AUTOSAVE_MAX_DELAY_MS = 5000;
 /** Повтор записи после сбоя. */
 export const RETRY_DELAY_MS = 5000;
 
@@ -103,6 +108,8 @@ export class NoteSession {
   #version: FileVersion;
   #status: SaveStatus;
   #timer: ReturnType<typeof setTimeout> | null = null;
+  /** Когда появилась первая ещё не ушедшая в запись правка (`Date.now()`); `null` — таких нет. */
+  #pendingSince: number | null = null;
   #inFlight: Promise<SaveOutcome> | null = null;
   #failing = false;
   #disposed = false;
@@ -185,13 +192,17 @@ export class NoteSession {
     // Файла нет: пишем только после moveTo() или по требованию.
     if (this.#status.kind === 'missing') return;
     if (text === this.#saved && !this.#inFlight) {
+      this.#pendingSince = null;
       this.#cancelTimer();
       this.#failing = false;
       this.#setStatus({ kind: 'saved' });
       return;
     }
     if (this.#status.kind !== 'failed') this.#setStatus({ kind: 'pending' });
-    this.#schedule(AUTOSAVE_DELAY_MS);
+    // Пауза 1 с, но не позже 5 с от первой несохранённой правки (решение 91).
+    const now = Date.now();
+    this.#pendingSince ??= now;
+    this.#schedule(Math.max(0, Math.min(AUTOSAVE_DELAY_MS, this.#pendingSince + AUTOSAVE_MAX_DELAY_MS - now)));
   }
 
   /**
@@ -251,6 +262,10 @@ export class NoteSession {
     if (this.#gone()) return { kind: 'none' };
     await this.idle();
     if (this.#gone()) return { kind: 'none' };
+    // Файла не было (флешку вынули, внешний редактор убрал файл), теперь он
+    // снова есть: ввод пишется со старой версией — изменённый файл ядро
+    // сохранит копией; если файла всё ещё нет — снова «нет файла».
+    if (this.#status.kind === 'missing') return this.#flushBoth();
     if (version && sameVersion(version, this.#version)) return { kind: 'none' };
     if (this.hasUnsavedChanges) return this.#flushBoth();
     const before = this.#current;
@@ -275,12 +290,9 @@ export class NoteSession {
     return { kind: 'reloaded' };
   }
 
-  /**
-   * Сессия закрыта, заметку удалили или файла по пути нет (`missing`: ждём
-   * сигнала о переименовании) — внешнее изменение её не касается.
-   */
+  /** Сессия закрыта или заметку удалили — внешнее изменение её не касается. */
   #gone(): boolean {
-    return this.#disposed || this.#status.kind === 'deleted' || this.#status.kind === 'missing';
+    return this.#disposed || this.#status.kind === 'deleted';
   }
 
   async #flushBoth(): Promise<ExternalOutcome> {
@@ -305,6 +317,8 @@ export class NoteSession {
   /** Одна запись текущего текста. */
   #save(): Promise<SaveOutcome> {
     const text = this.#current;
+    // Всё набранное до этой минуты уходит в запись: срок 5 с — заново.
+    this.#pendingSince = null;
     const path = this.#path;
     if (this.#status.kind !== 'failed' && this.#status.kind !== 'missing') this.#setStatus({ kind: 'pending' });
     const flight = this.#store

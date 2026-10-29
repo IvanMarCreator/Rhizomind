@@ -276,6 +276,25 @@ describe('С3.6: открытая заметка удалена снаружи',
     expect(disk.texts.has('Встреча.md')).toBe(false);
   });
 
+  it('решение 90: переименована снаружи в не-заметку (.md → .txt) — закрыта, уведомление с новым именем файла, ввод не пишется', async () => {
+    const disk = new Disk({ 'Встреча.md': 'начало\n' });
+    const { calls, model, view } = await openWindow(disk, ['Встреча.md']);
+    type(view, 'ввод');
+
+    disk.rename('Встреча.md', 'Встреча.txt');
+    await emitCoreEvent('vault:changed', {
+      rescan: false,
+      changes: [{ kind: 'renamed', from: ['Встреча.md'], to: ['Встреча.txt'] }],
+    });
+    await emitCoreEvent('note:deleted', { path: ['Встреча.md'] });
+
+    expect(await screen.findByText('Заметка «Встреча» больше не заметка: файл переименован в «Встреча.txt».')).toBeTruthy();
+    expect(screen.queryByText(/удалена на диске/)).toBeNull();
+    expect(model.currentPath).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(writes(calls)).toEqual([]);
+  });
+
   it('удалена другая (не открытая) заметка — без уведомления, открытая не трогается', async () => {
     const disk = new Disk({ 'Встреча.md': 'начало\n', 'План.md': 'план' });
     const { model } = await openWindow(disk, ['Встреча.md']);

@@ -9,7 +9,9 @@
 //! - **из чего:** из сообщений наблюдателя за папкой ([`VaultEvents`]):
 //!   пачка изменений дерева → `vault:changed` и выведенные из неё `note:*`
 //!   (`note:changed` для изменённой заметки, `note:renamed` и
-//!   `note:deleted` для каждой заметки из списка заметок по пути и под ним),
+//!   `note:deleted` для каждой заметки из списка заметок по пути и под ним;
+//!   переименование заметки в не-заметку, `a.md` → `a.txt`, — `note:deleted`,
+//!   решение 90),
 //!   пропажа и возвращение папки → `vault:availability`;
 //! - `note:conflict-saved` отправляет команда `note_write` (конфликт
 //!   изменений решён при записи, а не по событию наблюдателя).
@@ -173,14 +175,24 @@ impl VaultEvents {
                                     .chain(&note.components()[from_len..])
                                     .cloned(),
                             );
-                            push(
-                                &mut notes,
-                                event::NOTE_RENAMED,
-                                &NoteRenamedPayload {
-                                    from: note,
-                                    to: moved,
-                                },
-                            );
+                            if moved.file_name().is_some_and(crate::names::is_note) {
+                                push(
+                                    &mut notes,
+                                    event::NOTE_RENAMED,
+                                    &NoteRenamedPayload {
+                                        from: note,
+                                        to: moved,
+                                    },
+                                );
+                            } else {
+                                // `a.md` → `a.txt`: заметка ушла из заметок —
+                                // для окна это удаление (решение 90).
+                                push(
+                                    &mut notes,
+                                    event::NOTE_DELETED,
+                                    &NoteDeletedPayload { path: note },
+                                );
+                            }
                         }
                     }
                     _ => {}
