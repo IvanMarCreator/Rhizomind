@@ -566,3 +566,144 @@ fn editor_save_by_delete_and_create_is_a_modification() {
         fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
     });
 }
+
+#[test]
+fn emacs_save_leaving_backup_copy_is_a_modification() {
+    // Emacs (по умолчанию): заметка → `Заметка.md~` (тот же идентификатор и
+    // дата создания), новая заметка пишется заново, копия остаётся.
+    assert_saved_as_modification("Emacs, копия остаётся", |root| {
+        fs::rename(root.join("Заметка.md"), root.join("Заметка.md~")).expect("резервная копия");
+        fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
+    });
+}
+
+#[test]
+fn vim_save_with_backup_removed_after_a_delay_is_a_modification() {
+    // Vim (`backupcopy=no`, `writebackup`): копия `~` удаляется после
+    // записи — сразу или позже, в другой склейке событий.
+    for delay_ms in [0, 100, 300, 500, 700] {
+        assert_saved_as_modification(
+            &format!("Vim, копия удалена через {delay_ms} мс"),
+            |root| {
+                fs::rename(root.join("Заметка.md"), root.join("Заметка.md~"))
+                    .expect("резервная копия");
+                fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
+                std::thread::sleep(Duration::from_millis(delay_ms));
+                fs::remove_file(root.join("Заметка.md~")).expect("удаление копии");
+            },
+        );
+    }
+}
+
+// --- Задача 1.9: переименование и правка в одной склейке (решение 89) ---
+
+/// Переименование `from` → `to` и сразу правка на месте (тот же файл).
+fn rename_then_edit(root: &Path, from: &str, to: &str, text: &str) {
+    use std::io::Write;
+    fs::rename(root.join(from), root.join(to)).expect("переименование");
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(root.join(to))
+        .expect("открыть на запись");
+    file.write_all(text.as_bytes()).expect("запись");
+}
+
+/// После затихания: для `from` и `to` только переименование и правка `to`.
+fn assert_renamed_and_modified(collector: &Collector, from: &str, to: &str) {
+    let renamed = TreeChange::Renamed {
+        from: vp(from),
+        to: vp(to),
+    };
+    let modified = TreeChange::Modified { path: vp(to) };
+    assert!(
+        collector.wait_for(WAIT, |_| {
+            let changes = collector.changes();
+            changes.contains(&renamed) && changes.contains(&modified)
+        }),
+        "нет переименования и правки: {:?}",
+        collector.payloads()
+    );
+    std::thread::sleep(QUIET);
+    let (from, to) = (vp(from), vp(to));
+    let other: Vec<_> = collector
+        .changes()
+        .into_iter()
+        .filter(|change| match change {
+            TreeChange::Created { path, .. } | TreeChange::Removed { path } => {
+                *path == from || *path == to
+            }
+            _ => false,
+        })
+        .collect();
+    assert_eq!(other, vec![], "{:?}", collector.payloads());
+    let changes = collector.changes();
+    let at = |c: &TreeChange| changes.iter().position(|x| x == c).expect("есть");
+    assert!(
+        at(&renamed) < at(&modified),
+        "правка — после переименования: {changes:?}"
+    );
+}
+
+#[test]
+fn note_renamed_and_edited_at_once_is_a_rename_and_a_modification() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "текст\n");
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(dir.path(), collector.sink()).expect("слежение");
+
+    rename_then_edit(dir.path(), "a.md", "b.md", "текст\nи правка снаружи\n");
+
+    assert_renamed_and_modified(&collector, "a.md", "b.md");
+}
+
+#[test]
+fn note_moved_to_another_folder_and_edited_at_once_is_a_rename_and_a_modification() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "текст\n");
+    fs::create_dir(dir.path().join("Архив")).expect("папка");
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(dir.path(), collector.sink()).expect("слежение");
+
+    rename_then_edit(dir.path(), "a.md", "Архив/b.md", "другой текст\n");
+
+    assert_renamed_and_modified(&collector, "a.md", "Архив/b.md");
+}
+
+#[test]
+fn note_renamed_and_written_anew_is_a_removal_and_a_creation() {
+    // Новый идентификатор: программа записала файл под новым именем заново
+    // («Сохранить как» и удаление старого). Переименование с последующей
+    // атомарной заменой — в `tree_tests` (на Linux склейка `notify` теряет
+    // путь источника такого переименования: см. обзор задачи 1.9).
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "текст\n");
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(dir.path(), collector.sink()).expect("слежение");
+
+    fs::write(dir.path().join("b.md"), "текст\nзаписан заново\n").expect("новый файл");
+    fs::remove_file(dir.path().join("a.md")).expect("удаление старого");
+
+    let removed = TreeChange::Removed { path: vp("a.md") };
+    let created = TreeChange::Created {
+        path: vp("b.md"),
+        entry_kind: EntryKind::Note,
+    };
+    assert!(
+        collector.wait_for(WAIT, |_| {
+            let changes = collector.changes();
+            changes.contains(&removed) && changes.contains(&created)
+        }),
+        "нет удаления и создания: {:?}",
+        collector.payloads()
+    );
+    std::thread::sleep(QUIET);
+    assert!(
+        !collector
+            .changes()
+            .iter()
+            .any(|c| matches!(c, TreeChange::Renamed { .. })),
+        "{:?}",
+        collector.payloads()
+    );
+}

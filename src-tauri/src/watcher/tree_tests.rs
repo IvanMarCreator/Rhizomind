@@ -723,3 +723,190 @@ fn held_file_still_missing_at_final_check_is_removed() {
         }]
     );
 }
+
+// --- Задача 1.9: переименование и правка в одной склейке (решение 89) ---
+
+/// Правка на месте: тот же файл (идентификатор и дата создания прежние),
+/// другое содержимое.
+fn edit_in_place(root: &Path, rel: &str, text: &str) {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(root.join(rel))
+        .expect("открыть на запись");
+    file.write_all(text.as_bytes()).expect("запись");
+}
+
+#[test]
+fn renamed_and_edited_file_in_one_batch_is_a_rename_and_a_modification() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("a.md"), dir.path().join("b.md")).expect("переименование");
+    edit_in_place(dir.path(), "b.md", "текст и правка снаружи");
+
+    let changes = changes(&mut model, [vp("a.md"), vp("b.md")], &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Renamed {
+                from: vp("a.md"),
+                to: vp("b.md")
+            },
+            TreeChange::Modified { path: vp("b.md") },
+        ]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn moved_to_another_folder_and_edited_in_one_batch_is_a_rename_and_a_modification() {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "текст");
+    fs::create_dir(dir.path().join("Архив")).expect("папка");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("a.md"), dir.path().join("Архив/b.md")).expect("перенос");
+    edit_in_place(dir.path(), "Архив/b.md", "другой текст");
+
+    let changes = changes(
+        &mut model,
+        [vp("a.md"), vp("Архив/b.md")],
+        &OwnWrites::new(),
+    );
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Renamed {
+                from: vp("a.md"),
+                to: vp("Архив/b.md")
+            },
+            TreeChange::Modified {
+                path: vp("Архив/b.md")
+            },
+        ]
+    );
+}
+
+#[test]
+fn renamed_and_edited_file_whose_old_path_came_a_batch_earlier_is_a_rename() {
+    // Исчезнувший файл ждёт свой новый путь (0,6 с): новый путь пришёл
+    // следующей пачкой, а файл к этому времени уже изменён.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/a.md", "текст");
+    write(dir.path(), "Я/другая.md", "д");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("А/a.md"), dir.path().join("Я/b.md")).expect("перенос");
+    edit_in_place(dir.path(), "Я/b.md", "текст, изменённый после переноса");
+
+    let first = model.reconcile_holding([vp("А")], &OwnWrites::new());
+    assert!(first.changes.is_empty(), "{:?}", first.changes);
+    let second = model.reconcile_holding([vp("Я/b.md")], &OwnWrites::new());
+    assert_eq!(
+        second.changes,
+        vec![
+            TreeChange::Renamed {
+                from: vp("А/a.md"),
+                to: vp("Я/b.md")
+            },
+            TreeChange::Modified {
+                path: vp("Я/b.md")
+            },
+        ]
+    );
+}
+
+#[test]
+fn renamed_and_rewritten_as_a_new_file_is_a_removal_and_a_creation() {
+    // Программа записала переименованный файл заново (новый идентификатор):
+    // это уже другой файл.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "a.md", "текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("a.md"), dir.path().join("b.md")).expect("переименование");
+    let tmp = dir.path().join("b.md.tmp");
+    fs::write(&tmp, "текст, записанный заново").expect("временный файл");
+    fs::rename(&tmp, dir.path().join("b.md")).expect("замена");
+
+    let changes = changes(
+        &mut model,
+        [vp("a.md"), vp("b.md"), vp("b.md.tmp")],
+        &OwnWrites::new(),
+    );
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Removed { path: vp("a.md") },
+            TreeChange::Created {
+                path: vp("b.md"),
+                entry_kind: EntryKind::Note
+            },
+        ]
+    );
+}
+
+#[test]
+fn renamed_folder_with_an_edited_note_inside_keeps_the_note() {
+    // Папку переименовали, а заметку в ней в ту же склейку изменили: это
+    // переименование папки и правка заметки, а не «заметка исчезла и
+    // появилась».
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "А/1.md", "1");
+    write(dir.path(), "А/2.md", "2");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("А"), dir.path().join("Б")).expect("переименование");
+    edit_in_place(dir.path(), "Б/2.md", "2 и правка");
+
+    let changes = changes(&mut model, [vp("А"), vp("Б")], &OwnWrites::new());
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Renamed {
+                from: vp("А"),
+                to: vp("Б")
+            },
+            TreeChange::Modified {
+                path: vp("Б/2.md")
+            },
+        ]
+    );
+}
+
+#[test]
+fn emacs_backup_with_the_same_id_is_not_a_rename_of_the_note() {
+    // Emacs: заметка → `~` (тот же идентификатор), новая заметка, копия
+    // остаётся. Вид элемента другой (заметка → вложение) — не переименование.
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Заметка.md", "старый текст");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(
+        dir.path().join("Заметка.md"),
+        dir.path().join("Заметка.md~"),
+    )
+    .expect("копия");
+    write(dir.path(), "Заметка.md", "новый текст, длиннее");
+    edit_in_place(dir.path(), "Заметка.md~", "копия изменилась");
+
+    let changes = changes(
+        &mut model,
+        [vp("Заметка.md"), vp("Заметка.md~")],
+        &OwnWrites::new(),
+    );
+
+    assert_eq!(
+        changes,
+        vec![
+            TreeChange::Created {
+                path: vp("Заметка.md~"),
+                entry_kind: EntryKind::Attachment
+            },
+            TreeChange::Modified {
+                path: vp("Заметка.md")
+            },
+        ]
+    );
+}

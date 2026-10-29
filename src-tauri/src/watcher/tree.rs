@@ -15,7 +15,10 @@
 //! Переименование и перемещение распознаются среди исчезнувших и появившихся
 //! путей одной пачки: по идентификатору файла, а если его нет — по размеру и
 //! дате изменения (единственный подходящий файл). Папка переносится одним
-//! изменением вместе с содержимым.
+//! изменением вместе с содержимым. Файл, который переименовали и изменили в
+//! одной пачке, — переименование и правка, если это тот же файл: тот же
+//! идентификатор и та же дата создания (задача 1.9, решение 89; см.
+//! [`Node::same_file`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -46,6 +49,10 @@ struct Node {
     modified: Option<SystemTime>,
     /// Идентификатор файла или папки, если ОС его дала.
     id: Option<FileId>,
+    /// Дата создания файла, если файловая система её хранит; у папки `None`.
+    /// Вместе с идентификатором отличает тот же файл от нового, получившего
+    /// освободившийся идентификатор (inode на Linux, FAT/exFAT).
+    born: Option<SystemTime>,
 }
 
 impl Node {
@@ -57,6 +64,22 @@ impl Node {
     fn same_content(&self, other: &Node) -> bool {
         self.size == other.size && self.modified == other.modified
     }
+
+    /// Файл с тем же идентификатором — тот же файл (переименован, возможно,
+    /// изменён), а не новый с освободившимся идентификатором: содержимое
+    /// прежнее или дата создания известна с обеих сторон и та же (новый файл
+    /// получает новую дату создания; переименование и правка на месте её не
+    /// меняют). Дата создания неизвестна (NFS, старые ядра) — только по
+    /// содержимому, как до задачи 1.9. Вид элемента сравнивает вызывающий.
+    fn same_file(&self, other: &Node) -> bool {
+        self.same_content(other) || (self.born.is_some() && self.born == other.born)
+    }
+}
+
+/// Дата создания, если она правдоподобна: нулевая или до 1970 года (так
+/// отвечают файловые системы без неё) — неизвестна.
+fn birth(created: Option<SystemTime>) -> Option<SystemTime> {
+    created.filter(|t| *t > std::time::UNIX_EPOCH)
 }
 
 /// Итог сверки.
@@ -267,6 +290,7 @@ impl TreeModel {
                 && old.same_content(node)
             {
                 node.id = old.id;
+                node.born = node.born.or(old.born);
             }
         }
         // Отложенные остаются в модели как были.
@@ -503,8 +527,9 @@ impl TreeModel {
                 let old = removed.remove(&from).expect("найден");
                 created.remove(&to);
                 if old.is_folder() {
-                    absorb_content(&from, &to, &mut removed, &mut created);
-                } else if !old.same_content(&new) {
+                    absorb_content(&from, &to, &mut removed, &mut created, &mut modified);
+                } else if !old.same_content(&new) && !own.is_own(&path_of(&to), &self.abs(&to)) {
+                    // Переименован и изменён (решение 89): правка снаружи.
                     modified.push(to.clone());
                 }
                 own.forget(&VaultPath::from_components(from.clone()));
@@ -513,7 +538,7 @@ impl TreeModel {
                 // Прежний файл уехал на `to`, а на его месте новый файл.
                 let old = displaced.remove(&from).expect("найден");
                 created.remove(&to);
-                if !old.same_content(&new) {
+                if !old.same_content(&new) && !own.is_own(&path_of(&to), &self.abs(&to)) {
                     modified.push(to.clone());
                 }
                 created.insert(from.clone(), disk[&from].clone());
@@ -657,6 +682,10 @@ impl TreeModel {
     }
 }
 
+fn path_of(key: &Key) -> VaultPath {
+    VaultPath::from_components(key.clone())
+}
+
 /// Где окажется путь после переименований `applied` (по порядку).
 fn through(applied: &[(Key, Key)], mut key: Key) -> Key {
     for (from, to) in applied {
@@ -692,6 +721,7 @@ fn listed_at_once(path: &Path, is_root: bool) -> io::Result<Option<HashMap<Strin
                 size: 0,
                 modified: None,
                 id: entry.id,
+                born: None,
             },
             Kind::File => Node {
                 kind: if names::is_note(&entry.name) {
@@ -702,6 +732,7 @@ fn listed_at_once(path: &Path, is_root: bool) -> io::Result<Option<HashMap<Strin
                 size: entry.size,
                 modified: entry.modified,
                 id: entry.id,
+                born: birth(entry.created),
             },
         };
         out.insert(entry.name, node);
@@ -791,6 +822,7 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
             size: 0,
             modified: None,
             id,
+            born: None,
         }));
     }
     if !file_type.is_file() {
@@ -809,6 +841,9 @@ fn read_node(entry: &fs::DirEntry, name: &str) -> io::Result<Option<Node>> {
         size: meta.len(),
         modified: meta.modified().ok(),
         id,
+        // Linux: statx (дата создания — если её хранит файловая система),
+        // macOS: st_birthtime, Windows: из списка папки. Без отдельного вызова.
+        born: birth(meta.created().ok()),
     }))
 }
 
@@ -881,9 +916,9 @@ impl Origins {
     }
 
     /// Откуда приехал появившийся элемент: ещё не сопоставленный
-    /// исчезнувший с тем же идентификатором (у файла — ещё и с теми же
-    /// размером и датой: идентификатор удалённого файла может достаться
-    /// новому — inode на Linux, FAT/exFAT); иначе — единственный исчезнувший
+    /// исчезнувший того же вида с тем же идентификатором (у файла — ещё и
+    /// тот же файл, [`Node::same_file`]: идентификатор удалённого файла может
+    /// достаться новому — inode на Linux, FAT/exFAT); иначе — единственный исчезнувший
     /// файл с теми же размером и датой изменения, даже с другим
     /// идентификатором (на FAT он меняется при переносе).
     fn find(&self, new: &Node, gone: &BTreeMap<Key, Node>) -> Option<Key> {
@@ -891,7 +926,7 @@ impl Origins {
         if let Some(id) = new.id {
             let found = self.by_id.get(&id).into_iter().flatten().find(|key| {
                 gone.get(*key)
-                    .is_some_and(|old| same_kind(old) && (old.is_folder() || old.same_content(new)))
+                    .is_some_and(|old| same_kind(old) && (old.is_folder() || old.same_file(new)))
             });
             if let Some(key) = found {
                 return Some(key.clone());
@@ -912,12 +947,14 @@ impl Origins {
 }
 
 /// Папка `from` переехала в `to`: её содержимое с теми же относительными
-/// путями — часть одного переименования, а не отдельные изменения.
+/// путями — часть одного переименования, а не отдельные изменения. Тот же
+/// файл с другим содержимым (изменён в ту же пачку) — в `modified`.
 fn absorb_content(
     from: &Key,
     to: &Key,
     removed: &mut BTreeMap<Key, Node>,
     created: &mut BTreeMap<Key, Node>,
+    modified: &mut Vec<Key>,
 ) {
     let inner: Vec<Key> = removed
         .range(from.clone()..)
@@ -930,10 +967,17 @@ fn absorb_content(
         let (Some(old), Some(new)) = (removed.get(&old_key), created.get(&new_key)) else {
             continue;
         };
-        // Тот же файл — только с теми же размером и датой; иначе на этом
-        // месте другой файл: исчез и появился.
-        if old.kind != new.kind || (!old.is_folder() && !old.same_content(new)) {
+        // Тот же файл — с теми же размером и датой или с тем же
+        // идентификатором и датой создания (изменён в ту же пачку); иначе
+        // на этом месте другой файл: исчез и появился.
+        let same_id = old.id.is_some() && old.id == new.id;
+        if old.kind != new.kind
+            || (!old.is_folder() && !old.same_content(new) && !(same_id && old.same_file(new)))
+        {
             continue;
+        }
+        if !old.is_folder() && !old.same_content(new) {
+            modified.push(new_key.clone());
         }
         removed.remove(&old_key);
         created.remove(&new_key);
@@ -942,7 +986,8 @@ fn absorb_content(
 
 /// Папка с тем же идентификатором — та же папка, если в ней нет файлов или
 /// хотя бы один файл на том же относительном пути подтверждён размером и
-/// датой: идентификатор папки тоже может достаться новой (FAT/exFAT).
+/// датой или идентификатором и датой создания: идентификатор папки тоже
+/// может достаться новой (FAT/exFAT).
 fn folder_confirmed(
     from: &Key,
     to: &Key,
@@ -960,9 +1005,11 @@ fn folder_confirmed(
     files.any(|(old_key, old)| {
         let mut new_key = to.clone();
         new_key.extend_from_slice(&old_key[from.len()..]);
-        created
-            .get(&new_key)
-            .is_some_and(|new| new.kind == old.kind && old.same_content(new))
+        created.get(&new_key).is_some_and(|new| {
+            new.kind == old.kind
+                && (old.same_content(new)
+                    || (old.id.is_some() && old.id == new.id && old.same_file(new)))
+        })
     })
 }
 
@@ -980,6 +1027,20 @@ mod tests {
             size,
             modified: Some(UNIX_EPOCH + Duration::from_secs(secs)),
             id: id.map(|n| FileId::new_inode(1, n)),
+            born: None,
+        }
+    }
+
+    /// Файл с известной датой создания (секунды от 1970).
+    fn born(mut node: Node, secs: u64) -> Node {
+        node.born = Some(UNIX_EPOCH + Duration::from_secs(secs));
+        node
+    }
+
+    fn attachment(node: Node) -> Node {
+        Node {
+            kind: EntryKind::Attachment,
+            ..node
         }
     }
 
@@ -989,6 +1050,7 @@ mod tests {
             size: 0,
             modified: None,
             id: Some(FileId::new_inode(1, id)),
+            born: None,
         }
     }
 
@@ -1037,6 +1099,121 @@ mod tests {
                     path: vp("новая.md"),
                     entry_kind: EntryKind::Note
                 },
+            ]
+        );
+    }
+
+    // --- Задача 1.9: тот же файл по идентификатору и дате создания ---
+
+    #[test]
+    fn same_id_and_birth_with_other_content_is_a_rename_and_a_modification() {
+        let changes = resolve(
+            &[("а.md", born(file(10, 1, Some(7)), 100))],
+            &[("б.md", born(file(99, 5, Some(7)), 100))],
+        );
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Renamed {
+                    from: vp("а.md"),
+                    to: vp("б.md")
+                },
+                TreeChange::Modified { path: vp("б.md") },
+            ]
+        );
+    }
+
+    #[test]
+    fn reused_id_with_other_birth_is_not_a_rename() {
+        // inode удалённого файла достался новому: дата создания новая.
+        let changes = resolve(
+            &[("чужая.md", born(file(10, 1, Some(7)), 100))],
+            &[("новая.md", born(file(99, 5, Some(7)), 200))],
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, TreeChange::Renamed { .. })),
+            "{changes:?}"
+        );
+    }
+
+    #[test]
+    fn birth_known_on_one_side_only_is_not_enough() {
+        let changes = resolve(
+            &[("а.md", born(file(10, 1, Some(7)), 100))],
+            &[("б.md", file(99, 5, Some(7)))],
+        );
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, TreeChange::Renamed { .. })),
+            "{changes:?}"
+        );
+    }
+
+    #[test]
+    fn note_turned_into_backup_with_same_id_and_birth_is_not_a_rename() {
+        // Emacs/Vim: `Заметка.md` → `Заметка.md~` (тот же файл), рядом новая
+        // заметка. Заметка ↔ не-заметка — не переименование: иначе сохранение
+        // внешним редактором закрыло бы заметку (решение 90).
+        let model_note = born(file(10, 1, Some(7)), 100);
+        let diff = Diff {
+            removed: BTreeMap::new(),
+            created: BTreeMap::from([(
+                key("Заметка.md~"),
+                attachment(born(file(12, 3, Some(7)), 100)),
+            )]),
+            changed: vec![(key("Заметка.md"), model_note)],
+        };
+        let disk = BTreeMap::from([
+            (key("Заметка.md"), born(file(20, 4, Some(8)), 100)),
+            (
+                key("Заметка.md~"),
+                attachment(born(file(12, 3, Some(7)), 100)),
+            ),
+        ]);
+        let changes = model().resolve(diff, &disk, &OwnWrites::new(), false).0;
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Created {
+                    path: vp("Заметка.md~"),
+                    entry_kind: EntryKind::Attachment
+                },
+                TreeChange::Modified {
+                    path: vp("Заметка.md")
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn displaced_file_renamed_and_edited_is_a_rename() {
+        // `а.md` переименовали в `б.md` и изменили, а на месте `а.md` —
+        // новый файл.
+        let diff = Diff {
+            removed: BTreeMap::new(),
+            created: BTreeMap::from([(key("б.md"), born(file(30, 6, Some(7)), 100))]),
+            changed: vec![(key("а.md"), born(file(10, 1, Some(7)), 100))],
+        };
+        let disk = BTreeMap::from([
+            (key("а.md"), born(file(5, 7, Some(9)), 300)),
+            (key("б.md"), born(file(30, 6, Some(7)), 100)),
+        ]);
+        let changes = model().resolve(diff, &disk, &OwnWrites::new(), false).0;
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Renamed {
+                    from: vp("а.md"),
+                    to: vp("б.md")
+                },
+                TreeChange::Created {
+                    path: vp("а.md"),
+                    entry_kind: EntryKind::Note
+                },
+                TreeChange::Modified { path: vp("б.md") },
             ]
         );
     }
@@ -1131,6 +1308,7 @@ mod diff_tests {
             size: 5,
             modified: Some(UNIX_EPOCH + Duration::from_secs(1)),
             id: id.map(|n| FileId::new_inode(1, n)),
+            born: None,
         }
     }
 

@@ -8,10 +8,24 @@
 //   на диске: ваша в заметке, с диска — копией «Имя (внешняя версия …).md»;
 // - переименование и перенос — заметка открыта под новым именем, ввод
 //   записан в новый файл;
+// - переименование и сразу правка (задача 1.9, решение 89) — заметка открыта
+//   под новым именем: без ввода текст с диска подхвачен, с вводом — обе версии;
 // - удаление — заметка закрыта с уведомлением, файл не появляется снова;
 // - правка снаружи и сразу закрытие окна — обе версии на диске после выхода.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  ftruncateSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { appPids, createTestVault, removeTestVault, startApp, waitForAppExit, type Session } from './driver.ts';
@@ -86,6 +100,22 @@ function conflictCopies(dir: string, name: string): string[] {
   return readdirSync(dir).filter((file) => pattern.test(file));
 }
 
+/**
+ * Переименовать и сразу изменить на месте — тот же файл (идентификатор и
+ * дата создания прежние), в одну склейку событий наблюдателя (задача 1.9).
+ */
+function renameAndEdit(from: string, to: string, text: string): void {
+  renameSync(from, to);
+  const fd = openSync(to, 'r+');
+  try {
+    const bytes = Buffer.from(text, 'utf8');
+    writeSync(fd, bytes, 0, bytes.length, 0);
+    ftruncateSync(fd, bytes.length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Закрыть окно процесса, как кнопкой «×» (см. close.test.ts). */
 function closeLikeUser(pid: number): void {
   if (isWindows) {
@@ -106,6 +136,7 @@ describe.skipIf(!isWindows && !isLinux)('С3.6: внешние изменени�
     vault = createTestVault('Внешние изменения', {
       'Конфликт.md': 'начало\n',
       'Переименование.md': 'начало\n',
+      'Переименование с правкой.md': 'начало\n',
       'Удаление.md': 'начало\n',
     });
     mkdirSync(path.join(vault, 'Архив'));
@@ -149,6 +180,34 @@ describe.skipIf(!isWindows && !isLinux)('С3.6: внешние изменени�
     expect(existsSync(path.join(vault, 'Переименование.md'))).toBe(false);
     expect(conflictCopies(path.join(vault, 'Архив'), 'Новое имя')).toEqual([]);
     await saveScreenshot(b, 'external-02-renamed');
+  });
+
+  it('переименование и сразу правка снаружи при несохранённом вводе: заметка открыта под новым именем, обе версии', async () => {
+    // Задача 1.9, решение 89: тот же файл — переименование, а правка —
+    // внешняя правка при вводе (С3.6): ваша версия в заметке, с диска — копией.
+    const b = session.browser;
+    await openNote(b, 'Переименование с правкой');
+    await typeAtEnd(b, 'мой набор');
+    renameAndEdit(
+      path.join(vault, 'Переименование с правкой.md'),
+      path.join(vault, 'Архив', 'Переименована и изменена.md'),
+      'начало\nправка снаружи\n',
+    );
+
+    await b.waitUntil(async () => (await headerPath(b)) === 'Архив / Переименована и изменена', {
+      timeout: 15_000,
+      timeoutMsg: 'путь над заметкой не сменился',
+    });
+    const archive = path.join(vault, 'Архив');
+    await waitFor(() => conflictCopies(archive, 'Переименована и изменена').length === 1, 'копия с версией с диска');
+    await waitFor(() => read(path.join(archive, 'Переименована и изменена.md')) === 'начало\nмой набор', 'ввод в заметке');
+    const [copy] = conflictCopies(archive, 'Переименована и изменена');
+    expect(read(path.join(archive, copy ?? ''))).toBe('начало\nправка снаружи\n');
+    await waitForText(b, 'Сохранены обе версии');
+    expect(await editorText(b)).toBe('начало\nмой набор');
+    expect(existsSync(path.join(vault, 'Переименование с правкой.md'))).toBe(false);
+    expect(await b.execute(() => document.body.innerText.includes('удалена на диске'))).toBe(false);
+    await saveScreenshot(b, 'external-05-renamed-and-edited-with-input');
   });
 
   it('удаление снаружи: заметка закрыта с уведомлением, файл не появляется снова', async () => {
@@ -201,6 +260,33 @@ describe.skipIf(!isWindows && !isLinux)('С3.6: правка без ввода �
     // Курсор остался в начале строки «три»: ввод встаёт туда.
     await b.keys('X');
     await waitFor(() => read(path.join(vault, 'Правка.md')) === 'ноль\nодин\nдва\nXтри\n', 'ввод с прежнего места курсора');
+  });
+
+  it('переименование и сразу правка снаружи без ввода: заметка открыта под новым именем, текст с диска', async () => {
+    // Задача 1.9, решение 89.
+    vault = createTestVault('Переименование с правкой', { 'Старое имя.md': 'один\nдва\n' });
+    mkdirSync(path.join(vault, 'Папка'));
+    session = await startApp({ vault });
+    const b = session.browser;
+    await openNote(b, 'Старое имя');
+
+    renameAndEdit(path.join(vault, 'Старое имя.md'), path.join(vault, 'Папка', 'Новое имя.md'), 'один\nдва\nтри снаружи\n');
+
+    await b.waitUntil(async () => (await headerPath(b)) === 'Папка / Новое имя', {
+      timeout: 15_000,
+      timeoutMsg: 'путь над заметкой не сменился',
+    });
+    await waitForEditorText(b, 'один\nдва\nтри снаружи\n');
+    await saveScreenshot(b, 'external-06-renamed-and-edited');
+    expect(await b.execute(() => document.body.innerText.includes('удалена на диске'))).toBe(false);
+    // Ни записи назад, ни копии.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(read(path.join(vault, 'Папка', 'Новое имя.md'))).toBe('один\nдва\nтри снаружи\n');
+    expect(conflictCopies(path.join(vault, 'Папка'), 'Новое имя')).toEqual([]);
+
+    // Дальше ввод пишется в новый файл.
+    await typeAtEnd(b, 'X');
+    await waitFor(() => read(path.join(vault, 'Папка', 'Новое имя.md')) === 'один\nдва\nтри снаружи\nX', 'ввод в новом файле');
   });
 
   it('ввод, правка снаружи и сразу закрытие окна: после выхода обе версии на диске', async () => {
