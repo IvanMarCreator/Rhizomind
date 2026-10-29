@@ -553,16 +553,26 @@ describe('сценарий выпуска 0.1: от первого запуск�
     const b = browser();
     writeFileSync(path.join(work, 'Большой.md'), 'x'.repeat(11 * 1024 * 1024));
     await row(b, 'Большой').waitForExist({ timeout: 5_000 });
+    // Предел открытия (З3, задача 2.10а). Обычно 6–12 с (Linux, CI и
+    // загруженная машина), Windows быстрее. Ошибка, которую ловим, — перенос
+    // посреди слова для этой строки (решение 83): WebKitGTK раскладывал её
+    // больше минуты, окно не отвечало (сценарный тест упирался в предел CI).
+    // 40 с — втрое выше обычного и заметно ниже зависания: шум не роняет,
+    // зависание ловится.
+    const limit = 40_000;
     const opened = Date.now();
+    const left = () => Math.max(1_000, limit - (Date.now() - opened));
     await row(b, 'Большой').click();
-    await b.waitUntil(async () => (await statusText(b)) === 'Только чтение', { timeout: 15_000 });
+    await b.waitUntil(async () => (await statusText(b)) === 'Только чтение', { timeout: left() });
     expect(await b.$('main .notice .title').getText()).toContain('Только чтение: файл');
     // Строка в 11 МБ без пробелов — без переноса посреди слова (решение 83,
-    // src/editor/huge-lines.ts): с ним WebKitGTK раскладывал её дольше минуты.
-    await b.waitUntil(async () => (await b.$$('main .cm-line.cm-rz-hugeLine')).length > 0, { timeout: 15_000 });
-    expect(Date.now() - opened, 'открытие файла 11 МБ, мс').toBeLessThan(15_000);
+    // src/editor/huge-lines.ts).
+    await b.waitUntil(async () => (await b.$$('main .cm-line.cm-rz-hugeLine')).length > 0, { timeout: left() });
+    const took = Date.now() - opened;
+    process.stderr.write(`открытие файла 11 МБ (${process.platform}): ${took} мс\n`);
+    expect(took, 'открытие файла 11 МБ, мс').toBeLessThan(limit);
     await shot(b, 'read-only');
-  });
+  }, 90_000);
 
   // ---- С3.5: быстрый переход и история ------------------------------------------
 

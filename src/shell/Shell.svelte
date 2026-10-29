@@ -27,6 +27,7 @@
   import Ribbon from './Ribbon.svelte';
   import Sidebar from './Sidebar.svelte';
   import StartupError from './StartupError.svelte';
+  import { ExternalChanges } from '../sync/external.ts';
   import { WindowClosing, coreClosing } from './closing.ts';
   import { ShownNote } from './shownNote.ts';
   import { WindowModel } from './window.svelte.ts';
@@ -67,6 +68,29 @@
     };
     return new FileTreeState(host);
   }
+
+  /**
+   * Изменения файлов снаружи (задача 2.9, С3.6): события ядра `note:*` и
+   * полная сверка — в редактор, историю и раскладку окна. Сначала редактор:
+   * смена пути после этого — не уход с заметки.
+   */
+  const external = new ExternalChanges({
+    get currentPath() {
+      return model.currentPath;
+    },
+    changed: (path, version) => editor?.changed(path, version),
+    renamed: (from, to) => {
+      editor?.renamed(from, to);
+      model.entryRenamed(from, to);
+    },
+    removed: (path) => {
+      editor?.removed(path);
+      model.entryRemoved(path);
+    },
+    rescanned: () => editor?.rescanned(),
+    deletingHere: (path) => files.isDeleting(path),
+    notify: (text) => model.notify(text),
+  });
 
   /**
    * Закрытие окна (задача 0.7): ядро скрыло окно и ждёт, пока ввод запишется.
@@ -137,6 +161,7 @@
   onMount(() => {
     // Подписка — первой: окно могут закрыть, пока оно загружается.
     const unsubscribe = onCoreEvent('window:close-requested', (payload) => void closing.closeRequested(payload));
+    const stopExternal = external.start();
     void model.start();
     // Не <svelte:window>: Svelte передаёт тогда объект window значением, и
     // проверка сети (tools/check-no-network) не может доказать безопасность.
@@ -148,6 +173,7 @@
       window.removeEventListener('keydown', onKeydownCapture, true);
       window.removeEventListener('keydown', onKeydownBubble);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
+      stopExternal();
     };
   });
 

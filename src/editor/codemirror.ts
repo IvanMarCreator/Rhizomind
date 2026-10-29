@@ -13,7 +13,7 @@
 // щелчку, автодополнение после `[[` и переход к заголовку — в обоих режимах;
 // связь с окном — `WikiHost` (src/editor/wikilinks/host.ts).
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { Compartment, EditorState, type Extension } from '@codemirror/state';
+import { Compartment, EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
@@ -62,6 +62,34 @@ export function setMode(view: EditorView, mode: EditorMode, onOpenLink?: (url: s
   view.dispatch({ effects: modeSlot.reconfigure(modeExtension(mode, onOpenLink)) });
 }
 
+const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code: number) => code >= 0xdc00 && code <= 0xdfff;
+
+/**
+ * Текст пришёл с диска (заметку изменили снаружи, задача 2.9): документ
+ * заменяется одной правкой — только отличающаяся середина (общие начало и
+ * конец не трогаются), поэтому курсор и выделение переносятся по правке и
+ * остаются на своём месте, если их часть текста не менялась (С3.6). Правка
+ * не попадает в историю отмены и не считается вводом пользователя
+ * (`Transaction.remote`): сессия уже знает этот текст.
+ */
+export function replaceDocument(view: EditorView, text: string): void {
+  const doc = view.state.doc.toString();
+  if (doc === text) return;
+  const max = Math.min(doc.length, text.length);
+  let start = 0;
+  while (start < max && doc.charCodeAt(start) === text.charCodeAt(start)) start += 1;
+  let end = 0;
+  while (end < max - start && doc.charCodeAt(doc.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end += 1;
+  // Граница правки не разрезает суррогатную пару (эмодзи и др.).
+  if (start > 0 && isHighSurrogate(doc.charCodeAt(start - 1))) start -= 1;
+  if (end > 0 && isLowSurrogate(doc.charCodeAt(doc.length - end))) end -= 1;
+  view.dispatch({
+    changes: { from: start, to: doc.length - end, insert: text.slice(start, text.length - end) },
+    annotations: [Transaction.addToHistory.of(false), Transaction.remote.of(true)],
+  });
+}
+
 export interface EditorOptions {
   readOnly?: boolean;
   /** Режим редактора; по умолчанию — исходный текст. */
@@ -99,7 +127,9 @@ export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink
       'aria-label': t('editor.label'),
     }),
     EditorView.updateListener.of((update) => {
-      if (update.docChanged) onChange?.(update.state.doc.toString());
+      // Текст с диска (replaceDocument) — не правка пользователя.
+      const fromDisk = update.transactions.every((tr) => !tr.docChanged || tr.annotation(Transaction.remote) === true);
+      if (update.docChanged && !fromDisk) onChange?.(update.state.doc.toString());
     }),
   ];
 }

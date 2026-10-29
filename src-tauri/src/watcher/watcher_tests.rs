@@ -461,3 +461,108 @@ fn retry_of_unreadable_paths_backs_off_up_to_a_minute() {
     assert_eq!(retry_delay(10), Duration::from_secs(60));
     assert_eq!(retry_delay(u32::MAX), Duration::from_secs(60));
 }
+
+/// Сохранение заметки внешним редактором (задача 2.9, вопрос 89): какой бы
+/// способ записи ни был у редактора, открытая заметка видна как изменённая
+/// (`Modified`), а не как исчезнувшая или переехавшая — иначе окно закрыло бы
+/// её как удалённую и отбросило несохранённый ввод.
+fn assert_saved_as_modification(name: &str, save: impl FnOnce(&Path)) {
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Заметка.md", "старый текст\n");
+    let collector = Collector::default();
+    let _watcher = VaultWatcher::start(dir.path(), collector.sink()).expect("слежение");
+
+    save(dir.path());
+
+    let modified = TreeChange::Modified {
+        path: vp("Заметка.md"),
+    };
+    assert!(
+        collector.wait_for(WAIT, |_| collector.changes().contains(&modified)),
+        "{name}: нет изменения заметки: {:?}",
+        collector.payloads()
+    );
+    std::thread::sleep(QUIET);
+    let note = vp("Заметка.md");
+    // Для самой заметки — только `Modified`: ни `Removed`, ни `Renamed`, ни
+    // `Created` (иначе окно закрыло бы её как удалённую).
+    let other = collector.changes().into_iter().find(|change| match change {
+        TreeChange::Created { path, .. } | TreeChange::Removed { path } => *path == note,
+        TreeChange::Renamed { from, to } => *from == note || *to == note,
+        TreeChange::Modified { .. } => false,
+    });
+    assert_eq!(
+        other,
+        None,
+        "{name}: заметка «исчезла»: {:?}",
+        collector.payloads()
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("Заметка.md")).expect("заметка"),
+        "новый текст\n"
+    );
+}
+
+#[test]
+fn editor_save_in_place_is_a_modification() {
+    // Блокнот, Notepad++, VS Code (по умолчанию), Vim с `backupcopy=yes`.
+    assert_saved_as_modification("на месте", |root| {
+        fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
+    });
+}
+
+#[test]
+fn editor_save_through_temp_file_is_a_modification() {
+    // Атомарная запись: временный файл рядом → замена (Sublime, VS Code
+    // с атомарной записью, многие программы).
+    assert_saved_as_modification("через временный файл", |root| {
+        let tmp = root.join("Заметка.md.tmp1234");
+        fs::write(&tmp, "новый текст\n").expect("временный файл");
+        fs::rename(&tmp, root.join("Заметка.md")).expect("замена");
+    });
+}
+
+#[test]
+fn editor_save_with_backup_rename_is_a_modification() {
+    // Vim (`backupcopy=no`) и Emacs: заметка → резервная копия `~`, новая
+    // заметка пишется заново, копия удаляется (Emacs — оставляет).
+    assert_saved_as_modification("с резервной копией", |root| {
+        fs::rename(root.join("Заметка.md"), root.join("Заметка.md~")).expect("резервная копия");
+        fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
+        fs::remove_file(root.join("Заметка.md~")).expect("удаление копии");
+    });
+}
+
+#[test]
+fn editor_safe_write_like_jetbrains_is_a_modification() {
+    // «Безопасная запись» JetBrains: новый текст во временный файл, заметка
+    // → `___jb_old___`, временный → заметка, старый удаляется.
+    assert_saved_as_modification("безопасная запись", |root| {
+        let tmp = root.join("Заметка.md___jb_tmp___");
+        let old = root.join("Заметка.md___jb_old___");
+        fs::write(&tmp, "новый текст\n").expect("временный файл");
+        fs::rename(root.join("Заметка.md"), &old).expect("старый");
+        fs::rename(&tmp, root.join("Заметка.md")).expect("замена");
+        fs::remove_file(&old).expect("удаление старого");
+    });
+}
+
+#[test]
+fn editor_save_with_backup_copy_is_a_modification() {
+    // Резервная копия `.bak` (Notepad++, Far, многие программы): копия рядом,
+    // заметка переписывается на месте, копия остаётся.
+    assert_saved_as_modification("с копией .bak", |root| {
+        fs::copy(root.join("Заметка.md"), root.join("Заметка.md.bak")).expect("копия");
+        fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
+    });
+}
+
+#[test]
+fn editor_save_by_delete_and_create_is_a_modification() {
+    // «Удалить и положить новый»: старый файл удаляется, новый пишется под
+    // тем же именем (простые скрипты, некоторые редакторы).
+    assert_saved_as_modification("удалить и положить новый", |root| {
+        fs::remove_file(root.join("Заметка.md")).expect("удаление");
+        fs::write(root.join("Заметка.md"), "новый текст\n").expect("запись");
+    });
+}

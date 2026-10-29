@@ -24,6 +24,11 @@ import type {
 
 /** Пауза ввода перед автосохранением (С3.3). */
 export const AUTOSAVE_DELAY_MS = 1000;
+/**
+ * Предельный срок автосохранения при непрерывном вводе (решение 91): от
+ * первой несохранённой правки — не дольше этого, даже если пауз ≥ 1 с нет.
+ */
+export const AUTOSAVE_MAX_DELAY_MS = 5000;
 /** Повтор записи после сбоя. */
 export const RETRY_DELAY_MS = 5000;
 
@@ -63,6 +68,26 @@ export interface SessionHooks {
   onSaveFailed?(error: unknown): void;
 }
 
+/**
+ * Итог внешнего изменения (`NoteSession.external`):
+ * - `none` — ничего не изменилось (своя запись, тот же файл, сессия закрыта);
+ * - `reloaded` — текст обновлён с диска, ввода не было;
+ * - `flushed` — был несохранённый ввод: он записан сразу со старой
+ *   ожидаемой версией, и ядро сохранило обе версии (конфликт, С3.6);
+ * - `reopen` — файл стал только для чтения или перестал им быть: сессию
+ *   надо открыть заново ответом `opened`.
+ */
+export type ExternalOutcome =
+  | { kind: 'none' }
+  | { kind: 'reloaded' }
+  | { kind: 'flushed' }
+  | { kind: 'reopen'; opened: NoteReadResponse };
+
+/** Та же версия файла: хэш и размер, как сравнивает ядро (дата не важна). */
+export function sameVersion(a: FileVersion, b: FileVersion): boolean {
+  return a.hash === b.hash && a.size === b.size;
+}
+
 function isNotFound(error: unknown): boolean {
   return error instanceof CoreCallError && error.error.code === 'not_found';
 }
@@ -83,9 +108,15 @@ export class NoteSession {
   #version: FileVersion;
   #status: SaveStatus;
   #timer: ReturnType<typeof setTimeout> | null = null;
+  /** Когда появилась первая ещё не ушедшая в запись правка (`Date.now()`); `null` — таких нет. */
+  #pendingSince: number | null = null;
   #inFlight: Promise<SaveOutcome> | null = null;
   #failing = false;
   #disposed = false;
+  /** Подписчики на текст, пришедший с диска (редактор на экране). */
+  readonly #externalText = new Set<(text: string) => void>();
+  /** Внешние изменения обрабатываются по одному, в порядке прихода. */
+  #externalQueue: Promise<unknown> = Promise.resolve();
 
   constructor(path: VaultPath, opened: NoteReadResponse, store: NoteStore, hooks: SessionHooks = {}) {
     this.#path = path;
@@ -161,13 +192,17 @@ export class NoteSession {
     // Файла нет: пишем только после moveTo() или по требованию.
     if (this.#status.kind === 'missing') return;
     if (text === this.#saved && !this.#inFlight) {
+      this.#pendingSince = null;
       this.#cancelTimer();
       this.#failing = false;
       this.#setStatus({ kind: 'saved' });
       return;
     }
     if (this.#status.kind !== 'failed') this.#setStatus({ kind: 'pending' });
-    this.#schedule(AUTOSAVE_DELAY_MS);
+    // Пауза 1 с, но не позже 5 с от первой несохранённой правки (решение 91).
+    const now = Date.now();
+    this.#pendingSince ??= now;
+    this.#schedule(Math.max(0, Math.min(AUTOSAVE_DELAY_MS, this.#pendingSince + AUTOSAVE_MAX_DELAY_MS - now)));
   }
 
   /**
@@ -191,6 +226,78 @@ export class NoteSession {
   dispose(): void {
     this.#disposed = true;
     this.#cancelTimer();
+    this.#externalText.clear();
+  }
+
+  /**
+   * Подписка на текст, пришедший с диска после внешнего изменения: редактор
+   * заменяет им документ. Возвращает отписку.
+   */
+  onExternalText(listener: (text: string) => void): () => void {
+    this.#externalText.add(listener);
+    return () => this.#externalText.delete(listener);
+  }
+
+  /**
+   * Файл заметки изменился снаружи (событие `note:changed` с версией с
+   * диска; без версии — после полной сверки, `vault:changed` с `rescan`).
+   * Инвариант 4, С3.6:
+   * - сначала дожидаемся записей в полёте: событие могло прийти о своей же
+   *   записи, а версия — ответом на неё;
+   * - версия совпала с известной — ничего;
+   * - есть несохранённый ввод — он записывается сразу со старой ожидаемой
+   *   версией: ядро видит конфликт и сохраняет обе версии (ваша — в
+   *   заметке, с диска — копией рядом);
+   * - ввода нет — текст и версия с диска; если, пока шло чтение, появился
+   *   ввод, прочитанное не показывается, а ввод пишется (снова обе версии).
+   * Вызовы выполняются по одному, в порядке прихода.
+   */
+  external(version?: FileVersion): Promise<ExternalOutcome> {
+    const run = this.#externalQueue.then(() => this.#external(version));
+    this.#externalQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  async #external(version: FileVersion | undefined): Promise<ExternalOutcome> {
+    if (this.#gone()) return { kind: 'none' };
+    await this.idle();
+    if (this.#gone()) return { kind: 'none' };
+    // Файла не было (флешку вынули, внешний редактор убрал файл), теперь он
+    // снова есть: ввод пишется со старой версией — изменённый файл ядро
+    // сохранит копией; если файла всё ещё нет — снова «нет файла».
+    if (this.#status.kind === 'missing') return this.#flushBoth();
+    if (version && sameVersion(version, this.#version)) return { kind: 'none' };
+    if (this.hasUnsavedChanges) return this.#flushBoth();
+    const before = this.#current;
+    let opened: NoteReadResponse;
+    try {
+      opened = await this.#store.read(this.#path);
+    } catch {
+      // Файла уже нет или он недоступен: об удалении и переименовании
+      // скажут свои события; текст в редакторе остаётся.
+      return { kind: 'none' };
+    }
+    // Пока шло чтение, заметку могли удалить или закрыть.
+    if (this.#gone()) return { kind: 'none' };
+    // Ввод, пока шло чтение: он важнее прочитанного — пишем, ядро сохранит обе версии.
+    if (this.#current !== before || this.hasUnsavedChanges) return this.#flushBoth();
+    if (sameVersion(opened.version, this.#version)) return { kind: 'none' };
+    if (JSON.stringify(opened.read_only) !== JSON.stringify(this.readOnly)) return { kind: 'reopen', opened };
+    this.#version = opened.version;
+    this.#saved = opened.text;
+    this.#current = opened.text;
+    for (const listener of [...this.#externalText]) listener(opened.text);
+    return { kind: 'reloaded' };
+  }
+
+  /** Сессия закрыта или заметку удалили — внешнее изменение её не касается. */
+  #gone(): boolean {
+    return this.#disposed || this.#status.kind === 'deleted';
+  }
+
+  async #flushBoth(): Promise<ExternalOutcome> {
+    await this.flush();
+    return { kind: 'flushed' };
   }
 
   #schedule(ms: number): void {
@@ -210,6 +317,8 @@ export class NoteSession {
   /** Одна запись текущего текста. */
   #save(): Promise<SaveOutcome> {
     const text = this.#current;
+    // Всё набранное до этой минуты уходит в запись: срок 5 с — заново.
+    this.#pendingSince = null;
     const path = this.#path;
     if (this.#status.kind !== 'failed' && this.#status.kind !== 'missing') this.#setStatus({ kind: 'pending' });
     const flight = this.#store

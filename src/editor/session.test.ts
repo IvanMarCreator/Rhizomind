@@ -121,6 +121,48 @@ describe('автосохранение', () => {
     ]);
   });
 
+  it('решение 91: при непрерывном вводе запись не реже чем раз в 5 с', async () => {
+    const store = new FakeStore();
+    const { s } = session(store);
+
+    // Клавиша каждые 300 мс, 12 с без паузы ≥ 1 с.
+    let text = '';
+    for (let i = 0; i < 40; i += 1) {
+      text += 'x';
+      s.edit(text);
+      await vi.advanceTimersByTimeAsync(300);
+    }
+
+    // Записи на 5-й и 10-й секунде — с тем, что набрано к этому моменту.
+    expect(store.writes.length).toBe(2);
+    expect(store.writes[0]?.text.length).toBeGreaterThanOrEqual(16);
+    expect(store.writes[0]?.text.length).toBeLessThanOrEqual(17);
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+    expect(store.writes.at(-1)?.text).toBe(text);
+    expect(s.status.kind).toBe('saved');
+  });
+
+  it('решение 91: срок 5 с отсчитывается от первой несохранённой правки, а не от прошлой записи', async () => {
+    const store = new FakeStore();
+    const { s } = session(store);
+
+    s.edit('a');
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
+    expect(store.writes).toHaveLength(1);
+    // Долгая пауза, потом снова непрерывный ввод: первая запись — через 5 с от его начала.
+    await vi.advanceTimersByTimeAsync(60_000);
+    let text = 'a';
+    for (let i = 0; i < 16; i += 1) {
+      text += 'b';
+      s.edit(text);
+      await vi.advanceTimersByTimeAsync(300);
+    }
+    expect(store.writes).toHaveLength(1);
+    s.edit(text + 'c');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.writes).toHaveLength(2);
+  });
+
   it('правка и её отмена до таймера — записи нет', async () => {
     const store = new FakeStore();
     const { s } = session(store, opened('abc'));
