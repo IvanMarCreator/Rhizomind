@@ -3,7 +3,7 @@
 // завершить, остаётся в памяти — при возврате показывается её текст, а не
 // файл с диска, и повтор записи продолжается. При закрытии окна —
 // `flushForClose()` (задача 0.7): ядро закрывает окно после ответа.
-import { CoreCallError, type VaultPath } from '../api/index.ts';
+import { CoreCallError, type FileVersion, type VaultPath } from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t } from '../i18n/index.ts';
 import { NoteSession, type NoteStore, type SaveStatus } from './session.ts';
@@ -57,6 +57,9 @@ async function settlesBy(work: Promise<unknown>, deadline: number): Promise<bool
   return done;
 }
 
+/** Метка «сверка без известной версии» для заметки, которая ещё открывается. */
+const RESCANNED: FileVersion = { hash: '', size: -1, modified_ms: -1 };
+
 /** Заметка, ввод которой при закрытии окна записать не удалось. */
 export interface UnsavedNote {
   path: VaultPath;
@@ -101,6 +104,11 @@ export class EditorSessions {
   readonly #unsaved = new Map<string, NoteSession>();
   /** Номер последнего перехода: ответ на чтение старого перехода отбрасывается. */
   #showToken = 0;
+  /**
+   * `note:changed` пришло, пока заметка открывалась (ключ пути → версия):
+   * чтение могло опередить внешнюю запись — после открытия текст сверяется.
+   */
+  readonly #changedWhileLoading = new Map<string, FileVersion>();
 
   constructor(store: NoteStore, listener: EditorListener) {
     this.#store = store;
@@ -128,6 +136,7 @@ export class EditorSessions {
       this.#setPane({ kind: 'open', session: kept });
       return;
     }
+    this.#changedWhileLoading.delete(pathKey(path));
     this.#setPane({ kind: 'loading', path });
     this.#store.read(path).then(
       (opened) => {
@@ -142,6 +151,9 @@ export class EditorSessions {
         }
         const session: NoteSession = new NoteSession(path, opened, this.#store, this.#hooks(() => session));
         this.#setPane({ kind: 'open', session });
+        const changed = this.#changedWhileLoading.get(pathKey(path));
+        this.#changedWhileLoading.delete(pathKey(path));
+        if (changed) this.#external(session, changed);
       },
       (error: unknown) => {
         if (token !== this.#showToken) return;
@@ -192,6 +204,60 @@ export class EditorSessions {
       session.discard();
       this.#unsaved.delete(pathKey(session.path));
     }
+  }
+
+  /**
+   * Заметку изменили снаружи (событие `note:changed`, задача 2.9, С3.6):
+   * без несохранённого ввода текст обновляется с диска (курсор сохраняет
+   * редактор), с вводом — ввод пишется сразу, ядро сохраняет обе версии.
+   * Касается и заметки, с которой ушли, но ввод которой ещё пишется.
+   */
+  changed(path: VaultPath, version: FileVersion): void {
+    const key = pathKey(path);
+    if (this.#pane.kind === 'loading' && pathKey(this.#pane.path) === key) this.#changedWhileLoading.set(key, version);
+    if (this.#retryFailed(key)) return;
+    for (const session of this.#sessions()) {
+      if (pathKey(session.path) === key) this.#external(session, version);
+    }
+  }
+
+  /**
+   * Полная сверка с диском (`vault:changed` с `rescan: true`, хранилище снова
+   * доступно): события о правке открытой заметки могло не быть — сверяем
+   * её с диском, как при `changed()`.
+   */
+  rescanned(): void {
+    if (this.#pane.kind === 'loading') this.#changedWhileLoading.set(pathKey(this.#pane.path), RESCANNED);
+    if (this.#pane.kind === 'failed' && this.#retryFailed(pathKey(this.#pane.path))) return;
+    for (const session of this.#sessions()) this.#external(session);
+  }
+
+  /** Заметка по ключу не открылась — открыть заново (файл появился или изменился). */
+  #retryFailed(key: string): boolean {
+    if (this.#pane.kind !== 'failed' || pathKey(this.#pane.path) !== key) return false;
+    const path = this.#pane.path;
+    this.#pane = { kind: 'empty' };
+    this.show(path);
+    return true;
+  }
+
+  #external(session: NoteSession, version?: FileVersion): void {
+    const known = version === RESCANNED ? undefined : version;
+    session.external(known).then(
+      (outcome) => {
+        if (outcome.kind !== 'reopen') return;
+        // Файл стал только для чтения или перестал им быть: ввода нет
+        // (иначе была бы запись), сессия открывается заново.
+        const key = pathKey(session.path);
+        if (this.#unsaved.get(key) === session) this.#unsaved.delete(key);
+        const current = this.#currentSession() === session;
+        session.dispose();
+        if (!current) return;
+        const fresh: NoteSession = new NoteSession(session.path, outcome.opened, this.#store, this.#hooks(() => fresh));
+        this.#setPane({ kind: 'open', session: fresh });
+      },
+      () => undefined,
+    );
   }
 
   /**

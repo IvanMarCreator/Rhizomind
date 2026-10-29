@@ -10,7 +10,8 @@
 //! Повтор того же изменения ничего не ломает: `created` уже известной
 //! заметки — без изменений, `renamed` с неизвестным `from` — пропускается
 //! (кроме случая, когда `to` — заметка, которой ещё нет: она добавляется),
-//! `removed` неизвестного — пропускается.
+//! `removed` неизвестного — пропускается. Переименование заметки в
+//! не-заметку (`a.md` → `a.txt`) убирает её из списка (решение 90).
 //!
 //! Ключ заметки — ключи имён компонентов пути (`names::key`): событие
 //! наблюдателя приходит в написании с диска, команда — в написании
@@ -145,7 +146,11 @@ impl NoteIndex {
                                 .chain(&old.components()[from_len..])
                                 .cloned(),
                         );
-                        self.notes.insert(path_key(&new), (new, created));
+                        // Переименование в не-заметку (`a.md` → `a.txt`) —
+                        // уход из заметок, как удаление (решение 90).
+                        if is_note_path(&new) {
+                            self.notes.insert(path_key(&new), (new, created));
+                        }
                     }
                     true
                 }
@@ -228,6 +233,29 @@ mod tests {
     }
 
     const NOW: &dyn Fn(&VaultPath) -> Option<i64> = &|_| Some(7);
+
+    #[test]
+    fn note_renamed_to_a_non_note_leaves_the_list() {
+        // Решение оркестратора 90 (найдено в 2.12): `.md` → `.txt` — не заметка.
+        let mut index = NoteIndex::new(vec![note("А/a.md", 1), note("А/b.md", 2)]);
+        assert!(index.apply(
+            &[TreeChange::Renamed {
+                from: vp("А/a.md"),
+                to: vp("А/a.txt"),
+            }],
+            NOW,
+        ));
+        assert_eq!(paths(&index), vec![vp("А/b.md")]);
+        // Папка с заметками переименовывается как раньше.
+        index.apply(
+            &[TreeChange::Renamed {
+                from: vp("А"),
+                to: vp("Б"),
+            }],
+            NOW,
+        );
+        assert_eq!(paths(&index), vec![vp("Б/b.md")]);
+    }
 
     #[test]
     fn applying_the_same_change_twice_is_harmless() {

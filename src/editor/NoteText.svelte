@@ -7,7 +7,7 @@
   import './codemirror-base.css';
   import { onMount, untrack } from 'svelte';
   import type { EditorMode } from '../api/index.ts';
-  import { createEditorState, setMode, setReadOnly } from './codemirror.ts';
+  import { createEditorState, replaceDocument, setMode, setReadOnly } from './codemirror.ts';
   import type { NoteSession } from './session.ts';
   import type { WikiHost } from './wikilinks/host.ts';
 
@@ -57,7 +57,12 @@
     });
     if (focus && !session.readOnly) created.focus();
     view = created;
-    return () => created.destroy();
+    // Заметку изменили снаружи, ввода не было: текст с диска, курсор на месте (задача 2.9).
+    const stop = session.onExternalText((text) => replaceDocument(created, text));
+    return () => {
+      stop();
+      created.destroy();
+    };
   });
 </script>
 
