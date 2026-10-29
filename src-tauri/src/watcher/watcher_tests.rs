@@ -491,7 +491,12 @@ fn assert_saved_as_modification(name: &str, save: impl FnOnce(&Path)) {
         TreeChange::Renamed { from, to } => *from == note || *to == note,
         TreeChange::Modified { .. } => false,
     });
-    assert_eq!(other, None, "{name}: заметка «исчезла»: {:?}", collector.payloads());
+    assert_eq!(
+        other,
+        None,
+        "{name}: заметка «исчезла»: {:?}",
+        collector.payloads()
+    );
     assert_eq!(
         fs::read_to_string(dir.path().join("Заметка.md")).expect("заметка"),
         "новый текст\n"
