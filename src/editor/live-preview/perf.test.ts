@@ -9,6 +9,10 @@ import { codeBlocks, previewDecorations } from './index.ts';
 import { MAX_BLOCK_TEXT } from './markdown.ts';
 
 const LIMIT_MS = 15;
+/** Рост времени при вчетверо более длинной строке: линейно ≈ ×4, квадратично ≈ ×16. */
+const MAX_GROWTH = 8;
+/** Абсолютный предел для неудобных строк — с запасом на нагрузку параллельных тестов. */
+const SLOW_LIMIT_MS = 50;
 const MB = 1024 * 1024;
 
 /** Плотный Markdown: заголовок, выделение, ссылка, списки, цитата и блок кода на каждые ~150 символов. */
@@ -116,10 +120,13 @@ describe('заметка больше 10 МБ (решение 77)', { timeout: 1
  * `sliceString`, `toString`, `iter`, `iterRange`, `iterLines` и прочее в
  * CodeMirror в итоге берут строки из массивов `text` листьев документа.
  * Документ, созданный за это время (`Text.of`), получает листья, у которых
- * массив строк считает каждое чтение строки по номеру.
+ * массив строк считает каждое чтение строки по номеру. Общий пустой документ
+ * `Text.empty` (его возвращает `Text.of([''])`) не трогается: обёртка осталась
+ * бы в нём и после замера.
  */
 function charsRead(fn: () => void): number {
-  const of = Text.of.bind(Text);
+  const original = Text.of;
+  const of = original.bind(Text);
   let read = 0;
   const counting = (lines: string[]) =>
     new Proxy(lines, {
@@ -136,22 +143,23 @@ function charsRead(fn: () => void): number {
   };
   Text.of = (lines: readonly string[]) => {
     const doc = of(lines);
-    wrap(doc);
+    if (doc !== Text.empty) wrap(doc);
     return doc;
   };
   try {
     fn();
   } finally {
-    Text.of = of;
+    Text.of = original;
   }
   return read;
 }
 
 describe('неудобная строка ~10 000 символов: оформление при движении курсора линейно', () => {
-  const fill = (piece: string) => piece.repeat(Math.floor(9_990 / piece.length));
-  it.each([
+  // Строка из повторов `piece` длиной не больше `n`.
+  const fill = (piece: string) => (n: number) => piece.repeat(Math.floor(n / piece.length));
+  const cases: [string, (n: number) => string][] = [
     ['[a без ]', fill('[a')],
-    ['[a и одна ] в конце', `${'[a'.repeat(4_990)}]`],
+    ['[a и одна ] в конце', (n) => `${'[a'.repeat(Math.floor(n / 2))}]`],
     ['[a](', fill('[a](')],
     ['[a](\\(', fill('[a](\\(')],
     ['[a](b (', fill('[a](b (')],
@@ -160,27 +168,30 @@ describe('неудобная строка ~10 000 символов: оформл
     ['*a', fill('*a')],
     ['a* ', fill('a* ')],
     ['~~a', fill('~~a')],
-    ['# и пробелы', `# a${' '.repeat(9_990)}a`],
+    ['# и пробелы', (n) => `# a${' '.repeat(n)}a`],
     ['> ', fill('> ')],
     // Вики-ссылки (задача 2.6): пары `[[` → `]]` — один проход по строке.
     ['[[a без ]]', fill('[[a')],
-    ['[[a и одна ]] в конце', `${'[[a'.repeat(3_320)}]]`],
+    ['[[a и одна ]] в конце', (n) => `${'[[a'.repeat(Math.floor(n / 3))}]]`],
     ['[[a]', fill('[[a]')],
     ['[[a`]]', fill('[[a`]]')],
-    ['[[`a]] с парой ` в конце', `${'[[`a]]'.repeat(1_660)}\``],
+    ['[[`a]] с парой ` в конце', (n) => `${'[[`a]]'.repeat(Math.floor(n / 6))}\``],
     ['[[a]]', fill('[[a]]')],
     ['[[a#b|c]]', fill('[[a#b|c]]')],
     ['![[a', fill('![[a')],
-  ])('%s', (_name, line) => {
-    // Под сильной нагрузкой (параллельные тесты на 2 ядрах) лучший из 15
-    // замеров бывал 16–26 мс при обычных ≤ 4,4. Поэтому рядом, попеременно,
-    // замеряется строка той же длины из вики-ссылок `[[a]] ` (~3,5 мс, разбор
-    // линейный, нагрузка та же): падение — только если и время выше предела,
-    // и отношение к ней больше ×3. Сейчас худшее отношение ×1,2 (`[[a]]`);
-    // квадратичный разбор — 16–245 мс, то есть ×4,5 и больше.
-    const { time, ratio } = bestVersus(cursorMoves(line), cursorMoves(fill('[[a]] ')));
-    const note = `${time.toFixed(1)} мс, ×${ratio.toFixed(1)} к строке вики-ссылок`;
-    expect(time < LIMIT_MS || ratio < 3, note).toBe(true);
+  ];
+  it.each(cases)('%s', (_name, make) => {
+    // Рост: та же строка вчетверо короче, замеры попеременно (нагрузка на
+    // машину одна и та же). Линейный разбор — около ×4 (сейчас ×2,5–3,9),
+    // квадратичный — около ×16 (код 12c7f4f — ×13–17). Сравнение с самой собой,
+    // а не с другой строкой: квадратичный разбор в общем пути (вики-ссылки)
+    // замедлил бы и опорную строку, отношение осталось бы ≈ 1. Абсолютный
+    // предел — дополнительный, с запасом на нагрузку: под ней лучший замер
+    // бывал 16–26 мс при обычных ≤ 4,4.
+    const { time, ratio } = bestVersus(cursorMoves(make(9_990)), cursorMoves(make(9_990 / 4)), 25);
+    const note = `${time.toFixed(2)} мс, рост ×${ratio.toFixed(1)} к строке вчетверо короче`;
+    expect(ratio, note).toBeLessThan(MAX_GROWTH);
+    expect(time, note).toBeLessThan(SLOW_LIMIT_MS);
   });
 });
 

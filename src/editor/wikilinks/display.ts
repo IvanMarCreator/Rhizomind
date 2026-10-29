@@ -53,10 +53,12 @@ export function wikiPieces(text: string, open: number, close: number): Piece[] |
   // Цель без псевдонима: имя — последний компонент пути до `#`.
   let targetEnd = bar >= 0 ? innerFrom + bar : close;
   if (bar >= 0 && text[targetEnd - 1] === '\\') targetEnd--;
-  const hash = text.indexOf('#', innerFrom);
-  const pathEnd = hash >= 0 && hash < targetEnd ? hash : targetEnd;
+  // Поиск `#` и `/` — только внутри ссылки: поиск по всей строке от каждой
+  // ссылки квадратичен (строка из `[[a]]` — задача 2.5в).
+  const hash = inner.indexOf('#');
+  const pathEnd = hash >= 0 && innerFrom + hash < targetEnd ? innerFrom + hash : targetEnd;
   const [pathFrom, pathTo] = trimmed(text, innerFrom, pathEnd);
-  const nameFrom = text.lastIndexOf('/', pathTo - 1) + 1;
+  const nameFrom = pathTo > innerFrom ? innerFrom + inner.lastIndexOf('/', pathTo - 1 - innerFrom) + 1 : 0;
   const visibleFrom = Math.max(nameFrom, pathFrom);
   const nameTo = visibleFrom + target.name.length;
 
