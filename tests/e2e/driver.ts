@@ -107,6 +107,26 @@ function stopDriver(driver: ChildProcess): Promise<void> {
   });
 }
 
+/** Новая сессия WebDriver через tauri-driver: одна попытка, без повторов клиента. */
+function newSession(): Promise<WebdriverIO.Browser> {
+  return remote({
+    hostname: '127.0.0.1',
+    port: PORT,
+    logLevel: 'warn',
+    connectionRetryTimeout: 90_000,
+    connectionRetryCount: 0,
+    capabilities: {
+      // tauri-driver принимает путь к приложению в своём расширении возможностей.
+      'tauri:options': { application: applicationPath() },
+    } as WebdriverIO.Capabilities,
+  });
+}
+
+/** Соединение с tauri-driver оборвано или отклонено (а не ответ с ошибкой WebDriver). */
+function isSocketDrop(error: unknown): boolean {
+  return /UND_ERR_SOCKET|ECONNREFUSED|ECONNRESET/.test(String(error));
+}
+
 export interface Session {
   browser: WebdriverIO.Browser;
   stop: () => Promise<void>;
@@ -200,7 +220,13 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   const logFd = openSync(driverLog, 'a');
   const driver: ChildProcess = spawn(tauriDriverPath(), args, { stdio: ['ignore', logFd, logFd], env });
   try {
+    // tauri-driver открывает свой порт сразу после запуска драйвера движка, не
+    // дожидаясь его готовности (tauri-driver 2.1.0, src/main.rs). Запрос сессии
+    // в этот промежуток (0–90 мс, дольше под нагрузкой) драйвер движка отклоняет
+    // («Connection refused» в журнале tauri-driver), и tauri-driver рвёт
+    // соединение — у клиента UND_ERR_SOCKET (задача 3.2). Ждём оба порта.
     await waitForPort(PORT, 30_000);
+    await waitForPort(NATIVE_PORT, 30_000);
   } catch (error) {
     driver.kill();
     removeProfile();
@@ -211,25 +237,23 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   let timer: NodeJS.Timeout | undefined;
   try {
     // Зависание при создании сессии превращается в ошибку, а не в бесконечное
-    // ожидание CI: одна попытка без повторов и общий предел.
-    const session = remote({
-      hostname: '127.0.0.1',
-      port: PORT,
-      logLevel: 'warn',
-      connectionRetryTimeout: 90_000,
-      connectionRetryCount: 0,
-      capabilities: {
-        // tauri-driver принимает путь к приложению в своём расширении возможностей.
-        'tauri:options': { application: applicationPath() },
-      } as WebdriverIO.Capabilities,
-    });
+    // ожидание CI: общий предел на обе попытки.
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(
         () => reject(new Error(`сессия WebDriver не создана за ${SESSION_TIMEOUT_MS / 1000} с; журнал — ${driverLog}`)),
         SESSION_TIMEOUT_MS,
       );
     });
-    browser = await Promise.race([session, deadline]);
+    try {
+      browser = await Promise.race([newSession(), deadline]);
+    } catch (error) {
+      // Один повтор — только если соединение оборвалось, а программа не
+      // запустилась: второй запуск рядом с первым упёрся бы в замок одного экземпляра.
+      if (!isSocketDrop(error) || appPids().length > 0) throw error;
+      console.warn(`сеанс WebDriver: соединение оборвано до запуска программы (${String(error)}); повтор`);
+      await waitForPort(NATIVE_PORT, 10_000);
+      browser = await Promise.race([newSession(), deadline]);
+    }
   } catch (error) {
     // Сессия не создана — afterAll не сможет остановить драйвер, останавливаем здесь.
     driver.kill();
@@ -242,15 +266,38 @@ export async function startApp(options: StartOptions = {}): Promise<Session> {
   return {
     browser,
     stop: async () => {
+      // Linux: WebKitWebDriver отвечает на конец сессии и только потом
+      // завершает запущенную им программу. Если tauri-driver остановить сразу
+      // после ответа, он убивает WebKitWebDriver (SIGKILL) раньше, и программа
+      // остаётся жить с открытым окном — сирота, которую никто не закроет:
+      // «программа не завершилась» и «процесс программы один» в следующих
+      // тестах (задача 3.2: 8 из 25 перезапусков под нагрузкой). Поэтому драйвер
+      // останавливается только после выхода программы этой сессии. На Windows
+      // tauri-driver держит процессы в задании ОС с завершением при закрытии.
+      const ours = process.platform === 'win32' ? [] : appPids();
       try {
         await browser.deleteSession();
       } finally {
+        if (ours.length > 0 && !(await waitForPidsGone(ours, 10_000))) {
+          console.warn(`конец сессии WebDriver: программа (${ours.join(', ')}) не вышла за 10 с`);
+        }
         await stopDriver(driver);
         await waitForPortsFree(15_000).catch(() => undefined);
         removeProfile();
       }
     },
   };
+}
+
+/** Ждёт, пока процессы `pids` завершатся (или станут зомби); `false` — не дождались. */
+async function waitForPidsGone(pids: number[], timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const alive = new Set(appPids());
+    if (!pids.some((pid) => alive.has(pid))) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 /** Процессы тестовой сборки (их запускает драйвер движка, а не тест). */
@@ -283,12 +330,42 @@ export function appPids(): number[] {
     .map(Number);
 }
 
-/** Ждёт выхода программы; возвращает, сколько ждали (мс), или -1, если не вышла. */
+/**
+ * Ждёт выхода программы; возвращает, сколько ждали (мс), или -1, если не вышла.
+ * Время ожидания и оставшиеся процессы пишутся в журнал (задача 3.2): так
+ * видно, своя ли программа медлит с выходом или осталась программа прошлой
+ * сессии, которую драйвер движка не завершил.
+ */
 export async function waitForAppExit(timeoutMs: number): Promise<number> {
   const started = Date.now();
+  const first = appPids();
   while (appPids().length > 0) {
-    if (Date.now() - started > timeoutMs) return -1;
+    if (Date.now() - started > timeoutMs) {
+      const left = appPids();
+      console.warn(
+        `программа не вышла за ${timeoutMs} мс: процессы ${left.map(describePid).join('; ')}` +
+          `; при начале ожидания были ${first.join(', ') || 'нет'}`,
+      );
+      return -1;
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  return Date.now() - started;
+  const waited = Date.now() - started;
+  console.log(`выход программы: ${waited} мс (процессы ${first.join(', ') || 'нет'})`);
+  return waited;
+}
+
+/** pid, состояние и время жизни процесса (Linux: /proc), для журнала. */
+function describePid(pid: number): string {
+  if (process.platform === 'win32') return String(pid);
+  try {
+    // Поля после имени процесса: 3 — состояние, 22 — время запуска в тиках с загрузки.
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const uptime = Number(readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+    const age = Math.round(uptime - Number(fields[19]) / 100);
+    return `${pid} (состояние ${fields[0]}, живёт ${age} с)`;
+  } catch {
+    return String(pid);
+  }
 }
