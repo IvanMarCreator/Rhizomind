@@ -314,6 +314,40 @@ class MarkWidget extends WidgetType {
   }
 }
 
+/**
+ * Стрелка «↗» за текстом внешней ссылки (http, https, mailto; вид 5Б, Э1):
+ * ссылка уводит из приложения. У вики-ссылок её нет. Щелчок по стрелке —
+ * как по ссылке: у неё тот же адрес в `data-rz-url`.
+ */
+class ExternalMarkWidget extends WidgetType {
+  readonly url: string;
+
+  constructor(url: string) {
+    super();
+    this.url = url;
+  }
+
+  override eq(other: ExternalMarkWidget): boolean {
+    return other.url === this.url;
+  }
+
+  toDOM(): HTMLElement {
+    const element = document.createElement('span');
+    element.className = 'cm-rz-link-external';
+    element.textContent = EXTERNAL_ARROW;
+    element.setAttribute('aria-hidden', 'true');
+    element.setAttribute('data-rz-url', this.url);
+    return element;
+  }
+
+  override ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/** Знак внешней ссылки (tokens.md: `accent/indigo/text`, «стрелка ↗»). */
+export const EXTERNAL_ARROW = '\u2197';
+
 const WIDGETS: Record<WidgetKind, MarkWidget> = {
   bullet: new MarkWidget('bullet'),
   checkbox: new MarkWidget('checkbox'),
@@ -403,6 +437,10 @@ export function previewDecorations(
         if (from >= to) continue;
         if (piece.kind === 'mark') {
           out.push(pieceMark(piece, resolution).range(from, to));
+          // Вне строки с курсором: на ней адрес и так виден.
+          if (!revealed && piece.url !== undefined && isExternalUrl(piece.url)) {
+            out.push(Decoration.widget({ widget: new ExternalMarkWidget(piece.url), side: -1 }).range(to));
+          }
         } else if (revealed) {
           out.push(MARKUP.range(from, to));
         } else {
@@ -435,7 +473,14 @@ function codeLine(
 ): void {
   const first = line.from === block.from;
   const last = block.closeLine === line.from;
-  const cls = ['cm-rz-codeblock', first ? 'cm-rz-codeblock-first' : '', last ? 'cm-rz-codeblock-last' : '']
+  // Скрытая ограда не занимает строку: поле блока — только отступ 12 px (tokens.md «Блок кода», Э1).
+  const fence = (first || last) && !revealed;
+  const cls = [
+    'cm-rz-codeblock',
+    first ? 'cm-rz-codeblock-first' : '',
+    last ? 'cm-rz-codeblock-last' : '',
+    fence ? 'cm-rz-codeblock-fence' : '',
+  ]
     .filter(Boolean)
     .join(' ');
   out.push(lineDecoration(cls).range(line.from));
