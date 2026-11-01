@@ -17,6 +17,7 @@ import { Compartment, EditorState, Transaction, type Extension } from '@codemirr
 import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@codemirror/view';
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
+import { bracketPairs } from './bracket-pairs.ts';
 import { hugeLines } from './huge-lines.ts';
 import { listContinuation } from './list-continuation.ts';
 import { blockTracking, livePreview, sourceLinks } from './live-preview/index.ts';
@@ -116,6 +117,7 @@ export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink
     modeSlot.of(modeExtension(mode, onOpenLink)),
     history(),
     listContinuation(),
+    bracketPairs(),
     keymap.of(editorKeymap),
     // Одиночный `\r`, NUL и другие невидимые символы видны значком.
     highlightSpecialChars(),

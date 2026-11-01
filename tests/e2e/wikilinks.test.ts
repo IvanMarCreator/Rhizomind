@@ -180,6 +180,8 @@ describe('вики-ссылки', () => {
     await b.keys([...'См. [']);
     await b.keys('[');
     await b.keys([...'пла']);
+    // Парная скобка (решение 95): `[[` сразу закрыт `]]`, курсор внутри.
+    expect(await lineText(b, 'См.')).toBe('См. [[пла]]');
     await b.waitUntil(
       () => b.execute(() => document.querySelectorAll('[role="listbox"] [role="option"]').length).then((n) => n > 0),
       {
