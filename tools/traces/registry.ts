@@ -14,7 +14,9 @@
 //    и во всём экспорте «после» ([`findMarkers`]), а не только в изменениях.
 // Учтённые записи (docs/SECURITY.md, «Записи вне хранилища») без меток данных —
 // не нарушение: служебные ключи движка WebView2 (решение 61) и записи оболочки
-// Windows о запуске программы (MuiCache, UserAssist). Остальное — фон ОС:
+// Windows о запуске программы (MuiCache, UserAssist, решение 65), записи
+// компонентов Windows из повторного аудита (решение 117: корзина, WinINet,
+// urlmon, OneDrive — в них и метка приложения — нарушение). Остальное — фон ОС:
 // печатается в журнал, тест не валит.
 
 export type RegExport = Map<string, Map<string, string>>;
@@ -102,7 +104,7 @@ const PATH_HISTORY_KEYS = [
 ];
 
 /** Учтённые записи (docs/SECURITY.md, «Записи вне хранилища»). */
-const KNOWN_KEYS: { pattern: RegExp; why: string }[] = [
+const KNOWN_KEYS: { pattern: RegExp; why: string; strict?: boolean }[] = [
   { pattern: /^HKEY_CURRENT_USER\\Software\\Microsoft\\EdgeWebView(\\|$)/i, why: 'движок WebView2, решение 61' },
   {
     pattern: /^HKEY_CURRENT_USER\\Software\\Microsoft\\EdgeUpdate\\ClientState\\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5\}(\\|$)/i,
@@ -110,6 +112,26 @@ const KNOWN_KEYS: { pattern: RegExp; why: string }[] = [
   },
   { pattern: /\\Shell\\MuiCache(\\|$)/i, why: 'оболочка Windows: запуск программы' },
   { pattern: /\\Explorer\\UserAssist\\/i, why: 'оболочка Windows: запуск программы' },
+  // Решение 117 (повторный ручной аудит 01.11.2026): записи компонентов Windows
+  // в процессе приложения. Только сами ключи, без подключей (в ZoneMap\Domains
+  // и OneDrive\Accounts\<учётная запись> могли бы оказаться адреса и пути), и
+  // `strict`: упоминание приложения в них — всё равно нарушение.
+  {
+    pattern: /^HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\\{[0-9a-f-]+\}$/i,
+    why: 'корзина Windows: настройки тома, решение 117',
+    strict: true,
+  },
+  {
+    pattern: /^HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\5\.0\\Cache\\(Content|Cookies|History)$/i,
+    why: 'WinINet: настройки кэша, решение 117',
+    strict: true,
+  },
+  {
+    pattern: /^HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\ZoneMap$/i,
+    why: 'urlmon: зоны безопасности, решение 117',
+    strict: true,
+  },
+  { pattern: /^HKEY_CURRENT_USER\\Software\\Microsoft\\OneDrive\\Accounts$/i, why: 'расширение оболочки OneDrive, решение 117', strict: true },
 ];
 
 export interface RegistryCheck {
@@ -142,7 +164,7 @@ export function checkRegistryChanges(changes: RegChange[], markers: Markers): Re
       continue;
     }
     const known = KNOWN_KEYS.find((k) => k.pattern.test(change.key));
-    if (known) {
+    if (known && !(known.strict && app.some((m) => text.includes(m)))) {
       result.known.push({ ...change, why: known.why });
       continue;
     }

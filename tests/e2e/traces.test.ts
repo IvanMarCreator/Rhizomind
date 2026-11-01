@@ -247,6 +247,14 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   //   с решением 64 (ядро завершает процесс браузера при выходе) их быть не должно.
   // - %LOCALAPPDATA%\Rhizomind\vaults.json — список хранилищ (решение 46);
   //   тест кладёт его до запуска и восстанавливает после.
+  // - %LOCALAPPDATA%\D3DSCache\<16 шестнадцатеричных>\<файл> — кэш шейдеров
+  //   Direct3D (процесс GPU движка WebView2), без данных хранилища (решение 117,
+  //   повторный ручной аудит 01.11.2026). Допускаются только файлы ровно на этой
+  //   глубине; кэши драйверов других видеокарт (NVIDIA, AMD) не учтены и валят тест.
+  // - %LOCALAPPDATA%\Microsoft\OneAuth\accounts\<шестнадцатеричное имя> — файл
+  //   учётной записи, который пишет библиотека OneAuth движка WebView2 (решение 118).
+  //   Допускаются только новые и изменённые такие файлы (и сами папки OneAuth,
+  //   accounts); любой другой файл в OneAuth и удаление — нарушение.
   const localAppData = isWindows ? real(env('LOCALAPPDATA')) : '';
   const credentialsFile = isWindows ? path.join(localAppData, 'Microsoft', 'Credentials', 'DFBE70A7E5CC19A398EBF1B96859CE5D') : '';
   const backgroundTokenFile = isWindows
@@ -254,11 +262,25 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     : '';
   const profileDir = isWindows ? path.join(localAppData, 'Rhizomind') : '';
   const vaultsFile = path.join(profileDir, 'vaults.json');
+  const shaderCacheDir = isWindows ? path.join(localAppData, 'D3DSCache') : '';
+  const isShaderCacheFile = (p: string) =>
+    path.dirname(path.dirname(p)) === shaderCacheDir && /^[0-9a-f]{16}$/i.test(path.basename(path.dirname(p))) && !p.endsWith(path.sep);
+  const isShaderCacheDir = (p: string) =>
+    p === shaderCacheDir + path.sep || (path.dirname(p.slice(0, -1)) === shaderCacheDir && /^[0-9a-f]{16}\\$/i.test(p.slice(shaderCacheDir.length + 1)));
+  const oneAuthDir = isWindows ? path.join(localAppData, 'Microsoft', 'OneAuth') : '';
+  const oneAuthAccounts = path.join(oneAuthDir, 'accounts');
+  const isOneAuthTrace = (p: string) =>
+    p === oneAuthDir + path.sep ||
+    p === oneAuthAccounts + path.sep ||
+    (path.dirname(p) === oneAuthAccounts && /^[0-9a-f]+$/i.test(path.basename(p)));
   const isKnownTrace = (p: string) =>
     isWindows &&
     ((p === credentialsFile && !before.has(p)) ||
       p === backgroundTokenFile ||
-      p === vaultsFile);
+      p === vaultsFile ||
+      isShaderCacheFile(p) ||
+      isShaderCacheDir(p) ||
+      isOneAuthTrace(p));
   const unexpected = (p: string) => !isHarnessNoise(p) && !isKnownTrace(p);
 
   // Тестовое хранилище с одной заметкой (вне проверяемых папок профиля).
@@ -449,7 +471,8 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     const LEFTOVER_NAME = /^rhizomind-webview-\d+-[0-9a-f]{16}$/;
     const isLeftover = (p: string) =>
       p.startsWith(tempReal) && LEFTOVER_NAME.test(p.slice(tempReal.length).split(path.sep)[0] ?? '');
-    expect(removed.filter((p) => !isLeftover(p))).toEqual([]);
+    // Файлы-замки кэша шейдеров Direct3D (`*.lock`) Windows удаляет сама (решение 117).
+    expect(removed.filter((p) => !isLeftover(p) && !isShaderCacheFile(p))).toEqual([]);
     expect(existsSync(leftover)).toBe(false);
     // Сценарий дошёл до конца: введённый текст записан в заметку до выхода.
     if (vaultScenario) {
