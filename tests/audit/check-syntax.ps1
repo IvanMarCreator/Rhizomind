@@ -40,7 +40,8 @@ if (-not $pssa) {
   Write-Host "PSScriptAnalyzer $($pssa.Version)"
   foreach ($f in $files) {
     $name = $f.Substring($root.Length + 1)
-    $all = @(Invoke-ScriptAnalyzer -Path $f -Severity @('Error', 'Warning'))
+    # Write-Host — намеренно: скрипт разговаривает с человеком в консоли.
+    $all = @(Invoke-ScriptAnalyzer -Path $f -Severity @('Error', 'Warning') -ExcludeRule 'PSAvoidUsingWriteHost')
     $errs = @($all | Where-Object { $_.Severity -eq 'Error' })
     foreach ($w in @($all | Where-Object { $_.Severity -ne 'Error' })) {
       Write-Host ("  предупреждение {0}:{1} {2}: {3}" -f $name, $w.Line, $w.RuleName, $w.Message)

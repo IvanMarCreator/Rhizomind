@@ -286,10 +286,8 @@ jobs:
   # включается. Отдельное задание после verify — его сбой verify не валит.
   audit-script-run:
     name: Скрипт сетевого аудита (прогон на выпускной сборке)
-    # ВРЕМЕННО (отладка 3.3б): сборка из прогона main 41303949074
-    permissions:
-      contents: read
-      actions: read
+    needs: verify
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -301,14 +299,12 @@ jobs:
         with:
           name: rhizomind-portable-windows
           path: ${{ runner.temp }}/portable
-          run-id: 41303949074
-          github-token: ${{ github.token }}
 
       - name: Неинтерактивный прогон скрипта аудита
         shell: powershell
         run: |
           $zip = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\portable" -Filter '*.zip' -Recurse | Select-Object -First 1
-          Write-Host "Сборка: $($zip.Name)"
+          Write-Host "Portable build: $($zip.Name)"
           $app = Join-Path $env:RUNNER_TEMP 'portable-app'
           Expand-Archive -LiteralPath $zip.FullName -DestinationPath $app -Force
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/audit/run-unattended.ps1 -AppExe (Join-Path $app 'rhizomind.exe') -IdleSeconds 30

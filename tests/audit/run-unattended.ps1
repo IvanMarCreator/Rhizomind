@@ -35,6 +35,24 @@ $code = Invoke-Audit @('-Unattended', '-NoProcmon', '-AppExe', $AppExe, '-OutDir
 Check 'папка результатов в перемещаемом профиле — отказ с кодом 2' ($code -eq 2) "code=$code"
 Check 'папка результатов в перемещаемом профиле не создана' (-not (Test-Path -LiteralPath (Join-Path $env:APPDATA 'rhizomind-audit-test')))
 
+# Сбой после запуска Process Monitor: finally должен остановить его (/Terminate).
+# Вместо Process Monitor — заглушка .cmd, которая записывает свои аргументы;
+# процесса Procmon после неё нет — скрипт останавливается на шаге 3.
+$stubDir = Join-Path $base 'procmon-stub'
+New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+$stub = Join-Path $stubDir 'Procmon64.cmd'
+$calls = Join-Path $stubDir 'calls.log'
+Remove-Item -LiteralPath $calls -Force -ErrorAction SilentlyContinue
+Set-Content -LiteralPath $stub -Encoding ASCII -Value '@echo %* >> "%~dp0calls.log"'
+$code = Invoke-Audit @('-Unattended', '-AppExe', $AppExe, '-Procmon', $stub, '-OutDir', (Join-Path $base 'audit-stub'))
+$log = ''
+if (Test-Path -LiteralPath $calls) { $log = Get-Content -Raw -LiteralPath $calls }
+Write-Host "  вызовы заглушки Process Monitor: $($log -replace '\s+$', '')"
+Check 'сбой после запуска Process Monitor — выход с кодом 2' ($code -eq 2) "code=$code"
+Check 'Process Monitor запускался с /BackingFile capture.pml' ($log -match '/BackingFile\s+"?[^"]*capture\.pml')
+Check 'finally остановил Process Monitor (/Terminate)' ($log -match '/Terminate')
+Check 'Rhizomind при сбое на шаге 3 не запускался' (@(Get-Process -Name 'rhizomind' -ErrorAction SilentlyContinue).Count -eq 0)
+
 # --- Прогон на выпускной сборке ----------------------------------------------
 
 $out = Join-Path $base 'audit-unattended'
