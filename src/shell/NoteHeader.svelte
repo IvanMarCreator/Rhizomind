@@ -21,6 +21,8 @@
     onMode,
     readOnly = false,
     modeShortcut = null,
+    backShortcut = null,
+    forwardShortcut = null,
     onBack,
     onForward,
     status,
@@ -34,6 +36,9 @@
     readOnly?: boolean;
     /** Сочетание режима из реестра горячих клавиш (`Ctrl+KeyE`); `null` — не назначено. */
     modeShortcut?: string | null;
+    /** Сочетания «назад» и «вперёд» для подсказок (`Alt+←`); `null` — не назначены. */
+    backShortcut?: string | null;
+    forwardShortcut?: string | null;
     onBack: () => void;
     onForward: () => void;
     /** Индикатор сохранения (редактор, src/editor/SaveIndicator.svelte). */
@@ -84,6 +89,13 @@
 
   onDestroy(() => clearTimeout(tooltipTimer));
 
+  const backLabel = $derived(
+    backShortcut ? t('note.header.backWith', { shortcut: backShortcut }) : t('note.header.back'),
+  );
+  const forwardLabel = $derived(
+    forwardShortcut ? t('note.header.forwardWith', { shortcut: forwardShortcut }) : t('note.header.forward'),
+  );
+
   const folders = $derived(path ? path.slice(0, -1) : []);
   const name = $derived(path ? (path.at(-1) ?? '').replace(/\.md$/i, '') : '');
 </script>
@@ -94,8 +106,8 @@
       type="button"
       class="nav"
       disabled={!canGoBack}
-      aria-label={t('note.header.back')}
-      title={t('note.header.back')}
+      aria-label={backLabel}
+      title={backLabel}
       onclick={onBack}
     >
       <Icon name="arrow-left" size={15} />
@@ -105,8 +117,8 @@
       type="button"
       class="nav"
       disabled={!canGoForward}
-      aria-label={t('note.header.forward')}
-      title={t('note.header.forward')}
+      aria-label={forwardLabel}
+      title={forwardLabel}
       onclick={onForward}
     >
       <Icon name="arrow-right" size={15} />

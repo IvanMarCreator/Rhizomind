@@ -418,4 +418,45 @@ describe('автодополнение после [[', () => {
     await fireEvent.mouseDown(screen.getAllByRole('option')[1] as Element);
     expect(lastLine(view)).toBe('[[/Встреча]]');
   });
+
+  // Задача 2.14: список открывается только вводом, не щелчком и не стрелками.
+  it('щелчок или перемещение курсора в цель ссылки список не открывают; ввод символа — открывает', async () => {
+    const { view, calls } = await openHome({
+      extra: { links_suggest: ({ query }) => ({ items: query.length > 0 ? ITEMS : [] }) },
+    });
+    const at = view.state.doc.length;
+    // Строка с готовой ссылкой и строка с незакрытой — без ввода в них.
+    view.dispatch({ changes: { from: at, insert: '\n[[Новая]]\n[[Нов' } });
+    const doc = view.state.doc.toString();
+
+    for (const anchor of [doc.indexOf('[[Новая]]') + 5, doc.length - 2, doc.length]) {
+      view.dispatch({ selection: { anchor }, userEvent: 'select.pointer' });
+      view.dispatch({ selection: { anchor }, userEvent: 'select' });
+      view.dispatch({ selection: { anchor } });
+      expect(activeCompletion(view.state)).toBeNull();
+    }
+    expect(view.dom.querySelector('[role="listbox"]')).toBeNull();
+    expect(called(calls, 'links_suggest')).toHaveLength(0);
+
+    view.dispatch({ changes: { from: doc.length, insert: 'а' }, selection: { anchor: doc.length + 1 }, userEvent: 'input.type' });
+    await waitFor(() => expect(view.dom.querySelectorAll('[role="option"]')).toHaveLength(3));
+    // Пока список открыт, курсор внутри цели его не закрывает.
+    view.dispatch({ selection: { anchor: doc.length }, userEvent: 'select' });
+    expect(activeCompletion(view.state)).not.toBeNull();
+  });
+
+  it('открытой заметки в списке нет', async () => {
+    const { view } = await openHome({
+      extra: {
+        links_suggest: () => ({
+          items: [{ insert: 'Дневник', name: 'Дневник', path: HOME, linkable: true }, ...ITEMS],
+        }),
+      },
+    });
+    const at = view.state.doc.length;
+    view.dispatch({ changes: { from: at, insert: '\n[[Дн' }, selection: { anchor: at + 5 }, userEvent: 'input.type' });
+    await waitFor(() => expect(view.dom.querySelectorAll('[role="option"]')).toHaveLength(3));
+    expect(screen.queryByRole('option', { name: /Дневник/ })).toBeNull();
+    expect(screen.getAllByRole('option')[0]?.getAttribute('aria-selected')).toBe('true');
+  });
 });

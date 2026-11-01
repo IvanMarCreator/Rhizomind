@@ -1,7 +1,10 @@
 /* Вики-ссылки (С3.4, вид 5Б из docs/design/README.md и tokens.md):
    цвет текста с подчёркиванием акцентом; неразрешённая — серая, без
    подчёркивания. Список автодополнения — как подсказки и меню (tokens.md:
-   bg/popover, border/strong, скругление 6). Отдельный CSS-файл, а не
+   bg/popover, border/strong, скругление 6); выбранный пункт — как в быстром
+   переходе (accent/indigo/subtle, задача 2.14). Цвета фона — свойством
+   background-color: его проверяет тест вида (suggest.look.component.test.ts),
+   jsdom не разбирает var() в сокращённом background. Отдельный CSS-файл, а не
    EditorView.theme: CSP окна запрещает вставку <style> (находка Н7). */
 
 .cm-rz-wikilink {
@@ -34,7 +37,7 @@
   padding: 4px;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
-  background: var(--bg-popover);
+  background-color: var(--bg-popover);
   box-shadow: 0 4px 12px rgb(0 0 0 / 14%);
   color: var(--text-primary);
   font-family: var(--font-ui);
@@ -51,8 +54,10 @@
   cursor: pointer;
 }
 
+/* Выбранный пункт — заметно (задача 2.14): bg/hover на bg/popover в тёмной
+   теме почти не отличался от фона списка. */
 .cm-rz-suggest-item[aria-selected='true'] {
-  background: var(--bg-hover);
+  background-color: var(--accent-subtle);
 }
 
 .cm-rz-suggest-item[aria-disabled='true'] {

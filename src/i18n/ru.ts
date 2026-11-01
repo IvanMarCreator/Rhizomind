@@ -84,8 +84,10 @@ export const ru = {
 
   // Строка над заметкой
   'note.header.label': 'Заметка',
-  'note.header.back': 'Назад (Alt+←)',
-  'note.header.forward': 'Вперёд (Alt+→)',
+  'note.header.back': 'Назад',
+  'note.header.backWith': 'Назад ({shortcut})',
+  'note.header.forward': 'Вперёд',
+  'note.header.forwardWith': 'Вперёд ({shortcut})',
   'note.header.path': 'Путь к заметке',
   'note.mode.label': 'Режим редактора',
   'note.mode.livePreview': 'Живой предпросмотр',
@@ -138,12 +140,12 @@ export const ru = {
 
   // Пустое состояние
   'shell.empty.title': 'Нет открытой заметки',
-  'shell.empty.hint': 'Выберите заметку в дереве файлов или откройте быстрый переход: Ctrl+O.',
+  'shell.empty.hint': 'Выберите заметку в дереве файлов или откройте быстрый переход.',
+  'shell.empty.hintWith': 'Выберите заметку в дереве файлов или откройте быстрый переход: {shortcut}.',
 
-  // Быстрый переход (Ctrl+O)
+  // Быстрый переход
   'quickSwitcher.label': 'Быстрый переход',
   'quickSwitcher.placeholder': 'Найдите или создайте заметку',
-  'quickSwitcher.shortcut': 'Ctrl+O',
   'quickSwitcher.results': 'Заметки',
   'quickSwitcher.create': 'Создать заметку „{name}“',
   'quickSwitcher.createSeparator': 'Косая черта в имени недопустима: сначала создайте папку',
