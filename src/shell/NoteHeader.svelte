@@ -10,7 +10,7 @@
   import { onDestroy, type Snippet } from 'svelte';
   import type { EditorMode, VaultPath } from '../api/index.ts';
   import { t, type MessageKey } from '../i18n/index.ts';
-  import { chordParts } from '../settings/hotkeys.ts';
+  import { chordAria, chordParts } from '../settings/hotkeys.ts';
   import Icon from './Icon.svelte';
 
   let {
@@ -146,7 +146,7 @@
           class:pressed={mode === item.mode}
           aria-checked={mode === item.mode}
           aria-label={modeLabel(item.label)}
-          aria-keyshortcuts="Control+E"
+          aria-keyshortcuts={modeShortcut ? chordAria(modeShortcut) : undefined}
           tabindex={mode === item.mode ? 0 : -1}
           onclick={() => onMode(item.mode)}
           onkeydown={onModeKeydown}

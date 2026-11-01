@@ -1,7 +1,8 @@
 // Продолжение списков, задач и цитат по Enter и вложенность по Tab
 // (решение владельца 92, задача 2.15). Курсор в образцах — `|`.
-import { undo } from '@codemirror/commands';
+import { deleteCharBackward, deleteCharForward, redo, undo } from '@codemirror/commands';
 import { EditorSelection, EditorState, type Transaction } from '@codemirror/state';
+import type { EditorView } from '@codemirror/view';
 import { describe, expect, it } from 'vitest';
 import { createEditorState, editorExtensions } from './codemirror.ts';
 import { checkChord, chordFromEvent, type KeyLike } from '../settings/hotkeys.ts';
@@ -276,6 +277,142 @@ describe('Tab и Shift+Tab — вложенность пункта', () => {
   ])('вне списка Tab не перехватывается: %s', (_name, before) => {
     expect(tab(before)).toBeNull();
     expect(tab(before, -1)).toBeNull();
+  });
+});
+
+/**
+ * Выполнить команду CodeMirror над состоянием (как нажатие клавиши). Командам
+ * Backspace/Delete из вида нужны только `state` и `dispatch`.
+ */
+function command(state: EditorState, cmd: (target: EditorView) => boolean): EditorState {
+  let next = state;
+  const target = { state, dispatch: (tr: Transaction) => (next = tr.state) };
+  cmd(target as unknown as EditorView);
+  return next;
+}
+
+/** Вырезать выделение (Ctrl+X): та же правка, что у CodeMirror, — `delete.cut`. */
+function cut(text: string): string {
+  const state = stateOf(text);
+  const { from, to } = state.selection.main;
+  return marked(state.update({ changes: { from, to }, selection: { anchor: from }, userEvent: 'delete.cut' }).state);
+}
+
+describe('перенумерация после Tab и Shift+Tab (задача 2.21)', () => {
+  it.each([
+    ['Tab: пункт начинает вложенный список с 1, ниже — сдвиг', '1. а\n2. б|\n3. в\n4. г', '1. а\n\t1. б|\n2. в\n3. г'],
+    ['Tab: пункт продолжает вложенный список выше', '1. а\n\t1. x\n2. б|\n3. в', '1. а\n\t1. x\n\t2. б|\n2. в'],
+    ['Tab: с вложенными строками', '1. а\n2. б|\n\t1. x\n3. в', '1. а\n\t1. б|\n\t\t1. x\n2. в'],
+    ['Tab: несколько пунктов выделением', '1. а\n2. |б\n3. в|\n4. г', '1. а\n\t1. |б\n\t2. в|\n2. г'],
+    ['Tab: ведущие нули', '01. а\n02. б|\n03. в', '01. а\n\t01. б|\n02. в'],
+    ['Tab: в цитате', '> 1. а\n> 2. б|\n> 3. в', '> 1. а\n> \t1. б|\n> 2. в'],
+    ['Tab: через пустую строку не перенумеровывается', '1. а\n2. б|\n\n3. в', '1. а\n\t1. б|\n\n3. в'],
+    ['Tab: маркированный список не трогается', '- а\n- б|\n- в', '- а\n\t- б|\n- в'],
+  ])('%s', (_name, before, after) => {
+    expect(tab(before)).toBe(after);
+  });
+
+  it.each([
+    ['Shift+Tab: пункт возвращается в список, ниже — сдвиг', '1. а\n\t1. б|\n2. в', '1. а\n2. б|\n3. в'],
+    ['Shift+Tab: остаток вложенного списка — с 1', '1. а\n\t1. x\n\t2. y|\n\t3. z\n2. б', '1. а\n\t1. x\n2. y|\n\t1. z\n3. б'],
+    ['Shift+Tab на верхнем уровне: номер не сбрасывается', '5. а|\n6. б', '5. а|\n6. б'],
+    ['Shift+Tab: вложенный список того же пункта не трогается', '1. а\n\t1. б|\n\t\t1. x\n\t\t2. y\n2. в', '1. а\n2. б|\n\t1. x\n\t2. y\n3. в'],
+  ])('%s', (_name, before, after) => {
+    expect(tab(before, -1)).toBe(after);
+  });
+
+  it.each([
+    ['Enter на пустом вложенном: пункт встаёт в список, ниже — сдвиг', '1. a\n\t1. x\n\t2. y\n\t3. |\n2. b', '1. a\n\t1. x\n\t2. y\n2. |\n3. b'],
+    ['Enter на пустом вложенном посреди списка: остаток вложенного — с 1', '1. a\n\t1. x\n\t2. |\n\t3. y\n2. b', '1. a\n\t1. x\n2. |\n\t1. y\n3. b'],
+    ['Enter на пустом вложенном (пробелы)', '1. a\n    1. x\n    2. |\n2. b', '1. a\n    1. x\n2. |\n3. b'],
+    ['Enter на пустом вложенном в цитате', '> 1. a\n> \t1. x\n> \t2. |\n> 2. b', '> 1. a\n> \t1. x\n> 2. |\n> 3. b'],
+    ['Enter на пустом вложенном маркированном: нумерованные не трогаются', '1. a\n\t- x\n\t- |\n2. b', '1. a\n\t- x\n- |\n2. b'],
+    ['Enter на пустом нумерованном верхнего уровня: номера ниже не трогаются', '1. a\n2. |\n3. b', '1. a\n|\n3. b'],
+  ])('%s', (_name, before, after) => {
+    expect(enter(before)).toBe(after);
+  });
+
+  it('Enter на пустом вложенном: Ctrl+Z отменяет подъём и перенумерацию одним шагом', () => {
+    let state = stateOf('1. a\n\t1. x\n\t2. |\n2. b');
+    state = state.update(continueMarkup(state) ?? {}).state;
+    expect(state.doc.toString()).toBe('1. a\n\t1. x\n2. \n3. b');
+    state = command(state, undo);
+    expect(marked(state)).toBe('1. a\n\t1. x\n\t2. |\n2. b');
+  });
+
+  it('Ctrl+Z отменяет сдвиг и перенумерацию одним шагом; Ctrl+Y возвращает', () => {
+    let state = stateOf('1. а\n2. б|\n3. в');
+    state = state.update(indentList(state, 1) ?? {}).state;
+    expect(state.doc.toString()).toBe('1. а\n\t1. б\n2. в');
+    state = command(state, undo);
+    expect(marked(state)).toBe('1. а\n2. б|\n3. в');
+    state = command(state, redo);
+    expect(state.doc.toString()).toBe('1. а\n\t1. б\n2. в');
+  });
+
+  it('10 000 пунктов — Tab одним изменением участка, быстро', () => {
+    const items = Array.from({ length: 10_000 }, (_v, k) => `${k + 1}. пункт`);
+    const state = stateOf(`${items[0]}\n${items[1]}|\n${items.slice(2).join('\n')}`);
+    const started = performance.now();
+    const tr = state.update(indentList(state, 1) ?? {});
+    const elapsed = performance.now() - started;
+    let ranges = 0;
+    tr.changes.iterChanges(() => ranges++);
+    expect(ranges).toBeLessThanOrEqual(2);
+    expect(elapsed).toBeLessThan(200);
+    expect(tr.state.doc.line(2).text).toBe('\t1. пункт');
+    expect(tr.state.doc.line(10_000).text).toBe('9999. пункт');
+  });
+});
+
+describe('перенумерация после удаления строк (задача 2.21)', () => {
+  it.each([
+    ['вырезан пункт из середины', '1. а\n|2. б\n|3. в\n4. г', '1. а\n|2. в\n3. г'],
+    ['вырезаны два пункта', '1. а\n|2. б\n3. в\n|4. г', '1. а\n|2. г'],
+    ['вырезан пункт с вложенным списком — вложенный не трогается', '1. а\n|2. б\n\t1. x\n|3. в', '1. а\n|2. в'],
+    ['вложенный список — своя нумерация', '1. а\n\t1. x\n|\t2. y\n|\t3. z\n2. б', '1. а\n\t1. x\n|\t2. z\n2. б'],
+    ['через пустую строку не перенумеровывается', '1. а\n|2. б\n|\n3. в', '1. а\n|\n3. в'],
+    ['удалена пустая строка между списками — один список, сквозная нумерация', '1. а\n2. б|\n|\n1. в\n2. г', '1. а\n2. б|\n3. в\n4. г'],
+  ])('%s', (_name, before, after) => {
+    expect(cut(before)).toBe(after);
+  });
+
+  it('Backspace в начале строки соединяет пункты — ниже сдвиг', () => {
+    const state = command(stateOf('1. а\n|2. б\n3. в'), deleteCharBackward);
+    expect(marked(state)).toBe('1. а|2. б\n2. в');
+  });
+
+  it('Delete в конце пункта соединяет строки — ниже сдвиг', () => {
+    const state = command(stateOf('1. а\n2. б|\n3. в\n4. г'), deleteCharForward);
+    expect(marked(state)).toBe('1. а\n2. б|3. в\n3. г');
+  });
+
+  it('удаление внутри строки не перенумеровывает', () => {
+    const state = command(stateOf('1. а\n2. б|\n5. в'), deleteCharBackward);
+    expect(marked(state)).toBe('1. а\n2. |\n5. в');
+  });
+
+  it('отмена удаления — одним шагом вместе с перенумерацией', () => {
+    let state = stateOf('1. а\n|2. б\n|3. в');
+    const { from, to } = state.selection.main;
+    state = state.update({ changes: { from, to }, userEvent: 'delete.cut' }).state;
+    expect(state.doc.toString()).toBe('1. а\n2. в');
+    state = command(state, undo);
+    expect(state.doc.toString()).toBe('1. а\n2. б\n3. в');
+  });
+
+  it('10 000 пунктов — удаление первого пункта быстро, одним участком', () => {
+    const items = Array.from({ length: 10_000 }, (_v, k) => `${k + 1}. пункт`);
+    const state = stateOf(`${items[0]}\n|${items[1]}\n|${items.slice(2).join('\n')}`);
+    const { from, to } = state.selection.main;
+    const started = performance.now();
+    const tr = state.update({ changes: { from, to }, userEvent: 'delete.cut' });
+    const elapsed = performance.now() - started;
+    let ranges = 0;
+    tr.changes.iterChanges(() => ranges++);
+    expect(ranges).toBeLessThanOrEqual(2);
+    expect(elapsed).toBeLessThan(200);
+    expect(tr.state.doc.line(9_999).text).toBe('9999. пункт');
   });
 });
 

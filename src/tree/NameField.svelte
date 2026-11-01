@@ -171,11 +171,12 @@
     padding: 0 10px 0 0;
   }
 
+  /* Поле имени в заголовке — размером имени заметки (NoteTitle.svelte, задача 2.20). */
   .title input {
-    height: 36px;
-    font-size: 28px;
+    height: calc(var(--note-font-size, 16px) * 2.25);
+    font-size: calc(var(--note-font-size, 16px) * 1.75);
     font-weight: 700;
-    line-height: 36px;
+    line-height: 1.2857;
   }
 
   .hint {

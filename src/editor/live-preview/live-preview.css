@@ -189,17 +189,63 @@
     85px 0;
 }
 
-/* ---- Списки: маркер в колонке 20 × 26, зазор 6, точка 5 × 5 ---- */
+/* ---- Списки: маркер в колонке 20 × 26, зазор 6, точка 5 × 5 ----
+   Размеры значков — в `em` от размера шрифта строки (задача 2.20): при 32 px
+   колонка 40, чекбокс 32. Числа в комментариях — при 16 px. */
 
+/* Номер — в колонке маркера, как точка (20 + 6); пробел за ним без ширины. */
 .cm-editor .cm-rz-list-number {
+  display: inline-block;
+  min-width: 1.25em;
+  margin-right: 0.375em;
   color: var(--text-secondary);
+  text-align: center;
+}
+
+.cm-editor .cm-rz-list-gap {
+  display: inline-block;
+  width: 0;
+  overflow: hidden;
+  vertical-align: top;
+}
+
+/* Вложенный пункт: отступ 26 на уровень (как колонка маркера) вместо ширины
+   пробелов и табуляций; символы отступа остаются в тексте. */
+.cm-editor .cm-rz-list-indent {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+}
+
+.cm-editor .cm-rz-list-indent-1 {
+  width: 1.625em;
+}
+
+.cm-editor .cm-rz-list-indent-2 {
+  width: 3.25em;
+}
+
+.cm-editor .cm-rz-list-indent-3 {
+  width: 4.875em;
+}
+
+.cm-editor .cm-rz-list-indent-4 {
+  width: 6.5em;
+}
+
+.cm-editor .cm-rz-list-indent-5 {
+  width: 8.125em;
+}
+
+.cm-editor .cm-rz-list-indent-6 {
+  width: 9.75em;
 }
 
 /* Значок заменяет маркер с пробелом за ним: текст пункта — ровно в 26 px. */
 .cm-editor .cm-rz-bullet {
   display: inline-block;
-  width: 20px;
-  margin-right: 6px;
+  width: 1.25em;
+  margin-right: 0.375em;
   text-align: center;
   vertical-align: middle;
   line-height: 0;
@@ -208,22 +254,23 @@
 .cm-editor .cm-rz-bullet::before {
   content: '';
   display: inline-block;
-  width: 5px;
-  height: 5px;
+  width: 0.3125em;
+  height: 0.3125em;
   border-radius: 50%;
   background: var(--text-secondary);
 }
 
-/* Чекбокс 16 × 16 по центру колонки 20 (2 + 16 + 2), зазор 6 до текста. */
+/* Чекбокс 16 × 16 по центру колонки 20 (2 + 16 + 2), зазор 6 до текста; по
+   вертикали — по центру строки 26 (низ на 2 px ниже линии шрифта Inter). */
 .cm-editor .cm-rz-checkbox {
   position: relative;
   display: inline-block;
-  width: 16px;
-  height: 16px;
-  margin: 0 8px 0 2px;
+  width: 1em;
+  height: 1em;
+  margin: 0 0.5em 0 0.125em;
   border: 1.5px solid var(--border-strong);
-  border-radius: 4px;
-  vertical-align: -2px;
+  border-radius: 0.25em;
+  vertical-align: -0.125em;
   box-sizing: border-box;
   cursor: pointer;
 }
@@ -237,12 +284,12 @@
 .cm-editor .cm-rz-checkbox-checked::after {
   content: '';
   position: absolute;
-  left: 4px;
-  top: 1px;
-  width: 4px;
-  height: 8px;
+  left: 0.25em;
+  top: 0.0625em;
+  width: 0.25em;
+  height: 0.5em;
   border: solid var(--text-on-accent);
-  border-width: 0 2px 2px 0;
+  border-width: 0 0.125em 0.125em 0;
   transform: rotate(45deg);
 }
 
@@ -279,4 +326,26 @@
   height: 1px;
   background: var(--border-strong);
   vertical-align: middle;
+}
+
+/* ---- Промежуток между блоками: 10 px при 16 (tokens.md «Колонка текста»,
+   задача 2.20) ----
+   Прозрачная граница у последней строки блока (абзаца, заголовка, цитаты,
+   списка целиком) перед пустой строкой или другим блоком; у строки под блоком
+   кода — сверху, чтобы фон и скругление блока не растягивались. Граница входит
+   в высоту строки, которую меряет CodeMirror (поля `margin` он не учитывает):
+   щелчок в промежуток ставит курсор в эту строку. Фон и полосы цитаты — без
+   границы (`background-clip`). Правила — последними: сильнее `background` блока. */
+.cm-editor .cm-content .cm-line.cm-rz-gap {
+  border-bottom-width: calc(var(--note-font-size, 16px) * 0.625);
+  border-bottom-style: solid;
+  border-bottom-color: transparent;
+  background-clip: padding-box;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-gap-before {
+  border-top-width: calc(var(--note-font-size, 16px) * 0.625);
+  border-top-style: solid;
+  border-top-color: transparent;
+  background-clip: padding-box;
 }

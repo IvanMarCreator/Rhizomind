@@ -1,10 +1,10 @@
 // Парная квадратная скобка (решение владельца 95, задача 2.18): правила по
 // отдельности, на состоянии редактора со всеми расширениями. Курсор в
 // образцах — `|`, выделение — между двумя `|`.
-import { undo } from '@codemirror/commands';
+import { isolateHistory, redo, undo } from '@codemirror/commands';
 import { EditorSelection, EditorState, type TransactionSpec } from '@codemirror/state';
 import { describe, expect, it } from 'vitest';
-import { closeBracket, deletePair, openBracket, taskSpace } from './bracket-pairs.ts';
+import { closeBracket, deletePair, enterInPair, openBracket, taskSpace } from './bracket-pairs.ts';
 import { createEditorState } from './codemirror.ts';
 
 function stateOf(marked: string, readOnly = false): EditorState {
@@ -64,6 +64,8 @@ describe('`[` вставляет пару', () => {
     ['перед `)`', '(|)', '([|])'],
     ['перед знаком препинания', 'а|.', 'а[|].'],
     ['после маркера задачи', '- |', '- [|]'],
+    ['после `\\\\` — косая экранирована, скобка — нет: пара (QA 2.18)', '\\\\|', '\\\\[|]'],
+    ['после `\\\\\\\\` — две экранированные косые', '\\\\\\\\|', '\\\\\\\\[|]'],
   ])('%s', (_name, before, after) => {
     expect(apply(before, openBracket)).toBe(after);
   });
@@ -72,6 +74,7 @@ describe('`[` вставляет пару', () => {
     ['перед буквой — одна `[` (обычный ввод)', '|слово'],
     ['перед цифрой', '|42'],
     ['после `\\` — экранированная скобка', '\\|'],
+    ['после `\\\\\\` — косая и экранированная скобка', '\\\\\\|'],
     ['в коде в строке', 'см. `код |`'],
     ['в блоке кода', '```\nкод |\n```'],
     ['на строке ограды', '```|'],
@@ -133,6 +136,104 @@ describe('`]` перед вставленной `]` — переход за не
     let state = typed(stateOf('|'), '[');
     state = state.update({ changes: { from: 1, to: 2, insert: ']' } }).state;
     expect(closeBracket(state.update({ selection: { anchor: 1 } }).state)).toBeNull();
+  });
+});
+
+/** Выполнить команду истории над состоянием. */
+function history(state: EditorState, cmd: typeof undo): EditorState {
+  let next = state;
+  cmd({ state, dispatch: (tr) => (next = tr.state) });
+  return next;
+}
+
+describe('Ctrl+Z и Ctrl+Y — скобка снова «своя» (QA 2.18, задача 2.21)', () => {
+  // После Ctrl+Y курсор CodeMirror ставит за вставленный текст: скобку
+  // проверяем, вернув курсор к ней (стрелкой влево).
+  const back = (state: EditorState, by: number): EditorState =>
+    state.update({ selection: { anchor: state.selection.main.head - by } }).state;
+
+  it('пара отменена и возвращена: `]` перескакивается', () => {
+    let state = typed(stateOf('текст |'), '[');
+    state = back(history(history(state, undo), redo), 1);
+    expect(marked(state)).toBe('текст [|]');
+    expect(marked(run(state, closeBracket, ']'))).toBe('текст []|');
+  });
+
+  it('пара с текстом отменена и возвращена: `]` перескакивается', () => {
+    let state = typed(stateOf('|'), '[имя');
+    state = history(history(state, undo), redo);
+    state = state.update({ selection: { anchor: 4 } }).state;
+    expect(marked(state)).toBe('[имя|]');
+    expect(marked(run(state, closeBracket, ']'))).toBe('[имя]|');
+  });
+
+  it('вики-ссылка: обе `]]` перескакиваются после Ctrl+Z, Ctrl+Y', () => {
+    let state = typed(stateOf('|'), '[[Имя');
+    state = history(history(state, undo), redo);
+    state = state.update({ selection: { anchor: 5 } }).state;
+    expect(marked(typed(state, ']]'))).toBe('[[Имя]]|');
+  });
+
+  it('Backspace по пустой паре отменён: пара снова «своя»', () => {
+    let state = typed(stateOf('|'), '[');
+    state = state.update({ annotations: isolateHistory.of('full') }).state;
+    state = state.update(deletePair(state) ?? {}).state;
+    state = history(state, undo);
+    expect(marked(state)).toBe('[|]');
+    expect(marked(run(state, closeBracket, ']'))).toBe('[]|');
+  });
+
+  it('чужая `]` после Ctrl+Z не становится «своей»', () => {
+    let state = stateOf('[а|]');
+    state = state.update({ changes: { from: 2, insert: 'б' }, selection: { anchor: 3 }, userEvent: 'input.type' }).state;
+    state = history(state, undo);
+    expect(closeBracket(state)).toBeNull();
+  });
+});
+
+/** Enter в паре: правило или обычный Enter (`null`). */
+const enter = (text: string): string | null => apply(text, enterInPair);
+
+describe('Enter в только что вставленной паре (QA 2.18, задача 2.21)', () => {
+  it.each([
+    ['пустая пара в пункте с текстом — пара убирается, новый пункт', '- а ', '[', '- а \n- |'],
+    ['пустая пара в пустом пункте — пара убирается, выход из списка', '- ', '[', '|'],
+    ['пустая пара во вложенном пустом пункте — на уровень выше', '- а\n\t- ', '[', '- а\n- |'],
+    ['пустая `[[]]` — убирается целиком', '- а ', '[[', '- а \n- |'],
+    ['пустая пара в абзаце — пара убирается, обычный перенос', 'текст ', '[', 'текст \n|'],
+  ])('%s', (_name, before, keys, after) => {
+    const state = typed(stateOf(`${before}|`), keys);
+    const spec = enterInPair(state);
+    expect(spec).not.toBeNull();
+    expect(marked(state.update(spec ?? {}).state)).toBe(after);
+  });
+
+  it.each([
+    ['текст в паре — `]` остаётся на строке, новый пункт', '- [а', '- [а]\n- |'],
+    ['вики-ссылка — `]]` остаются на строке', '- см. [[Имя', '- см. [[Имя]]\n- |'],
+    ['номер — следующий', '1. [а', '1. [а]\n2. |'],
+    ['в абзаце — перенос после `]`', 'см. [а', 'см. [а]\n|'],
+  ])('%s', (_name, before, after) => {
+    const state = typed(stateOf('|'), before);
+    const spec = enterInPair(state);
+    expect(spec).not.toBeNull();
+    expect(marked(state.update(spec ?? {}).state)).toBe(after);
+  });
+
+  it.each([
+    ['чужая `]`', '- [а|]'],
+    ['курсор не перед `]`', '- [а]|'],
+  ])('%s — обычный Enter', (_name, before) => {
+    expect(enter(before)).toBeNull();
+  });
+
+  it('Ctrl+Z отменяет Enter одним шагом, пара снова «своя»', () => {
+    let state = typed(stateOf('- а |'), '[');
+    state = state.update({ annotations: isolateHistory.of('full') }).state;
+    state = state.update(enterInPair(state) ?? {}).state;
+    state = history(state, undo);
+    expect(marked(state)).toBe('- а [|]');
+    expect(marked(run(state, closeBracket, ']'))).toBe('- а []|');
   });
 });
 

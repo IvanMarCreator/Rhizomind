@@ -7,16 +7,32 @@
 //   сдвигаются; курсор посреди текста разрывает пункт;
 // - Enter на пустом пункте: вложенный — на уровень выше, верхнего уровня —
 //   маркер удаляется (выход из списка); пустая цитата теряет внутренний `>`;
+//   подъём вложенного пункта перенумеровывает списки, как Shift+Tab (2.21а);
 // - Tab / Shift+Tab в пункте — вложенность пункта вместе с его вложенными
 //   строками; шаг — по стилю документа (табуляция или пробелы ближайшего
 //   вложенного пункта), по умолчанию табуляция, как в Obsidian;
+// - перенумерация (задача 2.21): после Tab / Shift+Tab и после удаления строк
+//   (Backspace, Delete, вырезание) нумерованные списки вокруг правки
+//   пересчитываются в той же транзакции — каждый уровень своей нумерацией, с
+//   номера первого пункта (пункт, только что ставший первым на уровне после
+//   Tab / Shift+Tab, — с 1); пустая строка — граница списка;
 // - вне списка, в блоке кода и в блоке свойств правила не действуют: Enter
 //   обычный, Tab не перехватывается (переход фокуса, как прежде).
 // Разбор префиксов — по тем же правилам, что у живого предпросмотра
 // (live-preview/markdown.ts). Правка — одна транзакция: Ctrl+Z отменяет
 // продолжение одним шагом. Enter при открытом списке подсказок `[[` остаётся
 // за автодополнением: его сочетания важнее (Prec.highest).
-import { EditorSelection, Prec, type ChangeSpec, type EditorState, type Extension, type Line, type TransactionSpec } from '@codemirror/state';
+import {
+  ChangeSet,
+  EditorSelection,
+  EditorState,
+  Prec,
+  type ChangeSpec,
+  type Extension,
+  type Line,
+  type Transaction,
+  type TransactionSpec,
+} from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { inCodeAt } from './live-preview/index.ts';
 import { fenceStep, type CodeBlock, type OpenFence } from './live-preview/markdown.ts';
@@ -129,7 +145,8 @@ function inBlockLine(state: EditorState, line: Line, prefix: Prefix): boolean {
 
 /** Номер с ведущими нулями до ширины `digits` (`01.` → `02.`). */
 function formatNumber(value: number, digits: string): string {
-  return String(value).padStart(digits.length, '0');
+  // Нули — только если номер написан с ними: `10.` → `9.`, а не `09.`.
+  return digits.startsWith('0') ? String(value).padStart(digits.length, '0') : String(value);
 }
 
 /**
@@ -154,42 +171,119 @@ function nextItemPrefix(item: ListItem): string {
   return `${item.indent}${bullet}${gap}[ ]${item.taskGap === '' ? ' ' : item.taskGap}`;
 }
 
+type Replace = { from: number; to: number; insert: string };
+
 /**
  * Новые номера пунктов ниже строки `line` того же уровня, если после неё
- * встал пункт с номером `inserted`. Вложенные строки пропускаются; конец —
- * пустая строка, другой уровень цитаты или строка с отступом не глубже пункта.
+ * встал пункт с номером `inserted`.
  */
 function renumber(state: EditorState, line: Line, prefix: Prefix, item: ListItem, inserted: number): ChangeSpec[] {
-  const changes: { from: number; to: number; insert: string }[] = [];
-  const base = columns(item.indent);
-  let expected = inserted + 1;
-  for (let n = line.number + 1; n <= state.doc.lines; n++) {
-    const next = state.doc.line(n);
-    const parsed = parsePrefix(next.text);
-    const depth = parsed?.quotes.length ?? 0;
-    if (depth !== prefix.quotes.length) break;
+  const changes: Replace[] = [];
+  numberRun(state, line.number + 1, prefix.quotes.length, columns(item.indent), item.delimiter, inserted + 1, changes);
+  return joinChanges(state, changes);
+}
+
+/**
+ * Пронумеровать пункты одного уровня, начиная со строки `start`, числами с
+ * `expected`. Вложенные строки пропускаются; конец — пустая строка, другой
+ * уровень цитаты, строка с отступом не глубже пункта, но не нумерованный
+ * пункт с тем же разделителем.
+ */
+function numberRun(state: EditorState, start: number, depth: number, base: number, delimiter: string, expected: number, out: Replace[]): void {
+  let next = expected;
+  for (let n = start; n <= state.doc.lines; n++) {
+    const line = state.doc.line(n);
+    const parsed = parsePrefix(line.text);
+    if ((parsed?.quotes.length ?? 0) !== depth) return;
     const quoteEnd = parsed?.quoteEnd ?? 0;
-    const body = next.text.slice(quoteEnd);
-    if (body.trim() === '') break;
+    const body = line.text.slice(quoteEnd);
+    if (body.trim() === '') return;
     const indent = parsed?.list?.indent ?? BLANKS.exec(body)?.[0] ?? '';
     const width = columns(indent);
     if (width > base) continue;
     const other = parsed?.list;
-    if (width < base || !other || other.number === null || other.delimiter !== item.delimiter) break;
-    if (other.number !== expected) {
-      const from = next.from + quoteEnd + other.indent.length;
-      changes.push({ from, to: from + other.digits.length, insert: formatNumber(expected, other.digits) });
+    if (width < base || !other || other.number === null || other.delimiter !== delimiter) return;
+    if (other.number !== next) {
+      const from = line.from + quoteEnd + other.indent.length;
+      out.push({ from, to: from + other.digits.length, insert: formatNumber(next, other.digits) });
     }
-    expected++;
+    next++;
   }
-  return joinChanges(state, changes);
+}
+
+/**
+ * Первая строка нумерованного списка того же уровня, в котором стоит пункт
+ * строки `n` (вверх, пропуская вложенные строки; границы — как у `numberRun`).
+ */
+function runFirst(state: EditorState, n: number, depth: number, base: number, delimiter: string): number {
+  let first = n;
+  for (let k = n - 1; k >= 1; k--) {
+    const text = state.doc.line(k).text;
+    const parsed = parsePrefix(text);
+    if ((parsed?.quotes.length ?? 0) !== depth) break;
+    const body = text.slice(parsed?.quoteEnd ?? 0);
+    if (body.trim() === '') break;
+    const width = columns(parsed?.list?.indent ?? BLANKS.exec(body)?.[0] ?? '');
+    if (width > base) continue;
+    const other = parsed?.list;
+    if (width < base || !other || other.number === null || other.delimiter !== delimiter) break;
+    first = k;
+  }
+  return first;
+}
+
+/**
+ * Перенумеровать списки, в которых стоят строки `anchors` (задача 2.21): каждый
+ * уровень — своей нумерацией, с номера первого пункта; если первый пункт — в
+ * `fromOne` (пункт только что перенесён на этот уровень), — с 1. Замены —
+ * одним изменением участка.
+ */
+function renumberRuns(state: EditorState, anchors: Iterable<number>, fromOne: ReadonlySet<number> = new Set()): Replace[] {
+  const changes: Replace[] = [];
+  const done = new Set<number>();
+  for (const n of anchors) {
+    if (n < 1 || n > state.doc.lines) continue;
+    const line = state.doc.line(n);
+    const prefix = parsePrefix(line.text);
+    const item = prefix?.list;
+    if (!prefix || !item || item.number === null || inBlockLine(state, line, prefix)) continue;
+    const depth = prefix.quotes.length;
+    const base = columns(item.indent);
+    const first = runFirst(state, n, depth, base, item.delimiter);
+    if (done.has(first)) continue;
+    done.add(first);
+    const start = fromOne.has(first) ? 1 : (parsePrefix(state.doc.line(first).text)?.list?.number ?? 1);
+    numberRun(state, first, depth, base, item.delimiter, start, changes);
+  }
+  return changes.sort((a, b) => a.from - b.from);
+}
+
+/**
+ * Позиция после замен номеров `changes` (по порядку). Замены сливаются в одно
+ * изменение участка (`joinChanges`), и CodeMirror перенёс бы курсор внутри
+ * участка к его краю — поэтому выделение переносится по каждой замене.
+ */
+function mapThrough(changes: readonly Replace[], pos: number): number {
+  let shift = 0;
+  for (const change of changes) {
+    if (change.from >= pos) break;
+    shift += change.to <= pos ? change.insert.length - (change.to - change.from) : Math.min(pos, change.from + change.insert.length) - pos;
+  }
+  return pos + shift;
+}
+
+function mapSelection(selection: EditorSelection, changes: readonly Replace[]): EditorSelection {
+  return EditorSelection.create(
+    selection.ranges.map((range) => EditorSelection.range(mapThrough(changes, range.anchor), mapThrough(changes, range.head))),
+    selection.mainIndex,
+  );
 }
 
 /**
  * Замены по порядку — одним изменением участка от первой до последней: у
  * длинного списка тысячи отдельных правок CodeMirror применяет заметно дольше.
  */
-function joinChanges(state: EditorState, changes: readonly { from: number; to: number; insert: string }[]): ChangeSpec[] {
+function joinChanges(state: EditorState, changes: readonly Replace[]): ChangeSpec[] {
   const first = changes[0];
   const last = changes.at(-1);
   if (!first || !last || changes.length === 1) return [...changes];
@@ -232,13 +326,21 @@ export function continueMarkup(state: EditorState): TransactionSpec | null {
   };
 }
 
-/** Enter на пустом пункте: вложенный — на уровень выше, иначе префикс удаляется. */
+/**
+ * Enter на пустом пункте: вложенный — на уровень выше (как Shift+Tab этой
+ * строки, с перенумерацией в той же правке — задача 2.21а), иначе префикс
+ * удаляется. Выход из списка верхнего уровня номера ниже не трогает: пустая
+ * строка — граница, оставшиеся пункты — свой список со своими номерами (как
+ * при удалении первого пункта, задача 2.21).
+ */
 function exitEmpty(state: EditorState, line: Line, prefix: Prefix): TransactionSpec {
   const { list } = prefix;
   let change: { from: number; to: number; insert: string };
   if (list && list.indent !== '') {
     const from = line.from + prefix.quoteEnd;
-    change = { from, to: from + list.indent.length, insert: outdented(list.indent, indentUnit(state, line)) };
+    const moved = state.changes({ from, to: from + list.indent.length, insert: outdented(list.indent, indentUnit(state, line)) });
+    const cursor = EditorSelection.single(moved.mapPos(line.to, 1));
+    return { ...shiftWithRenumber(state, moved, new Set([line.number]), cursor), scrollIntoView: true, userEvent: 'delete' };
   } else if (list) {
     change = { from: line.from + prefix.quoteEnd, to: line.to, insert: '' };
   } else {
@@ -317,20 +419,88 @@ export function indentList(state: EditorState, direction: 1 | -1): TransactionSp
   const main = state.doc.lineAt(state.selection.main.head);
   const unit = indentUnit(state, main);
   const changes: ChangeSpec[] = [];
+  /** Строки, отступ которых действительно изменился. */
+  const shiftedLines = new Set<number>();
   for (const n of [...targets].sort((a, b) => a - b)) {
     const line = state.doc.line(n);
     const quoteEnd = parsePrefix(line.text)?.quoteEnd ?? 0;
     const from = line.from + quoteEnd;
     if (direction > 0) {
       changes.push({ from, insert: unit });
+      shiftedLines.add(n);
     } else {
       const indent = BLANKS.exec(line.text.slice(quoteEnd))?.[0] ?? '';
       const rest = outdented(indent, unit);
-      if (rest.length < indent.length) changes.push({ from, to: from + indent.length - rest.length });
+      if (rest.length < indent.length) {
+        changes.push({ from, to: from + indent.length - rest.length });
+        shiftedLines.add(n);
+      }
     }
   }
-  return { changes, userEvent: direction > 0 ? 'input.indent' : 'delete.dedent' };
+  return { ...shiftWithRenumber(state, state.changes(changes), shiftedLines), userEvent: direction > 0 ? 'input.indent' : 'delete.dedent' };
 }
+
+/**
+ * Сдвиг отступа `moved` строк `shiftedLines` вместе с перенумерацией (задача
+ * 2.21): списки, куда пункты встали и откуда ушли, — в той же правке (Ctrl+Z
+ * отменяет одним шагом). Сдвинутый пункт, ставший первым на новом уровне, и
+ * пункт под сдвинутыми, ставший первым на старом, нумеруются с 1. Общая для
+ * Tab / Shift+Tab и Enter на пустом вложенном пункте (задача 2.21а).
+ */
+function shiftWithRenumber(
+  state: EditorState,
+  moved: ChangeSet,
+  shiftedLines: ReadonlySet<number>,
+  selection?: EditorSelection,
+): { changes: ChangeSet; selection: EditorSelection } {
+  const shifted = state.update({ changes: moved, ...(selection ? { selection } : {}) }).state;
+  const sorted = [...shiftedLines].sort((a, b) => a - b);
+  const anchors = new Set(sorted);
+  for (const n of sorted) {
+    const after = n + 1;
+    if (shiftedLines.has(after) || after > state.doc.lines) continue;
+    const oldWidth = listWidth(state, groupFirst(shiftedLines, n));
+    if (oldWidth !== null && listWidth(state, after) === oldWidth) anchors.add(after);
+  }
+  const fromOne = new Set(anchors);
+  const numbers = renumberRuns(shifted, anchors, fromOne);
+  const renumbered = shifted.changes(joinChanges(shifted, numbers));
+  return { changes: moved.compose(renumbered), selection: mapSelection(shifted.selection, numbers) };
+}
+
+/** Первая строка сплошной группы строк `lines`, в которой стоит `n`. */
+function groupFirst(lines: ReadonlySet<number>, n: number): number {
+  let k = n;
+  while (lines.has(k - 1)) k--;
+  return k;
+}
+
+/** Отступ пункта списка на строке `n` в колонках; `null` — не пункт. */
+function listWidth(state: EditorState, n: number): number | null {
+  const item = parsePrefix(state.doc.line(n).text)?.list;
+  return item ? columns(item.indent) : null;
+}
+
+/**
+ * Удаление строк (Backspace, Delete, вырезание — `delete.*`, кроме Shift+Tab):
+ * нумерованный список вокруг места удаления перенумеровывается в той же
+ * транзакции (задача 2.21). Удаление внутри одной строки не трогает номера.
+ */
+const renumberAfterDelete = EditorState.transactionFilter.of((tr: Transaction) => {
+  if (!tr.docChanged || !tr.isUserEvent('delete') || tr.isUserEvent('delete.dedent')) return tr;
+  const anchors: number[] = [];
+  tr.changes.iterChanges((fromA, toA, fromB) => {
+    if (toA > fromA && tr.startState.doc.sliceString(fromA, toA).includes('\n')) {
+      const n = tr.newDoc.lineAt(fromB).number;
+      anchors.push(n, n + 1);
+    }
+  });
+  if (anchors.length === 0) return tr;
+  const state = tr.state;
+  const numbers = renumberRuns(state, anchors);
+  if (numbers.length === 0) return tr;
+  return [tr, { changes: joinChanges(state, numbers), selection: mapSelection(state.selection, numbers), sequential: true }];
+});
 
 /** Вложенные строки пункта: ниже него, с тем же уровнем цитаты и отступом глубже. */
 function addChildren(state: EditorState, n: number, prefix: Prefix, item: ListItem, out: Set<number>): void {
@@ -355,15 +525,19 @@ function run(view: EditorView, spec: TransactionSpec | null): boolean {
 }
 
 /**
- * Расширение: Enter, Tab, Shift+Tab. Важнее сочетаний по умолчанию
- * (`Prec.high`), но ниже списка подсказок вики-ссылок (`Prec.highest`).
+ * Расширение: Enter, Tab, Shift+Tab и перенумерация после удаления строк.
+ * Сочетания важнее сочетаний по умолчанию (`Prec.high`), но ниже списка
+ * подсказок вики-ссылок (`Prec.highest`).
  */
 export function listContinuation(): Extension {
-  return Prec.high(
-    keymap.of([
-      { key: 'Enter', run: (view) => !composing(view) && run(view, continueMarkup(view.state)) },
-      { key: 'Tab', run: (view) => !composing(view) && run(view, indentList(view.state, 1)) },
-      { key: 'Shift-Tab', run: (view) => !composing(view) && run(view, indentList(view.state, -1)) },
-    ]),
-  );
+  return [
+    renumberAfterDelete,
+    Prec.high(
+      keymap.of([
+        { key: 'Enter', run: (view) => !composing(view) && run(view, continueMarkup(view.state)) },
+        { key: 'Tab', run: (view) => !composing(view) && run(view, indentList(view.state, 1)) },
+        { key: 'Shift-Tab', run: (view) => !composing(view) && run(view, indentList(view.state, -1)) },
+      ]),
+    ),
+  ];
 }

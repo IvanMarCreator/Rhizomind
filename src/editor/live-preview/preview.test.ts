@@ -46,7 +46,23 @@ function lineClasses(state: EditorState): string[] {
   const out: string[] = [];
   previewDecorations(state).between(0, state.doc.length, (from, to, value) => {
     const attrs = (value.spec as { attributes?: { class?: string } }).attributes;
-    if (from === to && attrs?.class) out.push(`${state.doc.lineAt(from).number}: ${attrs.class}`);
+    if (from === to && attrs?.class && !isGap(value)) out.push(`${state.doc.lineAt(from).number}: ${attrs.class}`);
+  });
+  return out;
+}
+
+/** Промежуток между блоками (задача 2.20) — отдельное оформление строки; его проверяет `gaps`. */
+function isGap(value: Decoration): boolean {
+  return (value.spec as { rz?: string }).rz === 'gap';
+}
+
+/** Промежутки между блоками: `номер строки: after` (снизу) или `before` (сверху). */
+function gaps(state: EditorState, ranges?: { from: number; to: number }[]): string[] {
+  const out: string[] = [];
+  previewDecorations(state, ranges).between(0, state.doc.length, (from, _to, value) => {
+    if (!isGap(value)) return;
+    const cls = (value.spec as { attributes: { class: string } }).attributes.class;
+    out.push(`${state.doc.lineAt(from).number}: ${cls === 'cm-rz-gap-before' ? 'before' : 'after'}`);
   });
   return out;
 }
@@ -322,8 +338,8 @@ describe('оформление', () => {
 
   it('нумерованный список: номер не прячется, а приглушается', () => {
     expect(hidden(away('1. пункт'))).toEqual([]);
-    expect(marks(away('1. пункт'))).toEqual(['cm-rz-list-number: 1.']);
-    expect(marks(away('12) пункт'))).toEqual(['cm-rz-list-number: 12)']);
+    expect(marks(away('1. пункт'))).toEqual(['cm-rz-list-number: 1.', 'cm-rz-list-gap:  ']);
+    expect(marks(away('12) пункт'))).toEqual(['cm-rz-list-number: 12)', 'cm-rz-list-gap:  ']);
   });
 
   it('ссылка: текст оформлен как ссылка, адрес — в атрибуте', () => {
@@ -556,5 +572,67 @@ describe('чекбокс', () => {
       changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => touched.push([fromA, toA, inserted.toString()]));
       expect(touched).toEqual([[from, from + 1, insert]]);
     }
+  });
+});
+
+describe('задача 2.20: промежутки между блоками, вложенные пункты, номер в колонке маркера', () => {
+  const live = (text: string) => createEditorState(text, { mode: 'live_preview' });
+
+  it.each([
+    ['строки одного абзаца — без промежутка; перед пустой строкой — промежуток', 'а\nб\n\nв', ['2: after']],
+    ['заголовок — блок сам по себе', '# З\nТекст', ['1: after']],
+    ['заголовок за заголовком', '# а\n## б', ['1: after']],
+    ['абзац перед списком', 'Текст:\n- пункт', ['1: after']],
+    ['пункты одного списка (и вложенные) — без промежутка, после списка — промежуток', '- а\n- б\n  - в\nТекст', ['3: after']],
+    ['продолжение пункта с отступом — тот же пункт', '- а\n  продолжение\n- б', []],
+    ['строки цитаты (и вложенной) — одна цитата', '> а\n> > б\nТекст', ['2: after']],
+    ['линия — блок сама по себе', 'а\n\n---\nб', ['1: after', '3: after']],
+    ['блок кода: промежуток над ним — у строки выше, под ним — сверху у строки ниже (фон блока не растягивается)', 'Текст\n```\nкод\n```\nТекст', ['1: after', '5: before']],
+    ['последняя строка и пустые строки — без промежутка', 'а\n\n\n', ['1: after']],
+  ])('%s', (_name, text, expected) => {
+    expect(gaps(live(text))).toEqual(expected);
+  });
+
+  it('в режиме исходного текста промежутков нет', () => {
+    expect(gaps(createEditorState('# З\nТекст\n\n- а', { mode: 'source' }))).toEqual([]);
+  });
+
+  it('текст строк не меняется: промежуток — только класс строки', () => {
+    const state = stateWithCursor('# З\nТекст|');
+    expect(hidden(state)).toEqual(['# ']);
+    expect(state.doc.toString()).toBe('# З\nТекст');
+  });
+
+  /** Отступы вложенных пунктов: `номер строки: уровень`. */
+  function levels(state: EditorState, ranges?: { from: number; to: number }[]): string[] {
+    const out: string[] = [];
+    previewDecorations(state, ranges).between(0, state.doc.length, (from, to, value) => {
+      const cls = (value.spec as { class?: string }).class ?? '';
+      const level = /cm-rz-list-indent-(\d)/.exec(cls);
+      if (level && from < to) out.push(`${state.doc.lineAt(from).number}: ${level[1]} «${state.sliceDoc(from, to)}»`);
+    });
+    return out;
+  }
+
+  it('вложенный пункт — отступ по уровню, а не по ширине пробелов', () => {
+    expect(levels(live('- а\n  - б\n    - в\n- г'))).toEqual(['2: 1 «  »', '3: 2 «    »']);
+    expect(levels(live('1. а\n   1. б'))).toEqual(['2: 1 «   »']);
+    expect(levels(live('- а\n\t- б\n\t\t- в'))).toEqual(['2: 1 «\t»', '3: 2 «\t\t»']);
+  });
+
+  it('пустая строка и продолжение пункта не обрывают список; абзац без отступа — обрывает', () => {
+    expect(levels(live('- а\n\n  - б'))).toEqual(['3: 1 «  »']);
+    expect(levels(live('- а\n  текст\n  - б'))).toEqual(['3: 1 «  »']);
+    expect(levels(live('- а\nТекст\n  - б'))).toEqual([]);
+  });
+
+  it('пункт с отступом без родителя — первый уровень не сдвигается', () => {
+    expect(levels(live('  - а'))).toEqual([]);
+  });
+
+  it('видимая часть начинается внутри списка: уровень считается по пунктам выше', () => {
+    const state = live('Текст\n- а\n  - б\n    - в');
+    const third = state.doc.line(4);
+    expect(levels(state, [{ from: third.from, to: third.to }])).toEqual(['4: 2 «    »']);
   });
 });

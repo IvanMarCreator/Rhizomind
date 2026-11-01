@@ -86,10 +86,10 @@ const completionField = StateField.define<CompletionState>({
     }
     const from = previous ? tr.changes.mapPos(previous.from, -1) : -1;
     const kept = previous !== null && from === trigger.from;
-    // Новый список — только от ввода (`[[` или символ цели), не от щелчка и
-    // не от перемещения курсора (задача 2.14). Открытый список следует за
-    // курсором, пока тот в цели.
-    if (!kept && !tr.isUserEvent('input.type')) return { active: null, dismissed };
+    // Новый список — только от ввода (`[[` или символ цели) и от Backspace в
+    // цели (задача 2.21), не от щелчка и не от перемещения курсора (задача
+    // 2.14). Открытый список следует за курсором, пока тот в цели.
+    if (!kept && !tr.isUserEvent('input.type') && !tr.isUserEvent('delete.backward')) return { active: null, dismissed };
     let active: Completion =
       kept && previous
         ? { ...previous, ...trigger }
