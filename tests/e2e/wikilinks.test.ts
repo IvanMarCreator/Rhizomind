@@ -120,7 +120,11 @@ describe('вики-ссылки', () => {
     await b.keys('ArrowUp');
     await b.keys('ArrowUp');
     await b.keys('End');
-    expect(await lineText(b, 'Сегодня:')).toBe('Сегодня: [[Альфа/Встреча#Итоги|итоги встречи]], [[Новая идея]] и [[План]].');
+    // Решение 93: курсор за «.» — вне ссылок, строка оформлена; шаг влево — к краю
+    // [[План]]: раскрыта только она.
+    expect(await lineText(b, 'Сегодня:')).toBe('Сегодня: итоги встречи, Новая идея и План.');
+    await b.keys('ArrowLeft');
+    expect(await lineText(b, 'Сегодня:')).toBe('Сегодня: итоги встречи, Новая идея и [[План]].');
     await shotThemes(b, 'links-cursor');
   });
 
