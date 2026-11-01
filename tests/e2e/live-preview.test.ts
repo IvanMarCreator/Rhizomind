@@ -1,8 +1,9 @@
 // Живой предпросмотр и режим исходного текста (задача 3.1 по 2.5; С3.3,
 // решение 72, макет Э13). Заметка со всеми элементами С3.3 на настоящем ядре:
-// снимки в светлой и тёмной теме — курсор вне разметки, курсор на строке с
-// разметкой, режим исходного текста (Ctrl+E); переключение режима не меняет
-// файл; чекбокс щелчком; выбранный режим помнится после перезапуска.
+// снимки в светлой и тёмной теме — курсор вне разметки, курсор у элемента
+// (решение 93: раскрыт только он), режим исходного текста (Ctrl+E);
+// переключение режима не меняет файл; чекбокс щелчком; выбранный режим
+// помнится после перезапуска.
 import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -55,6 +56,16 @@ const LONG_NOTE = 'Длинная ссылка';
 // Без дефисов и других мест переноса: переносится только посреди слова.
 const LONG_URL = `https://example.com/?q=${'abcdefghij'.repeat(32)}`;
 const LONG_SAMPLE = ['Обычный абзац перед ссылкой.', '', `Адрес: ${LONG_URL}`, '', 'Обычный абзац после ссылки.', ''].join('\n');
+
+/** Несколько строчных элементов на строке (решение 93, задача 2.16). */
+const INLINE_NOTE = 'Строчные элементы';
+const INLINE_SAMPLE = [
+  'Начало.',
+  '> текст [ссылка](https://a.example/1) и ~~зачёркнутое~~',
+  'См. [а](https://a.example/1), ~~б~~ и [в](https://a.example/2) конец',
+  'Конец.',
+  '',
+].join('\n');
 
 let step = 0;
 
@@ -171,7 +182,7 @@ describe('живой предпросмотр и режим исходного �
   let file = '';
 
   beforeAll(async () => {
-    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE, [`${LONG_NOTE}.md`]: LONG_SAMPLE });
+    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE, [`${LONG_NOTE}.md`]: LONG_SAMPLE, [`${INLINE_NOTE}.md`]: INLINE_SAMPLE });
     profile = createTestProfile();
     file = path.join(vault, `${NOTE}.md`);
     session = await startApp({ vault, profile });
@@ -308,13 +319,16 @@ describe('живой предпросмотр и режим исходного �
     await shotThemes(b, 'look-e1');
   });
 
-  it('курсор на строке с разметкой: разметка этой строки видна, остальные — нет', async () => {
+  it('курсор у элемента: видна разметка только этого элемента (решение 93); маркер заголовка — на всей строке', async () => {
     const b = browser();
+    // Конец строки — за «.»: ни один элемент не задет, строка оформлена.
     await cursorTo(b, 'жирным');
-    expect(await lineText(b, 'жирным')).toBe(
-      'Текст с **жирным**, *курсивом*, ~~зачёркнутым~~ и `кодом в строке`.',
-    );
-    expect(await count(b, 'cm-rz-markup')).toBeGreaterThan(0);
+    expect(await lineText(b, 'жирным')).toBe('Текст с жирным, курсивом, зачёркнутым и кодом в строке.');
+    expect(await count(b, 'cm-rz-markup')).toBe(0);
+    // Шаг влево — к краю кода в строке: раскрыт только он.
+    await b.keys('ArrowLeft');
+    expect(await lineText(b, 'жирным')).toBe('Текст с жирным, курсивом, зачёркнутым и `кодом в строке`.');
+    expect(await count(b, 'cm-rz-markup')).toBe(2);
     expect(await lineText(b, 'Заголовок 2')).toBe('Заголовок 2');
     await shotThemes(b, 'cursor-on-markup');
     await cursorTo(b, 'Заголовок 2');
@@ -409,5 +423,32 @@ describe('живой предпросмотр и режим исходного �
     expect(address?.height ?? 0, detail).toBeGreaterThan(60);
     await shotThemes(b, 'long-link');
     expect(await unexpectedStyleViolations(b)).toEqual([]);
+  });
+  it('строка с цитатой, двумя ссылками и зачёркнутым: раскрыт только элемент с курсором, `>` — на всей строке (решение 93)', async () => {
+    const b = browser();
+    await b.$(`[role="treeitem"][aria-label="${INLINE_NOTE}"]`).click();
+    await b.waitUntil(async () => (await lineText(b, 'Начало.')) === 'Начало.', { timeout: 10_000 });
+    // Курсор — клавишами: щелчок по оформленной ссылке открыл бы её.
+    await cursorTo(b, 'Начало.');
+    await b.keys(['ArrowDown', 'Home']);
+    expect(await lineText(b, 'текст')).toBe('> текст ссылка↗ и зачёркнутое');
+    await b.keys(['ArrowRight', 'ArrowRight', 'ArrowRight']);
+    // Курсор в слове «текст»: виден `>`, ссылка и зачёркнутое оформлены.
+    expect(await lineText(b, 'текст')).toBe('> текст ссылка↗ и зачёркнутое');
+    await shotThemes(b, 'element-quote-text');
+    // Шесть шагов вправо — внутрь ссылки: видны `>` и её разметка, зачёркнутое оформлено.
+    await b.keys(['ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowRight']);
+    expect(await lineText(b, 'текст')).toBe('> текст [ссылка](https://a.example/1) и зачёркнутое');
+    await shotThemes(b, 'element-quote-link');
+    // Строка ниже: курсор в начале — всё оформлено; у второй ссылки — раскрыта только она.
+    await b.keys(['ArrowDown', 'Home']);
+    expect(await lineText(b, 'См.')).toBe('См. а↗, б и в↗ конец');
+    // Курсор ушёл со строки цитаты — `>` снова спрятан (полоса цитаты).
+    expect(await lineText(b, 'текст')).toBe('текст ссылка↗ и зачёркнутое');
+    await b.keys('End');
+    for (let k = 0; k < 8; k += 1) await b.keys('ArrowLeft');
+    expect(await lineText(b, 'См.')).toBe('См. а↗, б и [в](https://a.example/2) конец');
+    await shotThemes(b, 'element-second-link');
+    expect(readFileSync(path.join(vault, `${INLINE_NOTE}.md`), 'utf8')).toBe(INLINE_SAMPLE);
   });
 });

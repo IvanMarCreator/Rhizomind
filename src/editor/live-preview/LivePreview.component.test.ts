@@ -211,7 +211,27 @@ describe('внешние ссылки', () => {
     await waitFor(() => expect(called(calls, 'open_external')).toEqual([['open_external', { request: { url: 'https://example.org' } }]]));
   });
 
-  it('на строке с курсором обычный щелчок не открывает ссылку, Ctrl+щелчок — открывает', async () => {
+  it('две ссылки на строке, курсор в первой (решение 93): обычный щелчок по второй открывает её, по первой — нет; Ctrl+щелчок по первой — открывает', async () => {
+    const { view, calls } = await openNote();
+    view.dispatch({ changes: { from: 0, insert: '[один](https://one.example) и [два](https://two.example)\n' } });
+    view.dispatch({ selection: { anchor: 3 } });
+    const [first, second] = [...view.contentDOM.querySelectorAll('.cm-rz-link[data-rz-url]')] as Element[];
+    expect(first?.getAttribute('data-rz-url')).toBe('https://one.example');
+
+    // Обычный щелчок по раскрытой ссылке уходит в CodeMirror (курсор): в jsdom — последним, без раскладки.
+    await fireEvent.mouseDown(second as Element, { button: 0 });
+    await waitFor(() => expect(called(calls, 'open_external')).toEqual([['open_external', { request: { url: 'https://two.example' } }]]));
+
+    await fireEvent.mouseDown(first as Element, { button: 0, ctrlKey: true });
+    await waitFor(() => expect(called(calls, 'open_external')).toHaveLength(2));
+    expect(called(calls, 'open_external')[1]).toEqual(['open_external', { request: { url: 'https://one.example' } }]);
+
+    await fireEvent.mouseDown(first as Element, { button: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(called(calls, 'open_external')).toHaveLength(2);
+  });
+
+  it('курсор в ссылке (раскрыта): обычный щелчок не открывает ссылку, Ctrl+щелчок — открывает', async () => {
     const { view, calls } = await openNote();
     view.dispatch({ selection: { anchor: view.state.doc.length - 2 } });
     const link = view.contentDOM.querySelector('[data-rz-url]') as Element;
