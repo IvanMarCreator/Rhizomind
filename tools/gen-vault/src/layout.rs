@@ -42,6 +42,17 @@ pub enum Special {
     NotLinked,
 }
 
+/// Роль заметки в замерах 0.2 (С2-8.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Образцы и массовые заметки: на них ведут случайные ссылки.
+    General,
+    /// «Узел»: ровно 100 ссылающихся заметок, случайных ссылок на него нет.
+    Hub,
+    /// Заметка большой папки: входящие ссылки только заданные, случайных нет.
+    Folder,
+}
+
 #[derive(Debug, Clone)]
 pub struct Note {
     pub folder: usize,
@@ -49,6 +60,7 @@ pub struct Note {
     pub headings: Vec<String>,
     pub style: Style,
     pub special: Special,
+    pub group: Group,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +93,10 @@ pub struct Layout {
     siblings: HashSet<(usize, String)>,
     /// Ключ имени заметки (без `.md`) → заметки с этим именем.
     pub by_key: HashMap<String, Vec<usize>>,
+    /// Заметки, имя которых есть ещё у какой-то заметки (`--dup-share`).
+    pub dup_members: usize,
+    /// Заданные ссылки: заметка → цели (узел, большая папка); дописываются в конец заметки.
+    pub extra: Vec<Vec<usize>>,
 }
 
 impl Layout {
@@ -141,6 +157,7 @@ impl Layout {
         headings: Vec<String>,
         style: Style,
         special: Special,
+        group: Group,
     ) -> usize {
         assert!(
             is_valid_windows_name(&format!("{name}.md")),
@@ -158,8 +175,16 @@ impl Layout {
             headings,
             style,
             special,
+            group,
         });
-        self.by_key.entry(name_key(name)).or_default().push(idx);
+        self.extra.push(Vec::new());
+        let same = self.by_key.entry(name_key(name)).or_default();
+        same.push(idx);
+        self.dup_members += match same.len() {
+            1 => 0,
+            2 => 2,
+            _ => 1,
+        };
         idx
     }
 

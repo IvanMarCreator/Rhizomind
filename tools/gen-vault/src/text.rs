@@ -1,17 +1,19 @@
-//! Текст заметок: заголовки, абзацы, списки, чекбоксы, цитаты, код и ссылки.
+//! Текст заметок: блок свойств, заголовки, абзацы, списки, чекбоксы, цитаты,
+//! код, теги, ссылки и встраивания.
 
 use crate::layout::{Eol, Special, Style};
 use crate::links::Links;
 use crate::rng::Rng;
+use crate::tags::TagLog;
 use crate::words::*;
 
 /// Байты файла заметки `idx`.
-pub fn note_bytes(links: &mut Links, idx: usize, rng: &mut Rng) -> Vec<u8> {
+pub fn note_bytes(links: &mut Links, tags: &mut TagLog, idx: usize, rng: &mut Rng) -> Vec<u8> {
     let note = &links.layout.notes[idx];
     let style = note.style;
     match note.special {
         Special::None | Special::NotLinked => {
-            let lines = bulk_lines(links, idx, rng);
+            let lines = bulk_lines(links, tags, idx, rng);
             encode(&lines, style, rng)
         }
         Special::AllLinks => encode(&all_links_lines(links, idx), style, rng),
@@ -21,10 +23,17 @@ pub fn note_bytes(links: &mut Links, idx: usize, rng: &mut Rng) -> Vec<u8> {
     }
 }
 
-fn bulk_lines(links: &mut Links, idx: usize, rng: &mut Rng) -> Vec<String> {
+fn bulk_lines(links: &mut Links, log: &mut TagLog, idx: usize, rng: &mut Rng) -> Vec<String> {
     let headings = links.layout.notes[idx].headings.clone();
+    let tags = log.note(idx, rng);
     let mut lines = Vec::new();
-    for heading in &headings {
+    if !tags.front.is_empty() {
+        lines.push("---".to_string());
+        lines.extend(tags.front);
+        lines.push("---".to_string());
+    }
+    let tag_section = rng.below(headings.len().max(1));
+    for (section, heading) in headings.iter().enumerate() {
         if !lines.is_empty() {
             lines.push(String::new());
         }
@@ -36,6 +45,27 @@ fn bulk_lines(links: &mut Links, idx: usize, rng: &mut Rng) -> Vec<String> {
             }
             block_lines(links, idx, rng, &mut lines);
         }
+        if rng.chance(8) {
+            lines.push(String::new());
+            lines.push(links.embed(idx, rng));
+        }
+        if section == tag_section
+            && let Some(t) = &tags.text_line
+        {
+            lines.push(String::new());
+            lines.push(t.clone());
+        }
+    }
+    if let Some(trap) = tags.trap {
+        lines.push(String::new());
+        lines.push(trap);
+    }
+    // Заданные ссылки: на «узел» и в большую папку (С2-8.3).
+    let extra = links.layout.extra[idx].clone();
+    if !extra.is_empty() {
+        let items: Vec<String> = extra.iter().map(|&t| links.directed(idx, t, rng)).collect();
+        lines.push(String::new());
+        lines.push(format!("Связано: {}.", items.join(", ")));
     }
     lines
 }

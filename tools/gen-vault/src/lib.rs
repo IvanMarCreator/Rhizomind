@@ -13,10 +13,13 @@ mod names;
 mod plan;
 mod rng;
 mod shortest;
+mod tags;
 mod text;
 mod words;
 
+use layout::Group;
 use names::name_key;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,6 +33,8 @@ pub struct Config {
     pub seed: u64,
     /// Размер файла «больше лимита» в МБ; `None` — файл не создаётся.
     pub big_mb: Option<u64>,
+    /// Доля заметок с повторяющимися именами, % (0–50; по умолчанию 5).
+    pub dup_share: f64,
 }
 
 impl Config {
@@ -38,11 +43,17 @@ impl Config {
             notes,
             seed,
             big_mb: None,
+            dup_share: DEFAULT_DUP_SHARE,
         }
     }
 }
 
 pub use manifest::*;
+
+/// Доля повторяющихся имён по умолчанию, %.
+pub const DEFAULT_DUP_SHARE: f64 = 5.0;
+/// Наибольшая доля повторяющихся имён, %.
+pub const MAX_DUP_SHARE: f64 = 50.0;
 
 /// Наибольший размер файла «больше лимита», МБ.
 pub const MAX_BIG_MB: u64 = 1024;
@@ -87,6 +98,12 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
             format!("--big-mb: не больше {MAX_BIG_MB} МБ"),
         ));
     }
+    if !(0.0..=MAX_DUP_SHARE).contains(&cfg.dup_share) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("--dup-share: от 0 до {MAX_DUP_SHARE} %"),
+        ));
+    }
     let mut rng = rng::Rng::new(cfg.seed);
     let layout = plan::plan(cfg, &mut rng);
 
@@ -95,6 +112,7 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     }
     // Содержимое считается последовательно (детерминированно), запись — потом.
     let mut links = links::Links::new(&layout);
+    let mut tag_log = tags::TagLog::default();
     let mut counts = EolCounts::default();
     let mut rounds: Vec<Vec<(PathBuf, Vec<u8>)>> = Vec::new();
     let mut files = Vec::new();
@@ -106,7 +124,7 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
             counts.lf += 1;
             continue;
         }
-        let bytes = text::note_bytes(&mut links, idx, &mut rng);
+        let bytes = text::note_bytes(&mut links, &mut tag_log, idx, &mut rng);
         counts.add(&bytes);
         let group = &layout.by_key[&name_key(&layout.notes[idx].name)];
         if group.len() > 1 {
@@ -146,7 +164,7 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     }
     write_parallel(&files)?;
 
-    Ok(build_manifest(&layout, cfg, &links, counts))
+    Ok(build_manifest(&layout, cfg, &links, &tag_log, counts))
 }
 
 /// Запись файлов в несколько потоков: на Windows создание файла дорогое
@@ -202,6 +220,7 @@ fn build_manifest(
     l: &layout::Layout,
     cfg: &Config,
     links: &links::Links,
+    tag_log: &tags::TagLog,
     eol: EolCounts,
 ) -> Manifest {
     let paths = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -209,6 +228,7 @@ fn build_manifest(
         format_version: FORMAT_VERSION,
         generator: format!("gen-vault {}", env!("CARGO_PKG_VERSION")),
         seed: cfg.seed,
+        dup_share: cfg.dup_share,
         notes: l.notes.len(),
         folders: l.folders.len() - 1,
         max_depth: (0..l.folders.len()).map(|f| l.depth(f)).max().unwrap_or(0),
@@ -259,6 +279,10 @@ fn build_manifest(
         },
         links: link_stats(links),
         expected_links: expected_links(l, links),
+        tags: tag_stats(tag_log),
+        expected_tags: expected_tags(l, tag_log),
+        hub: hub(l, links),
+        folder_1000: big_folder(l, links),
         samples: Samples {
             natural_sort: [1, 2, 3, 10, 11, 20, 100]
                 .iter()
@@ -306,6 +330,7 @@ fn link_stats(links: &links::Links) -> LinkStats {
         ambiguous_bare: 0,
         case_variant: 0,
         in_code: links.in_code,
+        embed: 0,
     };
     for r in &links.records {
         let root = r.target_text.starts_with('/');
@@ -319,18 +344,23 @@ fn link_stats(links: &links::Links) -> LinkStats {
         s.unresolved += (r.target == links::Target::Unresolved) as usize;
         s.ambiguous_bare += matches!(r.target, links::Target::Oldest(_)) as usize;
         s.case_variant += r.case_variant as usize;
+        s.embed += r.embed as usize;
     }
     s
 }
 
+/// Заметки для ожидаемых ссылок и тегов: все образцы и примерно 300 массовых.
+fn in_expected_sample(l: &layout::Layout, idx: usize) -> bool {
+    let step = ((l.notes.len() - l.samples) / 300).max(1);
+    idx < l.samples || (idx - l.samples).is_multiple_of(step)
+}
+
 /// Все ссылки образцов и ссылки примерно 300 массовых заметок.
 fn expected_links(l: &layout::Layout, links: &links::Links) -> Vec<ExpectedLink> {
-    let samples = l.samples;
-    let step = ((l.notes.len() - samples) / 300).max(1);
     links
         .records
         .iter()
-        .filter(|r| r.source < samples || (r.source - samples).is_multiple_of(step))
+        .filter(|r| in_expected_sample(l, r.source))
         .map(|r| {
             let (resolution, target, candidates) = match &r.target {
                 links::Target::Unique(t) => (Resolution::Unique, Some(*t), Vec::new()),
@@ -348,6 +378,7 @@ fn expected_links(l: &layout::Layout, links: &links::Links) -> Vec<ExpectedLink>
             ExpectedLink {
                 source: l.note_path(r.source),
                 link: r.raw.clone(),
+                embed: r.embed,
                 resolution,
                 target: target.map(|t| l.note_path(t)),
                 candidates,
@@ -380,4 +411,94 @@ fn encoding_samples(l: &layout::Layout, cfg: &Config, big_bytes: u64) -> Encodin
         invalid_utf8: p("Невалидный UTF-8"),
         big,
     }
+}
+
+/// Сбор по тегу: заметки, написания с числом вхождений, первое написание.
+type TagAcc = (BTreeSet<usize>, BTreeMap<String, usize>, String);
+
+fn tag_stats(log: &tags::TagLog) -> Vec<TagInfo> {
+    // Заметки создаются по порядку индексов, вхождения — в порядке файла.
+    let mut by_key: BTreeMap<String, TagAcc> = BTreeMap::new();
+    for (idx, spelling) in &log.occurrences {
+        let e = by_key
+            .entry(name_key(spelling))
+            .or_insert_with(|| (BTreeSet::new(), BTreeMap::new(), spelling.clone()));
+        e.0.insert(*idx);
+        *e.1.entry(spelling.clone()).or_default() += 1;
+    }
+    by_key
+        .into_iter()
+        .map(|(key, (notes, spellings, first_spelling))| TagInfo {
+            key,
+            notes: notes.len(),
+            spellings,
+            first_spelling,
+        })
+        .collect()
+}
+
+fn expected_tags(l: &layout::Layout, log: &tags::TagLog) -> Vec<ExpectedTags> {
+    let mut by_note: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+    for (idx, spelling) in &log.occurrences {
+        if in_expected_sample(l, *idx) {
+            by_note.entry(*idx).or_default().insert(name_key(spelling));
+        }
+    }
+    by_note
+        .into_iter()
+        .map(|(idx, tags)| ExpectedTags {
+            source: l.note_path(idx),
+            tags: tags.into_iter().collect(),
+        })
+        .collect()
+}
+
+fn hub(l: &layout::Layout, links: &links::Links) -> Option<Hub> {
+    let hub = (0..l.notes.len()).find(|&i| l.notes[i].group == Group::Hub)?;
+    Some(Hub {
+        path: l.note_path(hub),
+        backlinks: links
+            .records
+            .iter()
+            .filter(|r| r.target == links::Target::Unique(hub))
+            .map(|r| Backlink {
+                source: l.note_path(r.source),
+                link: r.raw.clone(),
+                embed: r.embed,
+            })
+            .collect(),
+    })
+}
+
+fn big_folder(l: &layout::Layout, links: &links::Links) -> Option<BigFolder> {
+    let in_folder = |i: usize| l.notes[i].group == Group::Folder;
+    let notes = (0..l.notes.len()).filter(|&i| in_folder(i)).count();
+    if notes == 0 {
+        return None;
+    }
+    let (mut incoming, mut with_name, mut internal) = (0, 0, 0);
+    let mut sources = BTreeSet::new();
+    for r in &links.records {
+        let links::Target::Unique(t) = r.target else {
+            continue;
+        };
+        if !in_folder(t) {
+            continue;
+        }
+        if in_folder(r.source) {
+            internal += 1;
+        } else {
+            incoming += 1;
+            sources.insert(r.source);
+            with_name += r.target_text.split('/').any(|c| c == plan::FOLDER_NAME) as usize;
+        }
+    }
+    Some(BigFolder {
+        path: plan::FOLDER_NAME.to_string(),
+        notes,
+        incoming_links: incoming,
+        incoming_sources: sources.len(),
+        incoming_with_folder_name: with_name,
+        internal_links: internal,
+    })
 }

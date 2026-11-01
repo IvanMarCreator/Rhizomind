@@ -1,19 +1,20 @@
 //! gen-vault — генератор тестового хранилища Rhizomind.
 //!
-//! cargo run -p gen-vault -- --notes N --out <папка> [--seed S] [--big-mb M] [--manifest <файл.json>]
+//! cargo run -p gen-vault -- --notes N --out <папка> [--seed S] [--big-mb M] [--dup-share P] [--manifest <файл.json>]
 
-use gen_vault::{Config, generate};
+use gen_vault::{Config, DEFAULT_DUP_SHARE, generate};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
 const USAGE: &str = "\
-Использование: gen-vault --notes N --out <папка> [--seed S] [--big-mb M] [--manifest <файл.json>]
+Использование: gen-vault --notes N --out <папка> [--seed S] [--big-mb M] [--dup-share P] [--manifest <файл.json>]
 
   --notes N        число заметок (.md), включая образцы
   --out <папка>    куда создать хранилище; папки нет или она пуста
   --seed S         зерно (по умолчанию 1): одинаковое зерно — одинаковое хранилище
   --big-mb M       добавить заметку больше M МБ (проверка лимита размера)
+  --dup-share P    доля заметок с повторяющимися именами, % (0–50, по умолчанию 5)
   --manifest <ф>   записать сводку в JSON (вне папки хранилища)";
 
 struct Args {
@@ -24,6 +25,7 @@ struct Args {
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut notes, mut out, mut seed, mut big_mb, mut manifest) = (None, None, 1u64, None, None);
+    let mut dup_share = DEFAULT_DUP_SHARE;
     while let Some(flag) = it.next() {
         let mut value = || it.next().ok_or(format!("{flag}: нет значения"));
         let number = |v: String| {
@@ -35,6 +37,14 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--out" => out = Some(PathBuf::from(value()?)),
             "--seed" => seed = number(value()?)?,
             "--big-mb" => big_mb = Some(number(value()?)?),
+            "--dup-share" => {
+                let v = value()?;
+                dup_share = v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|x| x.is_finite())
+                    .ok_or(format!("{flag}: «{v}» не число"))?;
+            }
             "--manifest" => manifest = Some(PathBuf::from(value()?)),
             _ => return Err(format!("неизвестный параметр {flag}")),
         }
@@ -51,6 +61,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             notes,
             seed,
             big_mb,
+            dup_share,
         },
         out,
         manifest,
@@ -86,12 +97,13 @@ fn main() -> ExitCode {
         }
     }
     println!(
-        "gen-vault: {} заметок, {} папок, {} вложений, {} ссылок ({} неразрешённых), {} групп дубликатов — {} за {:.2} с",
+        "gen-vault: {} заметок, {} папок, {} вложений, {} ссылок ({} неразрешённых), {} тегов, {} групп дубликатов — {} за {:.2} с",
         manifest.notes,
         manifest.folders,
         manifest.attachments.png + manifest.attachments.pdf,
         manifest.links.total,
         manifest.links.unresolved,
+        manifest.tags.len(),
         manifest.duplicates.len(),
         args.out.display(),
         elapsed.as_secs_f64()

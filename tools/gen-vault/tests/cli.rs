@@ -1,4 +1,4 @@
-//! Командная строка: `gen-vault --notes N --out <папка> [--seed S] [--big-mb M] [--manifest <файл>]`.
+//! Командная строка: `gen-vault --notes N --out <папка> [--seed S] [--big-mb M] [--dup-share P] [--manifest <файл>]`.
 
 mod common;
 
@@ -31,13 +31,17 @@ fn creates_vault_and_writes_manifest() {
         "3",
         "--big-mb",
         "1",
+        "--dup-share",
+        "7.5",
         "--manifest",
         manifest.to_str().unwrap(),
     ]);
     assert!(o.status.success(), "{}", stderr(&o));
 
     let m: Manifest = serde_json::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
-    assert_eq!((m.notes, m.seed, m.format_version), (120, 3, 1));
+    assert_eq!((m.notes, m.seed, m.format_version), (120, 3, 2));
+    assert_eq!(m.dup_share, 7.5);
+    assert!(!m.tags.is_empty() && m.hub.is_some());
     assert!(m.encodings.samples.big.is_some());
     let tree = read_tree(&out);
     assert_eq!(tree.keys().filter(|p| p.ends_with(".md")).count(), 120);
@@ -107,6 +111,12 @@ fn rejects_bad_arguments() {
     let o = run(&["--notes", "100", "--out", out, "--big-mb", "2000"]);
     assert_eq!(o.status.code(), Some(1), "--big-mb больше предела");
     assert!(stderr(&o).contains("1024"), "{}", stderr(&o));
+
+    let o = run(&["--notes", "100", "--out", out, "--dup-share", "много"]);
+    assert_eq!(o.status.code(), Some(2), "--dup-share не число");
+    let o = run(&["--notes", "100", "--out", out, "--dup-share", "60"]);
+    assert_eq!(o.status.code(), Some(1), "--dup-share больше 50");
+    assert!(stderr(&o).contains("50"), "{}", stderr(&o));
 
     let inside = format!("{out}/manifest.json");
     let o = run(&["--notes", "100", "--out", out, "--manifest", &inside]);
