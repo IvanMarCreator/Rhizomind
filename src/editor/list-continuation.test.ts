@@ -321,6 +321,25 @@ describe('перенумерация после Tab и Shift+Tab (задача 2
     expect(tab(before, -1)).toBe(after);
   });
 
+  it.each([
+    ['Enter на пустом вложенном: пункт встаёт в список, ниже — сдвиг', '1. a\n\t1. x\n\t2. y\n\t3. |\n2. b', '1. a\n\t1. x\n\t2. y\n2. |\n3. b'],
+    ['Enter на пустом вложенном посреди списка: остаток вложенного — с 1', '1. a\n\t1. x\n\t2. |\n\t3. y\n2. b', '1. a\n\t1. x\n2. |\n\t1. y\n3. b'],
+    ['Enter на пустом вложенном (пробелы)', '1. a\n    1. x\n    2. |\n2. b', '1. a\n    1. x\n2. |\n3. b'],
+    ['Enter на пустом вложенном в цитате', '> 1. a\n> \t1. x\n> \t2. |\n> 2. b', '> 1. a\n> \t1. x\n> 2. |\n> 3. b'],
+    ['Enter на пустом вложенном маркированном: нумерованные не трогаются', '1. a\n\t- x\n\t- |\n2. b', '1. a\n\t- x\n- |\n2. b'],
+    ['Enter на пустом нумерованном верхнего уровня: номера ниже не трогаются', '1. a\n2. |\n3. b', '1. a\n|\n3. b'],
+  ])('%s', (_name, before, after) => {
+    expect(enter(before)).toBe(after);
+  });
+
+  it('Enter на пустом вложенном: Ctrl+Z отменяет подъём и перенумерацию одним шагом', () => {
+    let state = stateOf('1. a\n\t1. x\n\t2. |\n2. b');
+    state = state.update(continueMarkup(state) ?? {}).state;
+    expect(state.doc.toString()).toBe('1. a\n\t1. x\n2. \n3. b');
+    state = command(state, undo);
+    expect(marked(state)).toBe('1. a\n\t1. x\n\t2. |\n2. b');
+  });
+
   it('Ctrl+Z отменяет сдвиг и перенумерацию одним шагом; Ctrl+Y возвращает', () => {
     let state = stateOf('1. а\n2. б|\n3. в');
     state = state.update(indentList(state, 1) ?? {}).state;

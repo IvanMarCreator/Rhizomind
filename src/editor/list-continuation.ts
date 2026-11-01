@@ -7,6 +7,7 @@
 //   сдвигаются; курсор посреди текста разрывает пункт;
 // - Enter на пустом пункте: вложенный — на уровень выше, верхнего уровня —
 //   маркер удаляется (выход из списка); пустая цитата теряет внутренний `>`;
+//   подъём вложенного пункта перенумеровывает списки, как Shift+Tab (2.21а);
 // - Tab / Shift+Tab в пункте — вложенность пункта вместе с его вложенными
 //   строками; шаг — по стилю документа (табуляция или пробелы ближайшего
 //   вложенного пункта), по умолчанию табуляция, как в Obsidian;
@@ -22,6 +23,7 @@
 // продолжение одним шагом. Enter при открытом списке подсказок `[[` остаётся
 // за автодополнением: его сочетания важнее (Prec.highest).
 import {
+  ChangeSet,
   EditorSelection,
   EditorState,
   Prec,
@@ -324,13 +326,21 @@ export function continueMarkup(state: EditorState): TransactionSpec | null {
   };
 }
 
-/** Enter на пустом пункте: вложенный — на уровень выше, иначе префикс удаляется. */
+/**
+ * Enter на пустом пункте: вложенный — на уровень выше (как Shift+Tab этой
+ * строки, с перенумерацией в той же правке — задача 2.21а), иначе префикс
+ * удаляется. Выход из списка верхнего уровня номера ниже не трогает: пустая
+ * строка — граница, оставшиеся пункты — свой список со своими номерами (как
+ * при удалении первого пункта, задача 2.21).
+ */
 function exitEmpty(state: EditorState, line: Line, prefix: Prefix): TransactionSpec {
   const { list } = prefix;
   let change: { from: number; to: number; insert: string };
   if (list && list.indent !== '') {
     const from = line.from + prefix.quoteEnd;
-    change = { from, to: from + list.indent.length, insert: outdented(list.indent, indentUnit(state, line)) };
+    const moved = state.changes({ from, to: from + list.indent.length, insert: outdented(list.indent, indentUnit(state, line)) });
+    const cursor = EditorSelection.single(moved.mapPos(line.to, 1));
+    return { ...shiftWithRenumber(state, moved, new Set([line.number]), cursor), scrollIntoView: true, userEvent: 'delete' };
   } else if (list) {
     change = { from: line.from + prefix.quoteEnd, to: line.to, insert: '' };
   } else {
@@ -427,12 +437,23 @@ export function indentList(state: EditorState, direction: 1 | -1): TransactionSp
       }
     }
   }
-  // Перенумерация (задача 2.21): списки, куда пункты встали и откуда ушли, —
-  // в той же правке (Ctrl+Z отменяет одним шагом). Сдвинутый пункт, ставший
-  // первым на новом уровне, и пункт под сдвинутыми, ставший первым на старом,
-  // нумеруются с 1.
-  const moved = state.changes(changes);
-  const shifted = state.update({ changes: moved }).state;
+  return { ...shiftWithRenumber(state, state.changes(changes), shiftedLines), userEvent: direction > 0 ? 'input.indent' : 'delete.dedent' };
+}
+
+/**
+ * Сдвиг отступа `moved` строк `shiftedLines` вместе с перенумерацией (задача
+ * 2.21): списки, куда пункты встали и откуда ушли, — в той же правке (Ctrl+Z
+ * отменяет одним шагом). Сдвинутый пункт, ставший первым на новом уровне, и
+ * пункт под сдвинутыми, ставший первым на старом, нумеруются с 1. Общая для
+ * Tab / Shift+Tab и Enter на пустом вложенном пункте (задача 2.21а).
+ */
+function shiftWithRenumber(
+  state: EditorState,
+  moved: ChangeSet,
+  shiftedLines: ReadonlySet<number>,
+  selection?: EditorSelection,
+): { changes: ChangeSet; selection: EditorSelection } {
+  const shifted = state.update({ changes: moved, ...(selection ? { selection } : {}) }).state;
   const sorted = [...shiftedLines].sort((a, b) => a - b);
   const anchors = new Set(sorted);
   for (const n of sorted) {
@@ -444,11 +465,7 @@ export function indentList(state: EditorState, direction: 1 | -1): TransactionSp
   const fromOne = new Set(anchors);
   const numbers = renumberRuns(shifted, anchors, fromOne);
   const renumbered = shifted.changes(joinChanges(shifted, numbers));
-  return {
-    changes: moved.compose(renumbered),
-    selection: mapSelection(shifted.selection, numbers),
-    userEvent: direction > 0 ? 'input.indent' : 'delete.dedent',
-  };
+  return { changes: moved.compose(renumbered), selection: mapSelection(shifted.selection, numbers) };
 }
 
 /** Первая строка сплошной группы строк `lines`, в которой стоит `n`. */
