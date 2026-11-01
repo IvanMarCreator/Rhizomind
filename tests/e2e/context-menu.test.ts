@@ -84,8 +84,17 @@ describe('своё контекстное меню вместо меню дви�
     await browser.$('[role="treeitem"][aria-label="Заметка"]').click({ button: 'right' });
     const menu = browser.$('[role="menu"][aria-label="Действия с файлами"]');
     await menu.waitForDisplayed({ timeout: 5_000 });
-    // Закрытие щелчком мимо (клавиатуру меню проверяют компонентные тесты).
-    await browser.$('[role="toolbar"][aria-label="Лента иконок"]').click();
-    await menu.waitForExist({ reverse: true, timeout: 5_000 });
+    await saveScreenshot(browser, 'context-menu-tree');
+    await browser.keys('Escape');
+    try {
+      await menu.waitForExist({ reverse: true, timeout: 5_000 });
+    } catch {
+      const state = await browser.execute(() => ({
+        menus: document.querySelectorAll('[role="menu"]').length,
+        active: document.activeElement?.outerHTML.slice(0, 160) ?? null,
+        focused: document.hasFocus(),
+      }));
+      throw new Error(`меню дерева не закрылось по Esc: ${JSON.stringify(state)}`);
+    }
   });
 });

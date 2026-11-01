@@ -319,6 +319,11 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
             }
         });
     }
+    // Меню WebKitGTK («Назад», «Вперёд», «Обновить») — не показывается
+    // (решение 97): сигнал `context-menu` отвечает «обработано». Свои меню —
+    // в интерфейсе (src/shell/textMenu.ts, дерево).
+    #[cfg(target_os = "linux")]
+    let _ = window.with_webview(|webview| security::disable_webkit_context_menu(&webview.inner()));
     #[cfg(not(windows))]
     if maximize {
         let _ = window.maximize();

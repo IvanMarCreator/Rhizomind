@@ -128,8 +128,11 @@ libc = "=0.2.191"
 # `insecure` (запуск через оболочку) и `shellexecute-on-windows`.
 # Буфер обмена для «Вставить» своего меню (src/clipboard/gtk.rs, задача 2.19):
 # тот же GTK, что уже приходит через tauri и wry, новых крейтов нет.
+# Меню WebKitGTK выключено (security::disable_webkit_context_menu, задача
+# 2.19): тот же webkit2gtk, что у wry.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "=0.18.2"
+webkit2gtk = "=2.0.2"
 
 [target.'cfg(not(windows))'.dependencies]
 open = "=5.4.5"
