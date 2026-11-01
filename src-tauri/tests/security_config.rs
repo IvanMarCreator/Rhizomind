@@ -14,7 +14,7 @@ fn config() -> Value {
 }
 
 const EXPECTED_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-connect-src ipc: http://ipc.localhost; img-src 'self' blob: data:; \
+connect-src ipc: http://ipc.localhost; img-src 'self' data:; \
 object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 #[test]
@@ -30,6 +30,18 @@ fn csp_does_not_mention_disabled_asset_protocol() {
     for key in ["csp", "devCsp"] {
         let csp = security[key].as_str().expect(key);
         assert!(!csp.contains("asset"), "{key}: {csp}");
+    }
+}
+
+#[test]
+fn csp_img_src_has_no_blob() {
+    // Картинки из `blob:` приложение не создаёт (задача 2.21): источник
+    // убран из `img-src` и в выпуске, и в разработке.
+    let security = &config()["app"]["security"];
+    for key in ["csp", "devCsp"] {
+        let csp = security[key].as_str().expect(key);
+        let img = directives(csp).remove("img-src").expect("img-src");
+        assert_eq!(img, ["'self'", "data:"], "{key}: {csp}");
     }
 }
 

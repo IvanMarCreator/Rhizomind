@@ -8,6 +8,7 @@ import {
   chordFromEvent,
   chordParts,
   chordText,
+  chordAria,
   isChanged,
   matchCommand,
   ownerOf,
@@ -140,6 +141,17 @@ describe('показ сочетания', () => {
     expect(chordParts('Ctrl+Shift+KeyE')).toEqual(['Ctrl', 'Shift', 'E']);
     expect(chordParts('Alt+ArrowLeft')).toEqual(['Alt', '←']);
     expect(chordText('Ctrl+KeyO')).toBe('Ctrl+O');
+  });
+
+  it('для aria-keyshortcuts — имена клавиш WAI-ARIA (задача 2.21)', () => {
+    expect(chordAria('Ctrl+KeyE')).toBe('Control+E');
+    expect(chordAria('Ctrl+Alt+Shift+Digit1')).toBe('Control+Alt+Shift+1');
+    expect(chordAria('Alt+ArrowLeft')).toBe('Alt+ArrowLeft');
+    expect(chordAria('Ctrl+PageDown')).toBe('Control+PageDown');
+    expect(chordAria('F2')).toBe('F2');
+    expect(chordAria('Ctrl+Space')).toBe('Control+Space');
+    expect(chordAria('Ctrl+BracketLeft')).toBe('Control+[');
+    expect(chordAria('Ctrl+Equal')).toBe('Control+=');
   });
 });
 

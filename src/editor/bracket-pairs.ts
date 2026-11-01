@@ -6,11 +6,16 @@
 //   строки, пробелом, закрывающей скобкой или знаком препинания (как
 //   closeBrackets в CodeMirror и Obsidian): перед словом `[` — одна, чтобы
 //   можно было взять в скобки уже написанный текст; после `\` — тоже одна
-//   (экранированная скобка — текст);
+//   (экранированная скобка — текст), а после `\\` (экранированная косая) —
+//   снова пара (задача 2.21);
 // - `[` при выделении оборачивает его в `[…]`, выделение остаётся внутри;
 // - `]` перед `]`, вставленной парой, переводит курсор за неё (так же для
 //   `]]` вики-ссылки и `[текст]` ссылки Markdown); чужая `]` не
-//   перескакивается. Вставленные скобки помнятся, пока курсор на их строке;
+//   перескакивается. Вставленные скобки помнятся, пока курсор на их строке,
+//   и после Ctrl+Z / Ctrl+Y (задача 2.21);
+// - Enter в только что вставленной паре не рвёт её на две строки (задача
+//   2.21): пустая пара (`[]`, `[[]]`) убирается, с текстом внутри — курсор
+//   переходит за свои `]`; дальше — обычный Enter (продолжение списка);
 // - Backspace между пустыми `[]` удаляет обе; в `[[]]` — внутреннюю пару
 //   (второй Backspace — внешнюю), как в Obsidian;
 // - пробел в пустой паре сразу после маркера пункта (`- `, `* `, `+ `, `1. `,
@@ -21,6 +26,7 @@
 // Каждая правка — одна транзакция: Ctrl+Z отменяет пару одним шагом.
 // Своё небольшое расширение вместо closeBrackets из @codemirror/autocomplete:
 // без новой зависимости (решение 75).
+import { insertNewlineAndIndent, invertedEffects } from '@codemirror/commands';
 import {
   EditorSelection,
   Prec,
@@ -28,9 +34,11 @@ import {
   StateField,
   type EditorState,
   type Extension,
+  type Transaction,
   type TransactionSpec,
 } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
+import { continueMarkup } from './list-continuation.ts';
 import { inCodeAt } from './live-preview/index.ts';
 
 /** Перед чем `[` вставляет пару: конец строки, пробел, закрывающая скобка, знак препинания. */
@@ -40,7 +48,9 @@ const PAIR_BEFORE = /^(?:$|[\s)\]}.,;:!?])/;
 const LIST_MARKER = /^(?:[ \t]{0,3}> ?)*[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$/;
 
 /** Позиции (в новом тексте) `]`, вставленных парой. */
-const addClosing = StateEffect.define<readonly number[]>();
+const addClosing = StateEffect.define<readonly number[]>({
+  map: (positions, mapping) => positions.map((pos) => mapping.mapPos(pos, 1)),
+});
 
 /**
  * Вставленные парой `]` — позиции символов. Скобка забывается, если её
@@ -56,11 +66,7 @@ const closingField = StateField.define<readonly number[]>({
         continue;
       }
       // Удалена или заменена сама скобка — забыть; вставка рядом её не задевает.
-      let touched = false;
-      tr.changes.iterChangedRanges((fromA, toA) => {
-        if (fromA <= pos && toA > pos) touched = true;
-      });
-      if (!touched) next.push(tr.changes.mapPos(pos, 1));
+      if (!touches(tr, pos)) next.push(tr.changes.mapPos(pos, 1));
     }
     for (const effect of tr.effects) if (effect.is(addClosing)) next.push(...effect.value);
     if (next.length === 0) return value.length === 0 ? value : [];
@@ -70,8 +76,36 @@ const closingField = StateField.define<readonly number[]>({
   },
 });
 
+/** Правка удаляет или заменяет символ в позиции `pos`. */
+function touches(tr: Transaction, pos: number): boolean {
+  let touched = false;
+  tr.changes.iterChangedRanges((fromA, toA) => {
+    if (fromA <= pos && toA > pos) touched = true;
+  });
+  return touched;
+}
+
+/**
+ * История: правка, удалившая свои `]`, при отмене возвращает их «своими»
+ * (Ctrl+Z после Backspace или Enter в паре, Ctrl+Y после Ctrl+Z пары) —
+ * позиции в тексте до правки, то есть после её отмены.
+ */
+const closingHistory = invertedEffects.of((tr) => {
+  if (!tr.docChanged) return [];
+  const own = tr.startState.field(closingField, false) ?? [];
+  const lost = own.filter((pos) => touches(tr, pos));
+  return lost.length > 0 ? [addClosing.of(lost)] : [];
+});
+
 function isClosing(state: EditorState, pos: number): boolean {
   return state.field(closingField, false)?.includes(pos) ?? false;
+}
+
+/** Символ в позиции `at` строки экранирован: перед ним нечётное число `\`. */
+function escaped(text: string, at: number): boolean {
+  let count = 0;
+  while (at - count > 0 && text[at - count - 1] === '\\') count++;
+  return count % 2 === 1;
 }
 
 /** Ввод `[`: пара, обёртка выделения или `null` — обычный ввод символа. */
@@ -82,8 +116,7 @@ export function openBracket(state: EditorState): TransactionSpec | null {
     if (!range.empty) continue;
     const line = state.doc.lineAt(range.head);
     const after = line.text.slice(range.head - line.from);
-    const before = range.head > line.from ? line.text[range.head - line.from - 1] : '';
-    if (!PAIR_BEFORE.test(after) || before === '\\') return null;
+    if (!PAIR_BEFORE.test(after) || escaped(line.text, range.head - line.from)) return null;
   }
   const spec = state.changeByRange((range) => {
     if (range.empty) {
@@ -154,6 +187,42 @@ export function taskSpace(state: EditorState): TransactionSpec | null {
   return { changes, selection: EditorSelection.cursor(head + 3), userEvent: 'input.type', scrollIntoView: true };
 }
 
+/**
+ * Enter перед своей `]` (задача 2.21): пустая пара `[]` или `[[]]` убирается,
+ * в паре с текстом курсор переходит за свои `]`; затем — обычный Enter
+ * (продолжение списка, иначе перенос строки). Одна транзакция: Ctrl+Z
+ * возвращает пару «своей». `null` — правило не действует.
+ */
+export function enterInPair(state: EditorState): TransactionSpec | null {
+  if (state.readOnly || state.selection.ranges.length !== 1) return null;
+  const range = state.selection.main;
+  const { head } = range;
+  if (!range.empty || !isClosing(state, head) || inCodeAt(state, head)) return null;
+  let first: TransactionSpec;
+  if (state.doc.sliceString(head - 1, head) === '[') {
+    const wiki = state.doc.sliceString(head - 2, head) === '[[' && isClosing(state, head + 1);
+    const size = wiki ? 2 : 1;
+    first = { changes: { from: head - size, to: head + size }, selection: EditorSelection.cursor(head - size) };
+  } else {
+    let to = head + 1;
+    while (isClosing(state, to)) to++;
+    first = { selection: EditorSelection.cursor(to) };
+  }
+  const moved = state.update(first);
+  let next: TransactionSpec | null = continueMarkup(moved.state);
+  if (!next) {
+    insertNewlineAndIndent({ state: moved.state, dispatch: (tr) => (next = { changes: tr.changes, selection: tr.selection }) });
+  }
+  if (!next) return null;
+  const second = moved.state.update(next);
+  return {
+    changes: moved.changes.compose(second.changes),
+    selection: second.selection,
+    userEvent: 'input',
+    scrollIntoView: true,
+  };
+}
+
 /** Идёт набор через IME (в том числе только что начатый): не вмешиваться. */
 const composing = (view: EditorView): boolean => view.composing || view.compositionStarted;
 
@@ -163,10 +232,15 @@ const RULES: Record<string, (state: EditorState) => TransactionSpec | null> = {
   ' ': taskSpace,
 };
 
-/** Расширение: ввод `[`, `]`, пробела и Backspace (важнее сочетаний по умолчанию). */
+/**
+ * Расширение: ввод `[`, `]`, пробела, Backspace и Enter (важнее сочетаний по
+ * умолчанию; в codemirror.ts — раньше продолжения списков, чтобы Enter в паре
+ * решался здесь).
+ */
 export function bracketPairs(): Extension {
   return [
     closingField,
+    closingHistory,
     EditorView.inputHandler.of((view, from, to, text) => {
       const rule = RULES[text];
       const { main } = view.state.selection;
@@ -183,6 +257,16 @@ export function bracketPairs(): Extension {
           run: (view) => {
             if (composing(view)) return false;
             const spec = deletePair(view.state);
+            if (!spec) return false;
+            view.dispatch(spec);
+            return true;
+          },
+        },
+        {
+          key: 'Enter',
+          run: (view) => {
+            if (composing(view)) return false;
+            const spec = enterInPair(view.state);
             if (!spec) return false;
             view.dispatch(spec);
             return true;

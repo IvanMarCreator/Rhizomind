@@ -253,3 +253,31 @@ export function chordParts(chord: string): string[] {
 export function chordText(chord: string): string {
   return chordParts(chord).join('+');
 }
+
+/** Клавиши для `aria-keyshortcuts`, у которых имя WAI-ARIA (значение `KeyboardEvent.key`) не совпадает с кодом. */
+const ARIA_KEYS: Readonly<Record<string, string>> = {
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  Backquote: '`',
+};
+
+/**
+ * Сочетание в формате `aria-keyshortcuts` (WAI-ARIA): модификатор `Control`,
+ * клавиша — значение `KeyboardEvent.key` (`Ctrl+KeyE` → `Control+E`).
+ */
+export function chordAria(chord: string): string {
+  const parts = chord.split('+');
+  const code = parts.pop() ?? '';
+  let key = ARIA_KEYS[code] ?? code;
+  if (/^Key[A-Z]$/.test(code)) key = code.slice(3);
+  else if (/^Digit[0-9]$/.test(code)) key = code.slice(5);
+  return [...parts.map((part) => (part === 'Ctrl' ? 'Control' : part)), key].join('+');
+}

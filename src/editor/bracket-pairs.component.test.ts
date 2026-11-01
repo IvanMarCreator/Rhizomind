@@ -103,6 +103,31 @@ describe('парная скобка в редакторе (оба режима)'
     expect(editor.state.doc.toString()).toBe('текст ');
   });
 
+  it('Ctrl+Z, затем Ctrl+Y: `]` снова перескакивается (QA 2.18, задача 2.21)', async () => {
+    const editor = open('текст ');
+    type(editor, '[');
+    await press(editor, 'z', { ctrlKey: true });
+    await press(editor, 'y', { ctrlKey: true });
+    // Курсор CodeMirror после Ctrl+Y — за скобкой; вернуть его стрелкой.
+    await press(editor, 'ArrowLeft');
+    expect(marked(editor)).toBe('текст [|]');
+    type(editor, ']');
+    expect(marked(editor)).toBe('текст []|');
+  });
+
+  it.each<EditorMode>(['live_preview', 'source'])(
+    'режим %s: Enter в паре не рвёт её на две строки (задача 2.21)',
+    async (mode) => {
+      const editor = open('', mode);
+      type(editor, '- [');
+      await press(editor, 'Enter');
+      expect(marked(editor)).toBe('|');
+      type(editor, '- [дело');
+      await press(editor, 'Enter');
+      expect(marked(editor)).toBe('- [дело]\n- |');
+    },
+  );
+
   it('в коде в строке — без пары', () => {
     const editor = open('`код `');
     editor.dispatch({ selection: { anchor: 5 } });
