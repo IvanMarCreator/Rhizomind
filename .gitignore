@@ -41,3 +41,8 @@ src-tauri/target-e2e/
 # Непринятые снимки insta
 *.snap.new
 *.pending-snap
+
+# Выпуск: локальные копии артефактов прогона «Выпуск» (только в корне)
+/dist-release/
+/installer-check/
+/release-notes/
