@@ -1,0 +1,396 @@
+{
+  "format_version": 1,
+  "description": "Вики-ссылки в тексте заметки с положениями частей — для ядра (src-tauri/src/markdown, fixtures_wikilinks_offsets) и правки байтов (relink). Дополняет tests/fixtures/wikilinks/text.json (там — только UTF-16 и разбор цели) теми же правилами кода и строк, плюс блок свойств (Р5). text — текст заметки без BOM. У ссылки и у частей from/to — UTF-16, byte_from/byte_to — байты UTF-8. target — текст между [[ (или ![[) и первым из #, |, \\| или ]] — то, что меняет переписывание (С2-3.5); heading — после # до псевдонима или ]]; alias — после | до ]]; нет части — null.",
+  "cases": [
+    {
+      "note": "простые ссылки",
+      "text": "См. [[Встреча]] и [[Альфа/Встреча|встречи]].",
+      "links": [
+        {
+          "raw": "[[Встреча]]",
+          "embed": false,
+          "from": 4,
+          "to": 15,
+          "byte_from": 6,
+          "byte_to": 24,
+          "target": {
+            "from": 6,
+            "to": 13,
+            "byte_from": 8,
+            "byte_to": 22
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "[[Альфа/Встреча|встречи]]",
+          "embed": false,
+          "from": 18,
+          "to": 43,
+          "byte_from": 28,
+          "byte_to": 72,
+          "target": {
+            "from": 20,
+            "to": 33,
+            "byte_from": 30,
+            "byte_to": 55
+          },
+          "heading": null,
+          "alias": {
+            "from": 34,
+            "to": 41,
+            "byte_from": 56,
+            "byte_to": 70
+          }
+        }
+      ]
+    },
+    {
+      "note": "заголовок, корень, встраивание",
+      "text": "[[Встреча#Итоги]], [[/План]] и ![[Схема.png]]",
+      "links": [
+        {
+          "raw": "[[Встреча#Итоги]]",
+          "embed": false,
+          "from": 0,
+          "to": 17,
+          "byte_from": 0,
+          "byte_to": 29,
+          "target": {
+            "from": 2,
+            "to": 9,
+            "byte_from": 2,
+            "byte_to": 16
+          },
+          "heading": {
+            "from": 10,
+            "to": 15,
+            "byte_from": 17,
+            "byte_to": 27
+          },
+          "alias": null
+        },
+        {
+          "raw": "[[/План]]",
+          "embed": false,
+          "from": 19,
+          "to": 28,
+          "byte_from": 31,
+          "byte_to": 44,
+          "target": {
+            "from": 21,
+            "to": 26,
+            "byte_from": 33,
+            "byte_to": 42
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "![[Схема.png]]",
+          "embed": true,
+          "from": 31,
+          "to": 45,
+          "byte_from": 48,
+          "byte_to": 67,
+          "target": {
+            "from": 34,
+            "to": 43,
+            "byte_from": 51,
+            "byte_to": 65
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "путь, заголовок и псевдоним",
+      "text": "[[Альфа/Встреча#Итоги|итоги]]",
+      "links": [
+        {
+          "raw": "[[Альфа/Встреча#Итоги|итоги]]",
+          "embed": false,
+          "from": 0,
+          "to": 29,
+          "byte_from": 0,
+          "byte_to": 51,
+          "target": {
+            "from": 2,
+            "to": 15,
+            "byte_from": 2,
+            "byte_to": 27
+          },
+          "heading": {
+            "from": 16,
+            "to": 21,
+            "byte_from": 28,
+            "byte_to": 38
+          },
+          "alias": {
+            "from": 22,
+            "to": 27,
+            "byte_from": 39,
+            "byte_to": 49
+          }
+        }
+      ]
+    },
+    {
+      "note": "# после | — часть псевдонима, заголовка нет",
+      "text": "[[а|б#в]]",
+      "links": [
+        {
+          "raw": "[[а|б#в]]",
+          "embed": false,
+          "from": 0,
+          "to": 9,
+          "byte_from": 0,
+          "byte_to": 12,
+          "target": {
+            "from": 2,
+            "to": 3,
+            "byte_from": 2,
+            "byte_to": 4
+          },
+          "heading": null,
+          "alias": {
+            "from": 4,
+            "to": 7,
+            "byte_from": 5,
+            "byte_to": 10
+          }
+        }
+      ]
+    },
+    {
+      "note": "эмодзи: байты и UTF-16 расходятся",
+      "text": "😀 [[Заметка]] 👍🏽 [[Ещё]]",
+      "links": [
+        {
+          "raw": "[[Заметка]]",
+          "embed": false,
+          "from": 3,
+          "to": 14,
+          "byte_from": 5,
+          "byte_to": 23,
+          "target": {
+            "from": 5,
+            "to": 12,
+            "byte_from": 7,
+            "byte_to": 21
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "[[Ещё]]",
+          "embed": false,
+          "from": 20,
+          "to": 27,
+          "byte_from": 33,
+          "byte_to": 43,
+          "target": {
+            "from": 22,
+            "to": 25,
+            "byte_from": 35,
+            "byte_to": 41
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "псевдоним в таблице через \\| — цель до \\",
+      "text": "| [[Заметка\\|псевдоним]] | 2 |",
+      "links": [
+        {
+          "raw": "[[Заметка\\|псевдоним]]",
+          "embed": false,
+          "from": 2,
+          "to": 24,
+          "byte_from": 2,
+          "byte_to": 40,
+          "target": {
+            "from": 4,
+            "to": 11,
+            "byte_from": 4,
+            "byte_to": 18
+          },
+          "heading": null,
+          "alias": {
+            "from": 13,
+            "to": 22,
+            "byte_from": 20,
+            "byte_to": 38
+          }
+        }
+      ]
+    },
+    {
+      "note": "подряд без пробела",
+      "text": "[[а]][[б]]",
+      "links": [
+        {
+          "raw": "[[а]]",
+          "embed": false,
+          "from": 0,
+          "to": 5,
+          "byte_from": 0,
+          "byte_to": 6,
+          "target": {
+            "from": 2,
+            "to": 3,
+            "byte_from": 2,
+            "byte_to": 4
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "[[б]]",
+          "embed": false,
+          "from": 5,
+          "to": 10,
+          "byte_from": 6,
+          "byte_to": 12,
+          "target": {
+            "from": 7,
+            "to": 8,
+            "byte_from": 8,
+            "byte_to": 10
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "в блоке свойств — не ссылка (Р5)",
+      "text": "---\nсвязь: \"[[Встреча]]\"\n---\n[[После]]",
+      "links": [
+        {
+          "raw": "[[После]]",
+          "embed": false,
+          "from": 29,
+          "to": 38,
+          "byte_from": 41,
+          "byte_to": 55,
+          "target": {
+            "from": 31,
+            "to": 36,
+            "byte_from": 43,
+            "byte_to": 53
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "в коде в строке — не ссылка",
+      "text": "Код `[[не ссылка]]` и [[ссылка]]",
+      "links": [
+        {
+          "raw": "[[ссылка]]",
+          "embed": false,
+          "from": 22,
+          "to": 32,
+          "byte_from": 34,
+          "byte_to": 50,
+          "target": {
+            "from": 24,
+            "to": 30,
+            "byte_from": 36,
+            "byte_to": 48
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "в блоке кода с CRLF — не ссылка",
+      "text": "До [[a]]\r\n```\r\n[[в коде]]\r\n```\r\nПосле [[b]]\r\n",
+      "links": [
+        {
+          "raw": "[[a]]",
+          "embed": false,
+          "from": 3,
+          "to": 8,
+          "byte_from": 5,
+          "byte_to": 10,
+          "target": {
+            "from": 5,
+            "to": 6,
+            "byte_from": 7,
+            "byte_to": 8
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "[[b]]",
+          "embed": false,
+          "from": 38,
+          "to": 43,
+          "byte_from": 50,
+          "byte_to": 55,
+          "target": {
+            "from": 40,
+            "to": 41,
+            "byte_from": 52,
+            "byte_to": 53
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "в коде с отступом — не ссылка",
+      "text": "Абзац\n\n    [[в коде]]\n\n[[b]]",
+      "links": [
+        {
+          "raw": "[[b]]",
+          "embed": false,
+          "from": 23,
+          "to": 28,
+          "byte_from": 33,
+          "byte_to": 38,
+          "target": {
+            "from": 25,
+            "to": 26,
+            "byte_from": 35,
+            "byte_to": 36
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "ссылка не переходит через перенос строки",
+      "text": "[[a\nb]] и [[c]]",
+      "links": [
+        {
+          "raw": "[[c]]",
+          "embed": false,
+          "from": 10,
+          "to": 15,
+          "byte_from": 11,
+          "byte_to": 16,
+          "target": {
+            "from": 12,
+            "to": 13,
+            "byte_from": 13,
+            "byte_to": 14
+          },
+          "heading": null,
+          "alias": null
+        }
+      ]
+    }
+  ]
+}
