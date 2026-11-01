@@ -15,6 +15,10 @@
 //    с галочкой «Удалить данные приложения».
 // 4. Галочка «Удалить данные приложения» (по умолчанию снята) удаляет и
 //    %LOCALAPPDATA%\Rhizomind (список хранилищ); без неё данные не трогаются.
+// 5. Ярлык на рабочем столе по умолчанию не создаётся (решение 107, задача
+//    3.4б): галочка на странице завершения снята, тихая (/S) и пассивная (/P)
+//    установка его не создают — рабочий стол бывает перенаправлен в OneDrive.
+//    Ярлык меню «Пуск» — как в шаблоне Tauri (/NS отключает оба).
 //
 // Проверка (nsis-template.test.ts): если откатить правки, получается ровно
 // шаблон из установленного @tauri-apps/cli (текст вшит в его исполняемый
@@ -71,6 +75,27 @@ export const PATCHES: readonly Patch[] = [
       '    RmDir /r "$LOCALAPPDATA\\${BUNDLEID}"\n' +
       '    ; Rhizomind: список хранилищ (vaults.json и его копии) — только по галочке\n' +
       '    RmDir /r "$LOCALAPPDATA\\${PRODUCTNAME}"\n',
+  },
+  {
+    name: 'галочка «Ярлык на рабочем столе» снята по умолчанию',
+    upstream: '!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut\n',
+    ours:
+      '!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut\n' +
+      '; Rhizomind: ярлык на рабочем столе — только по галочке, по умолчанию снята (решение 107)\n' +
+      '!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED\n',
+  },
+  {
+    name: 'тихая и пассивная установка не создают ярлык на рабочем столе',
+    upstream:
+      '  ; Create desktop shortcut for silent and passive installers\n' +
+      '  ; because finish page will be skipped\n' +
+      '  ${If} $PassiveMode = 1\n' +
+      '  ${OrIf} ${Silent}\n' +
+      '    Call CreateOrUpdateDesktopShortcut\n' +
+      '  ${EndIf}\n',
+    ours:
+      '  ; Rhizomind: тихая (/S) и пассивная (/P) установка не создают ярлык на рабочем\n' +
+      '  ; столе (решение 107: рабочий стол бывает перенаправлен в OneDrive)\n',
   },
 ];
 
