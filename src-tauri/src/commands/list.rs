@@ -48,7 +48,9 @@ macro_rules! with_core_commands {
             window_close_ready,
             window_close_cancel,
             // Заголовок окна, задача 2.12
-            window_shown_note
+            window_shown_note,
+            // Буфер обмена: «Вставить» своего меню, задача 2.19
+            clipboard_read_text
         )
     };
 }

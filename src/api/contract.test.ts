@@ -23,6 +23,7 @@ import type {
   NameWarning,
   NewNoteLocation,
   NoteWriteResponse,
+  ClipboardReadOutcome,
   OpenExternalOutcome,
   ReadOnlyReason,
   Settings,
@@ -278,6 +279,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
   },
   window_close_ready: { command: 'window_close_ready', request: null, response: null, errors: [] },
   window_close_cancel: { command: 'window_close_cancel', request: null, response: null, errors: [] },
+  clipboard_read_text: {
+    command: 'clipboard_read_text',
+    request: null,
+    response: { outcome: 'text', text: 'Текст из буфера\nвторая строка' },
+    errors: [err('no_vault_open'), err('io_failed')],
+  },
   window_shown_note: {
     command: 'window_shown_note',
     request: { path: ['Проекты', 'Встреча.md'] },
@@ -414,6 +421,10 @@ const enums = {
   'VaultOpenOutcome.outcome': { opened: true, focused: true } satisfies Record<VaultOpenOutcome['outcome'], true>,
   'OpenExternalOutcome.outcome': { opened: true, cancelled: true } satisfies Record<
     OpenExternalOutcome['outcome'],
+    true
+  >,
+  'ClipboardReadOutcome.outcome': { text: true, empty: true, too_large: true, not_focused: true } satisfies Record<
+    ClipboardReadOutcome['outcome'],
     true
   >,
   'TreeChange.kind': { created: true, modified: true, removed: true, renamed: true } satisfies Record<

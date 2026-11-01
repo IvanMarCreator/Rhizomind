@@ -65,4 +65,7 @@ export const core = {
   // Заголовок окна (задача 2.12)
   /** Какая заметка показана: заголовок окна ставит ядро, интерфейс сообщает только путь. */
   windowShownNote: withRequest('window_shown_note'),
+  // Буфер обмена (задача 2.19, решение 98)
+  /** Текст буфера обмена: вызывать только по щелчку пользователя по пункту «Вставить». */
+  clipboardReadText: withoutRequest('clipboard_read_text'),
 } as const;

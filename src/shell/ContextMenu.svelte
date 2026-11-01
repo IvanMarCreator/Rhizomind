@@ -1,22 +1,19 @@
 <!--
-  Контекстное меню дерева (С3.2): пункты по месту щелчка — на папке, на файле
-  или на пустом месте. Стрелки двигают фокус, Esc и щелчок мимо закрывают.
+  Своё контекстное меню Rhizomind (решение 97; меню движка выключено): в
+  дереве (С3.2) — пункты по месту щелчка, в тексте заметки и полях — правка
+  текста (src/shell/textMenu.ts). Стрелки двигают фокус по активным пунктам,
+  Enter выбирает, Esc и щелчок мимо закрывают; неактивные пункты серые.
 -->
-<script lang="ts" module>
-  export interface MenuItem {
-    id: string;
-    label: string;
-    /** Клавиша-подсказка справа (F2, Delete). */
-    shortcut?: string | undefined;
-    run: () => void;
-  }
-</script>
-
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { t } from '../i18n/index.ts';
-
-  let { x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void } = $props();
+  import type { MenuItem } from './menu.ts';
+  let {
+    x,
+    y,
+    items,
+    label,
+    onClose,
+  }: { x: number; y: number; items: MenuItem[]; label: string; onClose: () => void } = $props();
 
   let menu: HTMLDivElement | undefined = $state();
   let menuLeft = $state(0);
@@ -35,17 +32,40 @@
     const onPointerDown = (event: PointerEvent) => {
       if (menu && !menu.contains(event.target as Node)) onClose();
     };
+    // Фокус может вернуться туда, где щёлкнули (WebKitGTK ставит его после
+    // события contextmenu): клавиши меню работают и тогда — Esc и Tab
+    // закрывают, стрелки уводят фокус в меню, а не в дерево или поле.
+    const onWindowKeydown = (event: KeyboardEvent) => {
+      if (!menu || menu.contains(document.activeElement)) return;
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusItem(event.key === 'ArrowUp' || event.key === 'End' ? -1 : 0);
+      }
+    };
     window.addEventListener('pointerdown', onPointerDown, true);
-    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onWindowKeydown, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onWindowKeydown, true);
+    };
   });
 
   function buttons(): HTMLButtonElement[] {
-    return menu ? [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')] : [];
+    return menu ? [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([aria-disabled="true"])')] : [];
   }
 
   function focusItem(index: number) {
     const all = buttons();
-    if (all.length === 0) return;
+    if (all.length === 0) {
+      // Все пункты неактивны: фокус на меню, чтобы работал Esc.
+      menu?.focus();
+      return;
+    }
     all[(index + all.length) % all.length]?.focus();
   }
 
@@ -70,6 +90,7 @@
   }
 
   function choose(item: MenuItem) {
+    if (item.disabled) return;
     onClose();
     item.run();
   }
@@ -80,13 +101,20 @@
   class="menu"
   role="menu"
   tabindex="-1"
-  aria-label={t('tree.menu.label')}
+  aria-label={label}
   style:left={`${menuLeft}px`}
   style:top={`${menuTop}px`}
   {onkeydown}
 >
   {#each items as item (item.id)}
-    <button type="button" class="item" role="menuitem" tabindex="-1" onclick={() => choose(item)}>
+    <button
+      type="button"
+      class="item"
+      role="menuitem"
+      tabindex="-1"
+      aria-disabled={item.disabled ? 'true' : undefined}
+      onclick={() => choose(item)}
+    >
       <span class="label">{item.label}</span>
       {#if item.shortcut}
         <span class="shortcut">{item.shortcut}</span>
@@ -98,7 +126,8 @@
 <style>
   .menu {
     position: fixed;
-    z-index: 20;
+    /* Выше модальных окон (настройки — 30) и подсказок вики-ссылок (50). */
+    z-index: 60;
     min-width: 200px;
     padding: 4px;
     border: 1px solid var(--border-strong);
@@ -124,6 +153,15 @@
   .item:focus-visible {
     outline: none;
     background: var(--bg-hover);
+  }
+
+  .item[aria-disabled='true'] {
+    color: var(--text-faint);
+    cursor: default;
+  }
+
+  .item[aria-disabled='true']:hover {
+    background: none;
   }
 
   .label {

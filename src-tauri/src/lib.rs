@@ -30,6 +30,7 @@ use tauri::{
 use webview_traces::WebviewDataDir;
 
 // Модули ядра (спецификация 0.1, С5.2) и команды API v1 (С5.5) — задача 0.4.
+pub mod clipboard;
 pub mod commands;
 pub mod dialogs;
 pub mod events;
@@ -249,8 +250,8 @@ fn build_window<R: Runtime>(
     Ok(window)
 }
 
-/// Настройки WebView2, которых нет в Tauri: SmartScreen и ускорители браузера
-/// (Ctrl+P, Ctrl+F, F5, F12…) выключаются, номер
+/// Настройки WebView2, которых нет в Tauri: SmartScreen, ускорители браузера
+/// (Ctrl+P, Ctrl+F, F5, F12…) и меню движка выключаются, номер
 /// процесса браузера запоминается для удаления папки данных после выхода;
 /// окно показывается, только если движок подтвердил InPrivate и принял все
 /// защитные настройки (`security::engine_check`), и выходит на
@@ -277,6 +278,12 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
                 (
                     "ускорители браузера",
                     security::windows::disable_browser_accelerator_keys(&controller),
+                ),
+                // Меню движка («Обновить», «Сохранить как», «Печать») —
+                // решение 97; свои меню — в интерфейсе.
+                (
+                    "стандартное контекстное меню",
+                    security::windows::disable_default_context_menus(&controller),
                 ),
             ];
             let mut failed = Vec::new();
@@ -312,6 +319,11 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
             }
         });
     }
+    // Меню WebKitGTK («Назад», «Вперёд», «Обновить») — не показывается
+    // (решение 97): сигнал `context-menu` отвечает «обработано». Свои меню —
+    // в интерфейсе (src/shell/textMenu.ts, дерево).
+    #[cfg(target_os = "linux")]
+    let _ = window.with_webview(|webview| security::disable_webkit_context_menu(&webview.inner()));
     #[cfg(not(windows))]
     if maximize {
         let _ = window.maximize();

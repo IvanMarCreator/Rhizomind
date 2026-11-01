@@ -151,3 +151,17 @@ export function blockEngineZoom(doc: Document): () => void {
   doc.addEventListener('wheel', onWheel, options);
   return () => doc.removeEventListener('wheel', onWheel, options);
 }
+
+/**
+ * Меню браузерного движка (решение 97: в нём «Обновить», «Сохранить как»,
+ * «Печать») не открывается нигде в окне. Главный рубеж на Windows —
+ * `AreDefaultContextMenusEnabled = false` (src-tauri/src/security/windows.rs),
+ * здесь — запасной и единственный на Linux. Гасится только действие по
+ * умолчанию: свои меню (дерево, правка текста) событие получают.
+ * Возвращает снятие (для тестов).
+ */
+export function blockEngineContextMenu(doc: Document): () => void {
+  const onContextMenu = (event: Event) => event.preventDefault();
+  doc.addEventListener('contextmenu', onContextMenu, true);
+  return () => doc.removeEventListener('contextmenu', onContextMenu, true);
+}

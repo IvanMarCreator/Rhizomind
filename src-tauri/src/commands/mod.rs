@@ -25,6 +25,7 @@
 //! `name_check`); затем модуль ядра, который ещё раз проверяет контур по
 //! диску и по дескриптору.
 
+mod clipboard;
 mod error;
 mod events;
 mod files;
@@ -51,6 +52,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+pub use clipboard::*;
 pub use error::{CoreError, CoreResult, ErrorCode, NameProblem};
 pub use events::{
     EVENT_NAMES, NoteChangedPayload, NoteConflictSavedPayload, NoteDeletedPayload,

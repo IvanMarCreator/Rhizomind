@@ -206,6 +206,16 @@ pub fn is_allowed_navigation(url: &tauri::Url, dev_url: Option<&tauri::Url>) -> 
     own_app && url.username().is_empty() && url.password().is_none() || dev_server
 }
 
+/// Меню WebKitGTK не показывается ни в одном окне (решение 97, Linux): на
+/// сигнал `context-menu` ответ «обработано», меню не строится. Так же, как
+/// `AreDefaultContextMenusEnabled = false` в WebView2; событие `contextmenu`
+/// страница получает как обычно (свои меню Rhizomind).
+#[cfg(target_os = "linux")]
+pub fn disable_webkit_context_menu(webview: &webkit2gtk::WebView) {
+    use webkit2gtk::WebViewExt;
+    webview.connect_context_menu(|_, _, _, _| true);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

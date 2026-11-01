@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { onCoreEvent } from '../api/index.ts';
+  import { core, onCoreEvent } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
@@ -21,6 +21,8 @@
   import NoteTitle from '../tree/NoteTitle.svelte';
   import { FileTreeState, type TreeHost } from '../tree/tree.svelte.ts';
   import VaultManager from '../vaults/VaultManager.svelte';
+  import ContextMenu from './ContextMenu.svelte';
+  import type { MenuItem } from './menu.ts';
   import EmptyState from './EmptyState.svelte';
   import { isEngineShortcut } from './engineShortcuts.ts';
   import NoteHeader from './NoteHeader.svelte';
@@ -31,6 +33,7 @@
   import { ExternalChanges } from '../sync/external.ts';
   import { WindowClosing, coreClosing } from './closing.ts';
   import { ShownNote } from './shownNote.ts';
+  import { textMenuItems, textTargetOf, type TextTarget } from './textMenu.ts';
   import { WindowModel } from './window.svelte.ts';
 
   let { model = new WindowModel() }: { model?: WindowModel } = $props();
@@ -114,6 +117,38 @@
    */
   const modalOpen = $derived(switcherOpen || settingsSection !== null || files.pendingDelete !== null);
 
+  /** Меню правки текста (решение 97); `null` — закрыто. */
+  let textMenu = $state.raw<{ x: number; y: number; items: MenuItem[]; target: TextTarget } | null>(null);
+
+  /**
+   * Правый щелчок (или Shift+F10, клавиша меню) в тексте заметки и полях —
+   * своё меню правки текста. Меню движка гасится везде (src/main.ts), в
+   * остальных местах правый щелчок ничего не делает; у дерева меню своё.
+   */
+  function onContextMenu(event: MouseEvent) {
+    const found = textTargetOf(event.target);
+    if (!found) return;
+    event.preventDefault();
+    const byKeyboard = event.button !== 2 && event.clientX === 0 && event.clientY === 0;
+    if (!byKeyboard) found.placeCaret(event.clientX, event.clientY);
+    // Выделение могло смениться курсором — цель читается заново.
+    const target = textTargetOf(event.target) ?? found;
+    const at = byKeyboard ? target.anchor() : { x: event.clientX, y: event.clientY };
+    // «Вставить» — только в окне хранилища (право команды ядра); буфер
+    // читается по щелчку по пункту, не здесь.
+    const source =
+      model.status.kind === 'ready' && model.vault
+        ? { read: () => core.clipboardReadText(), notify: (text: string) => model.notify(text) }
+        : null;
+    textMenu = { ...at, items: textMenuItems(target, source), target };
+  }
+
+  function closeTextMenu() {
+    const target = textMenu?.target;
+    textMenu = null;
+    target?.focus();
+  }
+
   /** Первое сочетание команды для подсказок; `null` — у команды нет сочетаний. */
   function shortcutOf(id: CommandId): string | null {
     const chord = bindingsOf(model.hotkeys, id)[0];
@@ -170,7 +205,9 @@
     // (решение 80), кроме клавиш правки текста в полях (решение 81).
     window.addEventListener('keydown', onKeydownCapture, true);
     window.addEventListener('keydown', onKeydownBubble);
+    window.addEventListener('contextmenu', onContextMenu);
     return () => {
+      window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeydownCapture, true);
       window.removeEventListener('keydown', onKeydownBubble);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
@@ -312,6 +349,10 @@
   <StartupError title={model.status.title} message={model.status.message} />
 {:else}
   <div class="loading" aria-busy="true" aria-label={t('startup.loading')}></div>
+{/if}
+
+{#if textMenu}
+  <ContextMenu x={textMenu.x} y={textMenu.y} items={textMenu.items} label={t('textMenu.label')} onClose={closeTextMenu} />
 {/if}
 
 <Notifications notices={model.notices} onDismiss={(id) => model.dismiss(id)} />

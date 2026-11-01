@@ -2,6 +2,12 @@
 source: src/commands/contract_tests.rs
 ---
 {
+  "ClipboardReadOutcome.outcome": [
+    "text",
+    "empty",
+    "too_large",
+    "not_focused"
+  ],
   "EditorMode": [
     "live_preview",
     "source"

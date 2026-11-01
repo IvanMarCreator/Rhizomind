@@ -5,6 +5,8 @@
 //! - `AreBrowserAcceleratorKeysEnabled = false`, `IsZoomControlEnabled = false`
 //!   (решение 94), и настоящие нажатия (SendInput) Ctrl+P, Ctrl+F, Ctrl+=, F5,
 //!   F12 доходят до страницы, но печати, перезагрузки и масштаба нет;
+//! - `AreDefaultContextMenusEnabled = false` (решение 97), и настоящий правый
+//!   щелчок (SendInput) не открывает меню движка;
 //! - `IsInPrivateModeEnabled = true` у профиля движка, окно показано после проверки;
 //! - `IsCustomCrashReportingEnabled = true` (правка wry): WebView2 запускает
 //!   процесс браузера с ключом `--edge-webview-disable-crash-reporting=1`
@@ -70,6 +72,10 @@ mod windows_only {
         match security::windows::are_browser_accelerator_keys_enabled(controller) {
             Ok(false) => println!("ok: AreBrowserAcceleratorKeysEnabled = false"),
             other => failures.push(format!("AreBrowserAcceleratorKeysEnabled: {other:?}")),
+        }
+        match security::windows::are_default_context_menus_enabled(controller) {
+            Ok(false) => println!("ok: AreDefaultContextMenusEnabled = false"),
+            other => failures.push(format!("AreDefaultContextMenusEnabled: {other:?}")),
         }
         match security::windows::is_zoom_control_enabled(controller) {
             Ok(false) => println!("ok: IsZoomControlEnabled = false"),
@@ -373,6 +379,224 @@ mod windows_only {
     /// останавливает нажатие раньше оболочки — проверяется настройка движка.
     /// Контроль детектора: с включёнными на время ускорителями Ctrl+P должен
     /// вызвать `beforeprint` (пока — только сообщение в журнал).
+    /// Видимые окна верхнего уровня всех процессов: номер окна и класс. Меню
+    /// движка — всплывающее окно верхнего уровня (процесс браузера WebView2
+    /// или приложения — не важно: ищутся новые окна после щелчка).
+    fn visible_windows() -> Vec<(isize, String)> {
+        use ::windows::Win32::Foundation::{HWND, LPARAM};
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetClassNameW, IsWindowVisible,
+        };
+        unsafe extern "system" fn collect(hwnd: HWND, param: LPARAM) -> ::windows::core::BOOL {
+            // SAFETY: param — указатель на Vec, живой на время EnumWindows.
+            let found = unsafe { &mut *(param.0 as *mut Vec<(isize, String)>) };
+            // SAFETY: функции только читают сведения об окне.
+            unsafe {
+                if IsWindowVisible(hwnd).as_bool() {
+                    let mut name = [0u16; 128];
+                    let len = GetClassNameW(hwnd, &mut name).max(0) as usize;
+                    found.push((hwnd.0 as isize, String::from_utf16_lossy(&name[..len])));
+                }
+            }
+            true.into()
+        }
+        let mut found: Vec<(isize, String)> = Vec::new();
+        // SAFETY: found живёт до конца вызова, collect не сохраняет указатель.
+        let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut found as *mut _ as isize)) };
+        found
+    }
+
+    /// Окна из `after`, которых не было в `before`.
+    fn new_windows(before: &[(isize, String)], after: &[(isize, String)]) -> Vec<String> {
+        after
+            .iter()
+            .filter(|(h, _)| !before.iter().any(|(b, _)| b == h))
+            .map(|(_, class)| class.clone())
+            .collect()
+    }
+
+    /// Настоящий правый щелчок (SendInput) в точке страницы (CSS-пиксели).
+    fn right_click(window: &tauri::WebviewWindow, x: f64, y: f64, dpr: f64) -> u32 {
+        use ::windows::Win32::Foundation::{HWND, POINT};
+        use ::windows::Win32::Graphics::Gdi::ClientToScreen;
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE,
+            MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+            SendInput,
+        };
+        use ::windows::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+            SM_YVIRTUALSCREEN,
+        };
+        let Ok(hwnd) = window.hwnd() else { return 0 };
+        let mut point = POINT {
+            x: (x * dpr).round() as i32,
+            y: (y * dpr).round() as i32,
+        };
+        // SAFETY: окно живо, point — локальная переменная.
+        let _ = unsafe { ClientToScreen(HWND(hwnd.0), &mut point) };
+        // SAFETY: GetSystemMetrics только читает настройки.
+        let (left, top, width, height) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2),
+            )
+        };
+        let input = |flags: MOUSE_EVENT_FLAGS| INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: (point.x - left) * 65535 / (width - 1),
+                    dy: (point.y - top) * 65535 / (height - 1),
+                    mouseData: 0,
+                    dwFlags: flags
+                        | MOUSEEVENTF_MOVE
+                        | MOUSEEVENTF_ABSOLUTE
+                        | MOUSEEVENTF_VIRTUALDESK,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = [
+            input(MOUSE_EVENT_FLAGS(0)),
+            input(MOUSEEVENTF_RIGHTDOWN),
+            input(MOUSEEVENTF_RIGHTUP),
+        ];
+        // SAFETY: массив корректно заполненных INPUT живёт до конца вызова.
+        unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) }
+    }
+
+    /// Меню движка у живого окна (решение 97): настоящий правый щелчок
+    /// доходит до страницы (`contextmenu`), но нового окна у процесса
+    /// браузера (меню движка) нет. Запасной рубеж интерфейса отключён:
+    /// слушатель страницы останавливает событие раньше него. Контроль: с
+    /// включённым на время меню движка правый щелчок открывает окно меню.
+    fn check_engine_context_menu(window: &tauri::WebviewWindow) -> Vec<String> {
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+        use ::windows::core::Interface;
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings;
+
+        let setup = r#"(() => {
+            window.__rzMenu = [];
+            addEventListener('contextmenu', (e) => {
+              window.__rzMenu.push('contextmenu');
+              e.stopImmediatePropagation();
+            }, true);
+            const x = Math.round(innerWidth / 2), y = Math.round(innerHeight / 2);
+            return [x, y, window.devicePixelRatio].join(',');
+          })()"#;
+        let coords = match run_script(window, setup) {
+            Ok(text) => text,
+            Err(error) => return vec![format!("меню движка: страница не подготовлена: {error}")],
+        };
+        let numbers: Vec<f64> = coords
+            .trim_matches('"')
+            .split(',')
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        let [x, y, dpr] = numbers[..] else {
+            return vec![format!("меню движка: координаты {coords}")];
+        };
+        // Событие движка «запрошено меню» (ICoreWebView2_11::ContextMenuRequested):
+        // при выключенном меню не приходит, при включённом — приходит.
+        let requested = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let requested = requested.clone();
+            let _ = window.with_webview(move |webview| {
+                use webview2_com::ContextMenuRequestedEventHandler;
+                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_11;
+                let handler = ContextMenuRequestedEventHandler::create(Box::new(move |_, _| {
+                    requested.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }));
+                let mut token = 0i64;
+                // SAFETY: вызовы COM в главном потоке (with_webview); token — локальная переменная.
+                let _ = unsafe {
+                    webview
+                        .controller()
+                        .CoreWebView2()
+                        .and_then(|core| core.cast::<ICoreWebView2_11>())
+                        .and_then(|core| core.add_ContextMenuRequested(&handler, &mut token))
+                };
+            });
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let requests = || requested.load(std::sync::atomic::Ordering::SeqCst);
+        let toggle = |window: &tauri::WebviewWindow, enabled: bool| {
+            let _ = window.with_webview(move |webview| {
+                // SAFETY: вызовы COM в главном потоке (with_webview).
+                let _ = unsafe {
+                    webview
+                        .controller()
+                        .CoreWebView2()
+                        .and_then(|core| core.Settings())
+                        .and_then(|s| s.cast::<ICoreWebView2Settings>())
+                        .and_then(|s| s.SetAreDefaultContextMenusEnabled(enabled))
+                };
+            });
+            std::thread::sleep(Duration::from_millis(300));
+        };
+
+        let _ = window.set_focus();
+        std::thread::sleep(Duration::from_millis(500));
+        let before = visible_windows();
+        let sent = right_click(window, x, y, dpr);
+        std::thread::sleep(Duration::from_millis(1500));
+        let popups = new_windows(&before, &visible_windows());
+        let mut failures = Vec::new();
+        if sent != 3 {
+            failures.push(format!("меню движка: SendInput принял {sent} событий из 3"));
+        }
+        match run_script(window, "(window.__rzMenu || []).join(',')") {
+            Ok(events) if events.contains("contextmenu") => {}
+            other => failures.push(format!(
+                "меню движка: правый щелчок не дошёл до страницы ({other:?})"
+            )),
+        }
+        if !popups.is_empty() {
+            failures.push(format!("меню движка: правый щелчок открыл окна {popups:?}"));
+            send_chord(&[], VK_ESCAPE.0);
+        }
+        let disabled_requests = requests();
+        if disabled_requests > 0 {
+            failures.push(format!(
+                "меню движка: при выключенном меню пришло ContextMenuRequested ({disabled_requests})"
+            ));
+        }
+        if failures.is_empty() {
+            println!("ok: правый щелчок доходит до страницы, меню движка нет");
+        }
+
+        // Контроль: с включённым меню движка окно меню появляется.
+        toggle(window, true);
+        let before = visible_windows();
+        right_click(window, x, y, dpr);
+        std::thread::sleep(Duration::from_millis(1500));
+        let control = new_windows(&before, &visible_windows());
+        let control_requests = requests() - disabled_requests;
+        send_chord(&[], VK_ESCAPE.0);
+        std::thread::sleep(Duration::from_millis(500));
+        toggle(window, false);
+        if control_requests > 0 {
+            println!(
+                "ok: контроль: с включённым меню движка пришло ContextMenuRequested ({control_requests}) — детектор работает"
+            );
+        } else {
+            println!("предупреждение: контроль ContextMenuRequested не подтвердился");
+        }
+        if control.is_empty() {
+            println!("предупреждение: контроль детектора меню не подтвердился (новых окон нет)");
+        } else {
+            println!(
+                "ok: контроль: с включённым меню движка правый щелчок открывает окна {control:?} — детектор работает"
+            );
+        }
+        failures
+    }
+
     fn check_engine_keys(window: &tauri::WebviewWindow) -> Vec<String> {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             VK_CONTROL, VK_ESCAPE, VK_F5, VK_F12, VK_OEM_PLUS, VK_SHIFT,
@@ -615,6 +839,7 @@ mod windows_only {
                         Some(window) => {
                             failures.extend(check_real_drag(&window));
                             failures.extend(check_engine_keys(&window));
+                            failures.extend(check_engine_context_menu(&window));
                         }
                         None => failures.push("нет окна для перетаскивания".into()),
                     }

@@ -294,6 +294,17 @@ fn window_shown_note() {
 }
 
 #[test]
+fn clipboard_read_text() {
+    command(
+        "clipboard_read_text",
+        &ClipboardReadOutcome::Text {
+            text: "Текст из буфера\nвторая строка".into(),
+        },
+        &[err(ErrorCode::NoVaultOpen), err(ErrorCode::IoFailed)],
+    );
+}
+
+#[test]
 fn tree_list() {
     command(
         "tree_list",
@@ -887,6 +898,23 @@ fn enums() {
         }
     }
 
+    let clipboard = [
+        ClipboardReadOutcome::Text {
+            text: String::new(),
+        },
+        ClipboardReadOutcome::Empty,
+        ClipboardReadOutcome::TooLarge { limit_bytes: 0 },
+        ClipboardReadOutcome::NotFocused,
+    ];
+    for value in &clipboard {
+        match value {
+            ClipboardReadOutcome::Text { .. }
+            | ClipboardReadOutcome::Empty
+            | ClipboardReadOutcome::TooLarge { .. }
+            | ClipboardReadOutcome::NotFocused => {}
+        }
+    }
+
     let enums = json!({
         "ErrorCode": tags(&error_codes, ""),
         "NameProblem": tags(&name_problems, ""),
@@ -910,6 +938,7 @@ fn enums() {
             "outcome"
         ),
         "TreeChange.kind": tags(&tree_change, "kind"),
+        "ClipboardReadOutcome.outcome": tags(&clipboard, "outcome"),
     });
     settings().bind(|| insta::assert_json_snapshot!("enums", enums));
 }

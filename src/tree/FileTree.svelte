@@ -12,7 +12,8 @@
   import ConfirmDelete from './ConfirmDelete.svelte';
   import NameField from './NameField.svelte';
   import TreeIcon from './TreeIcon.svelte';
-  import TreeMenu, { type MenuItem } from './TreeMenu.svelte';
+  import ContextMenu from '../shell/ContextMenu.svelte';
+  import type { MenuItem } from '../shell/menu.ts';
   import { bindingsOf, chordText, matchCommand, type CommandId } from '../settings/hotkeys.ts';
   import { isUndo } from './keys.ts';
   import { canMove, displayName, parentOf, pathKey, samePath, splitName, typeLabel, type TreeRow } from './model.ts';
@@ -150,6 +151,8 @@
   }
 
   function onRowContextMenu(event: MouseEvent, row: TreeRow) {
+    // В поле переименования — меню правки текста окна (решение 97).
+    if (event.target instanceof HTMLInputElement) return;
     event.preventDefault();
     event.stopPropagation();
     tree.select(row.node.path);
@@ -363,7 +366,7 @@
 </div>
 
 {#if menu}
-  <TreeMenu x={menu.x} y={menu.y} items={menu.items} onClose={closeMenu} />
+  <ContextMenu x={menu.x} y={menu.y} items={menu.items} label={t('tree.menu.label')} onClose={closeMenu} />
 {/if}
 
 {#if tree.pendingDelete}
