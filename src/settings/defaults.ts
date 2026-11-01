@@ -12,4 +12,5 @@ export const DEFAULT_SETTINGS: Settings = {
   confirm_delete: true,
   max_edit_size_bytes: 10 * 1024 * 1024,
   hotkeys: {},
+  rename_links: 'ask',
 };

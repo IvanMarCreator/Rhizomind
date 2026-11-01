@@ -1,5 +1,5 @@
 //! Список заметок хранилища — общий для разрешения ссылок (`links`) и
-//! быстрого перехода (`switcher`) (ревью 0.4: «общий индекс заметок»).
+//! быстрого перехода (`switcher`) (ревью 0.4: «общий индекс заметок»; с 0.2 — «список заметок», чтобы не путать с индексом хранилища `crate::index`, план 0.2, Т3).
 //!
 //! Обновляется двумя путями, оба идемпотентны:
 //! - сразу после своей команды окна (создание, переименование, перемещение,
@@ -37,7 +37,7 @@ fn path_key(path: &VaultPath) -> PathKey {
 
 /// Заметки хранилища и построенные по ним ссылки и быстрый переход.
 #[derive(Debug, Default)]
-pub struct NoteIndex {
+pub struct NoteList {
     /// Ключ пути → путь (как на диске или как прислала команда) и дата
     /// создания.
     notes: BTreeMap<PathKey, (VaultPath, i64)>,
@@ -45,12 +45,12 @@ pub struct NoteIndex {
     switcher: Switcher,
 }
 
-impl NoteIndex {
-    /// Индекс по полному списку заметок (`Vault::notes`).
+impl NoteList {
+    /// Список по полному списку заметок (`Vault::notes`).
     pub fn new(notes: Vec<NoteRef>) -> Self {
-        let mut index = Self::default();
-        index.replace(notes);
-        index
+        let mut list = Self::default();
+        list.replace(notes);
+        list
     }
 
     /// Заменяет список целиком (открытие, полная сверка).
@@ -84,7 +84,7 @@ impl NoteIndex {
     }
 
     /// Заметки по пути `path` и под ним (путь заметки или папки), в
-    /// написании индекса.
+    /// написании списка.
     pub fn notes_under(&self, path: &VaultPath) -> Vec<VaultPath> {
         let prefix = path_key(path);
         self.notes
@@ -105,14 +105,14 @@ impl NoteIndex {
         self.apply_observed(changes, created_ms, &mut |_, _| {})
     }
 
-    /// [`NoteIndex::apply`], но перед каждым изменением `before` видит
+    /// [`NoteList::apply`], но перед каждым изменением `before` видит
     /// список заметок до него (так выводятся события `note:*`). Ссылки и
     /// быстрый переход перестраиваются один раз в конце.
     pub fn apply_observed(
         &mut self,
         changes: &[TreeChange],
         created_ms: &dyn Fn(&VaultPath) -> Option<i64>,
-        before: &mut dyn FnMut(&NoteIndex, &TreeChange),
+        before: &mut dyn FnMut(&NoteList, &TreeChange),
     ) -> bool {
         let mut changed = false;
         for change in changes {
@@ -228,7 +228,7 @@ mod tests {
         }
     }
 
-    fn paths(index: &NoteIndex) -> Vec<VaultPath> {
+    fn paths(index: &NoteList) -> Vec<VaultPath> {
         index.notes.values().map(|(p, _)| p.clone()).collect()
     }
 
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn note_renamed_to_a_non_note_leaves_the_list() {
         // Решение оркестратора 90 (найдено в 2.12): `.md` → `.txt` — не заметка.
-        let mut index = NoteIndex::new(vec![note("А/a.md", 1), note("А/b.md", 2)]);
+        let mut index = NoteList::new(vec![note("А/a.md", 1), note("А/b.md", 2)]);
         assert!(index.apply(
             &[TreeChange::Renamed {
                 from: vp("А/a.md"),
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn applying_the_same_change_twice_is_harmless() {
-        let mut index = NoteIndex::new(vec![note("А/a.md", 1)]);
+        let mut index = NoteList::new(vec![note("А/a.md", 1)]);
         let created = TreeChange::Created {
             path: vp("А/a.md"),
             entry_kind: EntryKind::Note,
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn created_date_is_kept_on_rename_and_paths_match_by_name_key() {
-        let mut index = NoteIndex::new(vec![note("Проекты/Встреча.md", 1)]);
+        let mut index = NoteList::new(vec![note("Проекты/Встреча.md", 1)]);
         index.apply(
             &[TreeChange::Renamed {
                 from: vp("проекты/встреча.md"),
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn rename_with_unknown_from_adds_the_new_note_once() {
-        let mut index = NoteIndex::default();
+        let mut index = NoteList::default();
         let renamed = TreeChange::Renamed {
             from: vp("нет.md"),
             to: vp("есть.md"),
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn notes_under_folder_and_links_follow_changes() {
-        let mut index = NoteIndex::new(vec![
+        let mut index = NoteList::new(vec![
             note("А/1.md", 1),
             note("А/Б/2.md", 2),
             note("АБ.md", 3),
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn note_that_vanished_before_indexing_is_not_added() {
-        let mut index = NoteIndex::default();
+        let mut index = NoteList::default();
         let gone: &dyn Fn(&VaultPath) -> Option<i64> = &|_| None;
         assert!(!index.apply(
             &[TreeChange::Created {

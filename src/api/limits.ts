@@ -25,6 +25,24 @@ export const LIMITS = {
   edit_size_range: [MIB, 100 * MIB],
   /** Размер шрифта текста, пиксели. */
   font_size_range: [10, 32],
+  /** Заметок в ответе `backlinks_list` (0.2). */
+  max_backlink_notes: 1_000,
+  /** Строк одной заметки в ответе `backlinks_list`. */
+  max_backlink_lines: 100,
+  /** Строка обратной ссылки, символов Unicode. */
+  max_snippet_chars: 200,
+  /** Заметок в ответе `tag_notes`. */
+  max_tag_notes: 10_000,
+  /** Длина тега, символов Unicode (длиннее — не тег). */
+  max_tag_chars: 200,
+  /** Ключ тега в `tag_notes`, символов Unicode. */
+  max_tag_key_chars: 600,
+  /** Переименований в `links:pending.renames`. */
+  max_pending_renames: 20,
+  /** Знак плана переписывания, шестнадцатеричных цифр. */
+  relink_token_chars: 32,
+  /** Сколько живёт знак плана, секунд. */
+  relink_token_ttl_secs: 600,
   /** Команд с назначениями горячих клавиш в настройках. */
   hotkey_max_commands: 64,
   /** Сочетаний у одной команды. */

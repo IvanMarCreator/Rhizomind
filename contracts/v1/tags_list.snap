@@ -1,0 +1,28 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "tags_list",
+  "errors": [
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": null,
+  "response": {
+    "status": "ready",
+    "tags": [
+      {
+        "count": 12,
+        "key": "проект",
+        "tag": "Проект"
+      },
+      {
+        "count": 3,
+        "key": "работа/отчёт",
+        "tag": "работа/отчёт"
+      }
+    ]
+  }
+}

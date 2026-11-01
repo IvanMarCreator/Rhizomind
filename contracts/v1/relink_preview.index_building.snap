@@ -1,0 +1,29 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "relink_preview",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "new_dir",
+      "message_key": "errors.invalid_argument"
+    }
+  ],
+  "request": {
+    "new_dir": [
+      "Бета"
+    ],
+    "op": "move",
+    "path": [
+      "Альфа",
+      "Встреча.md"
+    ]
+  },
+  "response": {
+    "done": 1200,
+    "status": "index_building",
+    "total": 10000
+  },
+  "variant": "index_building"
+}

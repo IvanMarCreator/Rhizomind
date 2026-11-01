@@ -56,6 +56,20 @@ pub enum NewNoteLocation {
     },
 }
 
+/// Что делать со ссылками при переименовании или перемещении заметки, на
+/// которую есть ссылки (С2-3.5, решения владельца 109, 116). Значения
+/// «Никогда не обновлять» нет: отказ от обновления — только ответом
+/// «Переименовать без обновления» в окне вопроса.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenameLinks {
+    /// «Всегда спрашивать» (по умолчанию).
+    #[default]
+    Ask,
+    /// «Всегда обновлять ссылки».
+    Update,
+}
+
 /// Настройки хранилища, как их видит интерфейс (С3.1). Состав для 0.1 —
 /// настройки, поведение которых есть в спецификации; окончательный состав
 /// окна настроек утверждает владелец в задаче 2.8.
@@ -84,6 +98,9 @@ pub struct Settings {
     /// Назначения горячих клавиш поверх сочетаний по умолчанию (решение 72,
     /// `commands::hotkeys`): команда → сочетания. Пусто — все по умолчанию.
     pub hotkeys: HotkeyOverrides,
+    /// «При переименовании заметки, на которую есть ссылки» (С2-3.5, с 0.2):
+    /// поле `rename_links` в `settings.json`; файл 0.1 без поля — `ask`.
+    pub rename_links: RenameLinks,
 }
 
 impl Default for Settings {
@@ -100,6 +117,7 @@ impl Default for Settings {
             confirm_delete: true,
             max_edit_size_bytes: 10 * 1024 * 1024,
             hotkeys: HotkeyOverrides::new(),
+            rename_links: RenameLinks::Ask,
         }
     }
 }

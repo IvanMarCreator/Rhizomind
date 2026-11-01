@@ -67,6 +67,43 @@ where
     snapshot_command(name, request, round_trip(response), errors);
 }
 
+/// Второй пример той же команды — отдельный снимок `<команда>.<вариант>.snap`
+/// (например, `entry_rename.update`: основной снимок остаётся примером 0.1).
+fn command_variant<Req, Res>(
+    name: &str,
+    variant: &str,
+    request: &Req,
+    response: &Res,
+    errors: &[CoreError],
+) where
+    Req: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    Res: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    assert!(COMMAND_NAMES.contains(&name), "{name} нет в списке команд");
+    assert!(
+        COMMAND_VARIANTS.contains(&(name, variant)),
+        "{name}.{variant} нет в COMMAND_VARIANTS"
+    );
+    let request = round_trip(request);
+    assert_rejects_unknown_field::<Req>(&request);
+    let errors: Vec<Value> = errors.iter().map(round_trip).collect();
+    let contract = json!({
+        "command": name,
+        "variant": variant,
+        "request": request,
+        "response": round_trip(response),
+        "errors": errors,
+    });
+    settings().bind(|| insta::assert_json_snapshot!(format!("{name}.{variant}"), contract));
+}
+
+/// Вторые примеры команд (`<команда>.<вариант>.snap`).
+const COMMAND_VARIANTS: [(&str, &str); 3] = [
+    ("entry_rename", "update"),
+    ("entry_move", "update"),
+    ("relink_preview", "index_building"),
+];
+
 fn snapshot_command(name: &str, request: Value, response: Value, errors: &[CoreError]) {
     assert!(COMMAND_NAMES.contains(&name), "{name} нет в списке команд");
     let errors: Vec<Value> = errors.iter().map(round_trip).collect();
@@ -142,7 +179,12 @@ fn settings_example() -> Settings {
         ]
         .into_iter()
         .collect(),
+        rename_links: RenameLinks::Ask,
     }
+}
+
+fn token(digit: char) -> RelinkToken {
+    RelinkToken(std::iter::repeat_n(digit, 32).collect())
 }
 
 #[test]
@@ -369,9 +411,12 @@ fn entry_rename() {
         &EntryRenameRequest {
             path: path(&["Проекты", "Без названия.md"]),
             new_name: "Встреча 2.md".into(),
+            links: LinksMode::Keep,
+            token: None,
         },
-        &EntryPathResponse {
+        &EntryMovedResponse {
             path: path(&["Проекты", "Встреча 2.md"]),
+            relink: None,
         },
         &[
             err(ErrorCode::NotFound),
@@ -388,11 +433,97 @@ fn entry_move() {
         &EntryMoveRequest {
             path: path(&["Проекты", "Встреча 2.md"]),
             new_dir: path(&["Архив"]),
+            links: LinksMode::Keep,
+            token: None,
         },
-        &EntryPathResponse {
+        &EntryMovedResponse {
             path: path(&["Архив", "Встреча 2.md"]),
+            relink: None,
         },
         &[err(ErrorCode::AlreadyExists), err(ErrorCode::NotFound)],
+    );
+}
+
+/// Переименование с обновлением ссылок (0.2): знак из `relink_preview`,
+/// в ответе — итог переписывания.
+#[test]
+fn entry_rename_update() {
+    command_variant(
+        "entry_rename",
+        "update",
+        &EntryRenameRequest {
+            path: path(&["Проекты", "Встреча.md"]),
+            new_name: "Планёрка.md".into(),
+            links: LinksMode::Update,
+            token: Some(token('a')),
+        },
+        &EntryMovedResponse {
+            path: path(&["Проекты", "Планёрка.md"]),
+            relink: Some(RelinkOutcome {
+                updated: 4,
+                failed: vec![RelinkFailure {
+                    path: path(&["Архив", "Старое.md"]),
+                    reason: RelinkFailureReason::Busy,
+                }],
+                retry_token: Some(token('b')),
+            }),
+        },
+        &[
+            CoreError::invalid_argument("token"),
+            err(ErrorCode::NotFound),
+            CoreError::invalid_name(NameProblem::Duplicate),
+        ],
+    );
+}
+
+/// Перенос с обновлением ссылок (0.2); все заметки переписаны — повторять
+/// нечего.
+#[test]
+fn entry_move_update() {
+    command_variant(
+        "entry_move",
+        "update",
+        &EntryMoveRequest {
+            path: path(&["Альфа", "Встреча.md"]),
+            new_dir: path(&["Бета"]),
+            links: LinksMode::Update,
+            token: Some(token('c')),
+        },
+        &EntryMovedResponse {
+            path: path(&["Бета", "Встреча.md"]),
+            relink: Some(RelinkOutcome {
+                updated: 2,
+                failed: vec![],
+                retry_token: None,
+            }),
+        },
+        &[
+            CoreError::invalid_argument("token"),
+            err(ErrorCode::AlreadyExists),
+        ],
+    );
+}
+
+/// Запрос 0.1 без `links` и `token` читается как `keep` и пишется обратно
+/// без новых полей: прежний снимок `entry_rename` не меняется (Р16).
+#[test]
+fn entry_rename_without_links_is_request_of_0_1() {
+    let old = json!({ "path": ["Проекты", "Без названия.md"], "new_name": "Встреча 2.md" });
+    let request: EntryRenameRequest = serde_json::from_value(old.clone()).expect("запрос 0.1");
+    assert_eq!(request.links, LinksMode::Keep);
+    assert_eq!(request.token, None);
+    assert_eq!(serde_json::to_value(&request).expect("запрос"), old);
+    let old_move = json!({ "path": ["a.md"], "new_dir": ["Б"] });
+    let request: EntryMoveRequest = serde_json::from_value(old_move.clone()).expect("запрос 0.1");
+    assert_eq!(request.links, LinksMode::Keep);
+    assert_eq!(serde_json::to_value(&request).expect("запрос"), old_move);
+    let response = EntryMovedResponse {
+        path: path(&["a.md"]),
+        relink: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&response).expect("ответ"),
+        json!({ "path": ["a.md"] })
     );
 }
 
@@ -567,6 +698,7 @@ fn settings_write() {
                 editor_mode: EditorMode::Source,
                 text_width: TextWidth::Full,
                 new_note_location: NewNoteLocation::CurrentFolder,
+                rename_links: RenameLinks::Update,
                 ..settings_example()
             },
         },
@@ -611,6 +743,238 @@ fn open_external() {
         },
         &OpenExternalOutcome::Opened,
         &[err(ErrorCode::SchemeNotAllowed)],
+    );
+}
+
+// ---- 0.2 «Связи»: индекс и обновление ссылок -------------------------------
+
+#[test]
+fn command_index_status() {
+    command(
+        "index_status",
+        &IndexStatus {
+            state: IndexState::Building,
+            done: 1_200,
+            total: 10_000,
+        },
+        &[err(ErrorCode::NoVaultOpen)],
+    );
+}
+
+#[test]
+fn command_backlinks_list() {
+    command_with(
+        "backlinks_list",
+        &BacklinksListRequest {
+            path: path(&["Проекты", "Встреча.md"]),
+        },
+        &IndexReply::Ready(Backlinks {
+            notes_total: 1,
+            notes: vec![BacklinkNote {
+                from: path(&["Дневник", "2026-11-01.md"]),
+                name: "2026-11-01".into(),
+                links_total: 2,
+                links: vec![
+                    BacklinkLine {
+                        line: 3,
+                        column_utf16: 9,
+                        snippet: "Обсудили [[Встреча|встречу]] и <b>планы</b>".into(),
+                        from_utf16: 9,
+                        to_utf16: 28,
+                    },
+                    BacklinkLine {
+                        line: 7,
+                        column_utf16: 0,
+                        snippet: "![[Встреча#Итоги]]".into(),
+                        from_utf16: 0,
+                        to_utf16: 18,
+                    },
+                ],
+            }],
+        }),
+        &[
+            err(ErrorCode::InvalidPath),
+            CoreError::invalid_argument("path"),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+}
+
+#[test]
+fn command_tags_list() {
+    command(
+        "tags_list",
+        &IndexReply::Ready(Tags {
+            tags: vec![
+                TagSummary {
+                    tag: "Проект".into(),
+                    key: "проект".into(),
+                    count: 12,
+                },
+                TagSummary {
+                    tag: "работа/отчёт".into(),
+                    key: "работа/отчёт".into(),
+                    count: 3,
+                },
+            ],
+        }),
+        &[err(ErrorCode::NoVaultOpen)],
+    );
+}
+
+#[test]
+fn command_tag_notes() {
+    command_with(
+        "tag_notes",
+        &TagNotesRequest {
+            key: "проект".into(),
+        },
+        &IndexReply::Ready(TagNotes {
+            notes_total: 2,
+            notes: vec![path(&["Проекты", "Альфа.md"]), path(&["Встреча.md"])],
+        }),
+        &[
+            CoreError::invalid_argument("key"),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+}
+
+#[test]
+fn command_relink_preview() {
+    command_with(
+        "relink_preview",
+        &RelinkPreviewRequest::Rename {
+            path: path(&["Проекты", "Встреча.md"]),
+            new_name: "Планёрка.md".into(),
+        },
+        &IndexReply::Ready(RelinkPreview {
+            notes: 5,
+            links: 7,
+            token: token('a'),
+        }),
+        &[
+            CoreError::invalid_name(NameProblem::NoteExtension),
+            err(ErrorCode::NotFound),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+}
+
+/// Перенос, пока индекс строится: окно ждёт готовности (решение 114).
+#[test]
+fn command_relink_preview_index_building() {
+    command_variant(
+        "relink_preview",
+        "index_building",
+        &RelinkPreviewRequest::Move {
+            path: path(&["Альфа", "Встреча.md"]),
+            new_dir: path(&["Бета"]),
+        },
+        &IndexReply::<RelinkPreview>::IndexBuilding(IndexProgress {
+            done: 1_200,
+            total: 10_000,
+        }),
+        &[CoreError::invalid_argument("new_dir")],
+    );
+}
+
+#[test]
+fn command_relink_answer() {
+    command_with(
+        "relink_answer",
+        &RelinkAnswerRequest {
+            token: token('d'),
+            apply: true,
+        },
+        &(),
+        &[
+            CoreError::invalid_argument("token"),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+}
+
+#[test]
+fn command_links_flush_done() {
+    command_with(
+        "links_flush_done",
+        &LinksFlushDoneRequest {
+            token: token('e'),
+            saved: true,
+        },
+        &(),
+        &[
+            CoreError::invalid_argument("token"),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+}
+
+#[test]
+fn event_index_status() {
+    event(
+        event::INDEX_STATUS,
+        &IndexStatus {
+            state: IndexState::Ready,
+            done: 10_000,
+            total: 10_000,
+        },
+    );
+}
+
+#[test]
+fn event_index_changed() {
+    event(event::INDEX_CHANGED, &IndexChangedPayload {});
+}
+
+#[test]
+fn event_links_flush_requested() {
+    event(
+        event::LINKS_FLUSH_REQUESTED,
+        &LinksFlushRequestedPayload { token: token('f') },
+    );
+}
+
+#[test]
+fn event_links_pending() {
+    event(
+        event::LINKS_PENDING,
+        &LinksPendingPayload {
+            token: token('1'),
+            reason: PendingReason::ExternalRename,
+            notes: 12,
+            links: 15,
+            renames: vec![PathRename {
+                from: path(&["Встреча.md"]),
+                to: path(&["Архив", "Встреча.md"]),
+            }],
+            renames_total: 3,
+        },
+    );
+}
+
+#[test]
+fn event_links_updated() {
+    event(
+        event::LINKS_UPDATED,
+        &LinksUpdatedPayload::new(
+            LinksUpdateReason::ExternalRename,
+            RelinkOutcome {
+                updated: 11,
+                failed: vec![
+                    RelinkFailure {
+                        path: path(&["Большая.md"]),
+                        reason: RelinkFailureReason::TooLarge,
+                    },
+                    RelinkFailure {
+                        path: path(&["Открыта в Word.md"]),
+                        reason: RelinkFailureReason::Busy,
+                    },
+                ],
+                retry_token: Some(token('2')),
+            },
+        ),
     );
 }
 
@@ -707,8 +1071,9 @@ fn event_window_close_requested() {
     );
 }
 
-/// В папке снимков ровно по файлу на каждую команду и событие: ни одна
-/// команда не осталась без снимка, ни один снимок не устарел.
+/// В папке снимков ровно по файлу на каждую команду и событие (и на каждый
+/// второй пример из [`COMMAND_VARIANTS`]): ни одна команда не осталась без
+/// снимка, ни один снимок не устарел.
 #[test]
 fn every_command_and_event_has_exactly_one_snapshot() {
     const EXTRA: [&str; 2] = ["enums.snap", "limits.snap"];
@@ -734,6 +1099,11 @@ fn every_command_and_event_has_exactly_one_snapshot() {
                 .map(|name| format!("{}.snap", snapshot_name_of_event(name))),
         )
         .chain(EXTRA.iter().map(|name| (*name).to_owned()))
+        .chain(
+            COMMAND_VARIANTS
+                .iter()
+                .map(|(name, variant)| format!("{name}.{variant}.snap")),
+        )
         .collect();
     expected.sort();
     assert_eq!(found, expected);
@@ -915,6 +1285,28 @@ fn enums() {
         }
     }
 
+    let index_reply: [IndexReply<()>; 2] = [IndexReply::Ready(()), IndexReply::building_unknown()];
+    for value in &index_reply {
+        match value {
+            IndexReply::Ready(_) | IndexReply::IndexBuilding(_) => {}
+        }
+    }
+    let preview_op = [
+        RelinkPreviewRequest::Rename {
+            path: p(),
+            new_name: String::new(),
+        },
+        RelinkPreviewRequest::Move {
+            path: p(),
+            new_dir: p(),
+        },
+    ];
+    for value in &preview_op {
+        match value {
+            RelinkPreviewRequest::Rename { .. } | RelinkPreviewRequest::Move { .. } => {}
+        }
+    }
+
     let enums = json!({
         "ErrorCode": tags(&error_codes, ""),
         "NameProblem": tags(&name_problems, ""),
@@ -939,6 +1331,26 @@ fn enums() {
         ),
         "TreeChange.kind": tags(&tree_change, "kind"),
         "ClipboardReadOutcome.outcome": tags(&clipboard, "outcome"),
+        "RenameLinks": tags(&all_variants!(RenameLinks: Ask, Update), ""),
+        "LinksMode": tags(&all_variants!(LinksMode: Keep, Update), ""),
+        "IndexState": tags(&all_variants!(IndexState: Building, Ready), ""),
+        "IndexReply.status": index_reply
+            .iter()
+            .map(|reply| match reply {
+                IndexReply::Ready(_) => json!("ready"),
+                building => serde_json::to_value(building).expect("вариант")["status"].clone(),
+            })
+            .collect::<Vec<_>>(),
+        "RelinkPreviewRequest.op": tags(&preview_op, "op"),
+        "PendingReason": tags(&all_variants!(PendingReason: ExternalRename, Duplicate), ""),
+        "LinksUpdateReason": tags(
+            &all_variants!(LinksUpdateReason: Rename, ExternalRename, Duplicate, Resumed, Retry),
+            ""
+        ),
+        "RelinkFailureReason": tags(
+            &all_variants!(RelinkFailureReason: TooLarge, NotUtf8, Busy, Io),
+            ""
+        ),
     });
     settings().bind(|| insta::assert_json_snapshot!("enums", enums));
 }
@@ -947,4 +1359,17 @@ fn enums() {
 #[test]
 fn limits() {
     settings().bind(|| insta::assert_json_snapshot!("limits", super::limits::LIMITS));
+}
+
+/// Повторить можно только занятые и недоступные заметки (решение 115).
+#[test]
+fn only_busy_and_io_are_retryable() {
+    let retryable: Vec<_> = all_variants!(RelinkFailureReason: TooLarge, NotUtf8, Busy, Io)
+        .into_iter()
+        .filter(|reason| reason.is_retryable())
+        .collect();
+    assert_eq!(
+        retryable,
+        vec![RelinkFailureReason::Busy, RelinkFailureReason::Io]
+    );
 }

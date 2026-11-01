@@ -1,0 +1,24 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "links:pending",
+  "payload": {
+    "links": 15,
+    "notes": 12,
+    "reason": "external_rename",
+    "renames": [
+      {
+        "from": [
+          "Встреча.md"
+        ],
+        "to": [
+          "Архив",
+          "Встреча.md"
+        ]
+      }
+    ],
+    "renames_total": 3,
+    "token": "11111111111111111111111111111111"
+  }
+}

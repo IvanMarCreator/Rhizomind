@@ -118,3 +118,33 @@ pub enum EntryKind {
     /// открывается, но переименовывается, перемещается и удаляется.
     Attachment,
 }
+
+/// Знак плана переписывания ссылок (С2-5.5, С2-6 «Граница»): непрозрачная
+/// строка из [`limits::RELINK_TOKEN_CHARS`](super::limits::RELINK_TOKEN_CHARS)
+/// шестнадцатеричных цифр в нижнем регистре.
+///
+/// Знак выдаёт только ядро (`relink_preview`, события `links:pending`,
+/// `links:flush-requested`, `links:updated`), интерфейс лишь возвращает его.
+/// Знак случайный, одноразовый, привязан к окну и к плану, который ядро
+/// посчитало само, и живёт не дольше
+/// [`limits::RELINK_TOKEN_TTL_SECS`](super::limits::RELINK_TOKEN_TTL_SECS):
+/// по знаку интерфейс может только подтвердить или отклонить план ядра, но
+/// не назвать свои файлы для переписывания. Неизвестный, использованный,
+/// чужой или просроченный знак — `invalid_argument` с полем `token` (или
+/// `retry_token`): интерфейс заново спрашивает `relink_preview`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RelinkToken(pub String);
+
+impl RelinkToken {
+    /// Знак правильного вида: ровно
+    /// [`limits::RELINK_TOKEN_CHARS`](super::limits::RELINK_TOKEN_CHARS)
+    /// цифр `0-9a-f`. Правильный вид не значит, что ядро такой знак выдало.
+    pub fn is_well_formed(&self) -> bool {
+        self.0.len() == super::limits::RELINK_TOKEN_CHARS
+            && self
+                .0
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    }
+}

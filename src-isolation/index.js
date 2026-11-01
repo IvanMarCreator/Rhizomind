@@ -45,6 +45,13 @@
     'window_close_cancel',
     'window_shown_note',
     'clipboard_read_text',
+    'index_status',
+    'backlinks_list',
+    'tags_list',
+    'tag_notes',
+    'relink_preview',
+    'relink_answer',
+    'links_flush_done',
   ]);
 
   // События ядра API v1 — ровно модуль `event` в src-tauri/src/commands/events.rs
@@ -60,6 +67,11 @@
     'note:conflict-saved',
     'vault:availability',
     'window:close-requested',
+    'index:status',
+    'index:changed',
+    'links:flush-requested',
+    'links:pending',
+    'links:updated',
   ]);
 
   // Служебные команды Tauri, без которых не работают события ядра (`listen`).

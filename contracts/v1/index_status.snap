@@ -1,0 +1,18 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "index_status",
+  "errors": [
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": null,
+  "response": {
+    "done": 1200,
+    "state": "building",
+    "total": 10000
+  }
+}

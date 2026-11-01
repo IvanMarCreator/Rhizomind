@@ -32,6 +32,7 @@ const SETTINGS: Settings = {
   confirm_delete: true,
   max_edit_size_bytes: 10 * 1024 * 1024,
   hotkeys: {},
+  rename_links: 'ask',
 };
 
 const VERSION = { hash: 'a'.repeat(64), size: 1, modified_ms: 1 };

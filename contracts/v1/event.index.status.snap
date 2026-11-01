@@ -1,0 +1,11 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "index:status",
+  "payload": {
+    "done": 10000,
+    "state": "ready",
+    "total": 10000
+  }
+}

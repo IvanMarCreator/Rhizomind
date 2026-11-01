@@ -84,6 +84,7 @@ impl SettingsFile {
             hotkeys: field::<HotkeyOverrides>(&self.values, "hotkeys")
                 .map(hotkeys::sanitize)
                 .unwrap_or(defaults.hotkeys),
+            rename_links: field(&self.values, "rename_links").unwrap_or(defaults.rename_links),
         }
     }
 
@@ -196,6 +197,29 @@ mod tests {
         let broken: SettingsFile =
             serde_json::from_value(json!({ "hotkeys": ["Ctrl+KeyP"] })).expect("файл");
         assert!(broken.to_settings().hotkeys.is_empty());
+    }
+
+    #[test]
+    fn rename_links_defaults_to_ask_and_reads_tolerantly() {
+        use crate::commands::RenameLinks;
+        let old: SettingsFile =
+            serde_json::from_value(json!({ "format_version": 1, "theme": "dark" }))
+                .expect("файл 0.1");
+        assert_eq!(old.to_settings().rename_links, RenameLinks::Ask);
+        let update: SettingsFile =
+            serde_json::from_value(json!({ "rename_links": "update" })).expect("файл");
+        assert_eq!(update.to_settings().rename_links, RenameLinks::Update);
+        let unknown: SettingsFile =
+            serde_json::from_value(json!({ "rename_links": "never" })).expect("файл");
+        assert_eq!(unknown.to_settings().rename_links, RenameLinks::Ask);
+
+        let mut file = SettingsFile::default();
+        file.update(&Settings {
+            rename_links: RenameLinks::Update,
+            ..Settings::default()
+        });
+        let written = serde_json::to_value(&file).expect("запись");
+        assert_eq!(written["rename_links"], "update");
     }
 
     #[test]

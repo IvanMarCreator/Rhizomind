@@ -1,0 +1,57 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "backlinks_list",
+  "errors": [
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "invalid_argument",
+      "field": "path",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ]
+  },
+  "response": {
+    "notes": [
+      {
+        "from": [
+          "Дневник",
+          "2026-11-01.md"
+        ],
+        "links": [
+          {
+            "column_utf16": 9,
+            "from_utf16": 9,
+            "line": 3,
+            "snippet": "Обсудили [[Встреча|встречу]] и <b>планы</b>",
+            "to_utf16": 28
+          },
+          {
+            "column_utf16": 0,
+            "from_utf16": 0,
+            "line": 7,
+            "snippet": "![[Встреча#Итоги]]",
+            "to_utf16": 18
+          }
+        ],
+        "links_total": 2,
+        "name": "2026-11-01"
+      }
+    ],
+    "notes_total": 1,
+    "status": "ready"
+  }
+}

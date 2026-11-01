@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::error::{CoreError, CoreResult};
 use super::hotkeys;
 use super::settings::{NewNoteLocation, Settings};
-use super::types::VaultPath;
+use super::types::{RelinkToken, VaultPath};
 
 const MIB: u64 = 1024 * 1024;
 
@@ -34,6 +34,30 @@ pub const MAX_FOLDER_PATH_UTF16: usize = 32_767;
 pub const EDIT_SIZE_RANGE: (u64, u64) = (MIB, MAX_NOTE_BYTES);
 /// Диапазон размера шрифта текста, пиксели.
 pub const FONT_SIZE_RANGE: (u16, u16) = (10, 32);
+/// Заметок в ответе `backlinks_list` (С2-5.5); остальные — только в числе
+/// `notes_total`.
+pub const MAX_BACKLINK_NOTES: usize = 1_000;
+/// Строк одной заметки в ответе `backlinks_list`; остальные — только в числе
+/// `links_total` (ответ ограничен и для заметки с тысячами ссылок).
+pub const MAX_BACKLINK_LINES: usize = 100;
+/// Длина строки обратной ссылки (`snippet`), символов Unicode: строка
+/// обрезается вокруг ссылки.
+pub const MAX_SNIPPET_CHARS: usize = 200;
+/// Заметок в ответе `tag_notes`; остальные — только в числе `notes_total`.
+pub const MAX_TAG_NOTES: usize = 10_000;
+/// Длина тега, символов Unicode (С2-3.3): длиннее — не тег.
+pub const MAX_TAG_CHARS: usize = 200;
+/// Длина ключа тега в запросе `tag_notes`, символов Unicode: приведение
+/// регистра может удлинить тег (`ß` → `ss`), не больше чем втрое.
+pub const MAX_TAG_KEY_CHARS: usize = 3 * MAX_TAG_CHARS;
+/// Переименований в `links:pending.renames`; остальные — только в числе
+/// `renames_total`.
+pub const MAX_PENDING_RENAMES: usize = 20;
+/// Длина знака плана переписывания (`RelinkToken`), шестнадцатеричных цифр
+/// (128 бит).
+pub const RELINK_TOKEN_CHARS: usize = 32;
+/// Сколько живёт знак плана переписывания, секунд (С2-6 «Граница»).
+pub const RELINK_TOKEN_TTL_SECS: u64 = 600;
 
 /// Пределы для снимка контракта.
 #[derive(Debug, Serialize)]
@@ -48,6 +72,15 @@ pub struct Limits {
     pub max_folder_path_utf16: usize,
     pub edit_size_range: (u64, u64),
     pub font_size_range: (u16, u16),
+    pub max_backlink_notes: usize,
+    pub max_backlink_lines: usize,
+    pub max_snippet_chars: usize,
+    pub max_tag_notes: usize,
+    pub max_tag_chars: usize,
+    pub max_tag_key_chars: usize,
+    pub max_pending_renames: usize,
+    pub relink_token_chars: usize,
+    pub relink_token_ttl_secs: u64,
     pub hotkey_max_commands: usize,
     pub hotkey_max_chords: usize,
     pub hotkey_max_command_bytes: usize,
@@ -69,6 +102,15 @@ pub const LIMITS: Limits = Limits {
     max_folder_path_utf16: MAX_FOLDER_PATH_UTF16,
     edit_size_range: EDIT_SIZE_RANGE,
     font_size_range: FONT_SIZE_RANGE,
+    max_backlink_notes: MAX_BACKLINK_NOTES,
+    max_backlink_lines: MAX_BACKLINK_LINES,
+    max_snippet_chars: MAX_SNIPPET_CHARS,
+    max_tag_notes: MAX_TAG_NOTES,
+    max_tag_chars: MAX_TAG_CHARS,
+    max_tag_key_chars: MAX_TAG_KEY_CHARS,
+    max_pending_renames: MAX_PENDING_RENAMES,
+    relink_token_chars: RELINK_TOKEN_CHARS,
+    relink_token_ttl_secs: RELINK_TOKEN_TTL_SECS,
     hotkey_max_commands: hotkeys::MAX_HOTKEY_COMMANDS,
     hotkey_max_chords: hotkeys::MAX_HOTKEY_CHORDS,
     hotkey_max_command_bytes: hotkeys::MAX_HOTKEY_COMMAND_BYTES,
@@ -148,6 +190,22 @@ pub fn url(url: &str) -> CoreResult<()> {
     )
 }
 
+/// Ключ тега (`tag_notes`): не пустой, не длиннее [`MAX_TAG_KEY_CHARS`], без
+/// управляющих символов.
+pub fn tag_key(key: &str) -> CoreResult<()> {
+    ensure(
+        !key.is_empty()
+            && key.chars().count() <= MAX_TAG_KEY_CHARS
+            && !key.chars().any(char::is_control),
+        "key",
+    )
+}
+
+/// Знак плана переписывания правильного вида (`RelinkToken::is_well_formed`).
+pub fn token(token: &RelinkToken, field: &str) -> CoreResult<()> {
+    ensure(token.is_well_formed(), field)
+}
+
 /// Значения настроек в своих диапазонах; путь папки новых заметок — как путь;
 /// назначения горячих клавиш — по правилам `commands::hotkeys`.
 pub fn settings(settings: &Settings) -> CoreResult<()> {
@@ -173,7 +231,7 @@ pub fn settings(settings: &Settings) -> CoreResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{EditorMode, ErrorCode, TextWidth, Theme};
+    use crate::commands::{EditorMode, ErrorCode, RenameLinks, TextWidth, Theme};
 
     fn field_of(result: CoreResult<()>) -> Option<String> {
         let error = result.expect_err("ожидался отказ");
@@ -191,6 +249,7 @@ mod tests {
             confirm_delete: true,
             max_edit_size_bytes: 10 * MIB,
             hotkeys: Default::default(),
+            rename_links: RenameLinks::Ask,
         }
     }
 
@@ -251,6 +310,35 @@ mod tests {
         );
         assert!(url("https://example.org/\u{7f}").is_err());
         assert!(url(&format!("https://example.org/{}", "a".repeat(8 * 1024))).is_err());
+    }
+
+    #[test]
+    fn tag_key_is_bounded_and_without_control_characters() {
+        assert!(tag_key("проект").is_ok());
+        assert!(tag_key(&"ж".repeat(600)).is_ok());
+        assert_eq!(field_of(tag_key(&"ж".repeat(601))), Some("key".into()));
+        assert!(tag_key("").is_err());
+        assert!(tag_key("про\nект").is_err());
+    }
+
+    #[test]
+    fn token_is_32_lowercase_hex_digits() {
+        let ok = RelinkToken("0123456789abcdef0123456789abcdef".into());
+        assert!(token(&ok, "token").is_ok());
+        for bad in [
+            "",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789ABCDEF0123456789ABCDEF",
+            "0123456789abcdef0123456789abcdeg",
+            "../../../../../../../settings.json",
+        ] {
+            assert_eq!(
+                field_of(token(&RelinkToken(bad.into()), "retry_token")),
+                Some("retry_token".into()),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

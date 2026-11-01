@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-relink-answer"
+description = "Enables the relink_answer command without any pre-configured scope."
+commands.allow = ["relink_answer"]
+
+[[permission]]
+identifier = "deny-relink-answer"
+description = "Denies the relink_answer command without any pre-configured scope."
+commands.deny = ["relink_answer"]

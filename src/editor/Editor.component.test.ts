@@ -107,6 +107,7 @@ const SETTINGS: Settings = {
   confirm_delete: true,
   max_edit_size_bytes: LIMIT,
   hotkeys: {},
+  rename_links: 'ask',
 };
 
 function mocksFor(disk: Disk, extra: CoreMocks = {}): CoreMocks {

@@ -30,12 +30,14 @@ mod error;
 mod events;
 mod files;
 pub mod hotkeys;
-mod index;
+mod index_cmds;
 pub mod limits;
 mod links;
 #[macro_use]
 mod list;
 mod note;
+mod note_list;
+mod relink_cmds;
 mod settings;
 mod types;
 mod vaults;
@@ -55,18 +57,23 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use clipboard::*;
 pub use error::{CoreError, CoreResult, ErrorCode, NameProblem};
 pub use events::{
-    EVENT_NAMES, NoteChangedPayload, NoteConflictSavedPayload, NoteDeletedPayload,
-    NoteRenamedPayload, TreeChange, VaultAvailabilityPayload, VaultChangedPayload,
+    EVENT_NAMES, IndexChangedPayload, LinksFlushRequestedPayload, LinksPendingPayload,
+    LinksUpdateReason, LinksUpdatedPayload, NoteChangedPayload, NoteConflictSavedPayload,
+    NoteDeletedPayload, NoteRenamedPayload, PathRename, PendingReason, RelinkFailure,
+    RelinkFailureReason, RelinkOutcome, TreeChange, VaultAvailabilityPayload, VaultChangedPayload,
     WindowCloseRequestedPayload, event,
 };
 pub use files::*;
 pub use hotkeys::HotkeyOverrides;
-pub use index::NoteIndex;
+pub use index_cmds::*;
 pub use links::*;
 pub use note::*;
+pub use note_list::NoteList;
+pub use relink_cmds::*;
 pub use settings::*;
 pub use types::{
-    API_VERSION, CurrentVault, EntryKind, FileVersion, VaultId, VaultPath, VaultSummary,
+    API_VERSION, CurrentVault, EntryKind, FileVersion, RelinkToken, VaultId, VaultPath,
+    VaultSummary,
 };
 pub use vaults::*;
 pub use window::*;
@@ -122,7 +129,7 @@ pub struct OpenVault {
     /// Файлы и контур.
     pub vault: Vault,
     /// Список заметок, разрешение ссылок и быстрый переход.
-    index: RwLock<NoteIndex>,
+    notes: RwLock<NoteList>,
     /// Заметка, показанная в окне (`window_shown_note`, задача 2.12): по ней
     /// ядро ставит заголовок окна. Меняется под замком списка заметок
     /// (чтение — команда, запись — наблюдатель): порядок «команда ↔
@@ -133,25 +140,25 @@ pub struct OpenVault {
 impl OpenVault {
     /// Открытое хранилище со списком заметок с диска.
     pub fn new(summary: VaultSummary, vault: Vault) -> CoreResult<Self> {
-        let index = NoteIndex::new(vault.notes()?);
+        let notes = NoteList::new(vault.notes()?);
         Ok(Self {
             summary,
             vault,
-            index: RwLock::new(index),
+            notes: RwLock::new(notes),
             shown: Mutex::new(None),
         })
     }
 
     /// Список заметок для чтения (ссылки, быстрый переход).
-    pub fn read_index(&self) -> RwLockReadGuard<'_, NoteIndex> {
-        self.index
+    pub fn read_notes(&self) -> RwLockReadGuard<'_, NoteList> {
+        self.notes
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Список заметок для изменения.
-    pub fn write_index(&self) -> RwLockWriteGuard<'_, NoteIndex> {
-        self.index
+    pub fn write_notes(&self) -> RwLockWriteGuard<'_, NoteList> {
+        self.notes
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -160,7 +167,7 @@ impl OpenVault {
     /// дожидаясь наблюдателя (повтор тем же событием наблюдателя безвреден).
     pub fn apply_own(&self, changes: &[TreeChange]) {
         let vault = &self.vault;
-        self.write_index()
+        self.write_notes()
             .apply(changes, &|path| vault.note_created_ms(path));
     }
 }
@@ -306,7 +313,7 @@ impl Core {
         self.open_vault_observed(window_label, summary, root, emit, trash, &|| {})
     }
 
-    /// [`Core::open_vault_with`] с тестовым швом `before_index`: вызывается
+    /// [`Core::open_vault_with`] с тестовым швом `before_notes`: вызывается
     /// после обхода папки, до записи списка заметок.
     pub(crate) fn open_vault_observed(
         &self,
@@ -315,7 +322,7 @@ impl Core {
         root: &Path,
         emit: Arc<dyn Emit>,
         trash: Option<TrashBackend>,
-        before_index: &dyn Fn(),
+        before_notes: &dyn Fn(),
     ) -> CoreResult<Arc<OpenVault>> {
         let token = self
             .next_opening
@@ -328,7 +335,7 @@ impl Core {
             opening.insert(window_label.to_owned(), token);
         }
         let result =
-            self.build_window_vault(window_label, summary, root, emit, trash, before_index);
+            self.build_window_vault(window_label, summary, root, emit, trash, before_notes);
         let mut windows = self.windows();
         let mut opening = self.opening_map();
         let still_open = opening.get(window_label) == Some(&token) && !self.is_closed(window_label);
@@ -362,7 +369,7 @@ impl Core {
         root: &Path,
         emit: Arc<dyn Emit>,
         trash: Option<TrashBackend>,
-        before_index: &dyn Fn(),
+        before_notes: &dyn Fn(),
     ) -> CoreResult<WindowVault> {
         let own_writes = OwnWrites::new();
         let vault = Vault::open_with(
@@ -375,10 +382,10 @@ impl Core {
         let open = Arc::new(OpenVault {
             summary,
             vault,
-            index: RwLock::default(),
+            notes: RwLock::default(),
             shown: Mutex::default(),
         });
-        let mut index = open.write_index();
+        let mut index = open.write_notes();
         let watcher = match VaultWatcher::start_with(
             open.vault.root(),
             own_writes,
@@ -391,7 +398,7 @@ impl Core {
             }
         };
         let notes = open.vault.notes();
-        before_index();
+        before_notes();
         let indexed = notes.map(|notes| index.replace(notes));
         // Замок отпускается до возможной остановки наблюдателя: его поток
         // может ждать этот замок.

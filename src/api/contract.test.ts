@@ -18,6 +18,10 @@ import type {
   EntryKind,
   EventName,
   FileVersion,
+  IndexReply,
+  IndexState,
+  LinksMode,
+  LinksUpdateReason,
   NameCheck,
   NameProblem,
   NameWarning,
@@ -25,7 +29,12 @@ import type {
   NoteWriteResponse,
   ClipboardReadOutcome,
   OpenExternalOutcome,
+  PendingReason,
   ReadOnlyReason,
+  RelinkFailureReason,
+  RelinkPreviewRequest,
+  RelinkToken,
+  RenameLinks,
   Settings,
   TextWidth,
   Theme,
@@ -76,7 +85,9 @@ const settings: Settings = {
   confirm_delete: true,
   max_edit_size_bytes: 10 * 1024 * 1024,
   hotkeys: { 'quick_switcher.open': ['Ctrl+KeyO', 'Ctrl+KeyP'], 'tree.delete': [] },
+  rename_links: 'ask',
 };
+const token = (digit: string): RelinkToken => digit.repeat(32);
 const conflictCopy = ['Проекты', 'Встреча (внешняя версия 2026-10-25 12-00).md'];
 
 type CommandExample<K extends CommandName> = {
@@ -254,6 +265,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
         editor_mode: 'source',
         text_width: 'full',
         new_note_location: { kind: 'current_folder' },
+        rename_links: 'update',
       },
     },
     response: null,
@@ -285,6 +297,75 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: { outcome: 'text', text: 'Текст из буфера\nвторая строка' },
     errors: [err('no_vault_open'), err('io_failed')],
   },
+  // ---- 0.2 «Связи» ----
+  index_status: {
+    command: 'index_status',
+    request: null,
+    response: { state: 'building', done: 1_200, total: 10_000 },
+    errors: [err('no_vault_open')],
+  },
+  backlinks_list: {
+    command: 'backlinks_list',
+    request: { path: ['Проекты', 'Встреча.md'] },
+    response: {
+      status: 'ready',
+      notes_total: 1,
+      notes: [
+        {
+          from: ['Дневник', '2026-11-01.md'],
+          name: '2026-11-01',
+          links_total: 2,
+          links: [
+            {
+              line: 3,
+              column_utf16: 9,
+              snippet: 'Обсудили [[Встреча|встречу]] и <b>планы</b>',
+              from_utf16: 9,
+              to_utf16: 28,
+            },
+            { line: 7, column_utf16: 0, snippet: '![[Встреча#Итоги]]', from_utf16: 0, to_utf16: 18 },
+          ],
+        },
+      ],
+    },
+    errors: [err('invalid_path'), invalidArgument('path'), err('no_vault_open')],
+  },
+  tags_list: {
+    command: 'tags_list',
+    request: null,
+    response: {
+      status: 'ready',
+      tags: [
+        { tag: 'Проект', key: 'проект', count: 12 },
+        { tag: 'работа/отчёт', key: 'работа/отчёт', count: 3 },
+      ],
+    },
+    errors: [err('no_vault_open')],
+  },
+  tag_notes: {
+    command: 'tag_notes',
+    request: { key: 'проект' },
+    response: { status: 'ready', notes_total: 2, notes: [['Проекты', 'Альфа.md'], ['Встреча.md']] },
+    errors: [invalidArgument('key'), err('no_vault_open')],
+  },
+  relink_preview: {
+    command: 'relink_preview',
+    request: { op: 'rename', path: ['Проекты', 'Встреча.md'], new_name: 'Планёрка.md' },
+    response: { status: 'ready', notes: 5, links: 7, token: token('a') },
+    errors: [invalidName('note_extension'), err('not_found'), err('no_vault_open')],
+  },
+  relink_answer: {
+    command: 'relink_answer',
+    request: { token: token('d'), apply: true },
+    response: null,
+    errors: [invalidArgument('token'), err('no_vault_open')],
+  },
+  links_flush_done: {
+    command: 'links_flush_done',
+    request: { token: token('e'), saved: true },
+    response: null,
+    errors: [invalidArgument('token'), err('no_vault_open')],
+  },
   window_shown_note: {
     command: 'window_shown_note',
     request: { path: ['Проекты', 'Встреча.md'] },
@@ -292,6 +373,43 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     errors: [err('not_found'), err('not_a_note'), err('invalid_path'), err('no_vault_open')],
   },
 };
+
+/** Вторые примеры команд — снимки `<команда>.<вариант>.snap` (COMMAND_VARIANTS в Rust). */
+const commandVariants: Array<CommandExample<CommandName> & { variant: string }> = [
+  {
+    command: 'entry_rename',
+    variant: 'update',
+    request: {
+      path: ['Проекты', 'Встреча.md'],
+      new_name: 'Планёрка.md',
+      links: 'update',
+      token: token('a'),
+    },
+    response: {
+      path: ['Проекты', 'Планёрка.md'],
+      relink: {
+        updated: 4,
+        failed: [{ path: ['Архив', 'Старое.md'], reason: 'busy' }],
+        retry_token: token('b'),
+      },
+    },
+    errors: [invalidArgument('token'), err('not_found'), invalidName('duplicate')],
+  } satisfies CommandExample<'entry_rename'> & { variant: string },
+  {
+    command: 'entry_move',
+    variant: 'update',
+    request: { path: ['Альфа', 'Встреча.md'], new_dir: ['Бета'], links: 'update', token: token('c') },
+    response: { path: ['Бета', 'Встреча.md'], relink: { updated: 2, failed: [], retry_token: null } },
+    errors: [invalidArgument('token'), err('already_exists')],
+  } satisfies CommandExample<'entry_move'> & { variant: string },
+  {
+    command: 'relink_preview',
+    variant: 'index_building',
+    request: { op: 'move', path: ['Альфа', 'Встреча.md'], new_dir: ['Бета'] },
+    response: { status: 'index_building', done: 1_200, total: 10_000 },
+    errors: [invalidArgument('new_dir')],
+  } satisfies CommandExample<'relink_preview'> & { variant: string },
+];
 
 const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
   'vault:changed': {
@@ -330,6 +448,41 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
     event: 'window:close-requested',
     payload: { sessionEnd: true },
   },
+  'index:status': {
+    event: 'index:status',
+    payload: { state: 'ready', done: 10_000, total: 10_000 },
+  },
+  'index:changed': {
+    event: 'index:changed',
+    payload: {},
+  },
+  'links:flush-requested': {
+    event: 'links:flush-requested',
+    payload: { token: token('f') },
+  },
+  'links:pending': {
+    event: 'links:pending',
+    payload: {
+      token: token('1'),
+      reason: 'external_rename',
+      notes: 12,
+      links: 15,
+      renames: [{ from: ['Встреча.md'], to: ['Архив', 'Встреча.md'] }],
+      renames_total: 3,
+    },
+  },
+  'links:updated': {
+    event: 'links:updated',
+    payload: {
+      reason: 'external_rename',
+      updated: 11,
+      failed: [
+        { path: ['Большая.md'], reason: 'too_large' },
+        { path: ['Открыта в Word.md'], reason: 'busy' },
+      ],
+      retry_token: token('2'),
+    },
+  },
 };
 
 /** Имя файла снимка события: двоеточие на Windows в имени файла недопустимо. */
@@ -338,6 +491,10 @@ const eventSnapshotFile = (name: string): string => `event.${name.replace(':', '
 describe('контракт API v1 совпадает со снимками ядра', () => {
   it.each(Object.values(commands))('команда $command', (example) => {
     expect(readSnapshot(`${example.command}.snap`)).toStrictEqual(example);
+  });
+
+  it.each(commandVariants)('команда $command, пример $variant', (example) => {
+    expect(readSnapshot(`${example.command}.${example.variant}.snap`)).toStrictEqual(example);
   });
 
   it.each(Object.values(events))('событие $event', (example) => {
@@ -353,12 +510,13 @@ describe('контракт API v1 совпадает со снимками яд�
       'limits.snap',
       ...Object.keys(commands).map((name) => `${name}.snap`),
       ...Object.keys(events).map(eventSnapshotFile),
+      ...commandVariants.map((example) => `${example.command}.${example.variant}.snap`),
     ].sort();
     expect(files).toEqual(expected);
   });
 
   it('ключ словаря ошибки — errors.<код>', () => {
-    for (const example of Object.values(commands)) {
+    for (const example of [...Object.values(commands), ...commandVariants]) {
       for (const error of example.errors) {
         expect(error.message_key).toBe(`errors.${error.code}`);
       }
@@ -429,6 +587,23 @@ const enums = {
   >,
   'TreeChange.kind': { created: true, modified: true, removed: true, renamed: true } satisfies Record<
     TreeChange['kind'],
+    true
+  >,
+  RenameLinks: { ask: true, update: true } satisfies Record<RenameLinks, true>,
+  LinksMode: { keep: true, update: true } satisfies Record<LinksMode, true>,
+  IndexState: { building: true, ready: true } satisfies Record<IndexState, true>,
+  'IndexReply.status': { ready: true, index_building: true } satisfies Record<IndexReply<object>['status'], true>,
+  'RelinkPreviewRequest.op': { rename: true, move: true } satisfies Record<RelinkPreviewRequest['op'], true>,
+  PendingReason: { external_rename: true, duplicate: true } satisfies Record<PendingReason, true>,
+  LinksUpdateReason: {
+    rename: true,
+    external_rename: true,
+    duplicate: true,
+    resumed: true,
+    retry: true,
+  } satisfies Record<LinksUpdateReason, true>,
+  RelinkFailureReason: { too_large: true, not_utf8: true, busy: true, io: true } satisfies Record<
+    RelinkFailureReason,
     true
   >,
 };

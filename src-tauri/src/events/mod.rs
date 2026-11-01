@@ -149,7 +149,7 @@ impl VaultEvents {
         let mut notes: Vec<(&'static str, serde_json::Value)> = Vec::new();
         let mut modified: Vec<VaultPath> = Vec::new();
         {
-            let mut index = self.open.write_index();
+            let mut index = self.open.write_notes();
             index.apply_observed(
                 &payload.changes,
                 &created_ms,

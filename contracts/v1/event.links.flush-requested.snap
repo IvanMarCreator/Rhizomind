@@ -1,0 +1,9 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "links:flush-requested",
+  "payload": {
+    "token": "ffffffffffffffffffffffffffffffff"
+  }
+}

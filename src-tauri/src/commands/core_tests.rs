@@ -1141,7 +1141,7 @@ fn changes_during_vault_opening_are_not_lost() {
 
     let start = std::time::Instant::now();
     loop {
-        let index = open.read_index();
+        let index = open.read_notes();
         let fresh = index.contains(&VaultPath::from_components(["Новая.md"]))
             && !index.contains(&VaultPath::from_components(["Уйдёт.md"]));
         if fresh {
@@ -1155,7 +1155,7 @@ fn changes_during_vault_opening_are_not_lost() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(
-        open.read_index()
+        open.read_notes()
             .contains(&VaultPath::from_components(["Останется.md"]))
     );
 }

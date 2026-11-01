@@ -1,0 +1,40 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "entry_move",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "token",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "already_exists",
+      "message_key": "errors.already_exists"
+    }
+  ],
+  "request": {
+    "links": "update",
+    "new_dir": [
+      "Бета"
+    ],
+    "path": [
+      "Альфа",
+      "Встреча.md"
+    ],
+    "token": "cccccccccccccccccccccccccccccccc"
+  },
+  "response": {
+    "path": [
+      "Бета",
+      "Встреча.md"
+    ],
+    "relink": {
+      "failed": [],
+      "retry_token": null,
+      "updated": 2
+    }
+  },
+  "variant": "update"
+}

@@ -130,7 +130,7 @@ fn removed_folder_closes_every_note_under_it() {
             ),
         ]
     );
-    assert!(!f.open.read_index().contains(&vp("Архив/1.md")));
+    assert!(!f.open.read_notes().contains(&vp("Архив/1.md")));
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn renamed_folder_renames_every_note_under_it_and_repeat_is_ignored() {
     let events = f.recorder.take();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0, "vault:changed");
-    assert!(f.open.read_index().contains(&vp("В/Б/2.md")));
+    assert!(f.open.read_notes().contains(&vp("В/Б/2.md")));
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn note_renamed_to_a_non_note_is_deleted_for_the_window() {
             json!({ "path": ["Папка", "a.md"] })
         )]
     );
-    let index = f.open.read_index();
+    let index = f.open.read_notes();
     assert!(!index.contains(&vp("Папка/a.txt")));
     assert!(!index.contains(&vp("Папка/a.md")));
     assert!(index.contains(&vp("b.md")));
@@ -212,7 +212,7 @@ fn non_note_renamed_back_to_a_note_becomes_a_note_again() {
 
     let events = f.recorder.take();
     assert_eq!(events.len(), 1, "только vault:changed: {events:?}");
-    assert!(f.open.read_index().contains(&vp("a.md")));
+    assert!(f.open.read_notes().contains(&vp("a.md")));
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn renamed_and_modified_note_gets_note_renamed_then_note_changed() {
         events[2].1["version"]["hash"],
         json!(blake3::hash("снаружи".as_bytes()).to_hex().to_string())
     );
-    assert!(f.open.read_index().contains(&vp("Архив/b.md")));
+    assert!(f.open.read_notes().contains(&vp("Архив/b.md")));
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn new_note_from_outside_becomes_resolvable() {
 
     assert_eq!(
         f.open
-            .read_index()
+            .read_notes()
             .links()
             .resolve(&vp("Дневник.md"), "Новая")
             .expect("разрешение"),

@@ -1,0 +1,25 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "links:updated",
+  "payload": {
+    "failed": [
+      {
+        "path": [
+          "Большая.md"
+        ],
+        "reason": "too_large"
+      },
+      {
+        "path": [
+          "Открыта в Word.md"
+        ],
+        "reason": "busy"
+      }
+    ],
+    "reason": "external_rename",
+    "retry_token": "22222222222222222222222222222222",
+    "updated": 11
+  }
+}
