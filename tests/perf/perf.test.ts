@@ -24,11 +24,12 @@
 //    приходят быстрее, чем человек печатает, и задержка включает очередь.
 // Нажатия — временем движка окна (probe.ts), без задержек WebDriver.
 // Вывод — по медиане повторов (stats.ts: почему не одна попытка).
-import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startApp, type Session } from '../e2e/driver.ts';
+import { applicationPath, startApp, type Session } from '../e2e/driver.ts';
 import { saveScreenshot } from '../e2e/screenshot.ts';
 import { armProbe, collectProbe, finishProbe } from './probe.ts';
 import { median, ms, nth, renderTable, summarize, type Measured } from './stats.ts';
@@ -349,6 +350,47 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
         : 'Длинных задач (> 50 мс) за время ввода нет или движок не даёт Long Tasks API.',
       eventMax > 0 ? `Event Timing: самое долгое событие ввода ${ms(eventMax)} мс.` : 'Event Timing: событий дольше 16 мс нет или движок не даёт API.',
     );
+  });
+
+  // Справочно, для профиля: на Linux CI окно хранилища под WebDriver
+  // появляется через ~6 с после щелчка, локально — через ~1 с. Здесь — то же
+  // открытие (хранилище при запуске, RHIZOMIND_E2E_VAULT) без tauri-driver и
+  // WebKitWebDriver: от запуска процесса до окна с именем хранилища в X11
+  // (tests/e2e/x11-titles.py). Если здесь ~1 с — 6 с добавляет связка WebDriver.
+  it.runIf(process.platform === 'linux')('справочно: окно хранилища без WebDriver (Linux, X11)', async () => {
+    const titles = path.join(ROOT, 'tests', 'e2e', 'x11-titles.py');
+    const runs: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const profile = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-perf-profile-'));
+      const started = Date.now();
+      const app = spawn(applicationPath('webdriver'), [], {
+        stdio: 'ignore',
+        env: { ...process.env, RHIZOMIND_E2E_PROFILE_DIR: profile, RHIZOMIND_E2E_VAULT: vault.root },
+      });
+      try {
+        for (;;) {
+          if (Date.now() - started > 60_000) throw new Error('окно хранилища не показано за 60 с');
+          if (app.exitCode !== null) throw new Error(`программа вышла с кодом ${app.exitCode}`);
+          const shown = execFileSync('python3', ['-I', titles, String(app.pid)], { encoding: 'utf8' });
+          if (shown.includes(vault.root.split(path.sep).at(-1) ?? '')) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        runs.push(Date.now() - started);
+        log(`без WebDriver, запуск ${i + 1}: окно хранилища через ${runs.at(-1)} мс после запуска процесса`);
+      } finally {
+        const exited = new Promise((resolve) => app.once('exit', resolve));
+        app.kill('SIGKILL');
+        await exited;
+        rmSync(profile, { recursive: true, force: true });
+      }
+    }
+    measured.push({
+      id: 'linux.nodriver',
+      title: 'Linux без WebDriver: запуск процесса → окно хранилища в X11 (ядро: обход, индекс; окно)',
+      limitMs: null,
+      repeatStat: 'max',
+      repeats: runs.map((v) => [v]),
+    });
   });
 
   it('сводка: критерии С9.5 укладываются в пределы', () => {
