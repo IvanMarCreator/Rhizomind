@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "description": "Вики-ссылки в тексте заметки с положениями частей — для ядра (src-tauri/src/markdown, fixtures_wikilinks_offsets) и правки байтов (relink). Дополняет tests/fixtures/wikilinks/text.json (там — только UTF-16 и разбор цели) теми же правилами кода и строк, плюс блок свойств (Р5). text — текст заметки без BOM. У ссылки и у частей from/to — UTF-16, byte_from/byte_to — байты UTF-8. target — текст между [[ (или ![[) и первым из #, |, \\| или ]] — то, что меняет переписывание (С2-3.5); heading — после # до псевдонима или ]]; alias — после | до ]]; нет части — null.",
+  "description": "Вики-ссылки в тексте заметки с положениями частей — для ядра (src-tauri/src/markdown, fixtures_wikilinks_offsets) и правки байтов (relink). Дополняет tests/fixtures/wikilinks/text.json (там — только UTF-16 и разбор цели) теми же правилами кода и строк, плюс блок свойств (Р5). text — текст заметки без BOM. У ссылки и у частей from/to — UTF-16, byte_from/byte_to — байты UTF-8. target — текст между [[ (или ![[) и первым из #, |, \\| или ]] без пробелов и табуляций по краям — ровно то, что меняет переписывание (С2-3.5, Р17 п.10; суффикс .md входит в цель); heading — после # до псевдонима или ]], alias — после | до ]], тоже без пробелов по краям; нет части — null.",
   "cases": [
     {
       "note": "простые ссылки",
@@ -388,6 +388,118 @@
             "byte_to": 14
           },
           "heading": null,
+          "alias": null
+        }
+      ]
+    },
+    {
+      "note": "пробелы вокруг цели, заголовка и псевдонима не входят в части (Р17 п.10)",
+      "text": "[[ Встреча ]] [[Встреча #Итоги | итоги ]] [[\tВстреча\t|в]]",
+      "links": [
+        {
+          "raw": "[[ Встреча ]]",
+          "embed": false,
+          "from": 0,
+          "to": 13,
+          "byte_from": 0,
+          "byte_to": 20,
+          "target": {
+            "from": 3,
+            "to": 10,
+            "byte_from": 3,
+            "byte_to": 17
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "[[Встреча #Итоги | итоги ]]",
+          "embed": false,
+          "from": 14,
+          "to": 41,
+          "byte_from": 21,
+          "byte_to": 65,
+          "target": {
+            "from": 16,
+            "to": 23,
+            "byte_from": 23,
+            "byte_to": 37
+          },
+          "heading": {
+            "from": 25,
+            "to": 30,
+            "byte_from": 39,
+            "byte_to": 49
+          },
+          "alias": {
+            "from": 33,
+            "to": 38,
+            "byte_from": 52,
+            "byte_to": 62
+          }
+        },
+        {
+          "raw": "[[\tВстреча\t|в]]",
+          "embed": false,
+          "from": 42,
+          "to": 57,
+          "byte_from": 66,
+          "byte_to": 89,
+          "target": {
+            "from": 45,
+            "to": 52,
+            "byte_from": 69,
+            "byte_to": 83
+          },
+          "heading": null,
+          "alias": {
+            "from": 54,
+            "to": 55,
+            "byte_from": 85,
+            "byte_to": 87
+          }
+        }
+      ]
+    },
+    {
+      "note": "суффикс .md — часть цели (Р17 п.10)",
+      "text": "[[Встреча.md]] [[Альфа/Встреча.md#Итоги]]",
+      "links": [
+        {
+          "raw": "[[Встреча.md]]",
+          "embed": false,
+          "from": 0,
+          "to": 14,
+          "byte_from": 0,
+          "byte_to": 21,
+          "target": {
+            "from": 2,
+            "to": 12,
+            "byte_from": 2,
+            "byte_to": 19
+          },
+          "heading": null,
+          "alias": null
+        },
+        {
+          "raw": "[[Альфа/Встреча.md#Итоги]]",
+          "embed": false,
+          "from": 15,
+          "to": 41,
+          "byte_from": 22,
+          "byte_to": 65,
+          "target": {
+            "from": 17,
+            "to": 33,
+            "byte_from": 24,
+            "byte_to": 52
+          },
+          "heading": {
+            "from": 34,
+            "to": 39,
+            "byte_from": 53,
+            "byte_to": 63
+          },
           "alias": null
         }
       ]

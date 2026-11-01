@@ -155,7 +155,7 @@
     {
       "name": "06-move-duplicate",
       "note": "перенос при повторе имени: даты создания равны, до переноса ссылка без пути ведёт на «Альфа/Встреча» (первая по пути), после — перескочила бы на «Арбуз/Встреча»; все строки таблицы; ссылка на другую заметку не меняется",
-      "spec": "С2-3.5, таблица, столбец «Перенос … имя повторяется»; С3.4 (равная дата — первая по пути)",
+      "spec": "С2-3.5, таблица, столбец «Перенос … имя повторяется»; Р17 п.9; С3.4 (равная дата — первая по пути)",
       "vault": [
         {
           "path": "Альфа/Встреча.md",
@@ -580,6 +580,127 @@
         "bom",
         "lf",
         "frontmatter"
+      ]
+    },
+    {
+      "name": "20-move-duplicate-distinct-dates",
+      "note": "перенос при повторе имени, даты разные: самая старая остаётся целью ссылок без пути — они не меняются; меняется только ссылка с путём через старую папку",
+      "spec": "С2-3.5, Р2, Р17 п.9",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Арбуз/Встреча.md",
+          "created": 2
+        },
+        {
+          "path": "Заметка.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Бета/Встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/20-move-duplicate-distinct-dates.before.md",
+      "after": "notes/20-move-duplicate-distinct-dates.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "21-spaces-around-target",
+      "note": "пробелы и табуляции вокруг цели остаются, меняются только символы цели",
+      "spec": "Р17 п.10",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/21-spaces-around-target.before.md",
+      "after": "notes/21-spaces-around-target.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "22-md-suffix",
+      "note": "суффикс .md в цели сохраняется как написан (и регистр суффикса)",
+      "spec": "Р17 п.10",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/22-md-suffix.before.md",
+      "after": "notes/22-md-suffix.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "23-indented-list-vs-code",
+      "note": "отступ в списке — продолжение пункта (ссылка переписывается), код с отступом после абзаца — нет",
+      "spec": "Р17 п.5",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/23-indented-list-vs-code.before.md",
+      "after": "notes/23-indented-list-vs-code.after.md",
+      "features": [
+        "lf",
+        "code"
       ]
     }
   ]

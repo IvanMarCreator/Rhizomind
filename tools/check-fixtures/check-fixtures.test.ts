@@ -146,7 +146,7 @@ describe('tags/text.json', () => {
       expect(name, 'тело тега по С2-3.3').toMatch(/^[\p{L}\p{N}\p{M}_\-/]+$/u);
       expect(name, 'хотя бы одна не-цифра').toMatch(/[^0-9]/u);
       expect(name.startsWith('/') || name.endsWith('/') || name.includes('//'), '/ не в начале, не в конце, не дважды').toBe(false);
-      expect([...name].length, 'длина до 200').toBeLessThanOrEqual(200);
+      expect([...name.normalize('NFC')].length, 'длина до 200 кодовых точек после NFC (Р17 п.1)').toBeLessThanOrEqual(200);
       return r;
     });
     ascending(tags, where);
@@ -188,8 +188,8 @@ describe('frontmatter/tags.json', () => {
     if (c.block !== null) {
       const block = range(text, c.block, `${where}.block`);
       expect(block.from, 'блок — в самом начале').toBe(0);
-      expect(block.text.startsWith('---'), 'блок начинается строкой ---').toBe(true);
-      expect(block.text.endsWith('---'), 'блок кончается строкой --- без перевода строки').toBe(true);
+      expect(block.text, 'блок начинается строкой ---').toMatch(/^---[ \t]*\r?\n/u);
+      expect(block.text, 'блок кончается строкой --- или ... (с концевыми пробелами) без перевода строки').toMatch(/(?:^|\n)(?:---|\.\.\.)[ \t]*$/u);
     }
     const tags = arr(c.tags, `${where}.tags`).map((t) => str(t, 'tag'));
     for (const name of tags) expect(name).toMatch(/^[\p{L}\p{N}\p{M}_\-/]+$/u);
@@ -240,21 +240,31 @@ describe('relink/links.json', () => {
       expect(typeof embed).toBe('boolean');
       expect(r.text.startsWith(embed === true ? '![[' : '[['), `${w}: начало ссылки`).toBe(true);
       expect(r.text.endsWith(']]'), `${w}: конец ссылки`).toBe(true);
+      // Части — без пробелов и табуляций по краям (Р17 п.10): между частью и
+      // её разделителем могут быть только они.
+      const gap = (from: number, to: number, what: string): void =>
+        expect(text.slice(from, to), `${w}: ${what}`).toMatch(/^[ \t]*$/u);
       const t = range(text, target, `${w}.target`);
-      expect(t.from).toBe(r.from + (embed === true ? 3 : 2));
+      expect(t.text, `${w}: цель без пробелов по краям`).toBe(t.text.replace(/^[ \t]+|[ \t]+$/gu, ''));
+      gap(r.from + (embed === true ? 3 : 2), t.from, 'перед целью только пробелы');
       const parts = [t];
       if (heading !== null) {
         const h = range(text, heading, `${w}.heading`);
-        expect(text[h.from - 1], `${w}: заголовок после #`).toBe('#');
+        const hash = text.lastIndexOf('#', h.from - 1);
+        expect(hash >= t.to, `${w}: заголовок после #`).toBe(true);
+        gap(t.to, hash, 'между целью и # только пробелы');
+        gap(hash + 1, h.from, 'после # только пробелы');
         parts.push(h);
       }
       if (alias !== null) {
         const a = range(text, alias, `${w}.alias`);
-        expect(text[a.from - 1], `${w}: псевдоним после |`).toBe('|');
-        expect(a.to).toBe(r.to - 2);
+        const bar = text.lastIndexOf('|', a.from - 1);
+        expect(bar >= (parts.at(-1) ?? t).to, `${w}: псевдоним после |`).toBe(true);
+        gap(bar + 1, a.from, 'после | только пробелы');
+        gap(a.to, r.to - 2, 'после псевдонима только пробелы');
         parts.push(a);
       } else {
-        expect((parts.at(-1) ?? t).to, `${w}: последняя часть до ]]`).toBe(r.to - 2);
+        gap((parts.at(-1) ?? t).to, r.to - 2, 'после последней части только пробелы');
       }
       ascending(parts, w);
       return r;

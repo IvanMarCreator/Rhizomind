@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "description": "Блок свойств и теги из него (С2-3.3 «Теги в блоке свойств», С2-3.4, Р14). text — текст заметки без BOM. block — блок свойств или null: from/to (UTF-16) и byte_from/byte_to (байты) — от начала первой строки --- до конца закрывающей строки --- (без её перевода строки). tags — теги ключей tags и tag по порядку, без #, как в тексте; значения не по правилу тега пропущены. Заметка больше 10 МБ (решение 77) образцом не покрыта — проверяется тестом кода.",
+  "description": "Блок свойств и теги из него (С2-3.3 «Теги в блоке свойств», С2-3.4, Р14). text — текст заметки без BOM. block — блок свойств или null: from/to (UTF-16) и byte_from/byte_to (байты) — от начала первой строки --- до конца закрывающей строки --- или ... вместе с её концевыми пробелами (без перевода строки; Р17 п.7). tags — теги ключей tags и tag по порядку, без #, как в тексте; значения не по правилу тега пропущены. Заметка больше 10 МБ (решение 77) образцом не покрыта — проверяется тестом кода.",
   "cases": [
     {
       "rule": "Ф1",
@@ -375,6 +375,122 @@
       },
       "tags": [
         "проект"
+      ]
+    },
+    {
+      "rule": "Ф10",
+      "note": "ограничители --- с концевыми пробелами (Р17 п.7)",
+      "text": "---  \ntags: [проект]\n--- \t\nТекст",
+      "block": {
+        "from": 0,
+        "to": 26,
+        "byte_from": 0,
+        "byte_to": 32
+      },
+      "tags": [
+        "проект"
+      ]
+    },
+    {
+      "rule": "Ф10",
+      "note": "... закрывает блок (Р17 п.7)",
+      "text": "---\ntags: [проект]\n...\nТекст",
+      "block": {
+        "from": 0,
+        "to": 22,
+        "byte_from": 0,
+        "byte_to": 28
+      },
+      "tags": [
+        "проект"
+      ]
+    },
+    {
+      "rule": "Ф10",
+      "note": "... с концевыми пробелами и CRLF (Р17 п.7)",
+      "text": "---\r\ntag: идея\r\n... \r\n",
+      "block": {
+        "from": 0,
+        "to": 20,
+        "byte_from": 0,
+        "byte_to": 24
+      },
+      "tags": [
+        "идея"
+      ]
+    },
+    {
+      "rule": "Ф4",
+      "note": "элементы списка без отступа (Р17 п.7)",
+      "text": "---\ntags:\n- проект\n- идея\ntitle: x\n---\n",
+      "block": {
+        "from": 0,
+        "to": 38,
+        "byte_from": 0,
+        "byte_to": 48
+      },
+      "tags": [
+        "проект",
+        "идея"
+      ]
+    },
+    {
+      "rule": "Ф7",
+      "note": "значение с точкой пропускается целиком, не обрезается (Р17 п.7)",
+      "text": "---\ntags: [проект., идея]\n---\n",
+      "block": {
+        "from": 0,
+        "to": 29,
+        "byte_from": 0,
+        "byte_to": 39
+      },
+      "tags": [
+        "идея"
+      ]
+    },
+    {
+      "rule": "Ф7",
+      "note": "значение с ! и с эмодзи пропускаются (Р17 п.7)",
+      "text": "---\ntags:\n  - важно!\n  - тег😀\n  - план\n---\n",
+      "block": {
+        "from": 0,
+        "to": 43,
+        "byte_from": 0,
+        "byte_to": 57
+      },
+      "tags": [
+        "план"
+      ]
+    },
+    {
+      "rule": "Ф7",
+      "note": "значения с / в начале, в конце, // пропускаются (Р17 п.2)",
+      "text": "---\ntags: [/работа, работа/, a//b, работа/отчёт]\n---\n",
+      "block": {
+        "from": 0,
+        "to": 52,
+        "byte_from": 0,
+        "byte_to": 75
+      },
+      "tags": [
+        "работа/отчёт"
+      ]
+    },
+    {
+      "rule": "Ф9",
+      "note": "даты и _ — теги, 201 кодовая точка — нет (Р17 п.1, п.8)",
+      "text": "---\ntags: [2026-11-01, 12/2026, _, aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb]\n---\n",
+      "block": {
+        "from": 0,
+        "to": 443,
+        "byte_from": 0,
+        "byte_to": 443
+      },
+      "tags": [
+        "2026-11-01",
+        "12/2026",
+        "_",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       ]
     },
     {
