@@ -252,7 +252,8 @@ fn build_window<R: Runtime>(
 /// Настройки WebView2, которых нет в Tauri: SmartScreen и ускорители браузера
 /// (Ctrl+P, Ctrl+F, F5, F12…) выключаются, номер
 /// процесса браузера запоминается для удаления папки данных после выхода;
-/// окно показывается, только если движок подтвердил InPrivate, и выходит на
+/// окно показывается, только если движок подтвердил InPrivate и принял все
+/// защитные настройки (`security::engine_check`), и выходит на
 /// передний план с фокусом; развёрнутое окно разворачивается после показа (скрытое окно Windows при развороте
 /// показалось бы до проверки).
 fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool) {
@@ -262,19 +263,34 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
         let window_to_show = window.clone();
         let _ = window.with_webview(move |webview| {
             let controller = webview.controller();
-            if let Err(error) = security::windows::disable_smartscreen(&controller) {
-                eprintln!("Rhizomind: не удалось выключить SmartScreen WebView2: {error}");
-            }
-            // Печать, поиск, перезагрузка, средства разработчика по сочетаниям
-            // движка — выключены (решение 94).
-            if let Err(error) = security::windows::disable_browser_accelerator_keys(&controller) {
-                eprintln!("Rhizomind: не удалось выключить ускорители браузера WebView2: {error}");
+            // Защитные настройки движка: не применилась хоть одна — окно не
+            // показывается, как без InPrivate (аудит 3.3, З1). Новая настройка
+            // добавляется строкой сюда.
+            let hardening = [
+                // Проверка адресов на серверах Microsoft.
+                (
+                    "SmartScreen",
+                    security::windows::disable_smartscreen(&controller),
+                ),
+                // Печать, поиск, перезагрузка, средства разработчика по
+                // сочетаниям движка (решение 94).
+                (
+                    "ускорители браузера",
+                    security::windows::disable_browser_accelerator_keys(&controller),
+                ),
+            ];
+            let mut failed = Vec::new();
+            for (name, result) in &hardening {
+                if let Err(error) = result {
+                    eprintln!("Rhizomind: не удалось выключить {name} WebView2: {error}");
+                    failed.push(*name);
+                }
             }
             if let Ok(pid) = security::windows::browser_process_id(&controller) {
                 app.state::<Shell>().data_dir.set_browser_pid(pid);
             }
             let checked = security::windows::is_in_private_mode_enabled(&controller).ok();
-            match security::in_private_check(checked) {
+            match security::engine_check(checked, &failed) {
                 Ok(()) => {
                     let _ = window_to_show.show();
                     if maximize {

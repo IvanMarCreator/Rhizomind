@@ -20,11 +20,18 @@
 
 ### Флаги движка
 - `additional_browser_args` **заменяют** набор wry по умолчанию, поэтому строка собирается так: набор wry (`--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`) + `--no-proxy-server` (нет поиска прокси WPAD; флаг документирован для WebView2).
-- К ним добавляются флаги Chromium против фоновой сети: `--host-resolver-rules="MAP * ~NOTFOUND"`, `--disable-background-networking`, `--disable-component-update`. Для WebView2 они не документированы, поэтому **действие каждого подтверждается сетевым аудитом** (Process Monitor и сетевой монитор на чистой Windows); флаг без подтверждённого действия в `SECURITY.md` гарантией не называется.
+- К ним добавляются пять флагов Chromium против фоновой сети (в коде — `PROTECTED_BROWSER_ARGS` в [src-tauri/src/security/mod.rs](../../src-tauri/src/security/mod.rs), точную строку сверяет тест `browser_args_are_wry_defaults_plus_no_proxy_and_background_network_flags`):
+  - `--disable-background-networking` — фоновые сетевые службы (проверки, предзагрузки, обновления вариаций);
+  - `--disable-component-update` — обновление компонентов (словари, списки);
+  - `--disable-domain-reliability` — отчёты Domain Reliability о сетевых ошибках;
+  - `--no-pings` — пинги гиперссылок (`<a ping>`); в интерфейсе нет `<a>`, флаг — запас;
+  - `--host-resolver-rules="MAP * ~NOTFOUND"` — любое имя хоста разрешается в «не найдено», движок не обращается к DNS.
+
+  Для WebView2 они не документированы, поэтому **действие каждого подтверждается сетевым аудитом** (Process Monitor и сетевой монитор на чистой Windows); флаг без подтверждённого действия в `SECURITY.md` гарантией не называется.
 - Аппаратное ускорение не отключается: оно нужно графу (0.4).
 
 ### Сетевые функции WebView2
-- **SmartScreen** выключен: `IsReputationCheckingRequired = false` через `with_webview` (и флаг `msSmartScreenProtection` из набора wry).
+- **SmartScreen** выключен: `IsReputationCheckingRequired = false` через `with_webview` (и флаг `msSmartScreenProtection` из набора wry). Движок не принял настройку — окно не показывается, как без InPrivate (аудит 3.3, З1; `security::engine_check`); то же для остальных защитных настроек через `with_webview`.
 - **Автозаполнение** выключено в настройках окна (в Tauri по умолчанию включено).
 - **Инструменты разработчика** выключены в выпускной сборке: функция `devtools` крейта `tauri` запрещена в `cargo-deny` (ADR 0009).
 - **Отчёты о падениях:** по умолчанию WebView2 отправляет дамп в Microsoft (`IsCustomCrashReportingEnabled = false`); wry это свойство не выставляет, Tauri не открывает. Держим свою правку wry: `IsCustomCrashReportingEnabled = true` — дампы не уходят в Microsoft. Правка подключается через `[patch.crates-io]` в корневом `Cargo.toml` (рабочее пространство Cargo) на свою копию wry той же версии; исправление предлагаем авторам wry, после принятия патч убираем. Своего обработчика падений нет, дампы не собираем.

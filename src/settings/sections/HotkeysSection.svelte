@@ -142,7 +142,7 @@
 <div class="toolbar">
   <label class="search">
     <Icon name="search" size={14} />
-    <input bind:value={filter} placeholder={t('settings.hotkeys.search')} aria-label={t('settings.hotkeys.search')} />
+    <input bind:value={filter} spellcheck="false" placeholder={t('settings.hotkeys.search')} aria-label={t('settings.hotkeys.search')} />
   </label>
   <button type="button" class="button" onclick={resetAll}>
     <Icon name="rotate-ccw" size={13} />{t('settings.hotkeys.resetAll')}
