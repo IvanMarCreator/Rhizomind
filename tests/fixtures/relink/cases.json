@@ -1,0 +1,707 @@
+{
+  "format_version": 1,
+  "description": "Переписывание ссылок при переименовании и переносе (С2-3.5, С2-3.6, С2-5.4 шаг 4, Р2–Р5). vault — заметки хранилища до операции: path от корня, created — дата создания условным числом (больше — новее, равные — одна дата; при равенстве — первая по пути, С3.4). op — операция: entry (note — заметка, folder — папка), from и to — пути до и после. file — заметка, текст которой переписывается (есть в vault и не затронута op). before и after — файлы заметки до и после переписывания, пути от tests/fixtures/relink/; сравнение — побайтно по всему файлу (BOM, CRLF/LF, концевые пробелы сохраняются). after = before — файл не должен меняться. features — особенности байтов, проверяются тестом формата.",
+  "cases": [
+    {
+      "name": "01-rename-plain",
+      "note": "имя",
+      "spec": "С2-3.5, таблица, столбец «Переименование»",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/01-rename-plain.before.md",
+      "after": "notes/01-rename-plain.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "02-rename-alias",
+      "note": "псевдоним сохраняется",
+      "spec": "С2-3.5, таблица, столбец «Переименование»",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/02-rename-alias.before.md",
+      "after": "notes/02-rename-alias.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "03-rename-heading",
+      "note": "заголовок сохраняется",
+      "spec": "С2-3.5, таблица, столбец «Переименование»",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/03-rename-heading.before.md",
+      "after": "notes/03-rename-heading.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "04-rename-path-heading-alias",
+      "note": "путь не нужен уникальному имени — цель как у автодополнения (Р3)",
+      "spec": "С2-3.5, таблица, столбец «Переименование»",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/04-rename-path-heading-alias.before.md",
+      "after": "notes/04-rename-path-heading-alias.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "05-rename-embed",
+      "note": "встраивание (Р4)",
+      "spec": "С2-3.5, таблица, столбец «Переименование»",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/05-rename-embed.before.md",
+      "after": "notes/05-rename-embed.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "06-move-duplicate",
+      "note": "перенос при повторе имени: даты создания равны, до переноса ссылка без пути ведёт на «Альфа/Встреча» (первая по пути), после — перескочила бы на «Арбуз/Встреча»; все строки таблицы; ссылка на другую заметку не меняется",
+      "spec": "С2-3.5, таблица, столбец «Перенос … имя повторяется»; Р17 п.9; С3.4 (равная дата — первая по пути)",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Арбуз/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Бета/Встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/06-move-duplicate.before.md",
+      "after": "notes/06-move-duplicate.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "07-crlf-bom-trailing",
+      "note": "BOM, CRLF и концевые пробелы и табуляция — побайтно",
+      "spec": "С2-5.4 шаг 4",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/07-crlf-bom-trailing.before.md",
+      "after": "notes/07-crlf-bom-trailing.after.md",
+      "features": [
+        "bom",
+        "crlf",
+        "trailing_spaces"
+      ]
+    },
+    {
+      "name": "08-mixed-eol",
+      "note": "смешанные переносы, без перевода строки в конце",
+      "spec": "С2-5.4 шаг 4",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/08-mixed-eol.before.md",
+      "after": "notes/08-mixed-eol.after.md",
+      "features": [
+        "mixed_eol",
+        "no_final_newline"
+      ]
+    },
+    {
+      "name": "09-code-frontmatter",
+      "note": "ссылки в блоке свойств, коде в строке, блоках ``` и ~~~ и коде с отступом не переписываются",
+      "spec": "С2-3.5, Р5, решения 86–87",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/09-code-frontmatter.before.md",
+      "after": "notes/09-code-frontmatter.after.md",
+      "features": [
+        "lf",
+        "code",
+        "frontmatter"
+      ]
+    },
+    {
+      "name": "10-unique-move-unchanged",
+      "note": "перенос заметки с уникальным именем не меняет файл",
+      "spec": "С2-3.5, Р2",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Бета/Встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/10-unique-move-unchanged.before.md",
+      "after": "notes/10-unique-move-unchanged.before.md",
+      "features": [
+        "lf",
+        "unchanged"
+      ]
+    },
+    {
+      "name": "11-case-only-unchanged",
+      "note": "смена только регистра имени не меняет файл",
+      "spec": "С2-3.5, Р2",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/11-case-only-unchanged.before.md",
+      "after": "notes/11-case-only-unchanged.before.md",
+      "features": [
+        "lf",
+        "unchanged"
+      ]
+    },
+    {
+      "name": "12-other-note-would-jump",
+      "note": "более старую заметку переименовали в «Встреча»: ссылка на прежнюю «Встречу» уточняется путём, ссылка на переименованную — новый путь",
+      "spec": "С2-3.5 (пример «перескочила бы»), С3.4",
+      "vault": [
+        {
+          "path": "Альфа/Старая.md",
+          "created": 1
+        },
+        {
+          "path": "Бета/Встреча.md",
+          "created": 2
+        },
+        {
+          "path": "Заметка.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Старая.md",
+        "to": "Альфа/Встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/12-other-note-would-jump.before.md",
+      "after": "notes/12-other-note-would-jump.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "13-folder-rename-unique",
+      "note": "переименование папки: ссылки с путём через неё — цель как у автодополнения (имя уникально); ссылка по имени не меняется",
+      "spec": "С2-3.5 «Переименование папки», Р3",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Альфа/План.md",
+          "created": 2
+        },
+        {
+          "path": "Заметка.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "folder",
+        "from": "Альфа",
+        "to": "Омега"
+      },
+      "file": "Заметка.md",
+      "before": "notes/13-folder-rename-unique.before.md",
+      "after": "notes/13-folder-rename-unique.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "14-folder-rename-duplicate",
+      "note": "переименование папки при повторе имени — кратчайший различающий путь; ссылка на другую заметку не меняется",
+      "spec": "С2-3.5 «Переименование папки», С3.4",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Бета/Встреча.md",
+          "created": 2
+        },
+        {
+          "path": "Заметка.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "folder",
+        "from": "Альфа",
+        "to": "Омега"
+      },
+      "file": "Заметка.md",
+      "before": "notes/14-folder-rename-duplicate.before.md",
+      "after": "notes/14-folder-rename-duplicate.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "15-table-pipe-case",
+      "note": "ссылка в таблице с \\| и ссылка в другом регистре: меняется только цель до \\| или #",
+      "spec": "С2-3.5, wikilinks/parse.json",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/15-table-pipe-case.before.md",
+      "after": "notes/15-table-pipe-case.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "16-duplicate-appears",
+      "note": "переименование создало повтор: ссылки, ставшие неоднозначными (по имени и с путём), уточняются; путь одной — конец пути другой, поэтому /Альфа/Встреча",
+      "spec": "С2-3.6, С3.4",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Х/Альфа/Старое.md",
+          "created": 2
+        },
+        {
+          "path": "Заметка.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Х/Альфа/Старое.md",
+        "to": "Х/Альфа/Встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/16-duplicate-appears.before.md",
+      "after": "notes/16-duplicate-appears.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "17-no-links-unchanged",
+      "note": "ссылки только на другие и несуществующие заметки — файл не меняется",
+      "spec": "С2-3.5, Р2",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/17-no-links-unchanged.before.md",
+      "after": "notes/17-no-links-unchanged.before.md",
+      "features": [
+        "lf",
+        "unchanged"
+      ]
+    },
+    {
+      "name": "18-long-line",
+      "note": "длинная строка (6 000 символов): меняется только цель",
+      "spec": "С2-8.1",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/18-long-line.before.md",
+      "after": "notes/18-long-line.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "19-bom-frontmatter",
+      "note": "BOM не часть текста: блок свойств в начале распознаётся, ссылка в нём не переписывается",
+      "spec": "Р5, С2-5.4 шаг 4",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/19-bom-frontmatter.before.md",
+      "after": "notes/19-bom-frontmatter.after.md",
+      "features": [
+        "bom",
+        "lf",
+        "frontmatter"
+      ]
+    },
+    {
+      "name": "20-move-duplicate-distinct-dates",
+      "note": "перенос при повторе имени, даты разные: самая старая остаётся целью ссылок без пути — они не меняются; меняется только ссылка с путём через старую папку",
+      "spec": "С2-3.5, Р2, Р17 п.9",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Арбуз/Встреча.md",
+          "created": 2
+        },
+        {
+          "path": "Заметка.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Бета/Встреча.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/20-move-duplicate-distinct-dates.before.md",
+      "after": "notes/20-move-duplicate-distinct-dates.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "21-spaces-around-target",
+      "note": "пробелы и табуляции вокруг цели остаются, меняются только символы цели",
+      "spec": "Р17 п.10",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/21-spaces-around-target.before.md",
+      "after": "notes/21-spaces-around-target.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "22-md-suffix",
+      "note": "суффикс .md в цели сохраняется как написан (и регистр суффикса)",
+      "spec": "Р17 п.10",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/22-md-suffix.before.md",
+      "after": "notes/22-md-suffix.after.md",
+      "features": [
+        "lf"
+      ]
+    },
+    {
+      "name": "23-indented-list-vs-code",
+      "note": "отступ в списке — продолжение пункта (ссылка переписывается), код с отступом после абзаца — нет",
+      "spec": "Р17 п.5",
+      "vault": [
+        {
+          "path": "Альфа/Встреча.md",
+          "created": 1
+        },
+        {
+          "path": "Заметка.md",
+          "created": 2
+        },
+        {
+          "path": "Другая.md",
+          "created": 3
+        }
+      ],
+      "op": {
+        "entry": "note",
+        "from": "Альфа/Встреча.md",
+        "to": "Альфа/Планёрка.md"
+      },
+      "file": "Заметка.md",
+      "before": "notes/23-indented-list-vs-code.before.md",
+      "after": "notes/23-indented-list-vs-code.after.md",
+      "features": [
+        "lf",
+        "code"
+      ]
+    }
+  ]
+}
