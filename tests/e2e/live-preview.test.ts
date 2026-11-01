@@ -421,6 +421,21 @@ describe('живой предпросмотр и режим исходного �
     await shotThemes(b, 'list-continued');
   });
 
+  it('парная скобка: `- [` + пробел + текст — готовая задача в файле (решение 95, задача 2.18)', async () => {
+    const b = browser();
+    const before = readFileSync(file, 'utf8');
+    await cursorTo(b, 'Последняя строка.');
+    // По одной клавише: WebKitWebDriver склеивает одинаковые клавиши подряд в одном вызове.
+    for (const key of ['Enter', '-', ' ', '[', ' ', ...'task']) await b.keys(key);
+    const expected = before.replace('Последняя строка.\n', 'Последняя строка.\n- [ ] task\n');
+    expect(expected, 'образец изменён').not.toBe(before);
+    await b.waitUntil(() => readFileSync(file, 'utf8') === expected, {
+      timeout: 10_000,
+      timeoutMsg: `в файле не тот текст: ${JSON.stringify(readFileSync(file, 'utf8').slice(-80))}`,
+    });
+    await shotThemes(b, 'bracket-task');
+  });
+
   it('ссылка длиннее колонки переносится, абзацы не шире колонки (Е1, решение 83); нарушений CSP по стилям нет', async () => {
     const b = browser();
     const row = b.$(`[role="treeitem"][aria-label="${LONG_NOTE}"]`);
