@@ -50,7 +50,16 @@ macro_rules! with_core_commands {
             // Заголовок окна, задача 2.12
             window_shown_note,
             // Буфер обмена: «Вставить» своего меню, задача 2.19
-            clipboard_read_text
+            clipboard_read_text,
+            // Индекс хранилища: обратные ссылки и теги, выпуск 0.2
+            index_status,
+            backlinks_list,
+            tags_list,
+            tag_notes,
+            // Обновление ссылок при переименовании, выпуск 0.2
+            relink_preview,
+            relink_answer,
+            links_flush_done
         )
     };
 }

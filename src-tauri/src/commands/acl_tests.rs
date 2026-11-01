@@ -754,3 +754,240 @@ fn clipboard_read_text_only_for_focused_vault_window() {
         "{error}"
     );
 }
+
+// ---- 0.2 «Связи»: индекс и обновление ссылок (задача 0.2-0.1) --------------
+
+/// Команды выпуска 0.2: только окнам хранилищ.
+const COMMANDS_0_2: [&str; 7] = [
+    "index_status",
+    "backlinks_list",
+    "tags_list",
+    "tag_notes",
+    "relink_preview",
+    "relink_answer",
+    "links_flush_done",
+];
+
+/// Знак правильного вида, который ядро не выдавало.
+const FOREIGN_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+/// Окно «Управление хранилищами» не получает ни одной команды 0.2: отказ
+/// прав Tauri (`not allowed`), до ядра вызов не доходит.
+#[test]
+fn manager_window_is_not_allowed_commands_of_0_2() {
+    let app = app();
+    let manager = manager_window(&app);
+    for name in COMMANDS_0_2 {
+        assert!(COMMAND_NAMES.contains(&name), "{name} нет в списке команд");
+        assert!(!MANAGER_COMMANDS.contains(&name), "{name}");
+        let error = invoke(&manager, name, example_args(name)).expect_err(name);
+        assert_eq!(
+            error
+                .as_str()
+                .map(|text| text.starts_with(&format!("{} not allowed", name))),
+            Some(true),
+            "{name}: {error}"
+        );
+    }
+}
+
+/// Параметры команд 0.2 проверяются в слое команд, до модулей и даже без
+/// открытого хранилища: пределы и вид знака — `invalid_argument` с именем
+/// поля, недопустимый компонент пути (`..`) — `invalid_path`.
+#[test]
+fn commands_of_0_2_check_paths_keys_and_tokens_before_modules() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let long = "я".repeat(256);
+    let deep: Vec<&str> = std::iter::repeat_n("a", 65).collect();
+    let invalid_argument = [
+        ("backlinks_list", json!({ "path": deep }), "path"),
+        ("tag_notes", json!({ "key": "" }), "key"),
+        ("tag_notes", json!({ "key": "ж".repeat(601) }), "key"),
+        ("tag_notes", json!({ "key": "про\u{0}ект" }), "key"),
+        (
+            "relink_preview",
+            json!({ "op": "rename", "path": deep, "new_name": "a.md" }),
+            "path",
+        ),
+        (
+            "relink_preview",
+            json!({ "op": "rename", "path": ["a.md"], "new_name": long }),
+            "new_name",
+        ),
+        (
+            "relink_preview",
+            json!({ "op": "move", "path": ["a.md"], "new_dir": deep }),
+            "new_dir",
+        ),
+        (
+            "relink_preview",
+            json!({ "op": "move", "path": [], "new_dir": ["Б"] }),
+            "path",
+        ),
+        (
+            "relink_answer",
+            json!({ "token": "../settings.json", "apply": true }),
+            "token",
+        ),
+        (
+            "links_flush_done",
+            json!({ "token": FOREIGN_TOKEN.to_uppercase(), "saved": true }),
+            "token",
+        ),
+        // `links: update` без знака, `keep` со знаком, знак не того вида.
+        (
+            "entry_rename",
+            json!({ "path": ["a.md"], "new_name": "b.md", "links": "update" }),
+            "token",
+        ),
+        (
+            "entry_rename",
+            json!({ "path": ["a.md"], "new_name": "b.md", "token": FOREIGN_TOKEN }),
+            "token",
+        ),
+        (
+            "entry_move",
+            json!({ "path": ["a.md"], "new_dir": ["Б"], "links": "update", "token": "1" }),
+            "token",
+        ),
+    ];
+    for (command, request, field) in invalid_argument {
+        let error = invoke(&main, command, json!({ "request": request })).expect_err(command);
+        let error = core_error(command, error);
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{command}: {field}");
+        assert_eq!(error.field.as_deref(), Some(field), "{command}");
+    }
+    let invalid_path = [
+        ("backlinks_list", json!({ "path": ["..", "a.md"] })),
+        (
+            "relink_preview",
+            json!({ "op": "rename", "path": ["..", "a.md"], "new_name": "b.md" }),
+        ),
+        (
+            "relink_preview",
+            json!({ "op": "move", "path": ["a.md"], "new_dir": [".."] }),
+        ),
+    ];
+    for (command, request) in invalid_path {
+        let error = invoke(&main, command, json!({ "request": request })).expect_err(command);
+        assert_eq!(
+            core_error(command, error).code,
+            ErrorCode::InvalidPath,
+            "{command}"
+        );
+    }
+}
+
+/// Лишнее поле в запросе любой команды 0.2 отклоняется при разборе, до
+/// вызова команды: в частности, интерфейс не может передать свой список
+/// файлов для переписывания.
+#[test]
+fn commands_of_0_2_reject_unknown_fields() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
+    let mut cases: Vec<(&str, Value)> = COMMANDS_0_2
+        .iter()
+        .filter_map(|name| match contract(name)["request"].clone() {
+            Value::Null => None,
+            request => Some((*name, request)),
+        })
+        .collect();
+    cases.push((
+        "entry_rename",
+        contract("entry_rename.update")["request"].clone(),
+    ));
+    cases.push((
+        "entry_move",
+        contract("entry_move.update")["request"].clone(),
+    ));
+    assert_eq!(cases.len(), 7);
+    for (command, mut request) in cases {
+        request["notes"] = json!([["Чужая.md"]]);
+        let error = invoke(&main, command, json!({ "request": request })).expect_err(command);
+        assert!(
+            error
+                .as_str()
+                .is_some_and(|text| text.contains("unknown field")),
+            "{command}: ожидался отказ разбора, получено {error}"
+        );
+    }
+}
+
+/// Знак, которого ядро не выдавало, не принимается ни одной командой, а
+/// переименование с ним не трогает файл: план переписывания может прийти
+/// только от ядра (С2-6 «Граница»).
+#[test]
+fn foreign_token_is_rejected_and_renames_nothing() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let vault_dir = bind_stub_vault(&app, MAIN);
+    std::fs::write(vault_dir.path().join("a.md"), "текст").expect("заметка");
+    let cases = [
+        (
+            "entry_rename",
+            json!({ "path": ["a.md"], "new_name": "b.md", "links": "update", "token": FOREIGN_TOKEN }),
+        ),
+        (
+            "entry_move",
+            json!({ "path": ["a.md"], "new_dir": [], "links": "update", "token": FOREIGN_TOKEN }),
+        ),
+        (
+            "relink_answer",
+            json!({ "token": FOREIGN_TOKEN, "apply": true }),
+        ),
+        (
+            "links_flush_done",
+            json!({ "token": FOREIGN_TOKEN, "saved": true }),
+        ),
+    ];
+    for (command, request) in cases {
+        let error = core_error(
+            command,
+            invoke(&main, command, json!({ "request": request })).expect_err(command),
+        );
+        assert_eq!(error.code, ErrorCode::InvalidArgument, "{command}");
+        assert_eq!(error.field.as_deref(), Some("token"), "{command}");
+    }
+    assert!(vault_dir.path().join("a.md").exists());
+    assert!(!vault_dir.path().join("b.md").exists());
+}
+
+/// Без поля `links` переименование — как в 0.1: ответ — только путь.
+#[test]
+fn entry_rename_without_links_behaves_as_in_0_1() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let vault_dir = bind_stub_vault(&app, MAIN);
+    std::fs::write(vault_dir.path().join("a.md"), "текст").expect("заметка");
+
+    let response = invoke(
+        &main,
+        "entry_rename",
+        json!({ "request": { "path": ["a.md"], "new_name": "b.md" } }),
+    )
+    .expect("переименование");
+
+    assert_eq!(response, json!({ "path": ["b.md"] }));
+    assert!(vault_dir.path().join("b.md").exists());
+}
+
+/// Заглушки 0.2-0.1: индекс «строится», пустых или выдуманных данных нет.
+#[test]
+fn index_commands_answer_index_building_until_index_exists() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let _vault_dir = bind_stub_vault(&app, MAIN);
+    assert_eq!(
+        invoke(&main, "index_status", json!({})).expect("index_status"),
+        json!({ "state": "building", "done": 0, "total": 0 })
+    );
+    for name in ["backlinks_list", "tags_list", "tag_notes", "relink_preview"] {
+        assert_eq!(
+            invoke(&main, name, example_args(name)).expect(name),
+            json!({ "status": "index_building", "done": 0, "total": 0 }),
+            "{name}"
+        );
+    }
+}

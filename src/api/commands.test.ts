@@ -95,6 +95,13 @@ describe('обёртки команд ядра', () => {
       'window_close_cancel',
       'window_shown_note',
       'clipboard_read_text',
+      'index_status',
+      'backlinks_list',
+      'tags_list',
+      'tag_notes',
+      'relink_preview',
+      'relink_answer',
+      'links_flush_done',
     ];
     const camel = (name: string) => name.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
     expect(Object.keys(core).sort()).toEqual(names.map(camel).sort());

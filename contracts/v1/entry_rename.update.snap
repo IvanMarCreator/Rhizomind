@@ -1,0 +1,51 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "entry_rename",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "token",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    },
+    {
+      "code": "invalid_name",
+      "message_key": "errors.invalid_name",
+      "name_problem": "duplicate"
+    }
+  ],
+  "request": {
+    "links": "update",
+    "new_name": "Планёрка.md",
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ],
+    "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "response": {
+    "path": [
+      "Проекты",
+      "Планёрка.md"
+    ],
+    "relink": {
+      "failed": [
+        {
+          "path": [
+            "Архив",
+            "Старое.md"
+          ],
+          "reason": "busy"
+        }
+      ],
+      "retry_token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "updated": 4
+    }
+  },
+  "variant": "update"
+}

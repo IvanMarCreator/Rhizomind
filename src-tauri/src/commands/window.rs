@@ -17,7 +17,7 @@ use tauri::{Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult, ErrorCode};
 use super::events::TreeChange;
-use super::index::NoteIndex;
+use super::note_list::NoteList;
 use super::types::VaultPath;
 use super::{Core, OpenVault, blocking, checked_path};
 use crate::windows::closing::{self, Answer};
@@ -76,7 +76,7 @@ impl OpenVault {
     /// запоминается и показывается в написании списка заметок: имя заметки в
     /// заголовке (имя файла без `.md`) — как в хранилище, а не как в запросе.
     pub fn show_note(&self, path: Option<VaultPath>, set_title: &dyn Fn(&str)) -> CoreResult<()> {
-        let index = self.read_index();
+        let index = self.read_notes();
         let path = match path {
             None => None,
             Some(path) => {
@@ -101,12 +101,7 @@ impl OpenVault {
     /// заменили на месте (резервная копия переименованием и новый файл с тем
     /// же именем), остаётся. Заголовок ставится (`set_title`), только если
     /// изменился.
-    pub fn follow_shown(
-        &self,
-        index: &NoteIndex,
-        changes: &[TreeChange],
-        set_title: &dyn Fn(&str),
-    ) {
+    pub fn follow_shown(&self, index: &NoteList, changes: &[TreeChange], set_title: &dyn Fn(&str)) {
         let mut shown = self.shown_note();
         let Some(before) = shown.clone() else {
             return;

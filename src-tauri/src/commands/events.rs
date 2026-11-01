@@ -30,7 +30,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{EntryKind, FileVersion, VaultPath};
+use super::types::{EntryKind, FileVersion, RelinkToken, VaultPath};
 
 /// Имена событий.
 pub mod event {
@@ -51,10 +51,28 @@ pub mod event {
     /// записывает ввод и отвечает `window_close_ready` или
     /// `window_close_cancel` (задача 0.7, решение владельца 53).
     pub const WINDOW_CLOSE_REQUESTED: &str = "window:close-requested";
+    /// Ход сборки индекса хранилища (0.2, С2-3.7): данные — те же, что у
+    /// команды `index_status`; не чаще 4 раз в секунду.
+    pub const INDEX_STATUS: &str = "index:status";
+    /// Изменились обратные ссылки или теги (0.2): интерфейс перезапрашивает
+    /// видимый вид; не чаще 4 раз в секунду.
+    pub const INDEX_CHANGED: &str = "index:changed";
+    /// Ядро собирается переписать ссылки: окно записывает несохранённый
+    /// ввод всех своих заметок и отвечает `links_flush_done` (0.2, С2-5.4).
+    pub const LINKS_FLUSH_REQUESTED: &str = "links:flush-requested";
+    /// Нужен ответ пользователя об обновлении ссылок (внешние переименования,
+    /// повторы имён; 0.2, решения 110, 111): ответ — `relink_answer`.
+    pub const LINKS_PENDING: &str = "links:pending";
+    /// Ссылки обновлены: сколько заметок переписано, где не удалось и
+    /// почему (0.2, С2-3.5, решение 115).
+    pub const LINKS_UPDATED: &str = "links:updated";
+    /// Ход переписывания ссылок (перенос большой папки, 0.2, С2-8.3): не
+    /// чаще `limits::MAX_EVENTS_PER_SEC` раз в секунду.
+    pub const LINKS_PROGRESS: &str = "links:progress";
 }
 
 /// Все события API v1 — для тестов снимков.
-pub const EVENT_NAMES: [&str; 7] = [
+pub const EVENT_NAMES: [&str; 13] = [
     event::VAULT_CHANGED,
     event::NOTE_CHANGED,
     event::NOTE_RENAMED,
@@ -62,6 +80,12 @@ pub const EVENT_NAMES: [&str; 7] = [
     event::NOTE_CONFLICT_SAVED,
     event::VAULT_AVAILABILITY,
     event::WINDOW_CLOSE_REQUESTED,
+    event::INDEX_STATUS,
+    event::INDEX_CHANGED,
+    event::LINKS_FLUSH_REQUESTED,
+    event::LINKS_PENDING,
+    event::LINKS_UPDATED,
+    event::LINKS_PROGRESS,
 ];
 
 /// Одно изменение дерева.
@@ -186,4 +210,191 @@ pub struct WindowCloseRequestedPayload {
     /// Нет поля — `false` (данные события до задачи 0.11а: `{}`).
     #[serde(default)]
     pub session_end: bool,
+}
+
+// ---- 0.2 «Связи»: индекс и обновление ссылок (С2-5.5) ----------------------
+//
+// Расширение контракта v1 (решение Р16): новые события, прежние не менялись.
+// `index:status` несёт [`IndexStatus`](super::IndexStatus) — тот же ответ, что
+// у команды `index_status`.
+
+/// `index:changed`: изменились обратные ссылки или теги. Данных нет — окно
+/// перезапрашивает то, что показывает (`backlinks_list`, `tags_list`,
+/// `tag_notes`): так в событии нет ни путей, ни тегов.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexChangedPayload {}
+
+/// `links:flush-requested`: окно записывает несохранённый ввод всех своих
+/// заметок (как при закрытии окна, решение 53, без закрытия) и отвечает
+/// `links_flush_done` с этим же знаком. Без ответа за 10 с — как ответ «не
+/// записано»: ссылки не переписываются (С2-5.4, шаг 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksFlushRequestedPayload {
+    /// Знак ожидания; возвращается в `links_flush_done`.
+    pub token: RelinkToken,
+}
+
+/// Переименование «откуда → куда» (заметка или папка), путями хранилища.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathRename {
+    /// Прежний путь.
+    pub from: VaultPath,
+    /// Новый путь.
+    pub to: VaultPath,
+}
+
+/// О чём вопрос в `links:pending`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingReason {
+    /// Подтверждённые переименования на диске (Проводник) в режиме «Всегда
+    /// спрашивать» (решение 110).
+    ExternalRename,
+    /// Появились повторы имён: уточнить ссылки путём больше чем в 20
+    /// заметках (решение 111).
+    Duplicate,
+}
+
+/// `links:pending`: нужен ответ пользователя — уведомление внизу окна с
+/// кнопками, висит до ответа (`relink_answer` с этим знаком). Одно событие
+/// на пачку изменений.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksPendingPayload {
+    /// Знак плана для `relink_answer`.
+    pub token: RelinkToken,
+    /// Внешние переименования или повторы имён.
+    pub reason: PendingReason,
+    /// Сколько заметок будет переписано.
+    pub notes: u32,
+    /// Сколько ссылок будет переписано.
+    pub links: u32,
+    /// Переименования пачки — не больше
+    /// [`limits::MAX_PENDING_RENAMES`](super::limits::MAX_PENDING_RENAMES);
+    /// у `duplicate` — пусто.
+    pub renames: Vec<PathRename>,
+    /// Сколько всего переименований в пачке (может быть больше `renames`).
+    pub renames_total: u32,
+}
+
+/// Почему ссылки обновлялись (`links:updated`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinksUpdateReason {
+    /// Переименование или перемещение в приложении (`entry_rename`,
+    /// `entry_move` с `links: update`).
+    Rename,
+    /// Подтверждённое переименование на диске.
+    ExternalRename,
+    /// Уточнение путём при повторе имени.
+    Duplicate,
+    /// Доделка обновления, прерванного при прошлом запуске (журнал
+    /// `link-update.json`).
+    Resumed,
+    /// Повтор пропущенных заметок по `retry_token` (решение 115).
+    Retry,
+}
+
+/// Почему заметка не переписана (С2-3.5 «Где ссылки не могут быть
+/// обновлены»). Повторить (`retry_token`) можно только `busy` и `io`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelinkFailureReason {
+    /// Больше максимального размера для редактирования (настройка).
+    TooLarge,
+    /// Не UTF-8.
+    NotUtf8,
+    /// Файл занят другой программой или запись запрещена (только чтение,
+    /// нет прав).
+    Busy,
+    /// Другая ошибка ввода-вывода (нет места, носитель недоступен).
+    Io,
+}
+
+impl RelinkFailureReason {
+    /// Можно ли повторить (решение 115): занятые и недоступные — да, больше
+    /// лимита и не UTF-8 — нет.
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Self::Busy | Self::Io)
+    }
+}
+
+/// Заметка, которую не удалось переписать.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelinkFailure {
+    /// Заметка.
+    pub path: VaultPath,
+    /// Причина.
+    pub reason: RelinkFailureReason,
+}
+
+/// Итог выполнения плана переписывания: ответ `entry_rename`/`entry_move`
+/// (поле `relink`) и данные `links:updated`.
+///
+/// **Правило контракта:** уведомление пользователю («Ссылки обновлены…»,
+/// «Не удалось обновить…») показывается **только по событию
+/// `links:updated`**; поле `relink` в ответе переименования — для логики
+/// окна (Ctrl+Z, выбор открытой заметки и т.п.), не для показа: иначе одно
+/// обновление дало бы два уведомления.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelinkOutcome {
+    /// Сколько заметок переписано.
+    pub updated: u32,
+    /// Заметки, которые переписать не удалось, с причиной.
+    pub failed: Vec<RelinkFailure>,
+    /// Знак для повтора (`relink_answer` с `apply: true`): есть, только если
+    /// среди `failed` есть `busy` или `io` (решение 115).
+    pub retry_token: Option<RelinkToken>,
+}
+
+/// `links:updated`: ссылки обновлены — единственный повод для уведомления
+/// пользователю об итоге (см. [`RelinkOutcome`]). Интерфейс показывает «Ссылки
+/// обновлены в N заметках» и, если `failed` не пуст, «Не удалось обновить
+/// ссылки в N заметках» с кнопками «Показать» и (при `retry_token`)
+/// «Повторить». Для переписанных заметок ядро отправляет и `note:changed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksUpdatedPayload {
+    /// Почему обновлялись ссылки.
+    pub reason: LinksUpdateReason,
+    /// Сколько заметок переписано.
+    pub updated: u32,
+    /// Заметки, которые переписать не удалось.
+    pub failed: Vec<RelinkFailure>,
+    /// Знак для «Повторить»; `null` — повторять нечего.
+    pub retry_token: Option<RelinkToken>,
+}
+
+impl LinksUpdatedPayload {
+    /// Данные события по итогу плана.
+    pub fn new(reason: LinksUpdateReason, outcome: RelinkOutcome) -> Self {
+        Self {
+            reason,
+            updated: outcome.updated,
+            failed: outcome.failed,
+            retry_token: outcome.retry_token,
+        }
+    }
+}
+
+/// `links:progress`: ход переписывания ссылок (перенос папки на 1 000
+/// заметок — секунды, «ход выполнения виден», С2-8.3). Не чаще
+/// [`limits::MAX_EVENTS_PER_SEC`](super::limits::MAX_EVENTS_PER_SEC) раз в
+/// секунду; конец — `links:updated`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksProgressPayload {
+    /// Знак плана, если план выдавался окну (`relink_preview`,
+    /// `links:pending`); `null` — план без вопроса («Всегда обновлять»,
+    /// уточнение до 20 заметок, доделка).
+    pub token: Option<RelinkToken>,
+    /// Сколько заметок плана уже обработано.
+    pub done: u32,
+    /// Сколько заметок в плане.
+    pub total: u32,
 }

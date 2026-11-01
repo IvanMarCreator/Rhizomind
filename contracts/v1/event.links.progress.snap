@@ -1,0 +1,11 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "links:progress",
+  "payload": {
+    "done": 250,
+    "token": null,
+    "total": 1000
+  }
+}

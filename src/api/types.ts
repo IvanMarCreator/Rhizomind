@@ -144,14 +144,31 @@ export interface EntryPathResponse {
   path: VaultPath;
 }
 
+/** Обновлять ли ссылки при переименовании или перемещении (0.2); нет поля — `keep`, как в 0.1. */
+export type LinksMode = 'keep' | 'update';
+
 export interface EntryRenameRequest {
   path: VaultPath;
   new_name: string;
+  /** Нет поля — `keep`. При `update` обязателен `token` из `relink_preview`. */
+  links?: LinksMode;
+  /** Знак плана из `relink_preview`: только вместе с `links: 'update'`. */
+  token?: RelinkToken;
 }
 
 export interface EntryMoveRequest {
   path: VaultPath;
   new_dir: VaultPath;
+  /** Как у `entry_rename`. */
+  links?: LinksMode;
+  token?: RelinkToken;
+}
+
+/** Ответ `entry_rename` и `entry_move`. */
+export interface EntryMovedResponse {
+  path: VaultPath;
+  /** Итог обновления ссылок — только при `links: 'update'`; для логики окна, уведомление — по `links:updated`. */
+  relink?: RelinkOutcome;
 }
 
 export interface EntryPathRequest {
@@ -272,6 +289,12 @@ export type NewNoteLocation =
  */
 export type HotkeyOverrides = { [command: string]: string[] };
 
+/**
+ * «При переименовании заметки, на которую есть ссылки» (0.2, С2-3.5):
+ * «Всегда спрашивать» или «Всегда обновлять ссылки»; «Никогда» нет (решение 116).
+ */
+export type RenameLinks = 'ask' | 'update';
+
 /** Настройки хранилища (версию формата файла ставит ядро). */
 export interface Settings {
   theme: Theme;
@@ -282,6 +305,8 @@ export interface Settings {
   confirm_delete: boolean;
   max_edit_size_bytes: number;
   hotkeys: HotkeyOverrides;
+  /** С 0.2; файл 0.1 без поля ядро читает как `ask`. */
+  rename_links: RenameLinks;
 }
 
 export interface SettingsReadResponse {
@@ -337,6 +362,139 @@ export type ClipboardReadOutcome =
  * Все команды API v1: запрос (`null` — без параметров) и ответ (`null` —
  * пустой ответ). Ключи — имена команд ядра (src-tauri/src/commands/list.rs).
  */
+// ---- Индекс и обновление ссылок (0.2 «Связи», С2-5.5) ---------------------
+
+/**
+ * Знак плана переписывания ссылок: 32 шестнадцатеричные цифры. Выдаёт только
+ * ядро; интерфейс лишь возвращает его. Одноразовый, привязан к окну и плану,
+ * живёт 10 минут; неизвестный или просроченный — `invalid_argument` с полем
+ * `token`: заново спросить `relink_preview`.
+ */
+export type RelinkToken = string;
+
+export type IndexState = 'building' | 'ready';
+
+/** Ответ `index_status` и данные `index:status`. `total: 0` — ещё неизвестно. */
+export interface IndexStatus {
+  state: IndexState;
+  done: number;
+  total: number;
+}
+
+/** Ход сборки в ответе команды, которой нужен готовый индекс. */
+export interface IndexProgress {
+  done: number;
+  total: number;
+}
+
+/**
+ * Ответ команды, которой нужен готовый индекс: данные или «индекс строится»
+ * (окно показывает «Индекс строится… N %» и ждёт `index:status` с `ready`).
+ */
+export type IndexReply<T> = ({ status: 'ready' } & T) | ({ status: 'index_building' } & IndexProgress);
+
+export interface BacklinksListRequest {
+  path: VaultPath;
+}
+
+/** Строка с ссылкой — показывается как текст, не как HTML. */
+export interface BacklinkLine {
+  /** Номер строки, с 1. */
+  line: number;
+  /** Начало ссылки в строке, единиц UTF-16 — куда поставить курсор. */
+  column_utf16: number;
+  /** Строка, обрезанная вокруг ссылки до `LIMITS.max_snippet_chars` символов. */
+  snippet: string;
+  /** Выделение ссылки в `snippet`, единиц UTF-16: [from, to). */
+  from_utf16: number;
+  to_utf16: number;
+}
+
+export interface BacklinkNote {
+  from: VaultPath;
+  /** Имя без `.md`. */
+  name: string;
+  /** Всего ссылок в этой заметке (строк — не больше `LIMITS.max_backlink_lines`). */
+  links_total: number;
+  links: BacklinkLine[];
+}
+
+export interface Backlinks {
+  /** Всего ссылающихся заметок (в `notes` — не больше `LIMITS.max_backlink_notes`). */
+  notes_total: number;
+  /** Показано не всё: пределы заметок, строк на заметку или `LIMITS.max_backlink_lines_total` строк на ответ. */
+  truncated: boolean;
+  notes: BacklinkNote[];
+}
+
+export interface TagSummary {
+  /** Написание для показа, без `#` (самое частое, решение 113). */
+  tag: string;
+  /** Ключ тега — для `tag_notes`. */
+  key: string;
+  count: number;
+}
+
+export interface Tags {
+  tags: TagSummary[];
+}
+
+export interface TagNotesRequest {
+  key: string;
+}
+
+export interface TagNotes {
+  /** Всего заметок с тегом (в `notes` — не больше `LIMITS.max_tag_notes`). */
+  notes_total: number;
+  notes: VaultPath[];
+}
+
+/** Переименование или перемещение, которое собирается сделать пользователь. */
+export type RelinkPreviewRequest =
+  | { op: 'rename'; path: VaultPath; new_name: string }
+  | { op: 'move'; path: VaultPath; new_dir: VaultPath };
+
+/** `notes: 0` — переписывать нечего: переименовать сразу, без окна, с `links: 'keep'`. */
+export interface RelinkPreview {
+  notes: number;
+  links: number;
+  token: RelinkToken;
+}
+
+export interface RelinkAnswerRequest {
+  /** Знак из `links:pending` или `retry_token` («Повторить»). */
+  token: RelinkToken;
+  /** `true` — обновить / уточнить / повторить; `false` — не обновлять / не трогать. */
+  apply: boolean;
+}
+
+export interface LinksFlushDoneRequest {
+  /** Знак из `links:flush-requested`. */
+  token: RelinkToken;
+  /** `false` — записать ввод не удалось: ссылки не переписываются. */
+  saved: boolean;
+}
+
+/** Почему заметка не переписана; «Повторить» — только `busy` и `io` (решение 115). */
+export type RelinkFailureReason = 'too_large' | 'not_utf8' | 'busy' | 'io';
+
+export interface RelinkFailure {
+  path: VaultPath;
+  reason: RelinkFailureReason;
+}
+
+/**
+ * Итог переписывания. Правило контракта: уведомление пользователю — только по
+ * событию `links:updated`; поле `relink` в ответе `entry_rename`/`entry_move` —
+ * для логики окна (Ctrl+Z и т.п.), не для показа.
+ */
+export interface RelinkOutcome {
+  updated: number;
+  failed: RelinkFailure[];
+  /** Знак для «Повторить»; `null` — повторять нечего. */
+  retry_token: RelinkToken | null;
+}
+
 export interface CoreCommands {
   vault_list: { request: null; response: VaultListResponse };
   vault_current: { request: null; response: VaultCurrentResponse };
@@ -351,8 +509,8 @@ export interface CoreCommands {
   tree_list: { request: null; response: TreeListResponse };
   note_create: { request: NameInDirRequest; response: EntryPathResponse };
   folder_create: { request: NameInDirRequest; response: EntryPathResponse };
-  entry_rename: { request: EntryRenameRequest; response: EntryPathResponse };
-  entry_move: { request: EntryMoveRequest; response: EntryPathResponse };
+  entry_rename: { request: EntryRenameRequest; response: EntryMovedResponse };
+  entry_move: { request: EntryMoveRequest; response: EntryMovedResponse };
   entry_trash: { request: EntryPathRequest; response: TrashOutcome };
   name_check: { request: NameCheckRequest; response: NameCheck };
   note_read: { request: NoteReadRequest; response: NoteReadResponse };
@@ -373,6 +531,17 @@ export interface CoreCommands {
   window_shown_note: { request: WindowShownNoteRequest; response: null };
   /** Текст буфера обмена — только по щелчку пользователя по «Вставить» (задача 2.19). */
   clipboard_read_text: { request: null; response: ClipboardReadOutcome };
+  // Индекс хранилища (0.2)
+  index_status: { request: null; response: IndexStatus };
+  backlinks_list: { request: BacklinksListRequest; response: IndexReply<Backlinks> };
+  tags_list: { request: null; response: IndexReply<Tags> };
+  tag_notes: { request: TagNotesRequest; response: IndexReply<TagNotes> };
+  // Обновление ссылок (0.2)
+  /** Пока индекс строится — `index_building`: окно «Подождите, индекс строится…» (решение 114). */
+  relink_preview: { request: RelinkPreviewRequest; response: IndexReply<RelinkPreview> };
+  /** Итог приходит событием `links:updated`. */
+  relink_answer: { request: RelinkAnswerRequest; response: null };
+  links_flush_done: { request: LinksFlushDoneRequest; response: null };
 }
 
 export type CommandName = keyof CoreCommands;
@@ -441,6 +610,50 @@ export interface WindowCloseRequestedPayload {
  * своего хранилища; `note:*` — для любой заметки хранилища, интерфейс
  * фильтрует открытые сам.
  */
+/** `index:changed`: обратные ссылки или теги изменились — перезапросить видимый вид. */
+export type IndexChangedPayload = Record<string, never>;
+
+/** `links:flush-requested`: записать ввод всех заметок окна и ответить `links_flush_done`. */
+export interface LinksFlushRequestedPayload {
+  token: RelinkToken;
+}
+
+export interface PathRename {
+  from: VaultPath;
+  to: VaultPath;
+}
+
+export type PendingReason = 'external_rename' | 'duplicate';
+
+/** `links:pending`: уведомление с кнопками, висит до ответа `relink_answer`. */
+export interface LinksPendingPayload {
+  token: RelinkToken;
+  reason: PendingReason;
+  notes: number;
+  links: number;
+  /** Не больше `LIMITS.max_pending_renames`; у `duplicate` — пусто. */
+  renames: PathRename[];
+  renames_total: number;
+}
+
+export type LinksUpdateReason = 'rename' | 'external_rename' | 'duplicate' | 'resumed' | 'retry';
+
+/** `links:updated`: «Ссылки обновлены в N заметках»; `failed` — «Показать», `retry_token` — «Повторить». */
+export interface LinksUpdatedPayload {
+  reason: LinksUpdateReason;
+  updated: number;
+  failed: RelinkFailure[];
+  retry_token: RelinkToken | null;
+}
+
+/** `links:progress`: ход переписывания (перенос большой папки), не чаще `LIMITS.max_events_per_sec` в секунду. */
+export interface LinksProgressPayload {
+  /** Знак плана, если план выдавался окну; `null` — план без вопроса. */
+  token: RelinkToken | null;
+  done: number;
+  total: number;
+}
+
 export interface CoreEvents {
   'vault:changed': VaultChangedPayload;
   'note:changed': NoteChangedPayload;
@@ -449,6 +662,12 @@ export interface CoreEvents {
   'note:conflict-saved': NoteConflictSavedPayload;
   'vault:availability': VaultAvailabilityPayload;
   'window:close-requested': WindowCloseRequestedPayload;
+  'index:status': IndexStatus;
+  'index:changed': IndexChangedPayload;
+  'links:flush-requested': LinksFlushRequestedPayload;
+  'links:pending': LinksPendingPayload;
+  'links:updated': LinksUpdatedPayload;
+  'links:progress': LinksProgressPayload;
 }
 
 export type EventName = keyof CoreEvents;

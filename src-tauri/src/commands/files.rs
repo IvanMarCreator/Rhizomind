@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult, NameProblem};
-use super::events::TreeChange;
-use super::types::{EntryKind, VaultPath};
+use super::events::{RelinkOutcome, TreeChange};
+use super::limits;
+use super::types::{EntryKind, RelinkToken, VaultPath};
 use super::{Core, blocking, check_entry_name, checked_path};
 
 /// Элемент дерева файлов.
@@ -60,6 +61,24 @@ pub struct EntryPathResponse {
     pub path: VaultPath,
 }
 
+/// Обновлять ли ссылки при переименовании или перемещении (0.2, С2-3.5).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinksMode {
+    /// Ссылки не трогаются — поведение 0.1 (по умолчанию: поля нет).
+    #[default]
+    Keep,
+    /// Переписать ссылки по плану ядра; нужен `token` из `relink_preview`.
+    Update,
+}
+
+impl LinksMode {
+    /// `keep` — поле в JSON не пишется (запрос 0.1 не меняется).
+    pub fn is_keep(&self) -> bool {
+        *self == Self::Keep
+    }
+}
+
 /// Запрос `entry_rename`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +87,13 @@ pub struct EntryRenameRequest {
     pub path: VaultPath,
     /// Новое полное имя, как на диске (для заметки — с `.md`).
     pub new_name: String,
+    /// Обновлять ли ссылки (0.2); нет поля — `keep`, как в 0.1.
+    #[serde(default, skip_serializing_if = "LinksMode::is_keep")]
+    pub links: LinksMode,
+    /// Знак плана из `relink_preview`: обязателен при `links: update`,
+    /// запрещён при `keep` (`invalid_argument`, поле `token`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<RelinkToken>,
 }
 
 /// Запрос `entry_move`.
@@ -78,6 +104,35 @@ pub struct EntryMoveRequest {
     pub path: VaultPath,
     /// Папка назначения (`[]` — корень).
     pub new_dir: VaultPath,
+    /// Обновлять ли ссылки (0.2); нет поля — `keep`, как в 0.1.
+    #[serde(default, skip_serializing_if = "LinksMode::is_keep")]
+    pub links: LinksMode,
+    /// Знак плана из `relink_preview` — как у `entry_rename`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<RelinkToken>,
+}
+
+/// Ответ `entry_rename` и `entry_move`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryMovedResponse {
+    /// Путь элемента после операции.
+    pub path: VaultPath,
+    /// Итог обновления ссылок — только при `links: update`; при `keep` поля
+    /// нет (ответ как в 0.1). Для логики окна, не для показа: уведомление —
+    /// только по `links:updated` (правило контракта, `RelinkOutcome`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relink: Option<RelinkOutcome>,
+}
+
+/// `links` и `token` согласованы: `update` — со знаком правильного вида,
+/// `keep` — без знака.
+fn check_links_mode(links: LinksMode, token: Option<&RelinkToken>) -> CoreResult<()> {
+    match (links, token) {
+        (LinksMode::Keep, None) => Ok(()),
+        (LinksMode::Update, Some(token)) => limits::token(token, "token"),
+        _ => Err(CoreError::invalid_argument("token")),
+    }
 }
 
 /// Запрос `entry_trash`.
@@ -203,18 +258,23 @@ pub async fn folder_create<R: Runtime>(
     .await
 }
 
-/// Переименование файла или папки. Ссылки в 0.1 не обновляются (С3.2).
-/// Заметка не может сменить расширение `.md`, другой файл — стать заметкой
-/// (`invalid_name` с причиной `note_extension`); смена только регистра
-/// разрешена.
+/// Переименование файла или папки. Заметка не может сменить расширение
+/// `.md`, другой файл — стать заметкой (`invalid_name` с причиной
+/// `note_extension`); смена только регистра разрешена.
+///
+/// `links: keep` (по умолчанию) — ссылки не трогаются, как в 0.1 (С3.2).
+/// `links: update` с `token` из `relink_preview` — ссылки обновляются по
+/// плану ядра (С2-3.5, порядок — модуль `relink_cmds`); реализация — задача
+/// 0.2-4.6, до неё знак ядру неизвестен (`invalid_argument`, `token`).
 #[tauri::command]
 pub async fn entry_rename<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
     request: EntryRenameRequest,
-) -> CoreResult<EntryPathResponse> {
+) -> CoreResult<EntryMovedResponse> {
     checked_path(&request.path, "path")?;
     check_entry_name(&request.new_name, "new_name")?;
+    check_links_mode(request.links, request.token.as_ref())?;
     let old_name = request
         .path
         .file_name()
@@ -223,34 +283,42 @@ pub async fn entry_rename<R: Runtime>(
         return Err(CoreError::invalid_name(problem));
     }
     let open = core.require_vault(window.label())?;
+    if let Some(token) = &request.token {
+        super::relink_cmds::unknown_token(token, "token")?;
+    }
     blocking(move || {
         let path = open.vault.rename(&request.path, &request.new_name)?;
         open.apply_own(&[TreeChange::Renamed {
             from: request.path,
             to: path.clone(),
         }]);
-        Ok(EntryPathResponse { path })
+        Ok(EntryMovedResponse { path, relink: None })
     })
     .await
 }
 
-/// Перемещение файла или папки в другую папку.
+/// Перемещение файла или папки в другую папку. `links` и `token` — как у
+/// [`entry_rename`].
 #[tauri::command]
 pub async fn entry_move<R: Runtime>(
     window: Window<R>,
     core: State<'_, Core>,
     request: EntryMoveRequest,
-) -> CoreResult<EntryPathResponse> {
+) -> CoreResult<EntryMovedResponse> {
     checked_path(&request.path, "path")?;
     checked_path(&request.new_dir, "new_dir")?;
+    check_links_mode(request.links, request.token.as_ref())?;
     let open = core.require_vault(window.label())?;
+    if let Some(token) = &request.token {
+        super::relink_cmds::unknown_token(token, "token")?;
+    }
     blocking(move || {
         let path = open.vault.move_entry(&request.path, &request.new_dir)?;
         open.apply_own(&[TreeChange::Renamed {
             from: request.path,
             to: path.clone(),
         }]);
-        Ok(EntryPathResponse { path })
+        Ok(EntryMovedResponse { path, relink: None })
     })
     .await
 }

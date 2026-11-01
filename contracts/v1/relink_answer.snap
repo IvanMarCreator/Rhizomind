@@ -1,0 +1,22 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "relink_answer",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "token",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "apply": true,
+    "token": "dddddddddddddddddddddddddddddddd"
+  },
+  "response": null
+}

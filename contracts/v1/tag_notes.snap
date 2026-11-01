@@ -1,0 +1,33 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "tag_notes",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "key",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "key": "проект"
+  },
+  "response": {
+    "notes": [
+      [
+        "Проекты",
+        "Альфа.md"
+      ],
+      [
+        "Встреча.md"
+      ]
+    ],
+    "notes_total": 2,
+    "status": "ready"
+  }
+}

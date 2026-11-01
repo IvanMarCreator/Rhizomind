@@ -1,0 +1,35 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "relink_preview",
+  "errors": [
+    {
+      "code": "invalid_name",
+      "message_key": "errors.invalid_name",
+      "name_problem": "note_extension"
+    },
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    },
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "new_name": "Планёрка.md",
+    "op": "rename",
+    "path": [
+      "Проекты",
+      "Встреча.md"
+    ]
+  },
+  "response": {
+    "links": 7,
+    "notes": 5,
+    "status": "ready",
+    "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

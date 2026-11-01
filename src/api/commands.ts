@@ -68,4 +68,17 @@ export const core = {
   // Буфер обмена (задача 2.19, решение 98)
   /** Текст буфера обмена: вызывать только по щелчку пользователя по пункту «Вставить». */
   clipboardReadText: withoutRequest('clipboard_read_text'),
+  // Индекс хранилища (0.2)
+  indexStatus: withoutRequest('index_status'),
+  /** Пока индекс строится — `{ status: 'index_building', done, total }`. */
+  backlinksList: withRequest('backlinks_list'),
+  tagsList: withoutRequest('tags_list'),
+  tagNotes: withRequest('tag_notes'),
+  // Обновление ссылок (0.2)
+  /** Сколько заметок и ссылок перепишет переименование, и знак плана. */
+  relinkPreview: withRequest('relink_preview'),
+  /** Ответ на `links:pending` или «Повторить» по `retry_token`. */
+  relinkAnswer: withRequest('relink_answer'),
+  /** Ответ на `links:flush-requested`: ввод записан (или нет). */
+  linksFlushDone: withRequest('links_flush_done'),
 } as const;

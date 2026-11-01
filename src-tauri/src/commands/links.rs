@@ -121,7 +121,7 @@ pub async fn links_resolve<R: Runtime>(
     limits::link_targets(request.targets.len())?;
     let open = core.require_vault(window.label())?;
     blocking(move || {
-        let index = open.read_index();
+        let index = open.read_notes();
         let links = index.links();
         let results = request
             .targets
@@ -152,7 +152,7 @@ pub async fn links_suggest<R: Runtime>(
     let open = core.require_vault(window.label())?;
     blocking(move || {
         let items = open
-            .read_index()
+            .read_notes()
             .links()
             .suggest(&request.from, &request.query)?;
         Ok(LinksSuggestResponse { items })
@@ -170,7 +170,7 @@ pub async fn switcher_search<R: Runtime>(
     limits::query(&request.query)?;
     let open = core.require_vault(window.label())?;
     blocking(move || {
-        let items = open.read_index().switcher().search(&request.query)?;
+        let items = open.read_notes().switcher().search(&request.query)?;
         Ok(SwitcherSearchResponse { items })
     })
     .await

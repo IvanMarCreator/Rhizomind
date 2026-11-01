@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-relink-preview"
+description = "Enables the relink_preview command without any pre-configured scope."
+commands.allow = ["relink_preview"]
+
+[[permission]]
+identifier = "deny-relink-preview"
+description = "Denies the relink_preview command without any pre-configured scope."
+commands.deny = ["relink_preview"]

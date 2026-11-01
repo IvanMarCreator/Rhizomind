@@ -29,6 +29,7 @@ source: src/commands/contract_tests.rs
           "Входящие"
         ]
       },
+      "rename_links": "ask",
       "text_width": "column",
       "theme": "system"
     }

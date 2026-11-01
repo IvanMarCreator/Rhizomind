@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-tag-notes"
+description = "Enables the tag_notes command without any pre-configured scope."
+commands.allow = ["tag_notes"]
+
+[[permission]]
+identifier = "deny-tag-notes"
+description = "Denies the tag_notes command without any pre-configured scope."
+commands.deny = ["tag_notes"]

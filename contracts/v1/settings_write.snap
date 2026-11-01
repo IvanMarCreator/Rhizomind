@@ -26,6 +26,7 @@ source: src/commands/contract_tests.rs
       "new_note_location": {
         "kind": "current_folder"
       },
+      "rename_links": "update",
       "text_width": "full",
       "theme": "dark"
     }

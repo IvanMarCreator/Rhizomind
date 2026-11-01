@@ -34,6 +34,25 @@ source: src/commands/contract_tests.rs
     "io_failed",
     "nested_vault"
   ],
+  "IndexReply.status": [
+    "ready",
+    "index_building"
+  ],
+  "IndexState": [
+    "building",
+    "ready"
+  ],
+  "LinksMode": [
+    "keep",
+    "update"
+  ],
+  "LinksUpdateReason": [
+    "rename",
+    "external_rename",
+    "duplicate",
+    "resumed",
+    "retry"
+  ],
   "NameCheck.status": [
     "ok",
     "rejected"
@@ -64,9 +83,27 @@ source: src/commands/contract_tests.rs
     "opened",
     "cancelled"
   ],
+  "PendingReason": [
+    "external_rename",
+    "duplicate"
+  ],
   "ReadOnlyReason.reason": [
     "too_large",
     "invalid_utf8"
+  ],
+  "RelinkFailureReason": [
+    "too_large",
+    "not_utf8",
+    "busy",
+    "io"
+  ],
+  "RelinkPreviewRequest.op": [
+    "rename",
+    "move"
+  ],
+  "RenameLinks": [
+    "ask",
+    "update"
   ],
   "TextWidth": [
     "column",

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-links-flush-done"
+description = "Enables the links_flush_done command without any pre-configured scope."
+commands.allow = ["links_flush_done"]
+
+[[permission]]
+identifier = "deny-links-flush-done"
+description = "Denies the links_flush_done command without any pre-configured scope."
+commands.deny = ["links_flush_done"]

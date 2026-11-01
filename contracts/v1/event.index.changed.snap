@@ -1,0 +1,7 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "event": "index:changed",
+  "payload": {}
+}
