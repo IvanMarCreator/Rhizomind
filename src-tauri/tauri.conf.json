@@ -31,9 +31,21 @@
     "shortDescription": "Local-only knowledge base with linked Markdown notes",
     "category": "Productivity",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "createUpdaterArtifacts": false,
+    "fileAssociations": [],
     "windows": {
       "webviewInstallMode": { "type": "skip" },
-      "nsis": { "installMode": "currentUser" }
+      "allowDowngrades": false,
+      "wix": {
+        "upgradeCode": "fa90db5e-2493-508a-bd33-bf8b0b833728",
+        "language": { "ru-RU": { "localePath": "windows/wix/ru-RU.wxl" } }
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "template": "windows/nsis/installer.nsi",
+        "languages": ["Russian"],
+        "displayLanguageSelector": false
+      }
     }
   }
 }

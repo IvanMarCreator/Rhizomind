@@ -8,7 +8,8 @@ $files = @(
   (Join-Path $root 'docs\security\network-audit.ps1'),
   (Join-Path $PSScriptRoot 'parse.tests.ps1'),
   (Join-Path $PSScriptRoot 'run-unattended.ps1'),
-  (Join-Path $PSScriptRoot 'check-syntax.ps1')
+  (Join-Path $PSScriptRoot 'check-syntax.ps1'),
+  (Join-Path $root 'tests\installer\check-installers.ps1')
 )
 $failed = 0
 Write-Host "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"

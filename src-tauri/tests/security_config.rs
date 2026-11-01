@@ -173,6 +173,39 @@ fn installer_does_not_download_webview2_and_nsis_is_per_user() {
 }
 
 #[test]
+fn installers_have_no_updater_associations_or_tauri_webview2_section() {
+    // Задача 3.4: установщики без автообновления (нет артефактов обновления и
+    // плагина updater), без ассоциаций файлов и протоколов; NSIS — свой шаблон
+    // без раздела установки WebView2 (tools/installer/nsis-template.ts), MSI —
+    // постоянный код обновления (иначе Windows примет новую версию за другую
+    // программу).
+    let config = config();
+    let bundle = &config["bundle"];
+    assert_eq!(bundle["targets"], serde_json::json!(["msi", "nsis"]));
+    assert_eq!(bundle["createUpdaterArtifacts"], false);
+    assert_eq!(bundle["fileAssociations"], serde_json::json!([]));
+    assert!(config["plugins"].get("updater").is_none());
+    assert!(config["plugins"].get("deep-link").is_none());
+    let windows = &bundle["windows"];
+    assert_eq!(windows["nsis"]["template"], "windows/nsis/installer.nsi");
+    assert_eq!(
+        windows["wix"]["upgradeCode"],
+        "fa90db5e-2493-508a-bd33-bf8b0b833728"
+    );
+    let template = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("windows/nsis/installer.nsi"),
+    )
+    .expect("шаблон NSIS");
+    assert!(!template.contains("Section WebView2"));
+    assert!(!template.contains("NSISdl"));
+    let manifest = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+    )
+    .expect("Cargo.toml");
+    assert!(!manifest.contains("tauri-plugin-updater"));
+}
+
+#[test]
 fn only_main_and_manager_capabilities_are_enabled() {
     assert_eq!(
         config()["app"]["security"]["capabilities"],

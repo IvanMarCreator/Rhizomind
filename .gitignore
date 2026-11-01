@@ -27,7 +27,7 @@ __pycache__/
 .env.*
 
 # Сборки и отчёты тестов
-release/
+/release/
 out/
 coverage/
 test-results/

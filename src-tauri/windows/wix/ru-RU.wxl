@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Русские строки установщика MSI для шаблона Tauri (bundle.windows.wix.language
+     в tauri.conf.json). Окна установщика переводит WiX (WixUI, ru-RU); здесь — строки
+     самого шаблона Tauri. TauriLanguage и TauriCodepage Tauri дописывает сам. -->
+<WixLocalization Culture="ru-ru" Codepage="1251" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="LaunchApp">Запустить Rhizomind</String>
+  <String Id="DowngradeErrorMessage">Уже установлена более новая версия Rhizomind.</String>
+  <String Id="PathEnvVarFeature">Файл программы Rhizomind. Переменная среды PATH не меняется.</String>
+  <String Id="InstallAppFeature">Устанавливает Rhizomind.</String>
+</WixLocalization>
