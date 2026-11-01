@@ -438,6 +438,8 @@ Var AppStartMenuFolder
 !define MUI_FINISHPAGE_SHOWREADME
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
 !define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
+; Rhizomind: ярлык на рабочем столе — только по галочке, по умолчанию снята (решение 107)
+!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 ; Show run app after installation.
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
@@ -682,12 +684,8 @@ Section Install
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
 
-  ; Create desktop shortcut for silent and passive installers
-  ; because finish page will be skipped
-  ${If} $PassiveMode = 1
-  ${OrIf} ${Silent}
-    Call CreateOrUpdateDesktopShortcut
-  ${EndIf}
+  ; Rhizomind: тихая (/S) и пассивная (/P) установка не создают ярлык на рабочем
+  ; столе (решение 107: рабочий стол бывает перенаправлен в OneDrive)
 
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL

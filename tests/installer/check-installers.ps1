@@ -125,13 +125,26 @@ function Get-TopLevel {
   return $result
 }
 
+# Регистрации (ассоциации, протоколы, автозапуск): новый ключ в HKCU\Software\Classes
+# или значение в ...\Run с именем программы или её идентификатора — ошибка, а не
+# строка отчёта. Прочие новые ключи там — записи Windows (см. docs/SECURITY.md).
+$registrationTops = @('HKCU\Software\Classes', 'HKCU\...\Run')
+$registrationPattern = 'rhizomind'  # и Rhizomind, и io.github.ivanmarcreator.rhizomind (-match без учёта регистра)
+
 function Compare-TopLevel($before, $after, [string] $stage) {
   $new = @()
+  $registrations = @()
   foreach ($t in $topLevel) {
-    foreach ($n in $after[$t.Name]) { if ($before[$t.Name] -notcontains $n) { $new += "$($t.Name)\$n" } }
+    foreach ($n in $after[$t.Name]) {
+      if ($before[$t.Name] -notcontains $n) {
+        $new += "$($t.Name)\$n"
+        if (($registrationTops -contains $t.Name) -and ($n -match $registrationPattern)) { $registrations += "$($t.Name)\$n" }
+      }
+    }
   }
   if ($new.Count -eq 0) { Note "- Новых элементов верхнего уровня ($stage): нет" }
   else { Note "- Новые элементы верхнего уровня ($stage): $($new -join '; ')" }
+  Check "нет регистраций программы в HKCU\Software\Classes и автозапуске ($stage)" ($registrations.Count -eq 0) ($registrations -join '; ')
   return $new
 }
 
@@ -225,6 +238,7 @@ Check 'в папке данных программы нет файлов про�
 Check 'ничего в Program Files' (-not (Test-Path -LiteralPath $programFilesDir))
 Check 'запись в «Программы и компоненты» только в HKCU' (((@(Get-UninstallEntries)).Count -eq 1) -and ((@(Get-UninstallEntries | Where-Object { $_ -like 'HKEY_CURRENT_USER*' })).Count -eq 1))
 Check 'ярлык в меню «Пуск» пользователя' (Test-Path -LiteralPath (Join-Path $userStartMenu "$product.lnk"))
+Check 'ярлыка на рабочем столе нет (решение 107: /S его не создаёт)' (-not (Test-Path -LiteralPath (Join-Path $userDesktop "$product.lnk")) -and -not (Test-Path -LiteralPath (Join-Path $publicDesktop "$product.lnk")))
 Check 'PATH не изменился' ($null -eq (Compare-Object $baselinePath @($nsisInstalled | Where-Object { $_ -like 'PATH*' })))
 Show-List 'Что поставил NSIS (наблюдаемые места):' @($nsisInstalled | Where-Object { $_ -notlike 'PATH*' })
 [void](Compare-TopLevel $baselineTop $nsisTop 'после установки NSIS')
