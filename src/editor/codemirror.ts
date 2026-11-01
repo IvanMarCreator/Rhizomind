@@ -18,6 +18,7 @@ import { EditorView, highlightSpecialChars, keymap, type KeyBinding } from '@cod
 import type { EditorMode } from '../api/index.ts';
 import { t } from '../i18n/index.ts';
 import { hugeLines } from './huge-lines.ts';
+import { listContinuation } from './list-continuation.ts';
 import { blockTracking, livePreview, sourceLinks } from './live-preview/index.ts';
 import { wikilinkCompletion } from './wikilinks/autocomplete.ts';
 import { wikiHost, type WikiHost } from './wikilinks/host.ts';
@@ -114,6 +115,7 @@ export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink
     lock.of(lockExtension(readOnly)),
     modeSlot.of(modeExtension(mode, onOpenLink)),
     history(),
+    listContinuation(),
     keymap.of(editorKeymap),
     // Одиночный `\r`, NUL и другие невидимые символы видны значком.
     highlightSpecialChars(),
