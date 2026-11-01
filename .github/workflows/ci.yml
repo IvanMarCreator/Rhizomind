@@ -175,6 +175,26 @@ jobs:
       - name: Сборка для сценарного теста
         run: npm run build:e2e
 
+      # Для замера производительности (задание perf ниже, задача 3.2): тестовая
+      # сборка (интерфейс встроен в исполняемый файл), генератор хранилища из
+      # шага «Генератор тестового хранилища» и tauri-driver — без второй сборки.
+      - name: Файлы для замера производительности
+        shell: bash
+        run: |
+          exe=""; [ "$RUNNER_OS" = Windows ] && exe=.exe
+          dir="$RUNNER_TEMP/perf-bin"
+          mkdir -p "$dir"
+          cp "src-tauri/target-e2e/release/rhizomind$exe" "src-tauri/target/release/gen-vault$exe" "$HOME/.cargo/bin/tauri-driver$exe" "$dir/"
+          ls -l "$dir"
+
+      - name: Загрузить файлы для замера производительности
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-bin-${{ runner.os }}
+          path: ${{ runner.temp }}/perf-bin/
+          retention-days: 1
+          if-no-files-found: error
+
       # Предел 20 мин: после сценариев выпуска (задача 3.1) набор идёт ~9–10 мин
       # и на медленном раннере упирался в прежние 10 мин при всех тестах зелёных.
       - name: Сценарный тест (Linux)
@@ -254,3 +274,115 @@ jobs:
           path: release/*.zip
           retention-days: 14
           if-no-files-found: error
+
+  # Производительность (задача 3.2, критерий С9.5): хранилище из 10 000 заметок —
+  # дерево не позже 3 с после открытия, быстрый переход до 100 мс, ввод в
+  # заметке на 5 000 строк без заметных задержек (tests/perf/perf.test.ts).
+  # Отдельное задание: превышение предела валит его, а не verify; сборка — из
+  # verify (артефакт perf-bin-*). Вывод по медиане повторов — разброс общих
+  # раннеров (tests/perf/stats.ts, docs/reviews/2026-11-01-task-3.2-perf.md).
+  perf:
+    name: perf (${{ matrix.os }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Установить Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      # Пакеты apt — из кэша, который сохраняет verify (tools/ci-apt/install.sh).
+      - name: Образ раннера (Linux)
+        id: image
+        if: runner.os == 'Linux'
+        run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+
+      - name: Кэш пакетов apt (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-${{ steps.image.outputs.version }}-${{ hashFiles('tools/ci-apt/install.sh') }}
+          restore-keys: apt-${{ steps.image.outputs.version }}-
+
+      - name: Системные библиотеки (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        env:
+          APT_CACHE_DIR: ${{ runner.temp }}/apt-archives
+        run: tools/ci-apt/install.sh
+
+      - name: Зависимости интерфейса
+        run: npm ci
+
+      - name: Получить файлы для замера
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: perf-bin-${{ runner.os }}
+          path: ${{ runner.temp }}/perf-bin
+
+      # Программа — туда, где её ищет tests/e2e/driver.ts (тестовая сборка);
+      # артефакт не хранит права на запуск.
+      - name: Разложить файлы для замера
+        shell: bash
+        run: |
+          exe=""; [ "$RUNNER_OS" = Windows ] && exe=.exe
+          bin="$RUNNER_TEMP/perf-bin"
+          chmod +x "$bin"/*
+          mkdir -p src-tauri/target-e2e/release
+          cp "$bin/rhizomind$exe" src-tauri/target-e2e/release/
+          echo "TAURI_DRIVER=$bin/tauri-driver$exe" >> "$GITHUB_ENV"
+          echo "RHIZOMIND_PERF_GEN_VAULT=$bin/gen-vault$exe" >> "$GITHUB_ENV"
+
+      # msedgedriver — под установленный WebView2 Runtime, как в verify.
+      - name: msedgedriver под версию WebView2 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $version = (Get-ItemProperty -Path $key).pv
+          Write-Host "WebView2 Runtime: $version"
+          $dir = Join-Path $env:RUNNER_TEMP 'msedgedriver'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir 'edgedriver.zip'
+          try {
+            Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath $dir -Force
+            $driver = Join-Path $dir 'msedgedriver.exe'
+          } catch {
+            Write-Warning "Не удалось скачать msedgedriver $version ($_); беру предустановленный"
+            $driver = Join-Path $env:EDGEWEBDRIVER 'msedgedriver.exe'
+          }
+          & $driver --version
+          "MSEDGEDRIVER=$driver" >> $env:GITHUB_ENV
+
+      - name: Замер производительности (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          NO_AT_BRIDGE: "1"
+        run: xvfb-run -a npm run test:perf
+
+      - name: Замер производительности (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 20
+        run: npm run test:perf
+
+      - name: Отчёт о производительности
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-report-${{ runner.os }}
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: warn
