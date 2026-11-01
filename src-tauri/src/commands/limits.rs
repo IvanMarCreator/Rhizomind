@@ -40,6 +40,12 @@ pub const MAX_BACKLINK_NOTES: usize = 1_000;
 /// Строк одной заметки в ответе `backlinks_list`; остальные — только в числе
 /// `links_total` (ответ ограничен и для заметки с тысячами ссылок).
 pub const MAX_BACKLINK_LINES: usize = 100;
+/// Строк всех заметок в одном ответе `backlinks_list`: ответ ограничен и для
+/// «узла», на который ссылаются тысячи заметок; при усечении — `truncated`.
+pub const MAX_BACKLINK_LINES_TOTAL: usize = 5_000;
+/// Не чаще стольких событий в секунду для частых событий: `index:status`,
+/// `index:changed`, `links:progress`.
+pub const MAX_EVENTS_PER_SEC: u32 = 4;
 /// Длина строки обратной ссылки (`snippet`), символов Unicode: строка
 /// обрезается вокруг ссылки.
 pub const MAX_SNIPPET_CHARS: usize = 200;
@@ -74,6 +80,8 @@ pub struct Limits {
     pub font_size_range: (u16, u16),
     pub max_backlink_notes: usize,
     pub max_backlink_lines: usize,
+    pub max_backlink_lines_total: usize,
+    pub max_events_per_sec: u32,
     pub max_snippet_chars: usize,
     pub max_tag_notes: usize,
     pub max_tag_chars: usize,
@@ -104,6 +112,8 @@ pub const LIMITS: Limits = Limits {
     font_size_range: FONT_SIZE_RANGE,
     max_backlink_notes: MAX_BACKLINK_NOTES,
     max_backlink_lines: MAX_BACKLINK_LINES,
+    max_backlink_lines_total: MAX_BACKLINK_LINES_TOTAL,
+    max_events_per_sec: MAX_EVENTS_PER_SEC,
     max_snippet_chars: MAX_SNIPPET_CHARS,
     max_tag_notes: MAX_TAG_NOTES,
     max_tag_chars: MAX_TAG_CHARS,

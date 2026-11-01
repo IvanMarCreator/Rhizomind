@@ -52,6 +52,7 @@ source: src/commands/contract_tests.rs
       }
     ],
     "notes_total": 1,
-    "status": "ready"
+    "status": "ready",
+    "truncated": false
   }
 }

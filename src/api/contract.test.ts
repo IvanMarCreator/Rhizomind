@@ -310,6 +310,7 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: {
       status: 'ready',
       notes_total: 1,
+      truncated: false,
       notes: [
         {
           from: ['Дневник', '2026-11-01.md'],
@@ -470,6 +471,10 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
       renames: [{ from: ['Встреча.md'], to: ['Архив', 'Встреча.md'] }],
       renames_total: 3,
     },
+  },
+  'links:progress': {
+    event: 'links:progress',
+    payload: { token: null, done: 250, total: 1_000 },
   },
   'links:updated': {
     event: 'links:updated',

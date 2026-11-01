@@ -72,6 +72,7 @@
     'links:flush-requested',
     'links:pending',
     'links:updated',
+    'links:progress',
   ]);
 
   // Служебные команды Tauri, без которых не работают события ядра (`listen`).

@@ -167,7 +167,7 @@ export interface EntryMoveRequest {
 /** Ответ `entry_rename` и `entry_move`. */
 export interface EntryMovedResponse {
   path: VaultPath;
-  /** Итог обновления ссылок — только при `links: 'update'`. */
+  /** Итог обновления ссылок — только при `links: 'update'`; для логики окна, уведомление — по `links:updated`. */
   relink?: RelinkOutcome;
 }
 
@@ -422,6 +422,8 @@ export interface BacklinkNote {
 export interface Backlinks {
   /** Всего ссылающихся заметок (в `notes` — не больше `LIMITS.max_backlink_notes`). */
   notes_total: number;
+  /** Показано не всё: пределы заметок, строк на заметку или `LIMITS.max_backlink_lines_total` строк на ответ. */
+  truncated: boolean;
   notes: BacklinkNote[];
 }
 
@@ -481,6 +483,11 @@ export interface RelinkFailure {
   reason: RelinkFailureReason;
 }
 
+/**
+ * Итог переписывания. Правило контракта: уведомление пользователю — только по
+ * событию `links:updated`; поле `relink` в ответе `entry_rename`/`entry_move` —
+ * для логики окна (Ctrl+Z и т.п.), не для показа.
+ */
 export interface RelinkOutcome {
   updated: number;
   failed: RelinkFailure[];
@@ -639,6 +646,14 @@ export interface LinksUpdatedPayload {
   retry_token: RelinkToken | null;
 }
 
+/** `links:progress`: ход переписывания (перенос большой папки), не чаще `LIMITS.max_events_per_sec` в секунду. */
+export interface LinksProgressPayload {
+  /** Знак плана, если план выдавался окну; `null` — план без вопроса. */
+  token: RelinkToken | null;
+  done: number;
+  total: number;
+}
+
 export interface CoreEvents {
   'vault:changed': VaultChangedPayload;
   'note:changed': NoteChangedPayload;
@@ -652,6 +667,7 @@ export interface CoreEvents {
   'links:flush-requested': LinksFlushRequestedPayload;
   'links:pending': LinksPendingPayload;
   'links:updated': LinksUpdatedPayload;
+  'links:progress': LinksProgressPayload;
 }
 
 export type EventName = keyof CoreEvents;

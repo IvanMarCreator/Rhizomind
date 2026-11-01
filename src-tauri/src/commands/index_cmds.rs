@@ -118,15 +118,45 @@ pub struct BacklinkNote {
 
 /// Обратные ссылки заметки (`backlinks_list`, вариант `ready`). Ссылка
 /// заметки на себя не считается; встраивание `![[…]]` и ссылка на заголовок
-/// — считаются (С2-3.2, Р4).
+/// — считаются (С2-3.2, Р4). Ответ ограничен ([`Backlinks::capped`]):
+/// не больше [`limits::MAX_BACKLINK_NOTES`] заметок,
+/// [`limits::MAX_BACKLINK_LINES`] строк на заметку и
+/// [`limits::MAX_BACKLINK_LINES_TOTAL`] строк на ответ.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Backlinks {
     /// Сколько всего заметок ссылается (заголовок вида «N заметок»).
     pub notes_total: u32,
-    /// Заметки в естественном порядке имён, затем путей — не больше
-    /// [`limits::MAX_BACKLINK_NOTES`].
+    /// `true` — показано не всё: часть заметок или строк отброшена пределами
+    /// (сколько всего — `notes_total` и `links_total` у заметок).
+    pub truncated: bool,
+    /// Заметки в естественном порядке имён, затем путей.
     pub notes: Vec<BacklinkNote>,
+}
+
+impl Backlinks {
+    /// Ответ по полному списку ссылающихся заметок (уже в порядке показа, у
+    /// каждой — все строки и верный `links_total`): пределы заметок, строк
+    /// на заметку и строк на ответ; что не поместилось — отбрасывается с
+    /// признаком `truncated`. Заметка, которой не досталось строк из общего
+    /// предела, остаётся в списке без строк (её имя всё равно видно).
+    pub fn capped(mut notes: Vec<BacklinkNote>) -> Self {
+        let notes_total = u32::try_from(notes.len()).unwrap_or(u32::MAX);
+        let mut truncated = notes.len() > limits::MAX_BACKLINK_NOTES;
+        notes.truncate(limits::MAX_BACKLINK_NOTES);
+        let mut budget = limits::MAX_BACKLINK_LINES_TOTAL;
+        for note in &mut notes {
+            let keep = note.links.len().min(limits::MAX_BACKLINK_LINES).min(budget);
+            truncated |= keep < note.links.len();
+            note.links.truncate(keep);
+            budget -= keep;
+        }
+        Self {
+            notes_total,
+            truncated,
+            notes,
+        }
+    }
 }
 
 /// Тег хранилища и число заметок с ним.
@@ -220,4 +250,63 @@ pub async fn tag_notes<R: Runtime>(
     core.require_vault(window.label())?;
     // Заглушка контракта (0.2-0.1) — 0.2-1.4.
     Ok(IndexReply::building_unknown())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(name: &str, links: usize) -> BacklinkNote {
+        BacklinkNote {
+            from: VaultPath::from_components([format!("{name}.md")]),
+            name: name.into(),
+            links_total: links as u32,
+            links: (0..links)
+                .map(|i| BacklinkLine {
+                    line: i as u32 + 1,
+                    column_utf16: 0,
+                    snippet: "[[Узел]]".into(),
+                    from_utf16: 0,
+                    to_utf16: 8,
+                })
+                .collect(),
+        }
+    }
+
+    fn shown_lines(backlinks: &Backlinks) -> usize {
+        backlinks.notes.iter().map(|n| n.links.len()).sum()
+    }
+
+    #[test]
+    fn small_answer_is_not_truncated() {
+        let backlinks = Backlinks::capped(vec![note("а", 3), note("б", 1)]);
+        assert_eq!(backlinks.notes_total, 2);
+        assert!(!backlinks.truncated);
+        assert_eq!(shown_lines(&backlinks), 4);
+    }
+
+    #[test]
+    fn lines_per_note_and_per_answer_are_capped_with_flag() {
+        // 100 заметок по 100 ссылок = 10 000 строк > 5 000.
+        let notes = (0..100).map(|i| note(&format!("з{i}"), 100)).collect();
+        let backlinks = Backlinks::capped(notes);
+        assert!(backlinks.truncated);
+        assert_eq!(backlinks.notes_total, 100);
+        assert_eq!(shown_lines(&backlinks), limits::MAX_BACKLINK_LINES_TOTAL);
+        assert!(backlinks.notes.iter().all(|n| n.links_total == 100));
+
+        let one = Backlinks::capped(vec![note("много", 150)]);
+        assert!(one.truncated);
+        assert_eq!(one.notes[0].links.len(), limits::MAX_BACKLINK_LINES);
+        assert_eq!(one.notes[0].links_total, 150);
+    }
+
+    #[test]
+    fn notes_are_capped_at_1000_with_flag() {
+        let notes = (0..1_001).map(|i| note(&format!("з{i}"), 1)).collect();
+        let backlinks = Backlinks::capped(notes);
+        assert!(backlinks.truncated);
+        assert_eq!(backlinks.notes_total, 1_001);
+        assert_eq!(backlinks.notes.len(), limits::MAX_BACKLINK_NOTES);
+    }
 }

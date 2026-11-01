@@ -20,6 +20,8 @@ source: src/commands/contract_tests.rs
   ],
   "max_backlink_notes": 1000,
   "max_backlink_lines": 100,
+  "max_backlink_lines_total": 5000,
+  "max_events_per_sec": 4,
   "max_snippet_chars": 200,
   "max_tag_notes": 10000,
   "max_tag_chars": 200,

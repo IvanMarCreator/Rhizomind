@@ -18,7 +18,7 @@ describe('подмена индекса', () => {
   it('готовый индекс отдаёт данные, неизвестное — пустым списком', async () => {
     mockCore(
       indexMocks({
-        backlinks: { 'Проекты/Встреча.md': { notes_total: 1, notes: [] } },
+        backlinks: { 'Проекты/Встреча.md': { notes_total: 1, truncated: false, notes: [] } },
         tags: [{ tag: 'Проект', key: 'проект', count: 1 }],
         tagNotes: { проект: [['Встреча.md']] },
       }),
@@ -26,9 +26,10 @@ describe('подмена индекса', () => {
     expect(await core.backlinksList({ path: ['Проекты', 'Встреча.md'] })).toEqual({
       status: 'ready',
       notes_total: 1,
+      truncated: false,
       notes: [],
     });
-    expect(await core.backlinksList({ path: ['Нет.md'] })).toEqual({ status: 'ready', notes_total: 0, notes: [] });
+    expect(await core.backlinksList({ path: ['Нет.md'] })).toEqual({ status: 'ready', notes_total: 0, truncated: false, notes: [] });
     expect(await core.tagsList()).toEqual({ status: 'ready', tags: [{ tag: 'Проект', key: 'проект', count: 1 }] });
     expect(await core.tagNotes({ key: 'проект' })).toEqual({ status: 'ready', notes_total: 1, notes: [['Встреча.md']] });
     expect(await core.tagNotes({ key: 'нет' })).toEqual({ status: 'ready', notes_total: 0, notes: [] });

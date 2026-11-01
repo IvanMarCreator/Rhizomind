@@ -119,7 +119,8 @@ pub struct EntryMovedResponse {
     /// Путь элемента после операции.
     pub path: VaultPath,
     /// Итог обновления ссылок — только при `links: update`; при `keep` поля
-    /// нет (ответ как в 0.1).
+    /// нет (ответ как в 0.1). Для логики окна, не для показа: уведомление —
+    /// только по `links:updated` (правило контракта, `RelinkOutcome`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relink: Option<RelinkOutcome>,
 }

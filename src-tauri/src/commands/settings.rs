@@ -99,7 +99,9 @@ pub struct Settings {
     /// `commands::hotkeys`): команда → сочетания. Пусто — все по умолчанию.
     pub hotkeys: HotkeyOverrides,
     /// «При переименовании заметки, на которую есть ссылки» (С2-3.5, с 0.2):
-    /// поле `rename_links` в `settings.json`; файл 0.1 без поля — `ask`.
+    /// поле `rename_links` в `settings.json`; файл 0.1 без поля — `ask`, и
+    /// запрос `settings_write` без поля — тоже `ask`.
+    #[serde(default)]
     pub rename_links: RenameLinks,
 }
 

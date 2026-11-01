@@ -770,6 +770,7 @@ fn command_backlinks_list() {
         },
         &IndexReply::Ready(Backlinks {
             notes_total: 1,
+            truncated: false,
             notes: vec![BacklinkNote {
                 from: path(&["Дневник", "2026-11-01.md"]),
                 name: "2026-11-01".into(),
@@ -952,6 +953,36 @@ fn event_links_pending() {
             renames_total: 3,
         },
     );
+}
+
+#[test]
+fn event_links_progress() {
+    event(
+        event::LINKS_PROGRESS,
+        &LinksProgressPayload {
+            token: None,
+            done: 250,
+            total: 1_000,
+        },
+    );
+}
+
+/// `settings_write` без `rename_links` (интерфейс 0.1) — `ask`.
+#[test]
+fn settings_without_rename_links_is_ask() {
+    let mut request = serde_json::to_value(SettingsWriteRequest {
+        settings: Settings {
+            rename_links: RenameLinks::Update,
+            ..settings_example()
+        },
+    })
+    .expect("запрос");
+    request["settings"]
+        .as_object_mut()
+        .expect("настройки")
+        .remove("rename_links");
+    let request: SettingsWriteRequest = serde_json::from_value(request).expect("без rename_links");
+    assert_eq!(request.settings.rename_links, RenameLinks::Ask);
 }
 
 #[test]

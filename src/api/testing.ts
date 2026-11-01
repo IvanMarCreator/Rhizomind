@@ -100,7 +100,7 @@ export function indexMocks(fake: IndexFake = {}): CoreMocks {
       : { status: 'index_building', done: status.done, total: status.total };
   return {
     index_status: () => status,
-    backlinks_list: ({ path }) => reply(fake.backlinks?.[path.join('/')] ?? { notes_total: 0, notes: [] }),
+    backlinks_list: ({ path }) => reply(fake.backlinks?.[path.join('/')] ?? { notes_total: 0, truncated: false, notes: [] }),
     tags_list: () => reply({ tags: fake.tags ?? [] }),
     tag_notes: ({ key }) => {
       const notes = fake.tagNotes?.[key] ?? [];

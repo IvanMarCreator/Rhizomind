@@ -58,10 +58,10 @@ pub use clipboard::*;
 pub use error::{CoreError, CoreResult, ErrorCode, NameProblem};
 pub use events::{
     EVENT_NAMES, IndexChangedPayload, LinksFlushRequestedPayload, LinksPendingPayload,
-    LinksUpdateReason, LinksUpdatedPayload, NoteChangedPayload, NoteConflictSavedPayload,
-    NoteDeletedPayload, NoteRenamedPayload, PathRename, PendingReason, RelinkFailure,
-    RelinkFailureReason, RelinkOutcome, TreeChange, VaultAvailabilityPayload, VaultChangedPayload,
-    WindowCloseRequestedPayload, event,
+    LinksProgressPayload, LinksUpdateReason, LinksUpdatedPayload, NoteChangedPayload,
+    NoteConflictSavedPayload, NoteDeletedPayload, NoteRenamedPayload, PathRename, PendingReason,
+    RelinkFailure, RelinkFailureReason, RelinkOutcome, TreeChange, VaultAvailabilityPayload,
+    VaultChangedPayload, WindowCloseRequestedPayload, event,
 };
 pub use files::*;
 pub use hotkeys::HotkeyOverrides;

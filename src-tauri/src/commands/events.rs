@@ -66,10 +66,13 @@ pub mod event {
     /// Ссылки обновлены: сколько заметок переписано, где не удалось и
     /// почему (0.2, С2-3.5, решение 115).
     pub const LINKS_UPDATED: &str = "links:updated";
+    /// Ход переписывания ссылок (перенос большой папки, 0.2, С2-8.3): не
+    /// чаще `limits::MAX_EVENTS_PER_SEC` раз в секунду.
+    pub const LINKS_PROGRESS: &str = "links:progress";
 }
 
 /// Все события API v1 — для тестов снимков.
-pub const EVENT_NAMES: [&str; 12] = [
+pub const EVENT_NAMES: [&str; 13] = [
     event::VAULT_CHANGED,
     event::NOTE_CHANGED,
     event::NOTE_RENAMED,
@@ -82,6 +85,7 @@ pub const EVENT_NAMES: [&str; 12] = [
     event::LINKS_FLUSH_REQUESTED,
     event::LINKS_PENDING,
     event::LINKS_UPDATED,
+    event::LINKS_PROGRESS,
 ];
 
 /// Одно изменение дерева.
@@ -330,6 +334,12 @@ pub struct RelinkFailure {
 
 /// Итог выполнения плана переписывания: ответ `entry_rename`/`entry_move`
 /// (поле `relink`) и данные `links:updated`.
+///
+/// **Правило контракта:** уведомление пользователю («Ссылки обновлены…»,
+/// «Не удалось обновить…») показывается **только по событию
+/// `links:updated`**; поле `relink` в ответе переименования — для логики
+/// окна (Ctrl+Z, выбор открытой заметки и т.п.), не для показа: иначе одно
+/// обновление дало бы два уведомления.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelinkOutcome {
@@ -342,7 +352,8 @@ pub struct RelinkOutcome {
     pub retry_token: Option<RelinkToken>,
 }
 
-/// `links:updated`: ссылки обновлены. Интерфейс показывает «Ссылки
+/// `links:updated`: ссылки обновлены — единственный повод для уведомления
+/// пользователю об итоге (см. [`RelinkOutcome`]). Интерфейс показывает «Ссылки
 /// обновлены в N заметках» и, если `failed` не пуст, «Не удалось обновить
 /// ссылки в N заметках» с кнопками «Показать» и (при `retry_token`)
 /// «Повторить». Для переписанных заметок ядро отправляет и `note:changed`.
@@ -369,4 +380,21 @@ impl LinksUpdatedPayload {
             retry_token: outcome.retry_token,
         }
     }
+}
+
+/// `links:progress`: ход переписывания ссылок (перенос папки на 1 000
+/// заметок — секунды, «ход выполнения виден», С2-8.3). Не чаще
+/// [`limits::MAX_EVENTS_PER_SEC`](super::limits::MAX_EVENTS_PER_SEC) раз в
+/// секунду; конец — `links:updated`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksProgressPayload {
+    /// Знак плана, если план выдавался окну (`relink_preview`,
+    /// `links:pending`); `null` — план без вопроса («Всегда обновлять»,
+    /// уточнение до 20 заметок, доделка).
+    pub token: Option<RelinkToken>,
+    /// Сколько заметок плана уже обработано.
+    pub done: u32,
+    /// Сколько заметок в плане.
+    pub total: u32,
 }
