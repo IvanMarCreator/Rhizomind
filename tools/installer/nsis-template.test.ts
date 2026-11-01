@@ -64,6 +64,17 @@ describe('свой шаблон NSIS', () => {
     expect(ours).not.toContain('StrCpy $INSTDIR "$LOCALAPPDATA\\${PRODUCTNAME}"');
   });
 
+  it('ярлык на рабочем столе по умолчанию не создаётся (решение 107)', () => {
+    // Галочка «Создать ярлык на рабочем столе» на странице завершения снята.
+    expect(ours).toContain('!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut\n');
+    expect(ours).toContain('!define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED\n');
+    // Тихая (/S) и пассивная (/P) установка ярлык на рабочем столе не создают:
+    // единственный вызов — по галочке страницы завершения.
+    expect(ours.split('Call CreateOrUpdateDesktopShortcut').length - 1).toBe(0);
+    // Ярлык меню «Пуск» по-прежнему создаётся (ключ /NS отключает оба).
+    expect(ours).toContain('    Call CreateOrUpdateStartMenuShortcut\n');
+  });
+
   it('список хранилищ удаляется только по галочке «Удалить данные приложения»', () => {
     const checkbox = ours.indexOf('${If} $DeleteAppDataCheckboxState = 1');
     const removal = ours.indexOf('RmDir /r "$LOCALAPPDATA\\${PRODUCTNAME}"');

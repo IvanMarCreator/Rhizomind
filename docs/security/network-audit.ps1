@@ -12,8 +12,9 @@
 # Ключи:
 #   -AppExe         путь к rhizomind.exe (если не указан — скрипт спросит)
 #   -Procmon        путь к Procmon64.exe (если не указан — скрипт спросит)
-#   -ProcmonConfig  файл настроек Process Monitor (.pmc) для /LoadConfig —
-#                   как его сделать, см. инструкцию, раздел «Process Monitor»
+#   -ProcmonConfig  больше не используется (задача 3.3в): скрипт сам сбрасывает
+#                   настройки Process Monitor на время аудита и возвращает их;
+#                   ключ принимается и игнорируется — старые команды работают
 #   -NoProcmon      без Process Monitor: шаги 3 и 10 пропускаются, остаётся
 #                   опрос соединений (и журнал DNS, если есть права)
 #   -OutDir         папка результатов; по умолчанию C:\rhizomind-audit-<дата>
@@ -23,13 +24,23 @@
 #                   -IdleSeconds секунд, окно Rhizomind скрипт закрывает сам.
 #                   Это не аудит.
 #   -LibraryOnly    только объявить функции (для тестов: tests/audit/)
+#   -AnalyzeOnly    только разбор готового CSV Process Monitor, без аудита:
+#                   -AnalyzeOnly -Csv <capture.csv> [-RootPid <n>] [-Vault <папка>]
+#                   [-OutDir <папка>]. RootPid — номер rhizomind.exe; если не
+#                   указан, берётся из results.md рядом с CSV (имя канала
+#                   --mojo-named-platform-channel-pipe=<номер>.… в командной
+#                   строке движка). Итог — в <папка CSV>\reanalysis-<дата>\.
 #
 # Скрипт ничего не скачивает и в сеть не ходит. Он читает процессы, сетевые
 # соединения, реестр, журнал DNS, файлы в профиле и пишет в свою папку
 # результатов. Следы вне папки результатов (честно):
-#   - Process Monitor пишет свои настройки в реестр
-#     HKCU\Software\Sysinternals\Process Monitor (в т. ч. согласие с EULA) и
-#     устанавливает свой драйвер (служба PROCMON24, файл в
+#   - настройки Process Monitor (реестр HKCU\Software\Sysinternals\Process
+#     Monitor) на время аудита сбрасываются: ключ сохраняется в
+#     procmon-settings-backup.reg в папке результатов, удаляется, а в конце
+#     (и при сбое, и при Ctrl+C) возвращается из копии как был; если его не
+#     было — удаляется. Закрыли окно крестиком — верните сами:
+#     reg import <папка результатов>\procmon-settings-backup.reg;
+#   - Process Monitor устанавливает свой драйвер (служба PROCMON24, файл в
 #     C:\Windows\System32\drivers) — так он работает всегда, это не Rhizomind;
 #   - включение журнала DNS (по согласию, с правами администратора) меняет
 #     системный журнал Microsoft-Windows-DNS-Client/Operational: в нём
@@ -37,7 +48,7 @@
 #     была (в том числе при сбое скрипта), события скрипт не стирает;
 #   - сам Windows PowerShell ведёт свои журналы (история команд PSReadLine и
 #     т. п.) — как при любом запуске PowerShell.
-# Скрипт ничего не удаляет (и свои capture.pml/capture.csv тоже — их удаляете
+# Скрипт не удаляет файлов (и свои capture.pml/capture.csv тоже — их удаляете
 # вы после разбора). Журнал Process Monitor
 # (capture.pml, capture.csv) содержит всё, что делала машина: его не
 # пересылайте, пересылайте results.md и summary-*.csv.
@@ -49,7 +60,11 @@ param(
   [string] $OutDir = '',
   [switch] $Unattended,
   [int] $IdleSeconds = 30,
-  [switch] $LibraryOnly
+  [switch] $LibraryOnly,
+  [switch] $AnalyzeOnly,
+  [string] $Csv = '',
+  [int] $RootPid = 0,
+  [string[]] $Vault = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -275,6 +290,7 @@ function Get-DnsQueryName([object[]] $Events) {
 
 # Все когда-либо замеченные процессы приложения: номер -> имя и командная строка.
 $script:Seen = @{}
+$script:AnalyzeRootPid = $RootPid
 $script:RootPid = 0
 
 function Get-AppTree {
@@ -418,6 +434,32 @@ $RegWriteOps = @('RegSetValue', 'RegDeleteValue', 'RegDeleteKey', 'RegCreateKey'
 
 function Add-Count([hashtable] $table, [string] $key) { $table[$key] = 1 + [int]$table[$key] }
 
+# Класс события Process Monitor по столбцу Operation (как кнопки классов на
+# панели Process Monitor): Registry, Network, Process, Profiling, остальное — File.
+function Get-OperationClass([string] $Operation) {
+  if ($Operation.StartsWith('Reg')) { return 'Registry' }
+  if ($Operation.StartsWith('TCP ') -or $Operation.StartsWith('UDP ')) { return 'Network' }
+  if ($Operation.EndsWith('Profiling')) { return 'Profiling' }
+  if ($Operation.StartsWith('Process ') -or $Operation.StartsWith('Thread ') -or $Operation -eq 'Load Image') { return 'Process' }
+  return 'File'
+}
+
+function New-ClassCounter { return [ordered]@{ File = 0; Registry = 0; Process = 0; Network = 0; Profiling = 0 } }
+
+# Счётчики классов для results.md: «файлы 10, реестр 5, …».
+function Format-ClassCounter($Counter) {
+  return ('файлы {0}, реестр {1}, процессы {2}, сеть {3}, профилирование {4}' -f $Counter.File, $Counter.Registry, $Counter.Process, $Counter.Network, $Counter.Profiling)
+}
+
+# Столбцы, без которых разбор невозможен (CSV Process Monitor по умолчанию).
+$ProcmonRequiredColumns = @('Process Name', 'PID', 'Operation', 'Path', 'Result', 'Detail')
+
+function Get-CsvMissingColumn([string] $CsvPath) {
+  $first = [string](Get-Content -LiteralPath $CsvPath -Encoding UTF8 -TotalCount 1)
+  $cols = @($first.Split(',') | ForEach-Object { $_.Trim().Trim('"') })
+  return @($ProcmonRequiredColumns | Where-Object { $cols -notcontains $_ })
+}
+
 # Разбирает CSV-выгрузку Process Monitor (столбцы по умолчанию: Time of Day,
 # Process Name, PID, Operation, Path, Result, Detail).
 #   OwnPids     — номера процессов Rhizomind и движка, известные заранее
@@ -451,14 +493,19 @@ function Invoke-ProcmonAnalysis {
   # (номер процесса и 16 случайных цифр), а в журнале путь может быть в другой
   # форме, чем в командной строке (8.3 у %TEMP% при кириллическом имени
   # пользователя), и к разбору папки уже нет — сравнить через диск нельзя.
+  # Без -EngineDir (режим только разбора) имя берётся из командной строки
+  # движка в событии Process Create процесса Rhizomind (--user-data-dir).
   $engineLeaf = ''
   if ($EngineDir) { $engineLeaf = '\' + (Split-Path -Leaf ((ConvertFrom-TypedPath $EngineDir).TrimEnd('\'))) }
   $longCache = @{}
 
   $r = [pscustomobject]@{
-    Rows = 0; RootRows = 0; Own = $own
+    Rows = 0; RootRows = 0; RootPid = $RootPid; Own = $own
     NetOwn = @{}; NetAll = @{}; FileOut = @{}; RegOut = @{}; Dictionaries = @{}
     DnsOwn = 0; DnsAll = 0
+    Classes = (New-ClassCounter); RootClasses = (New-ClassCounter)
+    TokenBrokerRows = 0; ConsentStoreRows = 0
+    MissingColumns = @(Get-CsvMissingColumn $CsvPath); EngineLeaf = ''
   }
 
   Import-Csv -LiteralPath $CsvPath -Encoding UTF8 | ForEach-Object {
@@ -466,10 +513,26 @@ function Invoke-ProcmonAnalysis {
     $op = [string]$_.Operation
     $procName = [string]$_.'Process Name'
     $procId = 0; [void][int]::TryParse([string]$_.PID, [ref]$procId)
-    if ($RootPid -and $procId -eq $RootPid) { $r.RootRows++ }
+    $class = Get-OperationClass $op
+    $r.Classes[$class]++
+    if ($RootPid -and $procId -eq $RootPid) { $r.RootRows++; $r.RootClasses[$class]++ }
+    # Контроль полноты журнала (решение 107а): к этим путям обращаются
+    # Windows и WAM; в неполном журнале их нет вовсе.
+    $path_ = [string]$_.Path
+    if ($path_.IndexOf('\TokenBroker\Cache', [StringComparison]::OrdinalIgnoreCase) -ge 0) { $r.TokenBrokerRows++ }
+    elseif ($path_.IndexOf('\ConsentStore', [StringComparison]::OrdinalIgnoreCase) -ge 0) { $r.ConsentStoreRows++ }
     if ($op -eq 'Process Create' -and $own.Contains($procId)) {
       $m = [regex]::Match([string]$_.Detail, 'PID: (\d+), Command line: (.*)')
-      if ($m.Success -and $m.Groups[2].Value -match 'msedgewebview2\.exe|rhizomind\.exe') { [void]$own.Add([int]$m.Groups[1].Value) }
+      if ($m.Success -and $m.Groups[2].Value -match 'msedgewebview2\.exe|rhizomind\.exe') {
+        [void]$own.Add([int]$m.Groups[1].Value)
+        if (-not $engineLeaf) {
+          $udd = [regex]::Match($m.Groups[2].Value, '--user-data-dir="?([^"]+?)\\EBWebView')
+          if ($udd.Success) {
+            $leaf = Split-Path -Leaf $udd.Groups[1].Value
+            if ($leaf -like 'rhizomind-webview-*') { $engineLeaf = '\' + $leaf }
+          }
+        }
+      }
       return
     }
     if ($op -match '^(TCP|UDP) ') {
@@ -513,18 +576,137 @@ function Invoke-ProcmonAnalysis {
       Add-Count $r.RegOut "$short`t$why"
     }
   }
+  $r.EngineLeaf = $engineLeaf
   return $r
+}
+
+# Почему журнал Process Monitor ничего не доказывает — конкретные причины
+# для итога (решение 107а). Пусто — журнал полный.
+function Get-ProcmonGap([object] $Analysis) {
+  if ($null -eq $Analysis) { return @('журнал не выгружен в CSV (файла capture.csv нет)') }
+  $gaps = New-Object System.Collections.Generic.List[string]
+  if (@($Analysis.MissingColumns).Count -gt 0) { $gaps.Add("в CSV нет столбцов $(@($Analysis.MissingColumns) -join ', ') (столбцы Process Monitor изменены)") }
+  if ($Analysis.Rows -eq 0) { $gaps.Add('CSV пуст: в журнале нет событий'); return $gaps.ToArray() }
+  if (-not $Analysis.RootPid) {
+    $gaps.Add('не известен номер корневого процесса Rhizomind (RootPid)')
+  } elseif ($Analysis.RootRows -eq 0) {
+    $gaps.Add("нет ни одного события корневого процесса Rhizomind (PID $($Analysis.RootPid)): Process Monitor их отбросил (фильтр, «Drop Filtered Events») или журнал снят не с этого запуска")
+  }
+  if ($Analysis.Classes.File -eq 0) { $gaps.Add('нет файловых событий ни у одного процесса (класс File выключен?)') }
+  if ($Analysis.Classes.Registry -eq 0) { $gaps.Add('нет событий реестра ни у одного процесса (класс Registry выключен?)') }
+  if ($Analysis.Classes.Process -eq 0) { $gaps.Add('нет событий процессов ни у одного процесса (класс Process выключен?) — потомков Rhizomind не найти') }
+  if ($Analysis.Classes.Network -eq 0) { $gaps.Add('нет сетевых событий ни у одного процесса (класс Network выключен?)') }
+  return $gaps.ToArray()
 }
 
 # Что доказывает журнал Process Monitor для итога:
 #   no-procmon — запуск с -NoProcmon (итог только по опросу соединений);
-#   not-proven — журнал не разобран (CSV нет), пуст или в нём нет ни одного
-#                события корневого процесса Rhizomind (фильтр, /LoadConfig);
-#   analysed   — разобран и содержит события Rhizomind.
+#   not-proven — журнал не разобран (CSV нет) или неполный (Get-ProcmonGap:
+#                нет событий корневого процесса Rhizomind, нет класса событий);
+#   analysed   — разобран и полный.
 function Get-ProcmonVerdict([switch] $NoProcmon, [object] $Analysis) {
   if ($NoProcmon) { return 'no-procmon' }
-  if ($null -eq $Analysis -or $Analysis.Rows -eq 0 -or $Analysis.RootRows -eq 0) { return 'not-proven' }
+  if (@(Get-ProcmonGap $Analysis).Count -gt 0) { return 'not-proven' }
   return 'analysed'
+}
+
+# --- Пробная запись Process Monitor (шаг 3, решение 107а) ---------------------
+
+# Проверяет CSV пробной записи: есть ли события тестового процесса (cmd.exe,
+# запущенного скриптом) классов File, Registry и Process. Тестовый процесс —
+# по номеру (ProbePid) и по метке в командной строке (Process Start у него,
+# Process Create у родителя).
+function Test-ProcmonProbe {
+  param(
+    [Parameter(Mandatory = $true)] [string] $CsvPath,
+    [int] $ProbePid = 0,
+    [string] $Marker = 'procmon-probe'
+  )
+  $res = [pscustomobject]@{ Ok = $false; Rows = 0; ProbeRows = 0; Pids = @(); Classes = (New-ClassCounter); AllClasses = (New-ClassCounter); Reason = '' }
+  if (-not (Test-Path -LiteralPath $CsvPath)) { $res.Reason = 'пробная запись не выгрузилась в CSV'; return $res }
+  $rows = @(Import-Csv -LiteralPath $CsvPath -Encoding UTF8)
+  $res.Rows = $rows.Count
+  $pids = New-Object 'System.Collections.Generic.HashSet[int]'
+  if ($ProbePid) { [void]$pids.Add($ProbePid) }
+  foreach ($row in $rows) {
+    $op = [string]$row.Operation
+    $detail = [string]$row.Detail
+    if ($op -eq 'Process Create') {
+      $m = [regex]::Match($detail, 'PID: (\d+), Command line: (.*)')
+      if ($m.Success -and $m.Groups[2].Value.Contains($Marker)) { [void]$pids.Add([int]$m.Groups[1].Value) }
+    } elseif ($op -eq 'Process Start' -and $detail.Contains($Marker)) {
+      $n = 0; if ([int]::TryParse([string]$row.PID, [ref]$n)) { [void]$pids.Add($n) }
+    }
+  }
+  foreach ($row in $rows) {
+    $class = Get-OperationClass ([string]$row.Operation)
+    $res.AllClasses[$class]++
+    $n = 0; [void][int]::TryParse([string]$row.PID, [ref]$n)
+    if ($pids.Contains($n)) { $res.ProbeRows++; $res.Classes[$class]++ }
+  }
+  $res.Pids = @($pids)
+  if ($res.Rows -eq 0) {
+    $res.Reason = 'пробный журнал пуст: Process Monitor ничего не записал'
+  } elseif ($res.ProbeRows -eq 0) {
+    $res.Reason = "в пробном журнале нет ни одного события тестового процесса cmd.exe, хотя событий других процессов $($res.Rows): Process Monitor отбрасывает события"
+  } else {
+    $missing = @(@('File', 'Registry', 'Process') | Where-Object { $res.Classes[$_] -eq 0 })
+    if ($missing.Count -gt 0) {
+      $res.Reason = "у тестового процесса нет событий классов $($missing -join ', ') (классы событий Process Monitor выключены?)"
+    } else {
+      $res.Ok = $true
+    }
+  }
+  return $res
+}
+
+# Номер корневого процесса Rhizomind из results.md прошлого прогона: движок
+# получает его в имени канала --mojo-named-platform-channel-pipe=<номер>.<…>.
+function Get-RootPidFromResult([string] $Text) {
+  $m = [regex]::Match([string]$Text, '--mojo-named-platform-channel-pipe=(\d+)\.')
+  if ($m.Success) { return [int]$m.Groups[1].Value }
+  return 0
+}
+
+# --- Настройки Process Monitor: сброс на время аудита (решение 107а) ----------
+
+$ProcmonKey = 'HKCU\Software\Sysinternals\Process Monitor'
+$ProcmonKeyPs = 'HKCU:\Software\Sysinternals\Process Monitor'
+$script:ProcmonSettingsReset = $false
+$script:ProcmonKeyExisted = $false
+$script:ProcmonBackup = ''
+
+# Сохраняет ключ настроек Process Monitor в .reg и удаляет его: Process Monitor
+# стартует с настройками по умолчанию (без фильтра и его правила «Drop Filtered
+# Events», со всеми классами событий, без кольцевого буфера, с глубиной истории по умолчанию,
+# со столбцами CSV по умолчанию). Показ имён вместо адресов выключается.
+function Reset-ProcmonSetting([string] $BackupPath) {
+  $script:ProcmonBackup = $BackupPath
+  $script:ProcmonKeyExisted = Test-Path -LiteralPath $ProcmonKeyPs
+  if ($script:ProcmonKeyExisted) {
+    $p = Start-Process -FilePath 'reg.exe' -ArgumentList @('export', "`"$ProcmonKey`"", "`"$BackupPath`"", '/y') -Wait -PassThru -WindowStyle Hidden
+    if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $BackupPath)) {
+      Stop-Audit "Не удалось сохранить настройки Process Monitor (reg export, код $($p.ExitCode)) — без копии скрипт их не трогает."
+    }
+  }
+  $script:ProcmonSettingsReset = $true
+  if ($script:ProcmonKeyExisted) { Remove-Item -LiteralPath $ProcmonKeyPs -Recurse -Force }
+  New-Item -Path $ProcmonKeyPs -Force | Out-Null
+  New-ItemProperty -LiteralPath $ProcmonKeyPs -Name 'ResolveAddresses' -PropertyType DWord -Value 0 -Force | Out-Null
+}
+
+# Возвращает ключ как был (после того как все Process Monitor закрылись: при
+# выходе он пишет свои настройки в этот ключ).
+function Restore-ProcmonSetting {
+  if (-not $script:ProcmonSettingsReset) { return }
+  $until = (Get-Date).AddSeconds(30)
+  while ((Get-Process -Name 'Procmon', 'Procmon64', 'Procmon64a' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $until) { Start-Sleep -Seconds 1 }
+  if (Test-Path -LiteralPath $ProcmonKeyPs) { Remove-Item -LiteralPath $ProcmonKeyPs -Recurse -Force }
+  if ($script:ProcmonKeyExisted) {
+    $p = Start-Process -FilePath 'reg.exe' -ArgumentList @('import', "`"$($script:ProcmonBackup)`"") -Wait -PassThru -WindowStyle Hidden
+    if ($p.ExitCode -ne 0) { throw "reg import $($script:ProcmonBackup): код $($p.ExitCode)" }
+  }
+  $script:ProcmonSettingsReset = $false
 }
 
 function Write-Table([string] $title, [hashtable] $data, [string[]] $headers, [string] $file) {
@@ -543,7 +725,125 @@ function Write-Table([string] $title, [hashtable] $data, [string[]] $headers, [s
   $objects | Export-Csv -LiteralPath (Join-Path $OutDir $file) -NoTypeInformation -Encoding UTF8
 }
 
+# Раздел results.md с разбором журнала: полнота (классы событий, причины
+# «не доказано») и таблицы. Общий для шага 10 и режима -AnalyzeOnly.
+function Write-ProcmonReport([object] $Analysis) {
+  Note "- Событий в журнале: $($Analysis.Rows); из них корневого процесса Rhizomind (PID $($Analysis.RootPid)): $($Analysis.RootRows); процессов Rhizomind и движка: $($Analysis.Own.Count)"
+  Note "- Классы событий в журнале (все процессы): $(Format-ClassCounter $Analysis.Classes)"
+  Note "- Классы событий корневого процесса Rhizomind: $(Format-ClassCounter $Analysis.RootClasses)"
+  Note "- Контроль полноты (любые процессы): событий на путях ``TokenBroker\Cache`` — $($Analysis.TokenBrokerRows), ``ConsentStore`` — $($Analysis.ConsentStoreRows)"
+  $gaps = @(Get-ProcmonGap $Analysis)
+  if ($gaps.Count -gt 0) {
+    Note "- **Журнал неполный — ничего не доказывает:** $($gaps -join '; ')."
+    foreach ($g in $gaps) { Bad "Журнал неполный: $g" }
+  } else {
+    Good 'Журнал полный: есть события Rhizomind и все классы событий (файлы, реестр, процессы, сеть).'
+  }
+  Write-Table 'Сеть процессов Rhizomind и движка (должно быть пусто)' $Analysis.NetOwn @('Процесс', 'Протокол', 'Адрес') 'summary-network-app.csv'
+  Note "`n- Запросы DNS (UDP Send на порт 53) процессов Rhizomind и движка: $($Analysis.DnsOwn) (должно быть 0 — подтверждение ``--host-resolver-rules``); всех процессов машины: $($Analysis.DnsAll)"
+  Write-Table 'Сеть всех процессов машины за время аудита (сверка со списком SECURITY.md)' $Analysis.NetAll @('Процесс', 'Протокол', 'Адрес', 'Оценка') 'summary-network-all.csv'
+  Write-Table 'Записи файлов процессами Rhizomind вне хранилища, временной папки движка и %LOCALAPPDATA%\Rhizomind' $Analysis.FileOut @('Путь', 'Учтено') 'summary-files.csv'
+  Write-Table 'Словари проверки орфографии (Hunspell) — должно быть пусто' $Analysis.Dictionaries @('Путь') 'summary-dictionaries.csv'
+  Write-Table 'Записи реестра процессами Rhizomind (по ключам)' $Analysis.RegOut @('Ключ', 'Учтено') 'summary-registry.csv'
+}
+
+# Итог по сети приложения. $LiveCount — находки опроса соединений; в режиме
+# -AnalyzeOnly опроса нет.
+function Write-NetVerdict([object] $Analysis, [int] $LiveCount, [bool] $NoPm, [bool] $WithPoll) {
+  $appNet = $LiveCount
+  if ($Analysis) { $appNet += $Analysis.NetOwn.Count }
+  $pmVerdict = Get-ProcmonVerdict -NoProcmon:$NoPm -Analysis $Analysis
+  $poll = ''
+  if ($WithPoll) { $poll = ' Опрос соединений обращений не нашёл, но этого мало.' }
+  if ($appNet -eq 0 -and $pmVerdict -eq 'not-proven') {
+    $why = (@(Get-ProcmonGap $Analysis) -join '; ')
+    Bad "Не доказано: $why."
+    Note "`n**Итог по сети приложения:** **не доказано** — $why.$poll Аудит нужно повторить с рабочим журналом (инструкция, раздел «Если итог: не доказано»)."
+  } elseif ($appNet -eq 0) {
+    Good 'Процессы Rhizomind и движка не обращались к сети.'
+    if ($NoPm) {
+      Note "`n**Итог по сети приложения:** опрос соединений обращений не нашёл; журнал Process Monitor не снимался (-NoProcmon) — для критериев 3 и 4 этого недостаточно."
+    } else {
+      Note "`n**Итог по сети приложения:** обращений процессов Rhizomind и движка не найдено."
+    }
+  } else {
+    Bad "Найдены сетевые обращения процессов Rhizomind или движка: $appNet. Это нарушение — пришлите результаты."
+    Note "`n**Итог по сети приложения: найдено $appNet обращений — нарушение, разобрать.**"
+  }
+}
+
+# Пути хранилищ из vaults.json этой машины (поле path).
+function Get-VaultRootFromJson {
+  $roots = New-Object System.Collections.ArrayList
+  $vaultsJson = Join-Path $env:LOCALAPPDATA 'Rhizomind\vaults.json'
+  if (Test-Path -LiteralPath $vaultsJson) {
+    try {
+      $list = Get-Content -Raw -Encoding UTF8 -LiteralPath $vaultsJson | ConvertFrom-Json
+      foreach ($v in @($list.vaults)) { if ($v.path) { [void]$roots.Add([string]$v.path) } }
+    } catch { $null = $_ }
+  }
+  return $roots.ToArray()
+}
+
 if ($LibraryOnly) { return }
+
+# =============================================================================
+# Режим только разбора (-AnalyzeOnly): готовый CSV Process Monitor -> итог в
+# <папка CSV>\reanalysis-<дата>\results.md и summary-*.csv. Без Process Monitor,
+# без Rhizomind и без вопросов. Код выхода: 0 — разбор сделан (итог — в
+# results.md), 2 — нечего разбирать.
+# =============================================================================
+
+if ($AnalyzeOnly) {
+  try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $null = $_ }
+  $code = 0
+  try {
+    $Csv = ConvertFrom-TypedPath $Csv
+    if (-not $Csv -or -not (Test-Path -LiteralPath $Csv -PathType Leaf)) { Stop-Audit "CSV не найден: '$Csv'. Укажите -Csv <путь к capture.csv>." }
+    $Csv = [System.IO.Path]::GetFullPath($Csv)
+    $csvDir = Split-Path -Parent $Csv
+    $pidSource = 'ключ -RootPid'
+    $root = $script:AnalyzeRootPid
+    $prev = Join-Path $csvDir 'results.md'
+    if (-not $root -and (Test-Path -LiteralPath $prev)) {
+      $root = Get-RootPidFromResult (Get-Content -Raw -Encoding UTF8 -LiteralPath $prev)
+      $pidSource = 'results.md рядом с CSV (имя канала --mojo-named-platform-channel-pipe)'
+    }
+    if (-not $root) { Stop-Audit 'Не известен номер rhizomind.exe. Укажите -RootPid <номер> (число из --mojo-named-platform-channel-pipe=<номер>.… в results.md).' }
+    if (-not $OutDir) { $OutDir = Join-Path $csvDir ('reanalysis-' + (Get-Date -Format 'yyyy-MM-dd-HHmm')) }
+    $OutDir = [System.IO.Path]::GetFullPath((ConvertFrom-TypedPath $OutDir))
+    if (Test-SyncedPath $OutDir) { Stop-Audit "Папка $OutDir — в OneDrive или в перемещаемом профиле. Укажите другую: -OutDir <путь>" }
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+    $script:Results = Join-Path $OutDir 'results.md'
+    $roots = @(@($Vault | ForEach-Object { ConvertFrom-TypedPath $_ } | Where-Object { $_ }) + @(Get-VaultRootFromJson))
+    Set-Content -LiteralPath $script:Results -Encoding UTF8 -Value @"
+# Сетевой аудит Rhizomind — повторный разбор журнала Process Monitor
+
+Дата разбора: $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Режим -AnalyzeOnly: только разбор готового CSV, без нового аудита.
+Инструкция: docs/security/network-audit.md.
+
+- CSV: $(Protect-UserText $Csv)
+- Корневой процесс Rhizomind: PID $root (источник: $pidSource)
+- Папок хранилищ для разбора: $($roots.Count) (ключ -Vault и vaults.json этой машины)
+"@
+    Say "Разбор $Csv (PID rhizomind.exe $root). Большой CSV читается долго — минуты на миллион строк."
+    $analysis = Invoke-ProcmonAnalysis -CsvPath $Csv -OwnPids @($root) -RootPid $root -VaultRoots $roots
+    if ($analysis.EngineLeaf) { Note "- Временная папка движка (из командной строки в журнале): ``$($analysis.EngineLeaf.TrimStart('\'))``" } else { Note '- Временная папка движка в журнале не найдена — записи движка в неё попадут в «не учтено».' }
+    Note "`n## Разбор журнала`n"
+    Write-ProcmonReport $analysis
+    Note "`n## Итог`n"
+    Write-NetVerdict -Analysis $analysis -LiveCount 0 -NoPm $false -WithPoll $false
+    Note '- Флаги движка, выход, TokenBroker, WER, журнал DNS — в results.md исходного аудита (этот режим их не проверяет).'
+    Say "Итог: $script:Results"
+  } catch [System.OperationCanceledException] {
+    Bad $_.Exception.Message
+    $code = 2
+  } catch {
+    Bad "Сбой разбора: $($_.Exception.Message) (строка $($_.InvocationInfo.ScriptLineNumber))"
+    $code = 1
+  }
+  exit $code
+}
 
 # =============================================================================
 # Сценарий. Всё — внутри try/finally: при любом сбое или Ctrl+C Process Monitor
@@ -564,6 +864,58 @@ function Stop-Procmon {
   if (-not $script:ProcmonStarted -or $script:ProcmonStopped) { return }
   Start-Process -FilePath $Procmon -ArgumentList '/Terminate' -Wait
   $script:ProcmonStopped = $true
+}
+
+function Get-ProcmonProcess { return @(Get-Process -Name 'Procmon', 'Procmon64', 'Procmon64a' -ErrorAction SilentlyContinue) }
+
+# Запись в файл (/BackingFile — события пишутся в .pml, а не в память) без
+# фильтра (/NoFilter — «Clear the filter at start up», справка procmon /?)
+# поверх сброшенных настроек (Reset-ProcmonSetting). /WaitForIdle — дождаться,
+# пока Process Monitor начнёт записывать.
+function Start-ProcmonCapture([string] $BackingFile) {
+  $pmArgs = @('/AcceptEula', '/Quiet', '/Minimized', '/NoFilter', '/BackingFile', "`"$BackingFile`"")
+  try {
+    Start-Process -FilePath $Procmon -ArgumentList $pmArgs
+  } catch {
+    Stop-Audit "Process Monitor не запустился ($($_.Exception.Message)). Без прав администратора запустите скрипт с -NoProcmon."
+  }
+  $script:ProcmonStarted = $true
+  $script:ProcmonStopped = $false
+  try {
+    $w = Start-Process -FilePath $Procmon -ArgumentList @('/AcceptEula', '/WaitForIdle') -PassThru
+    if ($w -and -not $w.WaitForExit(60000)) { Bad 'Process Monitor не сообщил о готовности за 60 с.' }
+  } catch { $null = $_ }
+  Start-Sleep -Seconds 2
+  if ((Get-ProcmonProcess).Count -eq 0) {
+    Bad 'Процесс Process Monitor не виден. Если запрос UAC был отклонён — запустите скрипт снова от администратора или с -NoProcmon.'
+    if (-not (Confirm 'Process Monitor всё-таки записывает (окно открыто)?')) { Stop-Audit 'Process Monitor не запущен.' }
+  }
+}
+
+# Выгрузка .pml в CSV всех событий: /SaveAs без /SaveApplyFilter, /NoFilter.
+function Convert-ProcmonLog([string] $Pml, [string] $CsvPath) {
+  Start-Process -FilePath $Procmon -ArgumentList @('/AcceptEula', '/Quiet', '/Minimized', '/NoFilter', '/OpenLog', "`"$Pml`"", '/SaveAs', "`"$CsvPath`"") -Wait
+}
+
+# Пробная запись: Process Monitor с теми же настройками пишет ~15 с, скрипт
+# запускает тестовый процесс cmd.exe (читает реестр при старте, пишет файл
+# procmon-probe.txt в папку результатов), запись останавливается, выгружается
+# в CSV и проверяется (Test-ProcmonProbe). Основную запись так проверить
+# нельзя: /Terminate останавливает все экземпляры Process Monitor, а открытый
+# журнал идущей записи второй экземпляр не прочитает.
+function Invoke-ProcmonProbe {
+  $probePml = Join-Path $OutDir 'procmon-probe.pml'
+  $probeCsv = Join-Path $OutDir 'procmon-probe.csv'
+  $probeTxt = Join-Path $OutDir 'procmon-probe.txt'
+  Start-ProcmonCapture $probePml
+  Start-Sleep -Seconds 3
+  $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+  $p = Start-Process -FilePath $cmd -ArgumentList @('/c', "echo procmon-probe> `"$probeTxt`"") -PassThru -Wait -WindowStyle Hidden
+  Start-Sleep -Seconds 5
+  Stop-Procmon
+  Start-Sleep -Seconds 2
+  Convert-ProcmonLog $probePml $probeCsv
+  return (Test-ProcmonProbe -CsvPath $probeCsv -ProbePid $p.Id)
 }
 
 if ($Unattended) {
@@ -636,12 +988,12 @@ try {
   }
   if (-not $NoProcmon) {
     if ($ProcmonConfig) {
-      $ProcmonConfig = ConvertFrom-TypedPath $ProcmonConfig
-      if (-not (Test-Path -LiteralPath $ProcmonConfig -PathType Leaf)) { Stop-Audit "Файл настроек Process Monitor не найден: $ProcmonConfig" }
+      Say 'Ключ -ProcmonConfig больше не нужен и не используется: скрипт сам сбрасывает настройки Process Monitor на время аудита.'
+      Note '- Ключ -ProcmonConfig указан, но не используется (задача 3.3в): настройки сбрасывает скрипт.'
     }
     if (-not $isAdmin) {
       Bad 'Process Monitor работает только с правами администратора (ставит свой драйвер).'
-      Say '  Windows покажет запрос UAC при запуске записи (шаг 3) и ещё раз при остановке (шаг 10) — подтверждайте.'
+      Say '  Windows покажет запрос UAC несколько раз (пробная и основная запись на шаге 3, остановка и выгрузка на шаге 10) — подтверждайте.'
       Say '  Лучше перезапустить PowerShell «от имени администратора». Без прав — запустите скрипт с ключом -NoProcmon.'
       if (-not (Confirm 'Продолжить с запросами UAC?')) {
         Stop-Audit 'Перезапустите PowerShell от имени администратора или запустите скрипт с -NoProcmon.'
@@ -670,7 +1022,7 @@ try {
   Note "- WebView2 Runtime: $wv"
   Note "- rhizomind.exe: SHA-256 $appHash"
   Note "- Запуск от администратора: $isAdmin"
-  Note "- Process Monitor: $(if ($NoProcmon) { 'нет (-NoProcmon)' } elseif ($ProcmonConfig) { 'да, свои настройки (/LoadConfig)' } else { 'да, настройки Process Monitor по умолчанию на этой машине' })"
+  Note "- Process Monitor: $(if ($NoProcmon) { 'нет (-NoProcmon)' } else { 'да; настройки сброшены скриптом на время аудита (без фильтра, все классы событий, запись в файл)' })"
   if ($wlid) { Note "- Служба wlidsvc: $($wlid.Status), запуск $($wlid.StartType)" }
 
   $policyRoots = @('HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2',
@@ -733,26 +1085,36 @@ try {
   } else {
     Say 'Process Monitor будет записывать все события машины в файл capture.pml в папке результатов.'
     Say 'Окно Process Monitor может появиться свёрнутым — не закрывайте его до шага 10.'
-    if (-not $ProcmonConfig) {
-      Say 'Настройки — те, что последними сохранены в Process Monitor на этой машине. Если в нём был фильтр,'
-      Say 'сбросьте его заранее: Filter → Reset Filter; Options → снять «Show Resolved Network Addresses» (см. инструкцию).'
+    while ((Get-ProcmonProcess).Count -gt 0) {
+      Bad 'Process Monitor уже запущен (возможно, со своим фильтром). Закройте все его окна — скрипт запустит его сам.'
+      if ($Unattended) { Stop-Audit 'Process Monitor уже запущен.' }
+      Wait-Enter 'Закройте Process Monitor и нажмите Enter'
     }
-    if (-not $isAdmin) { Say 'Сейчас Windows спросит разрешение (UAC) для Process Monitor — подтвердите.' }
-    $pmArgs = @('/AcceptEula', '/Quiet', '/Minimized', '/BackingFile', "`"$Pml`"")
-    if ($ProcmonConfig) { $pmArgs += @('/LoadConfig', "`"$ProcmonConfig`"") }
-    try {
-      Start-Process -FilePath $Procmon -ArgumentList $pmArgs
-    } catch {
-      Stop-Audit "Process Monitor не запустился ($($_.Exception.Message)). Без прав администратора запустите скрипт с -NoProcmon."
+    # Сброс настроек (решение 107а): в первом аудите журнал вышел без событий
+    # Rhizomind — вероятно, сохранённый на машине фильтр или выключенные классы.
+    $backup = Join-Path $OutDir 'procmon-settings-backup.reg'
+    Reset-ProcmonSetting $backup
+    if ($script:ProcmonKeyExisted) {
+      Note "- Настройки Process Monitor этой машины сохранены в ``procmon-settings-backup.reg`` и на время аудита сброшены (вернутся в конце)."
+    } else {
+      Note '- Настроек Process Monitor на машине не было; ключ, созданный на время аудита, в конце удаляется.'
     }
-    $script:ProcmonStarted = $true
-    Start-Sleep -Seconds 5
-    if (-not (Get-Process -Name 'Procmon', 'Procmon64', 'Procmon64a' -ErrorAction SilentlyContinue)) {
-      Bad 'Процесс Process Monitor не виден. Если запрос UAC был отклонён — запустите скрипт снова от администратора или с -NoProcmon.'
-      if (-not (Confirm 'Process Monitor всё-таки записывает (окно открыто)?')) { Stop-Audit 'Process Monitor не запущен.' }
+    if (-not $isAdmin) { Say 'Сейчас Windows спросит разрешение (UAC) для Process Monitor — подтверждайте каждый раз.' }
+
+    Say 'Пробная запись (около 20 с): видит ли Process Monitor события тестового процесса — файлы, реестр, процессы.'
+    $probe = Invoke-ProcmonProbe
+    Note ("- Пробная запись: событий всего {0} ({1}); тестового процесса cmd.exe (PID {2}): {3}" -f $probe.Rows, (Format-ClassCounter $probe.AllClasses), ($probe.Pids -join ', '), (Format-ClassCounter $probe.Classes))
+    if (-not $probe.Ok) {
+      Note "- **Пробная запись не прошла:** $($probe.Reason)."
+      Stop-Audit ("Пробная запись Process Monitor не прошла: $($probe.Reason). С таким журналом аудит ничего не докажет — он остановлен до запуска Rhizomind. " +
+        'Что сделать: закройте все окна Process Monitor; запускайте PowerShell от администратора; возьмите свежий Process Monitor с сайта Microsoft Sysinternals; ' +
+        'если стоит антивирус или EDR, он может мешать драйверу Process Monitor. Затем запустите скрипт снова. Подробно — инструкция, раздел «Если итог: не доказано».')
     }
+    Good "Пробная запись: Process Monitor видит события тестового процесса ($(Format-ClassCounter $probe.Classes))."
+
+    Start-ProcmonCapture $Pml
     $captureStart = Get-Date
-    Note "- Запись Process Monitor начата: $($captureStart.ToString('HH:mm:ss'))"
+    Note "- Запись Process Monitor начата: $($captureStart.ToString('HH:mm:ss')) (без фильтра, в файл capture.pml)"
     Good 'Запись идёт.'
   }
   Wait-Enter
@@ -768,6 +1130,7 @@ try {
     Wait-Enter 'Закройте Rhizomind и нажмите Enter'
   }
   Step 'Скрипт запустит Rhizomind. Окно может появиться через 1–3 секунды.'
+  $appStart = Get-Date
   $proc = Start-Process -FilePath $AppExe -PassThru
   $script:RootPid = $proc.Id
   $browser = $null
@@ -830,6 +1193,25 @@ try {
   } else {
     Note '- **Процесс браузера WebView2 не найден** — флаги не проверены.'
     $script:FlagViolations++
+  }
+  # Через 60 с после запуска: запись Process Monitor продолжается (окно не
+  # закрыто, драйвер не выгружен). Что он видит события именно этого запуска,
+  # без остановки записи проверить нельзя — это проверила пробная запись на
+  # шаге 3 с теми же настройками; события корневого процесса считает шаг 10.
+  if (-not $NoProcmon) {
+    $wait = [int][Math]::Ceiling(60 - ((Get-Date) - $appStart).TotalSeconds)
+    if ($wait -gt 0) {
+      Say "Через $wait с скрипт проверит, что Process Monitor продолжает запись."
+      Start-Sleep -Seconds $wait
+    }
+    $pmAlive = (Get-ProcmonProcess).Count -gt 0
+    $pmlMb = 0
+    if (Test-Path -LiteralPath $Pml) { $pmlMb = [Math]::Round((Get-Item -LiteralPath $Pml).Length / 1MB, 1) }
+    Note "- Через 60 с после запуска Rhizomind: Process Monitor работает — $pmAlive; capture.pml — $pmlMb МБ"
+    if (-not $pmAlive) {
+      Stop-Audit 'Process Monitor перестал работать (окно закрыто или процесс завершился) — журнал этого запуска не будет полным. Закройте Rhizomind и запустите скрипт снова; окно Process Monitor не закрывайте до шага 10.'
+    }
+    Good "Process Monitor пишет журнал (capture.pml — $pmlMb МБ)."
   }
   Wait-Enter
 
@@ -991,23 +1373,16 @@ try {
     if (-not $isAdmin) { Say 'Windows спросит разрешение (UAC) для остановки Process Monitor — подтвердите.' }
     Stop-Procmon
     Start-Sleep -Seconds 3
-    $saveArgs = @('/AcceptEula', '/Quiet', '/Minimized', '/OpenLog', "`"$Pml`"", '/SaveAs', "`"$Csv`"")
-    if ($ProcmonConfig) { $saveArgs += @('/LoadConfig', "`"$ProcmonConfig`"") }
-    Start-Process -FilePath $Procmon -ArgumentList $saveArgs -Wait
+    # Те же гарантии, что при записи: настройки ещё сброшены, /NoFilter,
+    # /SaveAs без /SaveApplyFilter — в CSV все события журнала.
+    Convert-ProcmonLog $Pml $Csv
     while (-not (Test-Path -LiteralPath $Csv)) {
       Bad 'CSV не получился. Откройте capture.pml в Process Monitor вручную: Filter → Reset Filter, затем File → Save… → «All events», формат CSV, в эту папку как capture.csv.'
       if (-not (Confirm 'CSV сохранён вручную (иначе — без разбора журнала)?')) { break }
     }
     if (Test-Path -LiteralPath $Csv) {
       $analysis = Invoke-ProcmonAnalysis -CsvPath $Csv -OwnPids $ownPids.ToArray() -RootPid $script:RootPid -VaultRoots $vaultRoots.ToArray() -EngineDir $script:EngineDir
-      Note "- Событий в журнале: $($analysis.Rows); из них корневого процесса Rhizomind: $($analysis.RootRows); процессов Rhizomind и движка: $($analysis.Own.Count)"
-      if ($analysis.RootRows -eq 0) { Bad 'В журнале нет ни одного события Rhizomind — скорее всего, в Process Monitor остался фильтр (Filter → Reset Filter).' }
-      Write-Table 'Сеть процессов Rhizomind и движка (должно быть пусто)' $analysis.NetOwn @('Процесс', 'Протокол', 'Адрес') 'summary-network-app.csv'
-      Note "`n- Запросы DNS (UDP Send на порт 53) процессов Rhizomind и движка: $($analysis.DnsOwn) (должно быть 0 — подтверждение ``--host-resolver-rules``); всех процессов машины: $($analysis.DnsAll)"
-      Write-Table 'Сеть всех процессов машины за время аудита (сверка со списком SECURITY.md)' $analysis.NetAll @('Процесс', 'Протокол', 'Адрес', 'Оценка') 'summary-network-all.csv'
-      Write-Table 'Записи файлов процессами Rhizomind вне хранилища, временной папки движка и %LOCALAPPDATA%\Rhizomind' $analysis.FileOut @('Путь', 'Учтено') 'summary-files.csv'
-      Write-Table 'Словари проверки орфографии (Hunspell) — должно быть пусто' $analysis.Dictionaries @('Путь') 'summary-dictionaries.csv'
-      Write-Table 'Записи реестра процессами Rhizomind (по ключам)' $analysis.RegOut @('Ключ', 'Учтено') 'summary-registry.csv'
+      Write-ProcmonReport $analysis
     } else {
       Note '- **Журнал Process Monitor не разобран** (CSV нет).'
     }
@@ -1037,23 +1412,7 @@ try {
   # --- Шаг 11. Итог ----------------------------------------------------------
 
   Stage 'Итог'
-  $appNet = $script:LiveFindings.Count
-  if ($analysis) { $appNet += $analysis.NetOwn.Count }
-  $pmVerdict = Get-ProcmonVerdict -NoProcmon:$NoProcmon -Analysis $analysis
-  if ($appNet -eq 0 -and $pmVerdict -eq 'not-proven') {
-    Bad 'Не доказано: журнал Process Monitor не разобран или не содержит событий Rhizomind. Опрос соединений обращений не нашёл, но этого мало.'
-    Note "`n**Итог по сети приложения:** **не доказано: журнал Process Monitor не разобран или не содержит событий Rhizomind (фильтр?)** Опрос соединений обращений не нашёл; аудит нужно повторить с рабочим журналом."
-  } elseif ($appNet -eq 0) {
-    Good 'Процессы Rhizomind и движка не обращались к сети.'
-    if ($NoProcmon) {
-      Note "`n**Итог по сети приложения:** опрос соединений обращений не нашёл; журнал Process Monitor не снимался (-NoProcmon) — для критериев 3 и 4 этого недостаточно."
-    } else {
-      Note "`n**Итог по сети приложения:** обращений процессов Rhizomind и движка не найдено."
-    }
-  } else {
-    Bad "Найдены сетевые обращения процессов Rhizomind или движка: $appNet. Это нарушение — пришлите результаты."
-    Note "`n**Итог по сети приложения: найдено $appNet обращений — нарушение, разобрать.**"
-  }
+  Write-NetVerdict -Analysis $analysis -LiveCount $script:LiveFindings.Count -NoPm ([bool]$NoProcmon) -WithPoll $true
   Note "- Флаги и папка движка: $(if ($script:FlagViolations) { "**нарушений $($script:FlagViolations)**" } else { 'как ожидается' }); выход: $(if ($script:ExitProblems) { "**проблем $($script:ExitProblems)**" } else { 'чисто' })"
   Say ''
   Say "Папка результатов: $OutDir"
@@ -1076,6 +1435,12 @@ try {
 } finally {
   if ($script:ProcmonStarted -and -not $script:ProcmonStopped) {
     try { Stop-Procmon; Write-Host '  Process Monitor остановлен.' -ForegroundColor Yellow } catch { Write-Host "  !!  Не удалось остановить Process Monitor: $($_.Exception.Message). Закройте его окно сами." -ForegroundColor Red }
+  }
+  if ($script:ProcmonSettingsReset) {
+    try {
+      Restore-ProcmonSetting
+      if ($script:ProcmonKeyExisted) { Write-Host '  Настройки Process Monitor возвращены из procmon-settings-backup.reg.' -ForegroundColor Yellow }
+    } catch { Write-Host "  !!  Не удалось вернуть настройки Process Monitor: $($_.Exception.Message). Верните сами: reg import `"$($script:ProcmonBackup)`"" -ForegroundColor Red }
   }
   if ($script:DnsChanged) {
     try {
