@@ -1,0 +1,6 @@
+﻿"Time of Day","Process Name","PID","Operation","Path","Result","Detail"
+"19:23:00.0000001","svchost.exe","1312","TCP Send","DESKTOP-1:50112 -> 20.190.151.68:443","SUCCESS","Length: 517"
+"19:23:00.0000002","browser.exe","8120","TCP Receive","DESKTOP-1:50200 -> 87.250.250.242:443","SUCCESS","Length: 1400"
+"19:23:00.0000003","OneDrive.exe","6044","UDP Send","DESKTOP-1:61000 -> 10.0.0.1:53","SUCCESS","Length: 40"
+"19:23:00.0000004","svchost.exe","1312","TCP Connect","DESKTOP-1:50113 -> 52.168.112.66:443","SUCCESS","Length: 0"
+"19:23:00.0000005","OneDrive.exe","6044","TCP Send","DESKTOP-1:50300 -> 13.107.42.14:443","SUCCESS","Length: 900"
