@@ -15,10 +15,13 @@
 //    запроса → обновлённый список на экране. Пять запросов (имена настоящих
 //    заметок); повтор — худшее нажатие.
 // 3. Ввод: открыть «Длинную заметку 5000 строк», печатать в конце, в начале
-//    и в середине — по 20 одиночных нажатий и серия из 30 подряд. Повтор —
-//    95-й процентиль задержки «нажатие → кадр». Предел 100 мс — порог, до
-//    которого отклик воспринимается мгновенным (Nielsen, 0,1 с; модель RAIL —
-//    ответ на ввод до 100 мс); 50 мс — цель, отмечается в отчёте.
+//    и в середине — по 20 одиночных нажатий (следующее — после кадра с
+//    предыдущим, темп ~10–30 символов в секунду, как быстрый набор). Повтор —
+//    95-й процентиль задержки «нажатие → кадр» по 60 нажатиям. Предел 100 мс —
+//    порог, до которого отклик воспринимается мгновенным (Nielsen, 0,1 с;
+//    модель RAIL — ответ на ввод до 100 мс); 50 мс — цель, отмечается в отчёте.
+//    Справочно — серия из 30 символов одним вызовом WebDriver: нажатия
+//    приходят быстрее, чем человек печатает, и задержка включает очередь.
 // Нажатия — временем движка окна (probe.ts), без задержек WebDriver.
 // Вывод — по медиане повторов (stats.ts: почему не одна попытка).
 import { mkdirSync, appendFileSync, writeFileSync } from 'node:fs';
@@ -57,6 +60,8 @@ interface TreeOpen {
   total: number;
   /** Щелчок → начало загрузки страницы нового окна (часы окна). */
   navigation: number;
+  /** Щелчок → DOMContentLoaded нового окна: скрипт интерфейса загружен и выполнен; `null` — нет данных. */
+  domReady: number | null;
   /** Начало и конец запроса `tree_list` от щелчка; `null` — движок не даёт Resource Timing для ipc. */
   treeList: { start: number; end: number } | null;
   /** Щелчок → дерево в DOM (часы окна). */
@@ -88,9 +93,11 @@ async function openFromManager(browser: WebdriverIO.Browser, vault: PerfVault): 
           .getEntriesByType('resource')
           .filter((e) => /tree_list/.test(e.name))
           .map((e) => ({ start: nav + e.startTime, end: nav + (e as PerformanceResourceTiming).responseEnd }));
+        const page = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
         return {
           items: document.querySelectorAll('[role="treeitem"]').length,
           nav,
+          domReady: page && page.domContentLoadedEventEnd > 0 ? nav + page.domContentLoadedEventEnd : null,
           now: nav + performance.now(),
           treeList: ipc[0] ?? null,
         };
@@ -100,6 +107,7 @@ async function openFromManager(browser: WebdriverIO.Browser, vault: PerfVault): 
         return {
           total: seen - clickAt,
           navigation: state.nav - clickAt,
+          domReady: state.domReady === null ? null : state.domReady - clickAt,
           treeList: state.treeList ? { start: state.treeList.start - clickAt, end: state.treeList.end - clickAt } : null,
           rendered: state.now - clickAt,
         };
@@ -137,24 +145,29 @@ async function placeCaret(browser: WebdriverIO.Browser, where: 'конец' | '�
   if (where === 'конец') await browser.keys(['Control', 'End']);
   else if (where === 'начало') await browser.keys(['Control', 'Home']);
   else {
-    await browser.execute(async () => {
-      const scroller = document.querySelector<HTMLElement>('.cm-scroller');
-      if (!scroller) throw new Error('нет .cm-scroller');
+    // Строку в середине выбирает окно, щелчок — по координатам: CodeMirror
+    // перерисовывает строки после прокрутки, пометка атрибутом не доживает до щелчка.
+    const point = await browser.execute(async () => {
+      // Прокручивается ближайший предок текста с прокруткой (не обязательно .cm-scroller).
+      let scroller = document.querySelector<HTMLElement>('.cm-content');
+      while (scroller && !(scroller.scrollHeight > scroller.clientHeight + 1 && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+        scroller = scroller.parentElement;
+      }
+      if (!scroller) throw new Error('нет прокручиваемого предка у текста заметки');
       scroller.scrollTop = (scroller.scrollHeight - scroller.clientHeight) / 2;
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const box = scroller.getBoundingClientRect();
-      const lines = [...document.querySelectorAll<HTMLElement>('.cm-line')].filter((line) => {
-        const r = line.getBoundingClientRect();
-        const text = line.textContent ?? '';
-        return r.top > box.top && r.bottom < box.bottom && text.length > 10 && !/[[\]()<>`#*_|]|http/.test(text);
-      });
-      const centre = box.top + box.height / 2;
-      lines.sort((a, b) => Math.abs(a.getBoundingClientRect().top - centre) - Math.abs(b.getBoundingClientRect().top - centre));
-      document.querySelectorAll('[data-rz-perf]').forEach((el) => el.removeAttribute('data-rz-perf'));
-      if (!lines[0]) throw new Error('нет подходящей строки в середине заметки');
-      lines[0].setAttribute('data-rz-perf', 'mid');
+      for (let i = 0; i < 4; i++) await new Promise((r) => requestAnimationFrame(r));
+      const rect = scroller.getBoundingClientRect();
+      const box = { top: Math.max(rect.top, 0), bottom: Math.min(rect.bottom, window.innerHeight) };
+      const centre = (box.top + box.bottom) / 2;
+      const lines = [...document.querySelectorAll<HTMLElement>('.cm-line')]
+        .map((line) => ({ rect: line.getBoundingClientRect(), text: line.textContent ?? '', links: line.querySelector('a, [class*="link"]') }))
+        .filter(({ rect, text, links }) => rect.top > box.top && rect.bottom < box.bottom && text.length > 10 && !links && !/[[\]()<>`#*_|]|http/.test(text))
+        .sort((a, b) => Math.abs(a.rect.top - centre) - Math.abs(b.rect.top - centre));
+      const line = lines[0];
+      if (!line) throw new Error('нет подходящей строки в середине заметки');
+      return { x: Math.round(line.rect.left + 4), y: Math.round(line.rect.top + line.rect.height / 2) };
     });
-    await browser.$('[data-rz-perf="mid"]').click();
+    await browser.action('pointer').move({ x: point.x, y: point.y, origin: 'viewport' }).down().up().perform();
     await browser.keys('End');
   }
 }
@@ -224,6 +237,8 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
       if (known.length > 0) measured.push({ id, title, limitMs: null, repeatStat: 'max', repeats: known.map((v) => [v]) });
     };
     phase('tree.core', 'Дерево: щелчок → окно начало загрузку (ядро: обход папки, индекс; создание окна)', runs.map((r) => r.navigation));
+    phase('tree.dom', 'Дерево: начало загрузки окна → DOMContentLoaded (скрипт интерфейса)', runs.map((r) => (r.domReady === null ? null : r.domReady - r.navigation)));
+    phase('tree.ui', 'Дерево: DOMContentLoaded → строки в DOM (запуск интерфейса, tree_list, отрисовка)', runs.map((r) => (r.domReady === null ? null : r.rendered - r.domReady)));
     phase('tree.boot', 'Дерево: загрузка окна → запрос tree_list', runs.map((r) => (r.treeList ? r.treeList.start - r.navigation : null)));
     phase('tree.list', 'Дерево: запрос tree_list (ядро + IPC)', runs.map((r) => (r.treeList ? r.treeList.end - r.treeList.start : null)));
     phase('tree.render', 'Дерево: ответ tree_list → строки в DOM', runs.map((r) => (r.treeList ? r.rendered - r.treeList.end : null)));
@@ -268,6 +283,7 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
   it(`набор текста в заметке на ${LONG_LINES} строк без заметных задержек`, async () => {
     const browser = await vaultSession();
     const repeats: number[][] = [];
+    const bursts: number[][] = [];
     const opens: number[] = [];
     let longTasks: number[] = [];
     let eventMax = 0;
@@ -281,6 +297,7 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
       await browser.$('.cm-content').waitForDisplayed({ timeout: 10_000 });
 
       const latencies: number[] = [];
+      const burstLatencies: number[] = [];
       for (const where of ['конец', 'начало', 'середина'] as const) {
         await placeCaret(browser, where);
         await armProbe(browser, 'editor');
@@ -293,15 +310,17 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
         const extras = await finishProbe(browser);
         longTasks = longTasks.concat(extras.longTasks);
         eventMax = Math.max(eventMax, extras.eventMax);
-        latencies.push(...all);
         const single = all.slice(0, SINGLE_KEYS);
         const burst = all.slice(SINGLE_KEYS);
+        latencies.push(...single);
+        burstLatencies.push(...burst);
         log(
           `ввод, повтор ${r + 1}, ${where}: одиночные — медиана ${ms(median(single))}, ` +
             `худшее ${ms(Math.max(...single))} мс; серия — худшее ${ms(Math.max(...burst))} мс`,
         );
       }
       repeats.push(latencies);
+      bursts.push(burstLatencies);
       if (r === 0) await saveScreenshot(browser, 'perf-typing');
       // Уйти на другую заметку: следующий повтор снова открывает длинную.
       await openNote(browser, vault.queries[r % vault.queries.length] ?? 'а', null);
@@ -319,7 +338,8 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
       repeats,
     };
     measured.push(typing);
-    measured.push({ id: 'typing.max', title: 'Ввод: худшее нажатие в повторе', limitMs: null, repeatStat: 'max', repeats });
+    measured.push({ id: 'typing.max', title: 'Ввод: худшее одиночное нажатие в повторе', limitMs: null, repeatStat: 'max', repeats });
+    measured.push({ id: 'typing.burst', title: `Ввод: серия ${BURST.length + 1} символов без пауз (95-й процентиль, с очередью)`, limitMs: null, repeatStat: 'p95', repeats: bursts });
     measured.push({ id: 'note.open', title: `Открытие заметки на ${LONG_LINES} строк (Enter → текст на экране)`, limitMs: null, repeatStat: 'max', repeats: opens.map((v) => [v]) });
     const p95 = summarize(typing).median;
     extra.push(
