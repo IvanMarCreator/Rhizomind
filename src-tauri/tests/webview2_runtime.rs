@@ -335,14 +335,17 @@ mod windows_only {
     fn send_chord(modifiers: &[u16], key: u16) -> u32 {
         use ::windows::Win32::UI::Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-            SendInput, VIRTUAL_KEY,
+            MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VIRTUAL_KEY,
         };
         let input = |vk: u16, up: bool| INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(vk),
-                    wScan: 0,
+                    // Код сканирования нужен странице: по нему движок
+                    // заполняет `KeyboardEvent.code` (без него code пустой).
+                    // SAFETY: функция только переводит код клавиши.
+                    wScan: unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) } as u16,
                     dwFlags: if up {
                         KEYEVENTF_KEYUP
                     } else {
@@ -426,9 +429,10 @@ mod windows_only {
         }
         std::thread::sleep(Duration::from_millis(1500));
         let mut failures = Vec::new();
-        if sent != 18 {
+        // Нажатие и отпускание каждой клавиши: 4 + 4 + 4 + 6 + 2 + 2.
+        if sent != 22 {
             failures.push(format!(
-                "сочетания движка: SendInput принял {sent} событий из 18"
+                "сочетания движка: SendInput принял {sent} событий из 22"
             ));
         }
         // ExecuteScript отдаёт JSON значения скрипта: массив [метки, dpr].
