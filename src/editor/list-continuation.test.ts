@@ -89,6 +89,36 @@ describe('нумерованный список: следующие номера
   });
 });
 
+describe('перенумерация: QA 2.15', () => {
+  it.each([
+    ['ведущие нули сохраняются', '01. a|\n02. b\n03. c', '01. a\n02. |\n03. b\n04. c'],
+    ['ширина с нулями растёт только при переполнении', '09. a|\n10. b', '09. a\n10. |\n11. b'],
+    ['другой разделитель — другой список, не трогается', '1. a|\n2) b', '1. a\n2. |\n2) b'],
+    ['другой уровень цитаты — конец перенумерации', '> 1. a|\n> 2. b\n2. c', '> 1. a\n> 2. |\n> 3. b\n2. c'],
+    ['в цитате перенумеровывается своя цитата', '> 1. a|\n> 2. b\n> 3. c', '> 1. a\n> 2. |\n> 3. b\n> 4. c'],
+  ])('%s', (_name, before, after) => {
+    expect(enter(before)).toBe(after);
+  });
+
+  it('10 000 пунктов — одно изменение одного участка, быстро; отмена одним шагом', () => {
+    const items = Array.from({ length: 10_000 }, (_v, k) => `${k + 1}. пункт`);
+    let state = stateOf(`${items[0]}|\n${items.slice(1).join('\n')}`);
+    const started = performance.now();
+    const spec = continueMarkup(state);
+    const tr = state.update(spec ?? {});
+    const elapsed = performance.now() - started;
+    let ranges = 0;
+    tr.changes.iterChanges(() => ranges++);
+    expect(ranges).toBeLessThanOrEqual(2);
+    expect(elapsed).toBeLessThan(200);
+    state = tr.state;
+    expect(state.doc.line(10_001).text).toBe('10001. пункт');
+    expect(state.doc.line(2).text).toBe('2. ');
+    undo({ state, dispatch: (t: Transaction) => { state = t.state; } });
+    expect(state.doc.toString()).toBe(items.join('\n'));
+  });
+});
+
 describe('Enter на пустом пункте — выход из списка', () => {
   it.each([
     ['пустой пункт верхнего уровня — маркер удаляется', '- а\n- |', '- а\n|'],
@@ -105,6 +135,52 @@ describe('Enter на пустом пункте — выход из списка'
     ['пустой пункт с пробелами после маркера', '- а\n-   |', '- а\n|'],
   ])('%s', (_name, before, after) => {
     expect(enter(before)).toBe(after);
+  });
+});
+
+describe('одиночный маркер под абзацем — не пункт (QA 2.15)', () => {
+  it.each([
+    ['«-» под текстом', 'Заголовок\n-|'],
+    ['«2020.» под текстом', 'Итого\n2020.|'],
+    ['«*» под текстом', 'текст\n*|'],
+    ['в цитате под текстом цитаты', '> текст\n> -|'],
+  ])('%s — обычный Enter', (_name, before) => {
+    expect(enter(before)).toBeNull();
+  });
+
+  it.each([
+    ['под пунктом списка', '- а\n-|', '- а\n|'],
+    ['под заголовком #', '# З\n-|', '# З\n|'],
+    ['под пустой строкой', 'текст\n\n-|', 'текст\n\n|'],
+    ['под продолжением пункта с отступом', '- а\n  ещё\n-|', '- а\n  ещё\n|'],
+  ])('%s — пустой пункт', (_name, before, after) => {
+    expect(enter(before)).toBe(after);
+  });
+});
+
+describe('мелочи QA 2.15', () => {
+  it('цитата из одних пробелов — выход, как из пустой', () => {
+    expect(enter('> а\n>   |')).toBe('> а\n|');
+  });
+
+  it('пробелы после [ ] у задачи сохраняются', () => {
+    expect(enter('- [ ]   а|')).toBe('- [ ]   а\n- [ ]   |');
+  });
+
+  it.each([
+    ['блок кода в цитате — Enter обычный', '> ```\n> - а|\n> ```'],
+    ['незакрытый блок кода в цитате', '> ~~~\n> - а|'],
+  ])('%s', (_name, before) => {
+    expect(enter(before)).toBeNull();
+    expect(tab(before)).toBeNull();
+  });
+
+  it('после блока кода в цитате список продолжается', () => {
+    expect(enter('> ```\n> код\n> ```\n> - а|')).toBe('> ```\n> код\n> ```\n> - а\n> - |');
+  });
+
+  it('Tab: строка другого уровня цитаты — не вложенная строка пункта', () => {
+    expect(tab('> - а|\n>   - б\n  - в')).toBe('>   - а|\n>     - б\n  - в');
   });
 });
 

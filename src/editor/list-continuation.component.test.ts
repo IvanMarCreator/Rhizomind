@@ -128,6 +128,15 @@ describe('Tab и Shift+Tab', () => {
     expect(editor.state.doc.toString()).toBe('- а\n- б');
   });
 
+  it('во время набора через IME Tab не меняет вложенность', async () => {
+    const editor = open('- а\n- б');
+    await fireEvent.compositionStart(editor.contentDOM);
+    expect(editor.compositionStarted).toBe(true);
+    await press(editor, 'Tab', { isComposing: true, keyCode: 229 });
+    await press(editor, 'Tab', { shiftKey: true, isComposing: true, keyCode: 229 });
+    expect(editor.state.doc.toString()).toBe('- а\n- б');
+  });
+
   it('в пункте Esc, затем Tab — фокус уходит дальше (выход из текста с клавиатуры)', async () => {
     const editor = open('- а');
     await press(editor, 'Escape', { keyCode: 27 });

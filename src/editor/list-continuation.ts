@@ -19,6 +19,7 @@
 import { EditorSelection, Prec, type ChangeSpec, type EditorState, type Extension, type Line, type TransactionSpec } from '@codemirror/state';
 import { EditorView, keymap } from '@codemirror/view';
 import { inCodeAt } from './live-preview/index.ts';
+import { fenceStep, type CodeBlock, type OpenFence } from './live-preview/markdown.ts';
 
 /** Цитата с позиции `lastIndex` — как в разборе предпросмотра. */
 const QUOTE_AT = / {0,3}> ?/y;
@@ -40,6 +41,8 @@ interface ListItem {
   /** `-`, `*`, `+` или номер с `.`/`)`. */
   bullet: string;
   number: number | null;
+  /** Цифры номера как написаны (с ведущими нулями). */
+  digits: string;
   delimiter: string;
   /** Пробелы между маркером и `[ ]` (у задачи) или текстом. */
   gap: string;
@@ -70,7 +73,7 @@ function parsePrefix(text: string): Prefix | null {
   }
   const quoteEnd = pos;
   const rest = text.slice(pos);
-  const list = RULE.test(rest) || HEADING.test(rest) ? null : LIST.exec(rest);
+  const list = RULE.test(rest) ? null : LIST.exec(rest);
   if (!list) return quotes.length > 0 ? { quotes, quoteEnd, list: null, contentFrom: quoteEnd } : null;
 
   const indent = list[1] ?? '';
@@ -88,8 +91,9 @@ function parsePrefix(text: string): Prefix | null {
     gap = BLANKS.exec(text.slice(at))?.[0] ?? '';
     at += gap.length;
   }
-  const number = list[3] === undefined ? null : Number(list[3]);
-  return { quotes, quoteEnd, list: { indent, bullet, number, delimiter: list[4] ?? '', gap, taskGap }, contentFrom: at };
+  const digits = list[3] ?? '';
+  const number = list[3] === undefined ? null : Number(digits);
+  return { quotes, quoteEnd, list: { indent, bullet, number, digits, delimiter: list[4] ?? '', gap, taskGap }, contentFrom: at };
 }
 
 /** Ширина отступа в колонках: табуляция — до следующей кратной `TAB_WIDTH`. */
@@ -99,14 +103,52 @@ function columns(indent: string): number {
   return width;
 }
 
-/** Строка — внутри блока кода или блока свойств: правила не действуют. */
-function inBlockLine(state: EditorState, line: Line): boolean {
-  return inCodeAt(state, line.from);
+/**
+ * Строка — внутри блока кода или блока свойств: правила не действуют. Блок
+ * кода внутри цитаты (`> ```…`) общий разбор блоков не видит: его ограды
+ * ищутся здесь, среди строк выше с тем же уровнем цитаты (без префиксов).
+ */
+function inBlockLine(state: EditorState, line: Line, prefix: Prefix): boolean {
+  if (inCodeAt(state, line.from)) return true;
+  const depth = prefix.quotes.length;
+  if (depth === 0) return false;
+  let first = line.number;
+  while (first > 1 && (parsePrefix(state.doc.line(first - 1).text)?.quotes.length ?? 0) === depth) first--;
+  let open: OpenFence | null = null;
+  const closed: CodeBlock[] = [];
+  for (let n = first; n <= line.number; n++) {
+    const text = state.doc.line(n).text;
+    const body = text.slice(parsePrefix(text)?.quoteEnd ?? 0);
+    const wasOpen = open !== null;
+    open = fenceStep(open, body, 0, body.length, closed);
+    // Сама строка — ограда (открывающая или закрывающая): тоже код.
+    if (n === line.number) return wasOpen || open !== null;
+  }
+  return false;
+}
+
+/** Номер с ведущими нулями до ширины `digits` (`01.` → `02.`). */
+function formatNumber(value: number, digits: string): string {
+  return String(value).padStart(digits.length, '0');
+}
+
+/**
+ * Пустой пункт сразу под строкой абзаца — не пункт (CommonMark: пустой пункт
+ * не прерывает абзац; `Итого` / `-` — заголовок setext или текст абзаца).
+ */
+function underParagraph(state: EditorState, line: Line, prefix: Prefix): boolean {
+  if (line.number === 1) return false;
+  const above = state.doc.line(line.number - 1).text;
+  const parsed = parsePrefix(above);
+  if ((parsed?.quotes.length ?? 0) !== prefix.quotes.length || parsed?.list) return false;
+  const body = above.slice(parsed?.quoteEnd ?? 0);
+  if (body.trim() === '' || /^[ \t]/.test(body)) return false;
+  return !HEADING.test(body) && !RULE.test(body);
 }
 
 /** Префикс нового пункта после `item`: тот же маркер, задача не отмечена, номер следующий. */
 function nextItemPrefix(item: ListItem): string {
-  const bullet = item.number === null ? item.bullet : `${item.number + 1}${item.delimiter}`;
+  const bullet = item.number === null ? item.bullet : `${formatNumber(item.number + 1, item.digits)}${item.delimiter}`;
   const gap = item.gap === '' ? ' ' : item.gap;
   if (item.taskGap === null) return `${item.indent}${bullet}${gap}`;
   return `${item.indent}${bullet}${gap}[ ]${item.taskGap === '' ? ' ' : item.taskGap}`;
@@ -118,7 +160,7 @@ function nextItemPrefix(item: ListItem): string {
  * пустая строка, другой уровень цитаты или строка с отступом не глубже пункта.
  */
 function renumber(state: EditorState, line: Line, prefix: Prefix, item: ListItem, inserted: number): ChangeSpec[] {
-  const changes: ChangeSpec[] = [];
+  const changes: { from: number; to: number; insert: string }[] = [];
   const base = columns(item.indent);
   let expected = inserted + 1;
   for (let n = line.number + 1; n <= state.doc.lines; n++) {
@@ -136,11 +178,28 @@ function renumber(state: EditorState, line: Line, prefix: Prefix, item: ListItem
     if (width < base || !other || other.number === null || other.delimiter !== item.delimiter) break;
     if (other.number !== expected) {
       const from = next.from + quoteEnd + other.indent.length;
-      changes.push({ from, to: from + String(other.number).length, insert: String(expected) });
+      changes.push({ from, to: from + other.digits.length, insert: formatNumber(expected, other.digits) });
     }
     expected++;
   }
-  return changes;
+  return joinChanges(state, changes);
+}
+
+/**
+ * Замены по порядку — одним изменением участка от первой до последней: у
+ * длинного списка тысячи отдельных правок CodeMirror применяет заметно дольше.
+ */
+function joinChanges(state: EditorState, changes: readonly { from: number; to: number; insert: string }[]): ChangeSpec[] {
+  const first = changes[0];
+  const last = changes.at(-1);
+  if (!first || !last || changes.length === 1) return [...changes];
+  const parts: string[] = [];
+  let pos = first.from;
+  for (const change of changes) {
+    parts.push(state.doc.sliceString(pos, change.from), change.insert);
+    pos = change.to;
+  }
+  return [{ from: first.from, to: last.to, insert: parts.join('') }];
 }
 
 /**
@@ -154,10 +213,12 @@ export function continueMarkup(state: EditorState): TransactionSpec | null {
   const line = state.doc.lineAt(range.head);
   const prefix = parsePrefix(line.text);
   if (!prefix || range.head - line.from < prefix.contentFrom) return null;
-  if (inBlockLine(state, line)) return null;
+  if (inBlockLine(state, line, prefix)) return null;
 
   const { list } = prefix;
-  if (prefix.contentFrom >= line.length) return exitEmpty(state, line, prefix);
+  if (line.text.slice(prefix.contentFrom).trim() === '') {
+    return list && underParagraph(state, line, prefix) ? null : exitEmpty(state, line, prefix);
+  }
 
   const insert = `\n${line.text.slice(0, prefix.quoteEnd)}${list ? nextItemPrefix(list) : ''}`;
   const specs: ChangeSpec[] = [{ from: range.head, insert }];
@@ -246,7 +307,7 @@ export function indentList(state: EditorState, direction: 1 | -1): TransactionSp
     for (let n = first; n <= last; n++) {
       const line = state.doc.line(n);
       const prefix = parsePrefix(line.text);
-      if (!prefix?.list || inBlockLine(state, line)) continue;
+      if (!prefix?.list || inBlockLine(state, line, prefix)) continue;
       targets.add(n);
       addChildren(state, n, prefix, prefix.list, targets);
     }
