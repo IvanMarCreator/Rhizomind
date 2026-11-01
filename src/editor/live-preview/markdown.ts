@@ -144,14 +144,18 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
       const checked = task[1] !== ' ';
       // Значок с пробелом за ним: зазор до текста задаёт значок (tokens.md «Списки»).
       const boxTo = boxFrom + 3 + (isBlank(text[boxFrom + 3]) ? 1 : 0);
-      if (ordered) pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
-      else pieces.push({ kind: 'hide', from: markerFrom, to: boxFrom, owner: block });
+      if (ordered) {
+        pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
+        if (boxFrom > markerTo) pieces.push({ kind: 'mark', cls: 'cm-rz-list-gap', from: markerTo, to: boxFrom });
+      } else pieces.push({ kind: 'hide', from: markerFrom, to: boxFrom, owner: block });
       pieces.push({ kind: 'widget', widget: checked ? 'checkbox-checked' : 'checkbox', from: boxFrom, to: boxTo, owner: block });
       if (checked) classes.push('cm-rz-task-done');
       contentFrom = boxTo;
     } else if (ordered) {
       pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
-      contentFrom = markerTo;
+      // Пробел за номером — без ширины: зазор до текста задаёт колонка номера, как у точки (задача 2.20).
+      contentFrom = markerTo + (isBlank(text[markerTo]) ? 1 : 0);
+      if (contentFrom > markerTo) pieces.push({ kind: 'mark', cls: 'cm-rz-list-gap', from: markerTo, to: contentFrom });
     } else {
       const bulletTo = markerTo + (isBlank(text[markerTo]) ? 1 : 0);
       pieces.push({ kind: 'widget', widget: 'bullet', from: markerFrom, to: bulletTo, owner: block });
@@ -164,6 +168,41 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
 }
 
 const isBlank = (ch: string | undefined) => ch === ' ' || ch === '\t';
+
+/** Вид строки для промежутков между блоками и вложенности пунктов (задача 2.20). */
+export type LineKind = 'blank' | 'heading' | 'quote' | 'list' | 'rule' | 'para';
+
+export interface LineShape {
+  kind: LineKind;
+  /** Ширина отступа в начале строки в колонках (табуляция — до кратного 4). */
+  columns: number;
+  /** Длина отступа в символах (у пункта списка — пробелы перед маркером). */
+  indent: number;
+}
+
+/** Ширина табуляции в колонках (как `tabSize` редактора по умолчанию). */
+const TAB_WIDTH = 4;
+
+/**
+ * Вид строки вне блока кода — без разбора строчных элементов: только
+ * начало строки. `previous` — строка выше (для `---`: линия или нет).
+ */
+export function lineShape(text: string, previous: string | null): LineShape {
+  let indent = 0;
+  let columns = 0;
+  while (isBlank(text[indent])) {
+    columns = text[indent] === '\t' ? columns - (columns % TAB_WIDTH) + TAB_WIDTH : columns + 1;
+    indent++;
+  }
+  const shape = (kind: LineKind): LineShape => ({ kind, columns, indent });
+  if (indent === text.length) return shape('blank');
+  if (QUOTE.test(text)) return shape('quote');
+  const rule = RULE.exec(text);
+  if (rule && (rule[1] !== '-' || breaksParagraph(previous))) return shape('rule');
+  if (HEADING.test(text)) return shape('heading');
+  if (LIST.test(text)) return shape('list');
+  return shape('para');
+}
 
 /**
  * Закрывающие решётки заголовка `## текст ##` после `from`: пробелы, `#`,

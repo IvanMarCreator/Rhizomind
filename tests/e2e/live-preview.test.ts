@@ -67,6 +67,37 @@ const INLINE_SAMPLE = [
   '',
 ].join('\n');
 
+/**
+ * Колонка текста Э1 (22-259 / 22-535) в Markdown — для сверки промежутков
+ * между блоками (задача 2.20). Блоки идут подряд, где Markdown это позволяет;
+ * два абзаца разделяет пустая строка.
+ */
+const E1_NOTE = 'Встреча по запуску';
+const E1_SAMPLE = [
+  '**Дата:** 22.10.2026 · **Участники:** Н. Орлова, Д. Ким, П. Захаров',
+  '',
+  'Продолжаем обсуждение из [[Встреча]]. Цель — согласовать пилот и сроки запуска.',
+  '## Решения',
+  '- Пилот запускаем в отделе закупок с **3 ноября**.',
+  '- Доступы выдаём по [[Регламент доступа]], срок — два рабочих дня.',
+  '- Инструкцию для пользователей готовит Д. Ким: [[Инструкция пользователя]].',
+  '> Пилот не расширяем, пока нет заключения службы ИБ.',
+  '## Задачи',
+  '- [x] Согласовать список пилотных пользователей',
+  '- [ ] Подготовить тестовый стенд к 30.10',
+  '- [ ] Сверить итоги с прошлой встречей: [[Альфа/Встреча]]',
+  'Параметры пилота (файл `pilot.yaml`):',
+  '```yaml',
+  '# пилот «Альфы»',
+  'pilot:',
+  '  department: закупки',
+  '  users: 25',
+  '  start: 2026-11-03',
+  '```',
+  'Процесс согласования описан на [портале регламентов](https://example.com/reglament).',
+  '',
+].join('\n');
+
 let step = 0;
 
 async function shotThemes(browser: WebdriverIO.Browser, name: string): Promise<void> {
@@ -187,7 +218,7 @@ describe('живой предпросмотр и режим исходного �
   let file = '';
 
   beforeAll(async () => {
-    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE, [`${LONG_NOTE}.md`]: LONG_SAMPLE, [`${INLINE_NOTE}.md`]: INLINE_SAMPLE });
+    vault = createTestVault('Предпросмотр', { [`${NOTE}.md`]: SAMPLE, [`${LONG_NOTE}.md`]: LONG_SAMPLE, [`${INLINE_NOTE}.md`]: INLINE_SAMPLE, [`${E1_NOTE}.md`]: E1_SAMPLE });
     profile = createTestProfile();
     file = path.join(vault, `${NOTE}.md`);
     session = await startApp({ vault, profile });
@@ -267,6 +298,21 @@ describe('живой предпросмотр и режим исходного �
         }
         return -1;
       };
+      /** Левый край слова `fragment` от края колонки (после номера списка — само слово). */
+      const wordStart = (fragment: string) => {
+        const line = find(fragment);
+        if (!line) return -1;
+        const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const at = (node.textContent ?? '').indexOf(fragment);
+          if (at < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + 1);
+          return Math.round(range.getBoundingClientRect().left - left);
+        }
+        return -1;
+      };
       const size = (fragment: string) => Number.parseFloat(getComputedStyle(find(fragment) ?? content).fontSize);
       const pad = (fragment: string) => Number.parseFloat(getComputedStyle(find(fragment) ?? content).paddingTop);
       const fences = [...content.querySelectorAll<HTMLElement>('.cm-rz-codeblock-fence')];
@@ -274,12 +320,43 @@ describe('живой предпросмотр и режим исходного �
       const arrow = content.querySelector('.cm-rz-link-external');
       const title = document.querySelector('main h1');
       const measure = () => ({ h1: size('Заголовок 1'), h2: size('Заголовок 2'), h6: size('Заголовок 6'), text: size('Последняя строка') });
+      const titleSize = () => (title ? Number.parseFloat(getComputedStyle(title).fontSize) : 0);
+      /** Значки списков и отступы (задача 2.20) — от размера шрифта. */
+      const lists = () => {
+        const center = (element: Element | null | undefined) => {
+          const rect = element?.getBoundingClientRect();
+          return rect ? { x: Math.round((rect.left + rect.right) / 2 - left), y: (rect.top + rect.bottom) / 2 } : { x: -1, y: -1 };
+        };
+        const task = find('Открытая задача');
+        const box = task?.querySelector('.cm-rz-checkbox');
+        const boxRect = box?.getBoundingClientRect();
+        const taskRect = task?.getBoundingClientRect();
+        const bullet = find('Пункт списка')?.querySelector('.cm-rz-bullet');
+        const number = find('Первый')?.querySelector('.cm-rz-list-number');
+        return {
+          title: titleSize(),
+          bullet: textStart('Пункт списка'),
+          nested: textStart('Вложенный пункт'),
+          ordered: wordStart('Первый'),
+          numberX: center(number).x,
+          bulletX: center(bullet).x,
+          dot: bullet ? Number.parseFloat(getComputedStyle(bullet, '::before').width) : -1,
+          box: boxRect ? Math.round(boxRect.width) : -1,
+          // Середина чекбокса — от середины строки (строка без промежутка: 26 px при 16).
+          boxOffCenter: boxRect && taskRect ? Math.abs(center(box).y - (taskRect.top + taskRect.bottom) / 2) : -1,
+          taskText: textStart('Открытая задача'),
+        };
+      };
       const at16 = measure();
+      const lists16 = lists();
       // Размер шрифта из настроек (src/settings/apply.ts): заголовки — вместе с текстом.
       const root = document.documentElement.style;
       const setting = root.getPropertyValue('--note-font-size');
       root.setProperty('--note-font-size', '20px');
       const at20 = measure();
+      const title20 = titleSize();
+      root.setProperty('--note-font-size', '32px');
+      const lists32 = lists();
       if (setting) root.setProperty('--note-font-size', setting);
       else root.removeProperty('--note-font-size');
       return {
@@ -290,9 +367,12 @@ describe('живой предпросмотр и режим исходного �
         task: textStart('Открытая задача'),
         arrow: arrow?.textContent ?? '',
         arrowAfterLink: Math.round((arrow?.getBoundingClientRect().left ?? 0) - (link?.right ?? 0)),
-        title: title ? Number.parseFloat(getComputedStyle(title).fontSize) : 0,
+        title: titleSize(),
         at16,
         at20,
+        title20,
+        lists16,
+        lists32,
         padH2: pad('Заголовок 2'),
         padH3: pad('Заголовок 3'),
         fences: fences.length,
@@ -313,6 +393,24 @@ describe('живой предпросмотр и режим исходного �
     expect(look.at16, detail).toEqual({ h1: 24, h2: 21, h6: 16, text: 16 });
     expect(look.at16.h1, detail).toBeLessThan(look.title);
     expect(look.at20, detail).toEqual({ h1: 30, h2: 26.25, h6: 20, text: 20 });
+    // Имя заметки — 1,75 от размера текста (задача 2.20): больше H1 при любом размере.
+    expect(look.title, detail).toBe(28);
+    expect(look.title20, detail).toBe(35);
+    expect(look.at20.h1, detail).toBeLessThan(look.title20);
+    // Списки (задача 2.20): вложенный пункт — на 26 правее, номер — в колонке маркера, как точка;
+    // значки от размера шрифта, чекбокс по центру строки. При 32 px — всё вдвое.
+    for (const [lists, k] of [[look.lists16, 1], [look.lists32, 2]] as const) {
+      expect(lists.bullet, detail).toBe(26 * k);
+      expect(lists.nested, detail).toBe(52 * k);
+      expect(lists.ordered, detail).toBe(26 * k);
+      expect(lists.taskText, detail).toBe(26 * k);
+      expect(Math.abs(lists.numberX - 10 * k), detail).toBeLessThanOrEqual(1);
+      expect(Math.abs(lists.bulletX - 10 * k), detail).toBeLessThanOrEqual(1);
+      expect(lists.dot, detail).toBe(5 * k);
+      expect(lists.box, detail).toBe(16 * k);
+      expect(lists.boxOffCenter, detail).toBeLessThanOrEqual(1.5 * k);
+    }
+    expect(look.lists32.title, detail).toBe(56);
     expect([look.padH2, look.padH3], detail).toEqual([12, 12]);
     // Блок кода из трёх строк: 12 + 3 × 20 + 12, ограды не занимают строк.
     expect(look.fences, detail).toBe(2);
@@ -486,5 +584,115 @@ describe('живой предпросмотр и режим исходного �
     expect(await lineText(b, 'См.')).toBe('См. а↗, б и [в](https://a.example/2) конец');
     await shotThemes(b, 'element-second-link');
     expect(readFileSync(path.join(vault, `${INLINE_NOTE}.md`), 'utf8')).toBe(INLINE_SAMPLE);
+  });
+
+  it('промежутки между блоками по Э1 (задача 2.20): 10 px между блоками, не между пунктами; щелчок, стрелки и выделение по ним', async () => {
+    const b = browser();
+    await b.$(`[role="treeitem"][aria-label="${E1_NOTE}"]`).click();
+    await b.waitUntil(async () => (await lineText(b, 'Решения')) === 'Решения', { timeout: 10_000 });
+    // Курсор — в пустую последнюю строку: ни один элемент не раскрыт.
+    await cursorTo(b, 'Дата:');
+    await b.keys(['Control', 'End']);
+    const look = await b.execute((selector) => {
+      const content = document.querySelector(selector) as HTMLElement;
+      const lines = [...content.querySelectorAll<HTMLElement>('.cm-line')];
+      const find = (fragment: string) => lines.find((item) => (item.textContent ?? '').includes(fragment));
+      const height = (fragment: string) => Math.round(find(fragment)?.getBoundingClientRect().height ?? -1);
+      /** Промежуток под строкой: прозрачная граница снизу, px (строка может переноситься — высоту не сравниваем). */
+      const gap = (fragment: string) => {
+        const line = find(fragment);
+        return line ? Math.round(Number.parseFloat(getComputedStyle(line).borderBottomWidth)) : -1;
+      };
+      const fences = [...content.querySelectorAll<HTMLElement>('.cm-rz-codeblock-fence')];
+      const process = find('Процесс согласования');
+      return {
+        gaps: {
+          // Абзац перед пустой строкой и перед заголовком, заголовок перед списком.
+          date: gap('Дата:'),
+          paragraph: gap('Продолжаем'),
+          h2: gap('Решения'),
+          // Пункты одного списка — без промежутка, последний (перед цитатой) — с ним.
+          item1: gap('Пилот запускаем'),
+          item2: gap('Доступы'),
+          item3: gap('Инструкцию'),
+          quote: gap('Пилот не расширяем'),
+          task1: gap('Согласовать'),
+          task2: gap('Подготовить'),
+          task3: gap('Сверить итоги'),
+          params: gap('Параметры пилота'),
+          // Под блоком кода — сверху у следующей строки, у ограды — нет: фон блока без промежутка.
+          codeFence: fences[1] ? Math.round(Number.parseFloat(getComputedStyle(fences[1]).borderBottomWidth)) : -1,
+          processTop: process ? Math.round(Number.parseFloat(getComputedStyle(process).borderTopWidth)) : -1,
+        },
+        // Пункт без промежутка — ровно строка 26; с промежутком — 26 + 10.
+        item1: height('Пилот запускаем'),
+        quote: height('Пилот не расширяем'),
+        // Блок кода: 12 + 5 × 20 + 12.
+        codeBlock: fences.length === 2 ? Math.round((fences[1]?.getBoundingClientRect().bottom ?? 0) - (fences[0]?.getBoundingClientRect().top ?? 0)) : -1,
+      };
+    }, TEXT);
+    const detail = JSON.stringify(look);
+    expect(look, detail).toEqual({
+      gaps: { date: 10, paragraph: 10, h2: 10, item1: 0, item2: 0, item3: 10, quote: 10, task1: 0, task2: 0, task3: 10, params: 10, codeFence: 0, processTop: 10 },
+      item1: 26,
+      quote: 36,
+      codeBlock: 124,
+    });
+    await b.execute(() => {
+      const body = document.querySelector('main .body');
+      if (body) body.scrollTop = 0;
+    });
+    await shotThemes(b, 'gaps-e1');
+
+    /** Строка, где стоит курсор (фокус выделения). */
+    const caretLine = () =>
+      b.execute(() => {
+        const node = document.getSelection()?.focusNode ?? null;
+        const element = node instanceof Element ? node : (node?.parentElement ?? null);
+        return element?.closest('.cm-line')?.textContent ?? '';
+      });
+    // Щелчок в промежуток под пунктом «Инструкцию…» ставит курсор в этот пункт.
+    const index = await b.execute(
+      (selector) => [...document.querySelectorAll(`${selector} .cm-line`)].findIndex((line) => (line.textContent ?? '').includes('Инструкцию')),
+      TEXT,
+    );
+    const item = (await b.$$(`${TEXT} .cm-line`))[index];
+    if (!item) throw new Error('нет строки «Инструкцию»');
+    const size = await item.getSize();
+    await item.click({ x: Math.round(-size.width / 2 + 60), y: Math.round(size.height / 2 - 4) });
+    expect(await caretLine()).toContain('Инструкцию');
+    // Стрелки ↓ / ↑ через промежутки — на соседние строки, не застревая.
+    await b.keys('ArrowDown');
+    expect(await caretLine()).toContain('Пилот не расширяем');
+    await b.keys('ArrowDown');
+    expect(await caretLine()).toContain('Задачи');
+    await b.keys('ArrowUp');
+    expect(await caretLine()).toContain('Пилот не расширяем');
+    await b.keys('ArrowUp');
+    expect(await caretLine()).toContain('Инструкцию');
+    // Выделение мышью через промежутки: от первого пункта до цитаты.
+    const points = await b.execute((selector) => {
+      const lines = [...document.querySelectorAll<HTMLElement>(`${selector} .cm-line`)];
+      const at = (fragment: string) => {
+        const rect = lines.find((line) => (line.textContent ?? '').includes(fragment))?.getBoundingClientRect();
+        return rect ? { x: Math.round(rect.left + 60), y: Math.round(rect.top + 13) } : { x: 0, y: 0 };
+      };
+      return { from: at('Пилот запускаем'), to: at('Пилот не расширяем') };
+    }, TEXT);
+    await b
+      .action('pointer')
+      .move({ x: points.from.x, y: points.from.y })
+      .down({ button: 0 })
+      .move({ x: points.to.x, y: points.to.y - 6, duration: 100 })
+      .move({ x: points.to.x, y: points.to.y, duration: 100 })
+      .up({ button: 0 })
+      .perform();
+    const selected = await b.execute(() => document.getSelection()?.toString() ?? '');
+    // Начало и конец — посреди слов (60 px от края строки): целиком — средние строки.
+    expect(selected).toContain('запускаем');
+    expect(selected).toContain('Доступы');
+    expect(selected).toContain('Инструкцию');
+    await shotThemes(b, 'gaps-e1-selection');
+    expect(readFileSync(path.join(vault, `${E1_NOTE}.md`), 'utf8')).toBe(E1_SAMPLE);
   });
 });

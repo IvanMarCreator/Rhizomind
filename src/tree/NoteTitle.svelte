@@ -75,11 +75,13 @@
     margin: 0 0 10px;
   }
 
+  /* Имя заметки — 1,75 от размера текста (28 / 36 при 16 px): всегда больше
+     H1 в тексте (1,5), при любой настройке «Размер шрифта» (задача 2.20). */
   .heading {
     margin: 0;
-    font-size: 28px;
+    font-size: calc(var(--note-font-size, 16px) * 1.75);
     font-weight: 700;
-    line-height: 36px;
+    line-height: 1.2857;
   }
 
   .name {

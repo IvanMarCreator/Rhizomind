@@ -43,11 +43,13 @@ import {
   fenceStep,
   findProperties,
   isFenceLike,
+  lineShape,
   openFenceAt,
   parseLine,
   scanBlocks,
   type Blocks,
   type CodeBlock,
+  type LineKind,
   type LineSource,
   type MarkPiece,
   type OpenFence,
@@ -386,6 +388,89 @@ function lineDecoration(cls: string): Decoration {
   return decoration;
 }
 
+// ---- Промежутки между блоками и вложенность пунктов (задача 2.20) ----------
+
+/** Вид строки: блок кода и блок свойств — по полю блоков, остальное — по началу строки. */
+type BlockKind = LineKind | 'code' | 'properties';
+
+interface LineInfo {
+  kind: BlockKind;
+  /** Блок кода, в котором строка. */
+  block: CodeBlock | null;
+  /** Отступ перед маркером пункта (символов) и уровень вложенности пункта: 0 — верхний. */
+  indent: number;
+  level: number;
+}
+
+/** Классы отступа вложенного пункта есть до этого уровня; глубже — как у него. */
+const MAX_LIST_LEVEL = 6;
+
+/** Строк выше видимой части, по которым ищутся родительские пункты. */
+const LIST_LOOKBACK = 200;
+
+/**
+ * Промежуток между блоками — граница снизу у последней строки блока (tokens.md
+ * «промежуток между блоками 10»), у строки под блоком кода — сверху: фон
+ * блока не растягивается. Отдельное оформление (`rz: 'gap'`), текст не меняется.
+ */
+const GAP_AFTER = Decoration.line({ attributes: { class: 'cm-rz-gap' }, rz: 'gap' });
+const GAP_BEFORE = Decoration.line({ attributes: { class: 'cm-rz-gap-before' }, rz: 'gap' });
+
+/** Вид строки `n` без учёта пунктов выше. */
+function classify(state: EditorState, blocks: BlockState, n: number): LineInfo & { columns: number } {
+  const { doc } = state;
+  const line = doc.line(n);
+  const { properties } = blocks;
+  if (properties && line.from >= properties.from && line.to <= properties.to) {
+    return { kind: 'properties', block: null, indent: 0, level: 0, columns: 0 };
+  }
+  const block = blockAt(state, blocks, line.from);
+  if (block) return { kind: 'code', block, indent: 0, level: 0, columns: 0 };
+  const previous = n > 1 && !blockAt(state, blocks, doc.line(n - 1).from) ? doc.line(n - 1).text : null;
+  const shape = lineShape(line.text, previous);
+  return { kind: shape.kind, block: null, indent: shape.indent, level: 0, columns: shape.columns };
+}
+
+/**
+ * Вложенность пунктов сверху вниз: стек отступов открытых пунктов. Пункт с
+ * отступом больше, чем у пункта выше, — вложен в него. Пустая строка и
+ * строка с отступом (продолжение пункта) список не обрывают; любой другой
+ * блок — обрывает.
+ */
+function nest(stack: number[], info: LineInfo & { columns: number }): LineInfo {
+  if (info.kind === 'blank') return info;
+  if (info.kind === 'list') {
+    while (stack.length > 0 && (stack[stack.length - 1] ?? 0) >= info.columns) stack.pop();
+    const level = stack.length;
+    stack.push(info.columns);
+    return { ...info, level };
+  }
+  if (info.kind === 'para' && info.indent > 0 && stack.length > 0) return { ...info, kind: 'list' };
+  stack.length = 0;
+  return info;
+}
+
+/** Стек пунктов перед строкой `first`: подъём до начала списка (не дальше `LIST_LOOKBACK` строк). */
+function listStackBefore(state: EditorState, blocks: BlockState, first: number): number[] {
+  let start = first;
+  while (start > 1 && first - start < LIST_LOOKBACK) {
+    const info = classify(state, blocks, start - 1);
+    if (info.kind !== 'blank' && info.kind !== 'list' && !(info.kind === 'para' && info.indent > 0)) break;
+    start--;
+  }
+  const stack: number[] = [];
+  for (let n = start; n < first; n++) nest(stack, classify(state, blocks, n));
+  return stack;
+}
+
+/** Нужен ли промежуток между строкой `a` и строкой `b` под ней (вне блоков кода). */
+function gapBetween(a: LineInfo, b: LineInfo): boolean {
+  if (a.kind === 'blank' || a.kind === 'properties' || a.kind === 'code') return false;
+  if (b.kind === 'blank' || b.kind === 'code' || b.kind === 'properties') return true;
+  if (a.kind === 'heading' || a.kind === 'rule' || b.kind === 'heading' || b.kind === 'rule') return true;
+  return a.kind !== b.kind;
+}
+
 // ---- Оформление --------------------------------------------------------------
 
 /** Задевает ли курсор или выделение участок `[from, to]`, включая края (решение 93). */
@@ -411,15 +496,31 @@ export function previewDecorations(
   for (const range of ranges) {
     let n = doc.lineAt(range.from).number;
     const last = doc.lineAt(range.to).number;
+    const stack = listStackBefore(state, blocks, n);
+    let info = nest(stack, classify(state, blocks, n));
     for (; n <= last; n++) {
       const line = doc.line(n);
-      const properties = blocks.properties;
-      if (properties && line.from >= properties.from && line.to <= properties.to) continue;
+      const next = n < doc.lines ? nest(stack, classify(state, blocks, n + 1)) : null;
+      if (next) {
+        if (info.block) {
+          if (info.block.closeLine === line.from) out.push(GAP_BEFORE.range(line.to + 1));
+        } else if (gapBetween(info, next)) {
+          out.push(GAP_AFTER.range(line.from));
+        }
+      }
+      const current = info;
+      info = next ?? info;
+      if (current.kind === 'properties') continue;
 
-      const block = blockAt(state, blocks, line.from);
-      if (block) {
-        codeLine(block, line, touches(state, block.from, block.to), out);
+      if (current.block) {
+        codeLine(current.block, line, touches(state, current.block.from, current.block.to), out);
         continue;
+      }
+
+      // Вложенный пункт: отступ по уровню (26 px на уровень), а не по ширине пробелов.
+      if (current.kind === 'list' && current.level > 0 && current.indent > 0) {
+        const level = Math.min(current.level, MAX_LIST_LEVEL);
+        out.push(markDecoration(`cm-rz-list-indent cm-rz-list-indent-${level}`).range(line.from, line.from + current.indent));
       }
 
       const previous = n > 1 && !blockAt(state, blocks, doc.line(n - 1).from) ? doc.line(n - 1).text : null;
