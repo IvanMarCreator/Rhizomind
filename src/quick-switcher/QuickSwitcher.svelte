@@ -1,5 +1,5 @@
 <!--
-  Быстрый переход (С3.5, макет Э3): окно по Ctrl+O с полем ввода и списком
+  Быстрый переход (С3.5, макет Э3): окно по сочетанию из реестра (по умолчанию Ctrl+O) с полем ввода и списком
   заметок. Поиск — в ядре (`switcher_search`, топ-50, нечёткий по имени и
   пути); здесь — подсветка, выбор с клавиатуры, дополнение имени по Tab
   (решение 51) и создание заметки, если заметки с таким именем нет. Окно рисуется, пока открыто: оболочка решает,
@@ -21,12 +21,15 @@
 
   let {
     currentPath,
+    shortcut = null,
     onOpen,
     onClose,
     onNotice,
   }: {
     /** Открытая заметка: для настройки «в папке открытой заметки». */
     currentPath: VaultPath | null;
+    /** Сочетание открытия из реестра горячих клавиш (`Ctrl+O`); `null` — не назначено, подсказки нет. */
+    shortcut?: string | null;
     onOpen: (path: VaultPath) => void;
     onClose: () => void;
     /** Короткое уведомление внизу окна (предупреждение об имени). */
@@ -277,7 +280,9 @@
         oninput={onInput}
         onkeydown={onKeydown}
       />
-      <span class="shortcut">{t('quickSwitcher.shortcut')}</span>
+      {#if shortcut}
+        <span class="shortcut">{shortcut}</span>
+      {/if}
     </div>
     {#if createError !== null}
       <p class="field-error" id="quick-switcher-error" role="alert">{createError}</p>

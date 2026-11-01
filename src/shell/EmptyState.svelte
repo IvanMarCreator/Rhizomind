@@ -2,12 +2,23 @@
 <script lang="ts">
   import { t } from '../i18n/index.ts';
   import Icon from './Icon.svelte';
+
+  let {
+    quickSwitcherShortcut = null,
+  }: {
+    /** Сочетание быстрого перехода из реестра горячих клавиш (`Ctrl+O`); `null` — не назначено. */
+    quickSwitcherShortcut?: string | null;
+  } = $props();
 </script>
 
 <div class="empty">
   <span class="mark"><Icon name="file-text" size={28} /></span>
   <p class="title">{t('shell.empty.title')}</p>
-  <p class="hint">{t('shell.empty.hint')}</p>
+  <p class="hint">
+    {quickSwitcherShortcut
+      ? t('shell.empty.hintWith', { shortcut: quickSwitcherShortcut })
+      : t('shell.empty.hint')}
+  </p>
 </div>
 
 <style>

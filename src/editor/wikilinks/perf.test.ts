@@ -42,7 +42,12 @@ function best(fn: () => void, runs = 7): number {
 describe.each(['source', 'live_preview'] as const)('автодополнение в заметке ~9 МБ с блоками кода (%s)', (mode) => {
   const text = `${dense(9 * MB)}\nСм. [[Пла`;
   const end = text.length;
-  const state: EditorState = createEditorState(text, { mode }).update({ selection: EditorSelection.cursor(end) }).state;
+  // Список открывается вводом (задача 2.14): последняя буква набирается.
+  const state: EditorState = createEditorState(text.slice(0, -1), { mode }).update({
+    changes: { from: end - 1, insert: text.slice(-1) },
+    selection: EditorSelection.cursor(end),
+    userEvent: 'input.type',
+  }).state;
 
   it('список открыт (иначе замеры ничего не проверяют)', () => {
     expect(text.length).toBeLessThan(MAX_BLOCK_TEXT);
@@ -51,7 +56,11 @@ describe.each(['source', 'live_preview'] as const)('автодополнение
 
   it(`ввод после [[ в конце — меньше ${LIMIT_MS} мс`, { timeout: 60_000 }, () => {
     const time = best(() => {
-      const next = state.update({ changes: { from: end, insert: 'н' }, selection: { anchor: end + 1 } }).state;
+      const next = state.update({
+        changes: { from: end, insert: 'н' },
+        selection: { anchor: end + 1 },
+        userEvent: 'input.type',
+      }).state;
       expect(activeCompletion(next)?.query).toBe('План');
     });
     expect(time).toBeLessThan(LIMIT_MS);

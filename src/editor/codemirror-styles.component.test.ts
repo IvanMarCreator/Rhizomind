@@ -73,8 +73,8 @@ const COVERAGE: Record<string, Coverage> = {
   '&dark .cm-content': css('note', ':global(.cm-content) {', 'caret-color: var(--accent)'),
   '&light .cm-specialChar': css('note', ':global(.cm-specialChar) {', 'color: var(--status-error)'),
   '&dark .cm-specialChar': css('note', ':global(.cm-specialChar) {', 'color: var(--status-error)'),
-  '&light .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {', 'background: var(--bg-popover)'),
-  '&dark .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {', 'background: var(--bg-popover)'),
+  '&light .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {', 'background-color: var(--bg-popover)'),
+  '&dark .cm-tooltip': css('wiki', '.cm-tooltip.cm-rz-suggest {', 'background-color: var(--bg-popover)'),
 
   '& .cm-cursor': NO_DRAW_SELECTION,
   '& .cm-dropCursor': NO_DRAW_SELECTION,
