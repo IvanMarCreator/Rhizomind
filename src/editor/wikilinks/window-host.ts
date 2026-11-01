@@ -54,7 +54,8 @@ export class WindowWikiHost implements WikiHost {
   async suggest(query: string) {
     const from = this.#options.from();
     if (!from) return [];
-    return (await core.linksSuggest({ from, query })).items;
+    // Ссылка на саму себя не нужна: открытой заметки в списке нет (задача 2.14).
+    return (await core.linksSuggest({ from, query })).items.filter((item) => !samePath(item.path, from));
   }
 
   open(inner: string): void {

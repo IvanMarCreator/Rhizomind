@@ -207,6 +207,48 @@ describe('оболочка окна', () => {
     await within(screen.getByRole('banner', { name: 'Заметка' })).findByText('А');
   });
 
+  it('подсказки берут сочетания из реестра горячих клавиш (задача 2.14)', async () => {
+    await renderShell({
+      ...WITH_VAULT,
+      settings_read: () => ({
+        settings: {
+          ...SETTINGS,
+          hotkeys: {
+            'quick_switcher.open': ['Ctrl+KeyP'],
+            'history.back': [],
+            'history.forward': ['Ctrl+Alt+ArrowRight'],
+          },
+        },
+      }),
+      switcher_search: () => ({ items: [] }),
+    });
+
+    expect(
+      await screen.findByText('Выберите заметку в дереве файлов или откройте быстрый переход: Ctrl+P.'),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Ctrl\+O/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Назад' }).getAttribute('title')).toBe('Назад');
+    expect(screen.getByRole('button', { name: 'Вперёд (Ctrl+Alt+→)' })).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Быстрый переход (Ctrl+P)' }));
+    const dialog = screen.getByRole('dialog', { name: 'Быстрый переход' });
+    expect(within(dialog).getByText('Ctrl+P')).toBeTruthy();
+    expect(within(dialog).queryByText('Ctrl+O')).toBeNull();
+  });
+
+  it('у быстрого перехода нет сочетания: подсказки без клавиш (задача 2.14)', async () => {
+    await renderShell({
+      ...WITH_VAULT,
+      settings_read: () => ({ settings: { ...SETTINGS, hotkeys: { 'quick_switcher.open': [] } } }),
+      switcher_search: () => ({ items: [] }),
+    });
+
+    expect(await screen.findByText('Выберите заметку в дереве файлов или откройте быстрый переход.')).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Быстрый переход' }));
+    const dialog = screen.getByRole('dialog', { name: 'Быстрый переход' });
+    expect(dialog.querySelector('.shortcut')).toBeNull();
+  });
+
   it('кнопка «Быстрый переход» на ленте открывает окно, Esc закрывает', async () => {
     await renderShell({ ...WITH_VAULT, switcher_search: () => ({ items: [] }) });
     await fireEvent.click(await screen.findByRole('button', { name: 'Быстрый переход (Ctrl+O)' }));

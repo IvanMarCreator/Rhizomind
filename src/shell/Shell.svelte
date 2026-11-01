@@ -102,7 +102,7 @@
     notify: (text) => model.notify(text),
   });
 
-  /** Окно быстрого перехода (Ctrl+O, задача 2.7) открыто. */
+  /** Окно быстрого перехода (задача 2.7) открыто. */
   let switcherOpen = $state(false);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
   let settingsSection = $state<SettingsSection | null>(null);
@@ -251,6 +251,8 @@
         mode={model.editorMode}
         onMode={(mode) => model.setEditorMode(mode)}
         modeShortcut={bindingsOf(model.hotkeys, 'editor.toggle-mode')[0] ?? null}
+        backShortcut={shortcutOf('history.back')}
+        forwardShortcut={shortcutOf('history.forward')}
         readOnly={saveStatus?.kind === 'read_only' || saveStatus?.kind === 'deleted'}
         onBack={() => model.back()}
         onForward={() => model.forward()}
@@ -261,7 +263,7 @@
       </NoteHeader>
       <div class="body">
         {#if !model.currentPath}
-          <EmptyState />
+          <EmptyState quickSwitcherShortcut={shortcutOf('quick_switcher.open')} />
         {:else}
           <!-- Заголовок над текстом; редактор (2.4) встаёт под ним в ту же колонку. -->
           <div class="column">
@@ -284,6 +286,7 @@
   {#if switcherOpen}
     <QuickSwitcher
       currentPath={model.currentPath}
+      shortcut={shortcutOf('quick_switcher.open')}
       onOpen={(path) => model.open(path)}
       onClose={() => (switcherOpen = false)}
       onNotice={(text) => model.notify(text)}
