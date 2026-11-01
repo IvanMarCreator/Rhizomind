@@ -420,13 +420,26 @@ $KnownReg = @(
   @{ re = '\\CIDOpen\\|\\Explorer\\Modules\\'; why = 'окно выбора папки, задача 0.8' },
   @{ re = '\\Shell\\BagMRU|\\Shell\\Bags\\'; why = 'ShellBags окна выбора папки (локально)' },
   @{ re = '\\CapabilityAccessManager\\ConsentStore\\'; why = 'Windows, решение 101 — принимается, если в ключе нет данных хранилища' },
-  @{ re = '\\Shell\\MuiCache|\\Explorer\\UserAssist\\'; why = 'оболочка Windows, решение 65' }
+  @{ re = '\\Shell\\MuiCache|\\Explorer\\UserAssist\\'; why = 'оболочка Windows, решение 65' },
+  # Решение 117 (повторный аудит 01.11.2026): записи Windows и движка, SECURITY.md «Записи вне хранилища».
+  @{ re = '\\Explorer\\BitBucket\\Volume\\\{[0-9a-f-]+\}(\\[^\\]+)?$'; why = 'корзина Windows: настройки тома, решение 117' },
+  @{ re = '\\Internet Settings\\5\.0\\Cache\\(Content|Cookies|History)(\\[^\\]+)?$'; why = 'WinINet: настройки кэша, решение 117' },
+  @{ re = '\\Internet Settings\\ZoneMap(\\[^\\]+)?$'; why = 'urlmon: зоны безопасности, решение 117' },
+  @{ re = '\\Software\\Microsoft\\OneDrive\\Accounts(\\[^\\]+)?$'; why = 'расширение оболочки OneDrive, решение 117' },
+  @{ re = '^HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\'; why = 'Windows BAM: запуск программы, решение 117' },
+  @{ re = '^HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\ClientStateMedium\\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5\}(\\[^\\]+)?$'; why = 'движок WebView2, решение 117' },
+  @{ re = '^HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Notifications\\Data(\\[^\\]+)?$'; why = 'платформа уведомлений Windows, решение 117' }
 )
 $KnownFile = @(
   @{ re = '\\\$Recycle\.Bin\\'; why = 'корзина ОС (удаление заметки, инвариант 4)' },
   @{ re = '\\Microsoft\\TokenBroker\\Cache\\01c5cb21ab1d4fd56e65159d6c36cd5db1f647e1\.tbres$'; why = 'фон Windows (задание GAEvents), учтено — решение 64' },
   @{ re = '\\Microsoft\\TokenBroker\\'; why = 'WAM (OneAuth), решение 64 — **должно отсутствовать**' },
-  @{ re = '\\Microsoft\\Credentials\\'; why = 'запись Windows (SECURITY.md)' }
+  @{ re = '\\Microsoft\\Credentials\\'; why = 'запись Windows (SECURITY.md)' },
+  # Решение 117 (повторный аудит 01.11.2026): кэш шейдеров Direct3D и драйвера Intel (процесс GPU движка).
+  @{ re = '\\AppData\\Local\\D3DSCache\\'; why = 'кэш шейдеров Direct3D (движок), решение 117' },
+  @{ re = '\\AppData\\LocalLow\\Intel\\ShaderCache\\'; why = 'кэш шейдеров драйвера Intel (движок), решение 117' },
+  # OneAuth: принимается только после проверки владельцем (какой процесс, запись или открытие).
+  @{ re = '\\Microsoft\\OneAuth\\'; why = '**не учтено — проверяется (решение 117)**: процесс и операция уточняются владельцем' }
 )
 $FileWriteOps = @('WriteFile', 'SetRenameInformationFile', 'SetDispositionInformationFile', 'SetEndOfFileInformationFile',
   'SetAllocationInformationFile', 'SetBasicInformationFile', 'CreateFile')
@@ -559,7 +572,11 @@ function Invoke-ProcmonAnalysis {
         if (-not $longCache.ContainsKey($p)) { $longCache[$p] = Get-LongPath $p }
         if ($longCache[$p]) { $p = $longCache[$p] }
       }
-      foreach ($a in $allowed) { if ($p.StartsWith($a, [StringComparison]::OrdinalIgnoreCase)) { return } }
+      # Сама папка хранилища (её создаёт «Создать хранилище») — тоже своя запись:
+      # в $allowed корни с «\» на конце, путь папки без него (решение 117).
+      foreach ($a in $allowed) {
+        if ($p.StartsWith($a, [StringComparison]::OrdinalIgnoreCase) -or $p.Equals($a.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { return }
+      }
       if ($engineLeaf -and ($p.IndexOf($engineLeaf + '\', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $p.EndsWith($engineLeaf, [StringComparison]::OrdinalIgnoreCase))) { return }
       if ($p -match '^\\Device\\|^[A-Z]:\\\$|pipe\\') { if ($p -notmatch '\\\$Recycle\.Bin\\') { return } }
       $why = '**не учтено**'
