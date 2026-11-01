@@ -1,45 +1,78 @@
-﻿# Помощник ручного сетевого аудита Rhizomind (план 0.1, задача 3.3).
+﻿# Помощник ручного сетевого аудита Rhizomind (план 0.1, задачи 3.3 и 3.3б).
 # Инструкция — docs/security/network-audit.md. Скрипт ведёт по шагам, сам
 # снимает то, что можно снять командами, и собирает итог в results.md.
 #
-# Запуск (Windows PowerShell 5.1 или PowerShell 7, обычный пользователь;
-# от администратора — дополнительно журнал DNS):
+# Запуск — в обычном окне Windows PowerShell 5.1 или PowerShell 7 (не в ISE),
+# «Запуск от имени администратора» (нужен Process Monitor и журнал DNS):
 #   powershell -ExecutionPolicy Bypass -File network-audit.ps1 `
 #     -AppExe "C:\...\rhizomind.exe" -Procmon "C:\Tools\Procmon64.exe"
+# Без прав администратора — только опрос соединений:
+#   powershell -ExecutionPolicy Bypass -File network-audit.ps1 -AppExe "..." -NoProcmon
 #
-# Скрипт ничего не скачивает и в сеть не ходит. Он только читает: процессы,
-# сетевые соединения, реестр, журнал DNS, файлы в профиле; пишет — в свою
-# папку результатов. Удаляет он только то, что создал сам (CSV-выгрузку можно
-# оставить). Журнал Process Monitor (.pml) содержит всё, что делала машина:
-# его не пересылайте, пересылайте results.md и summary-*.csv.
+# Ключи:
+#   -AppExe         путь к rhizomind.exe (если не указан — скрипт спросит)
+#   -Procmon        путь к Procmon64.exe (если не указан — скрипт спросит)
+#   -ProcmonConfig  файл настроек Process Monitor (.pmc) для /LoadConfig —
+#                   как его сделать, см. инструкцию, раздел «Process Monitor»
+#   -NoProcmon      без Process Monitor: шаги 3 и 10 пропускаются, остаётся
+#                   опрос соединений (и журнал DNS, если есть права)
+#   -OutDir         папка результатов; по умолчанию C:\rhizomind-audit-<дата>
+#                   (не на рабочем столе: он часто синхронизируется OneDrive)
+#   -Unattended     автоматический режим для проверки самого скрипта в CI:
+#                   вопросов нет, сценарии 6–8 пропускаются, простой —
+#                   -IdleSeconds секунд, окно Rhizomind скрипт закрывает сам.
+#                   Это не аудит.
+#   -LibraryOnly    только объявить функции (для тестов: tests/audit/)
+#
+# Скрипт ничего не скачивает и в сеть не ходит. Он читает процессы, сетевые
+# соединения, реестр, журнал DNS, файлы в профиле и пишет в свою папку
+# результатов. Следы вне папки результатов (честно):
+#   - Process Monitor пишет свои настройки в реестр
+#     HKCU\Software\Sysinternals\Process Monitor (в т. ч. согласие с EULA) и
+#     устанавливает свой драйвер (служба PROCMON24, файл в
+#     C:\Windows\System32\drivers) — так он работает всегда, это не Rhizomind;
+#   - включение журнала DNS (по согласию, с правами администратора) меняет
+#     системный журнал Microsoft-Windows-DNS-Client/Operational: в нём
+#     остаются события за время аудита; включённость журнала возвращается как
+#     была (в том числе при сбое скрипта), события скрипт не стирает;
+#   - сам Windows PowerShell ведёт свои журналы (история команд PSReadLine и
+#     т. п.) — как при любом запуске PowerShell.
+# Удаляет скрипт только то, что создал сам. Журнал Process Monitor
+# (capture.pml, capture.csv) содержит всё, что делала машина: его не
+# пересылайте, пересылайте results.md и summary-*.csv.
 param(
   [string] $AppExe = '',
   [string] $Procmon = '',
-  [string] $OutDir = ''
+  [string] $ProcmonConfig = '',
+  [switch] $NoProcmon,
+  [string] $OutDir = '',
+  [switch] $Unattended,
+  [int] $IdleSeconds = 30,
+  [switch] $LibraryOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $TotalStages = 11
 $script:Stage = 0
+$script:Results = ''
 
-if (-not $OutDir) {
-  $OutDir = Join-Path ([Environment]::GetFolderPath('Desktop')) ('rhizomind-audit-' + (Get-Date -Format 'yyyy-MM-dd-HHmm'))
-}
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$Results = Join-Path $OutDir 'results.md'
-$Pml = Join-Path $OutDir 'capture.pml'
-$Csv = Join-Path $OutDir 'capture.csv'
+# Файл фонового задания Windows GAEvents в TokenBroker\Cache (решение 64,
+# docs/SECURITY.md): пишется и без приложения — учтён.
+$TokenBrokerBackgroundFile = '01c5cb21ab1d4fd56e65159d6c36cd5db1f647e1.tbres'
+
+# Остановка аудита с понятным сообщением (ловится в конце, finally всё убирает).
+function Stop-Audit([string] $why) { throw (New-Object System.OperationCanceledException $why) }
 
 # --- Вывод и вопросы ---------------------------------------------------------
 
 function Stage([string] $title) {
   $script:Stage++
-  Clear-Host
+  if (-not $Unattended) { try { Clear-Host } catch { $null = $_ } }
   Write-Host ('=' * 72) -ForegroundColor DarkCyan
   Write-Host ("Шаг {0} из {1}: {2}" -f $script:Stage, $TotalStages, $title) -ForegroundColor Cyan
   Write-Host ('=' * 72) -ForegroundColor DarkCyan
   Write-Host ''
-  Add-Content -LiteralPath $Results -Encoding UTF8 -Value ("`n## Шаг {0}. {1}`n" -f $script:Stage, $title)
+  Add-Content -LiteralPath $script:Results -Encoding UTF8 -Value ("`n## Шаг {0}. {1}`n" -f $script:Stage, $title)
 }
 
 function Say([string] $text) { Write-Host $text }
@@ -47,13 +80,15 @@ function Step([string] $text) { Write-Host ('  > ' + $text) -ForegroundColor Yel
 function Good([string] $text) { Write-Host ('  OK  ' + $text) -ForegroundColor Green }
 function Bad([string] $text) { Write-Host ('  !!  ' + $text) -ForegroundColor Red }
 
-function Note([string] $text) { Add-Content -LiteralPath $Results -Encoding UTF8 -Value $text }
+function Note([string] $text) { Add-Content -LiteralPath $script:Results -Encoding UTF8 -Value $text }
 
 function Wait-Enter([string] $text = 'Нажмите Enter, когда будет готово') {
+  if ($Unattended) { return }
   [void](Read-Host ("`n" + $text))
 }
 
 function Ask([string] $question, [string] $default = '') {
+  if ($Unattended) { return $default }
   $suffix = ''
   if ($default) { $suffix = " [$default]" }
   $answer = Read-Host ($question + $suffix)
@@ -61,12 +96,178 @@ function Ask([string] $question, [string] $default = '') {
   return $answer
 }
 
-function Confirm([string] $question) {
+# Ответ «да/нет». Принимает русскую и английскую раскладку: «д» на английской
+# раскладке — «l», «н» на английской — «y» (это «yes»), поэтому «y» — «да»,
+# «т» (n на русской раскладке) — «нет».
+function ConvertTo-YesNo([string] $answer) {
+  $a = ([string]$answer).Trim().ToLowerInvariant()
+  if ($a -in @('д', 'да', 'l', 'y', 'yes', 'lf')) { return $true }
+  if ($a -in @('н', 'нет', 'n', 'no', 'т', 'ytn')) { return $false }
+  return $null
+}
+
+function Confirm([string] $question, [bool] $default = $false) {
+  if ($Unattended) { return $default }
   while ($true) {
-    $a = (Read-Host ($question + ' (д/н)')).Trim().ToLower()
-    if ($a -in @('д', 'да', 'y', 'yes')) { return $true }
-    if ($a -in @('н', 'нет', 'n', 'no')) { return $false }
+    $r = ConvertTo-YesNo (Read-Host ($question + ' (д/н)'))
+    if ($null -ne $r) { return $r }
+    Say '  Введите «д» (да) или «н» (нет).'
   }
+}
+
+# Путь, введённый человеком: без пробелов по краям и без кавычек, которые
+# добавляет «Копировать как путь» в Проводнике.
+function ConvertFrom-TypedPath([string] $text) {
+  return ([string]$text).Trim().Trim('"').Trim("'").Trim()
+}
+
+# --- Пути: короткие имена 8.3 и полная форма ----------------------------------
+
+# Полная форма пути: компоненты вида RUNNER~1 заменяются длинными именами
+# (FindFirstFile по маске находит файл и по короткому имени). Путь должен
+# существовать; иначе $null.
+function Get-LongPath([string] $Path) {
+  try {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    $parts = $full.Substring($root.Length).Split([char[]]@('\'), [StringSplitOptions]::RemoveEmptyEntries)
+    $cur = $root
+    foreach ($part in $parts) {
+      $name = $part
+      if ($part.Contains('~')) {
+        $item = Get-ChildItem -LiteralPath $cur -Filter $part -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($item) { $name = $item.Name }
+      }
+      $cur = Join-Path $cur $name
+    }
+    return $cur
+  } catch { return $null }
+}
+
+# Короткая форма 8.3 (Scripting.FileSystemObject). Путь должен существовать.
+function Get-ShortPath([string] $Path) {
+  try {
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $fso = New-Object -ComObject Scripting.FileSystemObject
+    if (Test-Path -LiteralPath $Path -PathType Container) { return $fso.GetFolder($Path).ShortPath }
+    return $fso.GetFile($Path).ShortPath
+  } catch { return $null }
+}
+
+# Все формы пути (как дан, полная, короткая) без завершающей «\».
+function Get-PathForms([string] $Path) {
+  $forms = New-Object System.Collections.Generic.List[string]
+  $p = ConvertFrom-TypedPath $Path
+  if (-not $p) { return @() }
+  foreach ($f in @($p, (Get-LongPath $p), (Get-ShortPath $p))) {
+    if (-not $f) { continue }
+    $f = ([string]$f).TrimEnd('\')
+    if (-not ($forms -contains $f)) { $forms.Add($f) }
+  }
+  return $forms.ToArray()
+}
+
+# Текст для results.md без имени пользователя: пути %TEMP%, %LOCALAPPDATA%,
+# %USERPROFILE% (в полной и короткой форме) заменяются условными обозначениями.
+$script:UserPathPairs = $null
+
+function Protect-UserText([string] $text) {
+  if (-not $text) { return $text }
+  if ($null -eq $script:UserPathPairs) {
+    $pairs = New-Object System.Collections.ArrayList
+    foreach ($v in @(@('%TEMP%', $env:TEMP), @('%LOCALAPPDATA%', $env:LOCALAPPDATA), @('%APPDATA%', $env:APPDATA), @('%USERPROFILE%', $env:USERPROFILE))) {
+      foreach ($f in (Get-PathForms $v[1])) { [void]$pairs.Add([pscustomobject]@{ Path = $f; Name = $v[0] }) }
+    }
+    $script:UserPathPairs = @($pairs | Sort-Object { $_.Path.Length } -Descending)
+  }
+  $out = $text
+  foreach ($pair in $script:UserPathPairs) {
+    $out = [regex]::Replace($out, [regex]::Escape($pair.Path), $pair.Name.Replace('$', '$$'), 'IgnoreCase')
+  }
+  if ($env:USERNAME) { $out = [regex]::Replace($out, [regex]::Escape($env:USERNAME), '<пользователь>', 'IgnoreCase') }
+  return $out
+}
+
+# Папка под OneDrive или в перемещаемом профиле — синхронизируется.
+function Test-SyncedPath([string] $Path) {
+  $p = ([string]$Path).TrimEnd('\') + '\'
+  foreach ($root in @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer, $env:APPDATA)) {
+    if (-not $root) { continue }
+    foreach ($f in (Get-PathForms $root)) {
+      if ($p.StartsWith($f + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+  }
+  return $false
+}
+
+# --- Снимки: TokenBroker и очередь WER ----------------------------------------
+
+function Get-TokenCacheSnapshot {
+  $map = @{}
+  $dir = Join-Path $env:LOCALAPPDATA 'Microsoft\TokenBroker\Cache'
+  Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue | ForEach-Object { $map[$_.Name] = $_.LastWriteTimeUtc.ToString('o') }
+  return $map
+}
+
+# Изменения кэша брокера токенов: новый, изменённый или удалённый файл.
+# Новый или изменённый 01c5cb21….tbres пишет фоновое задание Windows —
+# учтено (решение 64); всё остальное, и удаление этого файла, — нарушение.
+function Compare-TokenCache([hashtable] $Before, [hashtable] $After) {
+  $changes = New-Object System.Collections.ArrayList
+  foreach ($name in ($After.Keys | Sort-Object)) {
+    $kind = $null
+    if (-not $Before.ContainsKey($name)) { $kind = 'новый' } elseif ($Before[$name] -ne $After[$name]) { $kind = 'изменён' }
+    if (-not $kind) { continue }
+    $verdict = 'нарушение меры решения 64 — разобрать'
+    if ($name -ieq $TokenBrokerBackgroundFile) { $verdict = 'фон Windows (задание GAEvents), учтено' }
+    [void]$changes.Add([pscustomobject]@{ Name = $name; Change = $kind; Verdict = $verdict; Violation = ($name -ine $TokenBrokerBackgroundFile) })
+  }
+  foreach ($name in ($Before.Keys | Sort-Object)) {
+    if ($After.ContainsKey($name)) { continue }
+    [void]$changes.Add([pscustomobject]@{ Name = $name; Change = 'удалён'; Verdict = 'нарушение меры решения 64 — разобрать'; Violation = $true })
+  }
+  return , $changes.ToArray()
+}
+
+# Очередь отчётов WER. Системная очередь без прав администратора обычно
+# недоступна — тогда так и пишется, а не «пусто».
+function Get-WerQueue {
+  $names = New-Object System.Collections.ArrayList
+  $status = New-Object System.Collections.ArrayList
+  $dirs = @(
+    @('%ProgramData%\Microsoft\Windows\WER\ReportQueue', (Join-Path $env:ProgramData 'Microsoft\Windows\WER\ReportQueue')),
+    @('%LOCALAPPDATA%\Microsoft\Windows\WER\ReportQueue', (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\WER\ReportQueue')))
+  foreach ($d in $dirs) {
+    try {
+      if (-not (Test-Path -LiteralPath $d[1])) { [void]$status.Add("$($d[0]): папки нет (очередь пуста)"); continue }
+      $items = @(Get-ChildItem -LiteralPath $d[1] -Force -ErrorAction Stop)
+      foreach ($i in $items) { [void]$names.Add($i.Name) }
+      [void]$status.Add("$($d[0]): доступна, записей $($items.Count)")
+    } catch {
+      [void]$status.Add("$($d[0]): **недоступна** (нет прав; запустите от администратора)")
+    }
+  }
+  return [pscustomobject]@{ Names = $names.ToArray(); Status = $status.ToArray() }
+}
+
+# --- Журнал DNS ---------------------------------------------------------------
+
+$DnsLogName = 'Microsoft-Windows-DNS-Client/Operational'
+
+# Имена из событий DNS-клиента — из XML события (поле QueryName), а не из
+# локализованного текста сообщения: так видны и имена без точки (wpad).
+function Get-DnsQueryName([object[]] $Events) {
+  $names = New-Object System.Collections.Generic.List[string]
+  foreach ($e in $Events) {
+    try {
+      $xml = [xml]$e.ToXml()
+      foreach ($d in @($xml.Event.EventData.Data)) {
+        if ($d.Name -eq 'QueryName' -and $d.'#text' -and -not $names.Contains($d.'#text')) { $names.Add($d.'#text') }
+      }
+    } catch { $null = $_ }
+  }
+  return @($names | Sort-Object)
 }
 
 # --- Процессы Rhizomind ------------------------------------------------------
@@ -103,17 +304,26 @@ function Test-OwnImage([string] $name) {
   return ($name -ieq 'rhizomind.exe') -or ($name -ieq 'msedgewebview2.exe')
 }
 
+# Нажата ли клавиша. В ISE и без консоли (CI) [Console]::KeyAvailable бросает
+# исключение — тогда «не нажата».
+function Test-KeyPressed {
+  try {
+    if ([Console]::KeyAvailable) { [void][Console]::ReadKey($true); return $true }
+  } catch { $null = $_ }
+  return $false
+}
+
 # Опрос сетевых соединений процессов приложения, пока не нажата клавиша
-# (или не прошло $Minutes минут). Возвращает найденные соединения.
+# (или не прошло $Seconds секунд).
 $script:LiveFindings = New-Object System.Collections.ArrayList
 
-function Watch-Network([string] $phase, [int] $Minutes = 0) {
+function Watch-Network([string] $phase, [int] $Seconds = 0) {
   $deadline = $null
-  if ($Minutes -gt 0) { $deadline = (Get-Date).AddMinutes($Minutes) }
+  if ($Seconds -gt 0) { $deadline = (Get-Date).AddSeconds($Seconds) }
   $keys = @{}
   Say ''
   if ($deadline) {
-    Say ("Слежу за сетью процессов Rhizomind {0} мин. Любая клавиша — закончить раньше." -f $Minutes)
+    Say ("Слежу за сетью процессов Rhizomind {0} с. Любая клавиша — закончить раньше." -f $Seconds)
   } else {
     Say 'Слежу за сетью процессов Rhizomind. Выполняйте действия; когда закончите — нажмите любую клавишу.'
   }
@@ -143,18 +353,16 @@ function Watch-Network([string] $phase, [int] $Minutes = 0) {
         Bad ("UDP-порт открыт: $name ($($u.OwningProcess)) $($u.LocalAddress):$($u.LocalPort)")
       }
     }
-    if ($other.Count -gt 0) {
-      foreach ($p in $other) {
-        $k = "OTHER $p"
-        if (-not $keys.ContainsKey($k)) {
-          $keys[$k] = $true
-          Say ("  (запущен процесс не из Rhizomind: {0}, {1} — например, браузер по ссылке; его сеть не считается)" -f $script:Seen[$p].Name, $p)
-        }
+    foreach ($p in $other) {
+      $k = "OTHER $p"
+      if (-not $keys.ContainsKey($k)) {
+        $keys[$k] = $true
+        Say ("  (запущен процесс не из Rhizomind: {0}, {1} — например, браузер по ссылке; его сеть не считается)" -f $script:Seen[$p].Name, $p)
       }
     }
     if ($tree.Count -eq 0) { Say '  Процессов Rhizomind нет.'; break }
     if ($deadline -and (Get-Date) -gt $deadline) { break }
-    if ([Console]::KeyAvailable) { [void][Console]::ReadKey($true); break }
+    if (Test-KeyPressed) { break }
     Start-Sleep -Seconds 2
   }
   $found = @($script:LiveFindings | Where-Object { $_.Phase -eq $phase })
@@ -166,314 +374,141 @@ function Watch-Network([string] $phase, [int] $Minutes = 0) {
   }
 }
 
-# --- Шаг 1. Подготовка -------------------------------------------------------
+# --- Разбор журнала Process Monitor (шаг 10) ----------------------------------
 
-Set-Content -LiteralPath $Results -Encoding UTF8 -Value @"
-# Сетевой аудит Rhizomind — результаты
+# Службы Windows из docs/SECURITY.md, «Ожидаемые обращения к Microsoft».
+$ExpectedServiceImages = @('svchost.exe', 'System', 'MicrosoftEdgeUpdate.exe', 'wermgr.exe', 'MsMpEng.exe', 'MpDefenderCoreService.exe')
 
-Дата: $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Компьютер: $env:COMPUTERNAME (имя пользователя не записывается).
-Инструкция: docs/security/network-audit.md.
-"@
-
-Stage 'Подготовка'
-Say 'Скрипт проверит машину и запишет условия аудита.'
-Say 'Перед началом закройте все программы, кроме этого окна (браузер, Teams, Outlook, OneDrive можно оставить, но тогда их обращения попадут в общий журнал).'
-Say ''
-
-while (-not $AppExe -or -not (Test-Path -LiteralPath $AppExe)) {
-  $AppExe = Ask 'Полный путь к rhizomind.exe (портативная сборка или установленная)'
-}
-while (-not $Procmon -or -not (Test-Path -LiteralPath $Procmon)) {
-  $Procmon = Ask 'Полный путь к Procmon64.exe (Sysinternals Process Monitor)'
-}
-
-$os = Get-CimInstance Win32_OperatingSystem
-$wv = $null
-foreach ($k in @(
-    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
-    'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
-    'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}')) {
-  if (-not $wv) { $wv = (Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue).pv }
-}
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-$wlid = Get-Service -Name wlidsvc -ErrorAction SilentlyContinue
-$appHash = (Get-FileHash -LiteralPath $AppExe -Algorithm SHA256).Hash
-
-Note "- Windows: $($os.Caption) $($os.Version), сборка $($os.BuildNumber)"
-Note "- WebView2 Runtime: $wv"
-Note "- rhizomind.exe: SHA-256 $appHash"
-Note "- Запуск от администратора: $isAdmin"
-if ($wlid) { Note "- Служба wlidsvc: $($wlid.Status), запуск $($wlid.StartType)" }
-
-$policyRoots = @('HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2',
-  'HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection',
-  'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting')
-Note '- Политики (если пусто — не заданы):'
-foreach ($r in $policyRoots) {
-  if (Test-Path -LiteralPath $r) {
-    $props = Get-ItemProperty -LiteralPath $r
-    $names = @($props.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { "$($_.Name)=$($_.Value)" })
-    Note ("  - ``{0}``: {1}" -f $r, ($names -join '; '))
-    Say ("Политики в {0}: {1}" -f $r, ($names -join '; '))
+# Оценка сетевого события: процесс Rhizomind или движка — нарушение; служба
+# Windows из списка SECURITY.md — норма после сверки адреса; прочее — разобрать.
+function Get-NetVerdict([string] $Process, [string] $Remote, [bool] $Own) {
+  if ($Own) { return 'нарушение: процесс Rhizomind или движка' }
+  $host_ = ($Remote -replace ':[^:]*$', '')
+  if ($ExpectedServiceImages -contains $Process) {
+    if ($host_ -match '^(20\.190\.|40\.126\.)|login\.live\.com|login\.microsoftonline\.com') {
+      return 'служба входа Microsoft (wlidsvc, решение 64): при выходе программы не должна появляться — сверить время'
+    }
+    if ($host_ -match 'events\.data\.microsoft\.com') { return 'обязательная диагностика Windows (SECURITY.md) — норма' }
+    if ($host_ -match 'ctldl\.windowsupdate\.com|crl\.microsoft\.com|^ocsp\.') { return 'проверка сертификатов (SECURITY.md) — норма' }
+    return 'служба Windows из SECURITY.md «Ожидаемые обращения к Microsoft» — сверить адрес'
   }
-}
-Say ''
-Say "Windows: $($os.Caption) $($os.BuildNumber); WebView2: $wv; администратор: $isAdmin"
-if (-not $wv) { Bad 'WebView2 Runtime не найден — Rhizomind не запустится.' }
-if (-not $isAdmin) { Say 'Без прав администратора журнал DNS не включить: проверка DNS будет только по Process Monitor.' }
-Wait-Enter
-
-# --- Шаг 2. Снимок «до» ------------------------------------------------------
-
-Stage 'Снимок до запуска'
-$before = @{
-  temp       = @(Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'rhizomind-webview-*' -ErrorAction SilentlyContinue | ForEach-Object Name)
-  profile    = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Rhizomind') -ErrorAction SilentlyContinue | ForEach-Object Name)
-  tokens     = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Microsoft\TokenBroker\Cache') -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name) $($_.LastWriteTimeUtc.ToString('o'))" })
-  wer        = @(Get-ChildItem -LiteralPath "$env:ProgramData\Microsoft\Windows\WER\ReportQueue", "$env:LOCALAPPDATA\Microsoft\Windows\WER\ReportQueue" -ErrorAction SilentlyContinue | ForEach-Object Name)
-}
-Note "- Остатки временных папок движка в %TEMP%: $($before.temp.Count)"
-Note "- Файлы в %LOCALAPPDATA%\Rhizomind: $($before.profile -join ', ')"
-Note "- Файлов в TokenBroker\Cache: $($before.tokens.Count)"
-Good 'Снимок сделан.'
-
-$dnsWasEnabled = $null
-if ($isAdmin -and (Confirm 'Включить журнал DNS-клиента Windows на время аудита (после аудита вернётся как было)?')) {
-  $dnsWasEnabled = ((wevtutil gl 'Microsoft-Windows-DNS-Client/Operational') -match 'enabled: true').Count -gt 0
-  wevtutil sl 'Microsoft-Windows-DNS-Client/Operational' /e:true | Out-Null
-  Good 'Журнал DNS включён.'
-}
-Wait-Enter
-
-# --- Шаг 3. Process Monitor --------------------------------------------------
-
-Stage 'Запуск Process Monitor'
-Say 'Process Monitor будет записывать все события машины в файл capture.pml в папке результатов.'
-Say 'Окно Process Monitor может появиться свёрнутым — не закрывайте его до шага 10.'
-Start-Process -FilePath $Procmon -ArgumentList @('/AcceptEula', '/Quiet', '/Minimized', '/BackingFile', "`"$Pml`"")
-Start-Sleep -Seconds 5
-$captureStart = Get-Date
-Note "- Запись Process Monitor начата: $($captureStart.ToString('HH:mm:ss'))"
-Good 'Запись идёт.'
-Wait-Enter
-
-# --- Шаг 4. Запуск Rhizomind и флаги движка ----------------------------------
-
-Stage 'Запуск Rhizomind и проверка флагов движка'
-Step 'Скрипт запустит Rhizomind. Окно может появиться через 1–3 секунды.'
-$proc = Start-Process -FilePath $AppExe -PassThru
-$script:RootPid = $proc.Id
-Start-Sleep -Seconds 6
-$tree = Get-AppTree
-$browser = $tree | Where-Object { $_.Name -ieq 'msedgewebview2.exe' -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1
-if (-not $browser) {
-  Bad 'Процесс браузера WebView2 не найден. Открылось ли окно Rhizomind? Подождите и нажмите Enter для повторной проверки.'
-  Wait-Enter
-  $tree = Get-AppTree
-  $browser = $tree | Where-Object { $_.Name -ieq 'msedgewebview2.exe' -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1
-}
-Note "- Процессов Rhizomind и движка: $($tree.Count)"
-$expected = @(
-  @{ flag = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection'; must = $true },
-  @{ flag = '--no-proxy-server'; must = $true },
-  @{ flag = '--disable-background-networking'; must = $true },
-  @{ flag = '--disable-component-update'; must = $true },
-  @{ flag = '--disable-domain-reliability'; must = $true },
-  @{ flag = '--no-pings'; must = $true },
-  @{ flag = '--host-resolver-rules='; must = $true },
-  @{ flag = '--edge-webview-disable-crash-reporting=1'; must = $true },
-  @{ flag = '--remote-debugging-port'; must = $false }
-)
-if ($browser) {
-  $cmd = [string]$browser.CommandLine
-  Note ''
-  Note '| Флаг | Ожидается | В командной строке процесса браузера |'
-  Note '|---|---|---|'
-  foreach ($e in $expected) {
-    $has = $cmd.Contains($e.flag)
-    $ok = ($has -eq $e.must)
-    $want = 'есть'; if (-not $e.must) { $want = 'нет' }
-    $got = 'нет'; if ($has) { $got = 'есть' }
-    Note ("| ``{0}`` | {1} | {2}{3} |" -f $e.flag, $want, $got, $(if ($ok) { '' } else { ' — **нарушение**' }))
-    if ($ok) { Good "$($e.flag): $got" } else { Bad "$($e.flag): $got (ожидалось: $want)" }
-  }
-  $udd = [regex]::Match($cmd, '--user-data-dir="?([^"]+)"?').Groups[1].Value
-  $inTemp = $udd -like "*rhizomind-webview-*"
-  Note ''
-  Note "- Папка данных движка во временной папке ``rhizomind-webview-*``: $inTemp"
-  if ($inTemp) { Good "Папка данных: $udd" } else { Bad "Папка данных не во временной папке: $udd" }
-  $script:EngineDir = Split-Path -Parent $udd
-} else {
-  Note '- **Процесс браузера WebView2 не найден** — флаги не проверены.'
-}
-Wait-Enter
-
-# --- Шаг 5. Простой ----------------------------------------------------------
-
-Stage 'Простой: фоновые обращения движка'
-Say 'Ничего не делайте в Rhizomind: окно открыто, программа простаивает.'
-Say 'Здесь проявились бы фоновые службы движка: конфигурация и эксперименты, обновление компонентов, отчёты.'
-$idle = [int](Ask 'Сколько минут ждать' '10')
-Watch-Network 'простой' $idle
-
-# --- Шаг 6. Сценарий: хранилище и заметки -------------------------------------
-
-Stage 'Сценарий: хранилище и заметки'
-Step 'Если открылось «Управление хранилищами» — создайте хранилище «Аудит» в новой папке на диске C: (кнопка «Обзор…»).'
-Step 'Создайте 3 заметки и папку; в заметке наберите несколько абзацев, список, задачу - [ ], код в `обратных кавычках`.'
-Step 'Вставьте вики-ссылку [[Вторая заметка]] и перейдите по ней; создайте заметку по неразрешённой ссылке.'
-Step 'Ctrl+O — найдите заметку; Alt+← и Alt+→ — назад и вперёд; Ctrl+E — режим исходного текста и обратно.'
-Step 'Переименуйте заметку в дереве (F2), перетащите в папку, удалите заметку (в корзину).'
-Step 'Откройте папку хранилища в Проводнике, измените заметку Блокнотом и сохраните — вернитесь в Rhizomind.'
-Watch-Network 'хранилище и заметки'
-$vaultPath = Ask 'Полный путь к папке хранилища (для разбора журнала; можно пропустить — возьмётся из vaults.json)'
-
-# --- Шаг 7. Сценарий: поля ввода, меню, настройки -----------------------------
-
-Stage 'Сценарий: поля ввода, контекстное меню, настройки'
-Step 'Наберите слова с ошибками («превет», «малако») в заметке, в поиске Ctrl+O, в поле переименования, в поиске горячих клавиш в настройках.'
-Step 'Откройте «Настройки хранилища»: смените тему, ширину текста, размер шрифта; назначьте горячую клавишу; закройте настройки.'
-Step 'Щёлкните правой кнопкой: в тексте заметки, на выделенном слове, на пустом месте окна. НИЧЕГО в меню движка не выбирайте — только перепишите пункты.'
-Watch-Network 'поля, меню, настройки'
-$menu = Ask 'Перечислите пункты контекстного меню в тексте заметки и на выделении (через запятую)'
-Note "- Пункты контекстного меню движка: $menu"
-
-# --- Шаг 8. Сценарий: внешние ссылки ------------------------------------------
-
-Stage 'Сценарий: внешние ссылки'
-Step 'В заметке наберите [Пример](https://example.com) и щёлкните по ссылке. В окне подтверждения нажмите «Отмена».'
-Step 'Щёлкните ещё раз и нажмите «Открыть в браузере»: откроется системный браузер. Его соединения — норма, это действие пользователя; закройте браузер.'
-Step 'Наберите [Почта](mailto:test@example.com), щёлкните — «Отмена».'
-Step 'Наберите [Файл](file:///C:/Windows/win.ini) и щёлкните — ничего не должно открыться.'
-Watch-Network 'внешние ссылки'
-$cancelOk = Confirm 'После «Отмена» браузер не открывался?'
-$fileOk = Confirm 'Ссылка file: ничего не открыла?'
-Note "- «Отмена» не открыла браузер: $cancelOk; ссылка file: ничего не открыла: $fileOk"
-
-# --- Шаг 9. Второе хранилище и выход ------------------------------------------
-
-Stage 'Второе хранилище и выход'
-Step 'Через переключатель слева внизу откройте «Управление хранилищами», создайте второе хранилище, откройте его.'
-Step 'Наберите текст в заметке второго хранилища и сразу закройте окна крестиком «×» (все окна Rhizomind).'
-Watch-Network 'второе хранилище и выход'
-$waitUntil = (Get-Date).AddSeconds(30)
-while ((Get-AppTree | Where-Object { Test-OwnImage $_.Name }).Count -gt 0 -and (Get-Date) -lt $waitUntil) { Start-Sleep -Seconds 1 }
-Start-Sleep -Seconds 3
-$left = @(Get-AppTree | Where-Object { Test-OwnImage $_.Name })
-if ($left.Count -gt 0) { Bad "Процессы Rhizomind живы через 30 с после закрытия: $($left.Count)" } else { Good 'Все процессы Rhizomind завершились.' }
-Note "- Процессы Rhizomind после выхода: $($left.Count)"
-$tempAfter = @(Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'rhizomind-webview-*' -ErrorAction SilentlyContinue | ForEach-Object Name)
-$newTemp = @($tempAfter | Where-Object { $before.temp -notcontains $_ })
-if ($newTemp.Count -eq 0) { Good 'Временная папка движка удалена.' } else { Bad "Осталась временная папка: $($newTemp -join ', ')" }
-Note "- Новые временные папки движка после выхода: $($newTemp.Count)"
-$tokensAfter = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Microsoft\TokenBroker\Cache') -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Name) $($_.LastWriteTimeUtc.ToString('o'))" })
-$tokenChanges = @($tokensAfter | Where-Object { $before.tokens -notcontains $_ })
-Note "- Новые или изменённые файлы TokenBroker\Cache: $($tokenChanges.Count) $(if ($tokenChanges.Count) { '(' + ($tokenChanges -join '; ') + ')' })"
-$werAfter = @(Get-ChildItem -LiteralPath "$env:ProgramData\Microsoft\Windows\WER\ReportQueue", "$env:LOCALAPPDATA\Microsoft\Windows\WER\ReportQueue" -ErrorAction SilentlyContinue | ForEach-Object Name)
-$newWer = @($werAfter | Where-Object { $before.wer -notcontains $_ })
-Note "- Новые отчёты WER в очереди: $($newWer.Count) $(if ($newWer.Count) { '(' + ($newWer -join '; ') + ')' })"
-
-$vaultsJson = Join-Path $env:LOCALAPPDATA 'Rhizomind\vaults.json'
-$vaultRoots = New-Object System.Collections.ArrayList
-if ($vaultPath) { [void]$vaultRoots.Add($vaultPath) }
-if (Test-Path -LiteralPath $vaultsJson) {
-  $list = Get-Content -Raw -Encoding UTF8 -LiteralPath $vaultsJson | ConvertFrom-Json
-  $fields = @($list.PSObject.Properties.Name)
-  Note "- vaults.json: поля верхнего уровня $($fields -join ', '); хранилищ $(@($list.vaults).Count)"
-  foreach ($v in @($list.vaults)) {
-    [void]$vaultRoots.Add([string]$v.path)
-    Note ("  - хранилище: поля {0}" -f (@($v.PSObject.Properties.Name) -join ', '))
-  }
-  Say ''
-  Say 'Содержимое vaults.json:'
-  Get-Content -Encoding UTF8 -LiteralPath $vaultsJson | Write-Host
-  $noNotes = Confirm 'В vaults.json нет имён заметок и текста (только имена и пути хранилищ, размеры окна)?'
-  Note "- В vaults.json нет имён и текста заметок (проверено глазами): $noNotes"
-}
-Wait-Enter
-
-# --- Шаг 10. Остановить запись и разобрать журнал -----------------------------
-
-Stage 'Остановка Process Monitor и разбор журнала'
-Say 'Запись останавливается, журнал выгружается в CSV и разбирается. Это может занять 5–20 минут.'
-Start-Process -FilePath $Procmon -ArgumentList '/Terminate' -Wait
-Start-Sleep -Seconds 3
-Start-Process -FilePath $Procmon -ArgumentList @('/AcceptEula', '/Quiet', '/Minimized', '/OpenLog', "`"$Pml`"", '/SaveAs', "`"$Csv`"") -Wait
-if (-not (Test-Path -LiteralPath $Csv)) {
-  Bad 'CSV не получился. Откройте capture.pml в Process Monitor вручную: File → Save… → формат CSV, все события, в эту папку как capture.csv. Затем нажмите Enter.'
-  Wait-Enter
+  if ($Process -ieq 'msedgewebview2.exe') { return 'WebView2 другого приложения (не Rhizomind) — контроль для флагов' }
+  return 'не из списка SECURITY.md — разобрать (фон машины?)'
 }
 
-# Номера процессов приложения: корень и всё, что он и его потомки
-# (rhizomind.exe, msedgewebview2.exe) запускали, — по событиям Process Create.
-$own = New-Object 'System.Collections.Generic.HashSet[int]'
-[void]$own.Add([int]$script:RootPid)
-foreach ($k in $script:Seen.Keys) { if (Test-OwnImage $script:Seen[$k].Name) { [void]$own.Add([int]$k) } }
-
-$engineDir = $script:EngineDir
-$allowedWrite = @()
-foreach ($v in $vaultRoots) { if ($v) { $allowedWrite += $v.TrimEnd('\') + '\' } }
-if ($engineDir) { $allowedWrite += $engineDir.TrimEnd('\') + '\' }
-$allowedWrite += (Join-Path $env:LOCALAPPDATA 'Rhizomind') + '\'
-
-$knownReg = @(
+$KnownReg = @(
   @{ re = '\\Software\\Microsoft\\EdgeWebView(\\|$)'; why = 'движок WebView2, решение 61' },
   @{ re = '\\EdgeUpdate\\ClientState\\\{F3017226'; why = 'движок WebView2, решение 61' },
   @{ re = '\\Explorer\\ComDlg32\\'; why = 'окно выбора папки, задача 0.8' },
   @{ re = '\\CIDOpen\\|\\Explorer\\Modules\\'; why = 'окно выбора папки, задача 0.8' },
   @{ re = '\\Shell\\BagMRU|\\Shell\\Bags\\'; why = 'ShellBags окна выбора папки (локально)' },
-  @{ re = '\\CapabilityAccessManager\\ConsentStore\\'; why = 'Windows, учтено (не проверено, аудит 3.3)' },
-  @{ re = '\\Shell\\MuiCache'; why = 'оболочка Windows, решение 65' }
+  @{ re = '\\CapabilityAccessManager\\ConsentStore\\'; why = 'Windows, решение 101 — принимается, если в ключе нет данных хранилища' },
+  @{ re = '\\Shell\\MuiCache|\\Explorer\\UserAssist\\'; why = 'оболочка Windows, решение 65' }
 )
-$knownFile = @(
+$KnownFile = @(
   @{ re = '\\\$Recycle\.Bin\\'; why = 'корзина ОС (удаление заметки, инвариант 4)' },
-  @{ re = '\\Microsoft\\TokenBroker\\'; why = 'WAM (OneAuth), решение 64 — должно отсутствовать' },
-  @{ re = '\\Microsoft\\Credentials\\'; why = 'запись Windows' }
+  @{ re = '\\Microsoft\\TokenBroker\\Cache\\01c5cb21ab1d4fd56e65159d6c36cd5db1f647e1\.tbres$'; why = 'фон Windows (задание GAEvents), учтено — решение 64' },
+  @{ re = '\\Microsoft\\TokenBroker\\'; why = 'WAM (OneAuth), решение 64 — **должно отсутствовать**' },
+  @{ re = '\\Microsoft\\Credentials\\'; why = 'запись Windows (SECURITY.md)' }
 )
-$writeOps = @('WriteFile', 'SetRenameInformationFile', 'SetDispositionInformationFile', 'SetEndOfFileInformationFile',
+$FileWriteOps = @('WriteFile', 'SetRenameInformationFile', 'SetDispositionInformationFile', 'SetEndOfFileInformationFile',
   'SetAllocationInformationFile', 'SetBasicInformationFile', 'CreateFile')
-$regOps = @('RegSetValue', 'RegDeleteValue', 'RegDeleteKey', 'RegCreateKey')
+$RegWriteOps = @('RegSetValue', 'RegDeleteValue', 'RegDeleteKey', 'RegCreateKey')
 
-$netOwn = @{}; $netAll = @{}; $fileOut = @{}; $regOut = @{}
-$rows = 0
-Import-Csv -LiteralPath $Csv | ForEach-Object {
-  $rows++
-  $op = $_.Operation
-  $procId = 0; [void][int]::TryParse($_.PID, [ref]$procId)
-  if ($op -eq 'Process Create' -and $own.Contains($procId)) {
-    $m = [regex]::Match($_.Detail, 'PID: (\d+), Command line: (.*)')
-    if ($m.Success -and $m.Groups[2].Value -match 'msedgewebview2\.exe|rhizomind\.exe') { [void]$own.Add([int]$m.Groups[1].Value) }
-    return
+function Add-Count([hashtable] $table, [string] $key) { $table[$key] = 1 + [int]$table[$key] }
+
+# Разбирает CSV-выгрузку Process Monitor (столбцы по умолчанию: Time of Day,
+# Process Name, PID, Operation, Path, Result, Detail).
+#   OwnPids     — номера процессов Rhizomind и движка, известные заранее
+#                 (корень и замеченные опросом); потомки добавляются по
+#                 событиям Process Create;
+#   VaultRoots  — папки хранилищ; EngineDir — временная папка движка
+#                 (rhizomind-webview-…), в любой форме пути, в том числе 8.3;
+#   AppDataDir  — %LOCALAPPDATA%\Rhizomind.
+# Возвращает таблицы «ключ -> число событий»; ключ — поля через табуляцию.
+function Invoke-ProcmonAnalysis {
+  param(
+    [Parameter(Mandatory = $true)] [string] $CsvPath,
+    [int[]] $OwnPids = @(),
+    [string[]] $VaultRoots = @(),
+    [string] $EngineDir = '',
+    [string] $AppDataDir = (Join-Path $env:LOCALAPPDATA 'Rhizomind')
+  )
+  $own = New-Object 'System.Collections.Generic.HashSet[int]'
+  foreach ($p in $OwnPids) { if ($p) { [void]$own.Add([int]$p) } }
+
+  # Разрешённые для записи префиксы — во всех формах пути (полная и 8.3).
+  $allowed = New-Object System.Collections.Generic.List[string]
+  foreach ($root in (@($VaultRoots) + @($AppDataDir) + @($EngineDir))) {
+    foreach ($f in (Get-PathForms $root)) { if ($f -and -not $allowed.Contains($f + '\')) { $allowed.Add($f + '\') } }
   }
-  if ($op -match '^(TCP|UDP) ') {
-    $remote = ($_.Path -split ' -> ')[-1]
-    if ($remote -match '^(localhost|127\.|\[?::1)') { return }
-    $key = "$($_.'Process Name')`t$($op.Split(' ')[0])`t$remote"
-    $netAll[$key] = 1 + [int]$netAll[$key]
-    if ($own.Contains($procId)) { $netOwn[$key] = 1 + [int]$netOwn[$key] }
-    return
+  # Временная папка движка узнаётся и по своему имени: оно уникально
+  # (номер процесса и 16 случайных цифр), а в журнале путь может быть в другой
+  # форме, чем в командной строке (8.3 у %TEMP% при кириллическом имени
+  # пользователя), и к разбору папки уже нет — сравнить через диск нельзя.
+  $engineLeaf = ''
+  if ($EngineDir) { $engineLeaf = '\' + (Split-Path -Leaf ((ConvertFrom-TypedPath $EngineDir).TrimEnd('\'))) }
+  $longCache = @{}
+
+  $r = [pscustomobject]@{
+    Rows = 0; Own = $own
+    NetOwn = @{}; NetAll = @{}; FileOut = @{}; RegOut = @{}; Dictionaries = @{}
+    DnsOwn = 0; DnsAll = 0
   }
-  if (-not $own.Contains($procId) -or $_.Result -ne 'SUCCESS') { return }
-  if ($writeOps -contains $op) {
-    if ($op -eq 'CreateFile' -and $_.Detail -notmatch 'OpenResult: (Created|Overwritten|Superseded)') { return }
-    $p = $_.Path
-    foreach ($a in $allowedWrite) { if ($p.StartsWith($a, [StringComparison]::OrdinalIgnoreCase)) { return } }
-    if ($p -match '^\\Device\\|^C:\\\$|pipe\\') { if ($p -notmatch '\\\$Recycle\.Bin\\') { return } }
-    $why = ''
-    foreach ($k in $knownFile) { if ($p -match $k.re) { $why = $k.why; break } }
-    $fileOut["$p`t$why"] = 1 + [int]$fileOut["$p`t$why"]
-    return
+
+  Import-Csv -LiteralPath $CsvPath -Encoding UTF8 | ForEach-Object {
+    $r.Rows++
+    $op = [string]$_.Operation
+    $procName = [string]$_.'Process Name'
+    $procId = 0; [void][int]::TryParse([string]$_.PID, [ref]$procId)
+    if ($op -eq 'Process Create' -and $own.Contains($procId)) {
+      $m = [regex]::Match([string]$_.Detail, 'PID: (\d+), Command line: (.*)')
+      if ($m.Success -and $m.Groups[2].Value -match 'msedgewebview2\.exe|rhizomind\.exe') { [void]$own.Add([int]$m.Groups[1].Value) }
+      return
+    }
+    if ($op -match '^(TCP|UDP) ') {
+      $remote = (([string]$_.Path) -split ' -> ')[-1].Trim()
+      if ($remote -match '^(localhost|127\.|\[?::1\]?:)') { return }
+      $isOwn = $own.Contains($procId)
+      if ($op -eq 'UDP Send' -and $remote -match ':(53|domain)$') {
+        $r.DnsAll++
+        if ($isOwn) { $r.DnsOwn++ }
+      }
+      $proto = $op.Split(' ')[0]
+      Add-Count $r.NetAll ("$procName`t$proto`t$remote`t" + (Get-NetVerdict $procName $remote $isOwn))
+      if ($isOwn) { Add-Count $r.NetOwn "$procName`t$proto`t$remote" }
+      return
+    }
+    if (-not $own.Contains($procId) -or $_.Result -ne 'SUCCESS') { return }
+    if ($FileWriteOps -contains $op) {
+      if ($op -eq 'CreateFile' -and [string]$_.Detail -notmatch 'OpenResult: (Created|Overwritten|Superseded)') { return }
+      $p = [string]$_.Path
+      # Словари Hunspell проверки орфографии (скачиваются по сети) — отдельная
+      # находка, где бы ни лежали, в том числе во временной папке движка.
+      if ($p -match '\.bdic$|\\Dictionaries\\') { Add-Count $r.Dictionaries $p }
+      if ($p.Contains('~')) {
+        if (-not $longCache.ContainsKey($p)) { $longCache[$p] = Get-LongPath $p }
+        if ($longCache[$p]) { $p = $longCache[$p] }
+      }
+      foreach ($a in $allowed) { if ($p.StartsWith($a, [StringComparison]::OrdinalIgnoreCase)) { return } }
+      if ($engineLeaf -and ($p.IndexOf($engineLeaf + '\', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $p.EndsWith($engineLeaf, [StringComparison]::OrdinalIgnoreCase))) { return }
+      if ($p -match '^\\Device\\|^[A-Z]:\\\$|pipe\\') { if ($p -notmatch '\\\$Recycle\.Bin\\') { return } }
+      $why = '**не учтено**'
+      foreach ($k in $KnownFile) { if ($p -match $k.re) { $why = $k.why; break } }
+      Add-Count $r.FileOut "$p`t$why"
+      return
+    }
+    if ($RegWriteOps -contains $op) {
+      if ($op -eq 'RegCreateKey' -and [string]$_.Detail -notmatch 'REG_CREATED_NEW_KEY') { return }
+      $p = [string]$_.Path
+      $why = '**не учтено**'
+      foreach ($k in $KnownReg) { if ($p -match $k.re) { $why = $k.why; break } }
+      $short = ($p -replace '\\[^\\]+$', '')
+      Add-Count $r.RegOut "$short`t$why"
+    }
   }
-  if ($regOps -contains $op) {
-    if ($op -eq 'RegCreateKey' -and $_.Detail -notmatch 'REG_CREATED_NEW_KEY') { return }
-    $p = $_.Path
-    $why = ''
-    foreach ($k in $knownReg) { if ($p -match $k.re) { $why = $k.why; break } }
-    $short = ($p -replace '\\[^\\]+$', '')
-    $regOut["$short`t$why"] = 1 + [int]$regOut["$short`t$why"]
-  }
+  return $r
 }
-Note "- Событий в журнале: $rows; процессов Rhizomind и движка: $($own.Count)"
 
 function Write-Table([string] $title, [hashtable] $data, [string[]] $headers, [string] $file) {
   Note "`n### $title`n"
@@ -482,54 +517,552 @@ function Write-Table([string] $title, [hashtable] $data, [string[]] $headers, [s
   Note ('|' + ('---|' * ($headers.Count + 1)))
   $objects = foreach ($k in ($data.Keys | Sort-Object)) {
     $parts = $k.Split("`t")
-    Note ('| ' + (($parts | ForEach-Object { if ($_) { $_ } else { '—' } }) -join ' | ') + " | $($data[$k]) |")
+    Note ('| ' + (($parts | ForEach-Object { if ($_) { (Protect-UserText $_) } else { '—' } }) -join ' | ') + " | $($data[$k]) |")
     $o = [ordered]@{}
-    for ($i = 0; $i -lt $headers.Count; $i++) { $o[$headers[$i]] = $parts[$i] }
+    for ($i = 0; $i -lt $headers.Count; $i++) { $o[$headers[$i]] = (Protect-UserText $parts[$i]) }
     $o['Событий'] = $data[$k]
     [pscustomobject]$o
   }
   $objects | Export-Csv -LiteralPath (Join-Path $OutDir $file) -NoTypeInformation -Encoding UTF8
 }
 
-Write-Table 'Сеть процессов Rhizomind и движка (должно быть пусто)' $netOwn @('Процесс', 'Протокол', 'Адрес') 'summary-network-app.csv'
-Write-Table 'Сеть всех процессов машины за время аудита (сверка со списком SECURITY.md)' $netAll @('Процесс', 'Протокол', 'Адрес') 'summary-network-all.csv'
-Write-Table 'Записи файлов процессами Rhizomind вне хранилища, временной папки движка и %LOCALAPPDATA%\Rhizomind' $fileOut @('Путь', 'Учтено') 'summary-files.csv'
-Write-Table 'Записи реестра процессами Rhizomind (по ключам)' $regOut @('Ключ', 'Учтено') 'summary-registry.csv'
+if ($LibraryOnly) { return }
 
-if ($script:LiveFindings.Count -gt 0) {
-  Note "`n### Соединения, замеченные опросом во время работы`n"
-  Note '| Этап | Вид | Процесс | Номер | Адрес | Состояние |'
-  Note '|---|---|---|---|---|---|'
-  foreach ($f in $script:LiveFindings) { Note "| $($f.Phase) | $($f.Kind) | $($f.Process) | $($f.Pid) | $($f.Remote) | $($f.State) |" }
+# =============================================================================
+# Сценарий. Всё — внутри try/finally: при любом сбое или Ctrl+C Process Monitor
+# останавливается, журнал DNS возвращается как был.
+# =============================================================================
+
+$script:ProcmonStarted = $false
+$script:ProcmonStopped = $false
+$script:DnsChanged = $false
+$script:DnsWasEnabled = $false
+$script:ExitCode = 0
+$script:EngineDir = ''
+
+function Stop-Procmon {
+  if (-not $script:ProcmonStarted -or $script:ProcmonStopped) { return }
+  Start-Process -FilePath $Procmon -ArgumentList '/Terminate' -Wait
+  $script:ProcmonStopped = $true
 }
 
-if ($null -ne $dnsWasEnabled) {
-  $dns = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-DNS-Client/Operational'; StartTime = $captureStart } -ErrorAction SilentlyContinue |
-      Where-Object { $own.Contains([int]$_.ProcessId) })
-  Note "`n### Запросы DNS процессов Rhizomind и движка (журнал DNS-клиента)`n"
-  if ($dns.Count -eq 0) { Note 'Нет.' } else {
-    $dns | ForEach-Object { [regex]::Match($_.Message, '(?i)(query|запрос)[^\r\n]*?([a-z0-9-]+\.)+[a-z]{2,}').Value } | Sort-Object -Unique | ForEach-Object { Note "- $_" }
+if ($Unattended) {
+  try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { $null = $_ }
+}
+
+try {
+  if ($Host.Name -eq 'Windows PowerShell ISE Host') {
+    Stop-Audit 'Скрипт не работает в PowerShell ISE (нет клавиши «закончить этап»). Запустите его в обычном окне PowerShell.'
   }
-  if (-not $dnsWasEnabled) { wevtutil sl 'Microsoft-Windows-DNS-Client/Operational' /e:false | Out-Null }
-}
-Good 'Разбор закончен.'
-Wait-Enter
 
-# --- Шаг 11. Итог -------------------------------------------------------------
+  # --- Папка результатов: не в OneDrive и не в перемещаемом профиле ---------
+  if (-not $OutDir) {
+    $OutDir = Join-Path ($env:SystemDrive + '\') ('rhizomind-audit-' + (Get-Date -Format 'yyyy-MM-dd-HHmm'))
+  }
+  $OutDir = [System.IO.Path]::GetFullPath((ConvertFrom-TypedPath $OutDir))
+  if (Test-SyncedPath $OutDir) {
+    Stop-Audit "Папка результатов $OutDir — в OneDrive или в перемещаемом профиле: журнал всех событий машины попал бы в синхронизацию. Укажите другую: -OutDir C:\rhizomind-audit"
+  }
+  try {
+    New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+  } catch {
+    Stop-Audit "Не удалось создать папку результатов $OutDir ($($_.Exception.Message)). Укажите другую: -OutDir <путь>"
+  }
+  $script:Results = Join-Path $OutDir 'results.md'
+  $Pml = Join-Path $OutDir 'capture.pml'
+  $Csv = Join-Path $OutDir 'capture.csv'
 
-Stage 'Итог'
-$appNet = $netOwn.Count + $script:LiveFindings.Count
-if ($appNet -eq 0) {
-  Good 'Процессы Rhizomind и движка не обращались к сети.'
-  Note "`n**Итог по сети приложения:** обращений процессов Rhizomind и движка не найдено."
-} else {
-  Bad "Найдены сетевые обращения процессов Rhizomind или движка: $appNet. Это нарушение — пришлите результаты."
-  Note "`n**Итог по сети приложения: найдено $appNet обращений — нарушение, разобрать.**"
+  # --- Шаг 1. Подготовка -----------------------------------------------------
+
+  Set-Content -LiteralPath $script:Results -Encoding UTF8 -Value @"
+# Сетевой аудит Rhizomind — результаты
+
+Дата: $(Get-Date -Format 'yyyy-MM-dd HH:mm'). Компьютер: $env:COMPUTERNAME (имя пользователя не записывается).
+Инструкция: docs/security/network-audit.md.
+"@
+  if ($Unattended) { Note "`n**Автоматический режим (-Unattended): проверка самого скрипта, не аудит.** Сценарии 6–8 пропущены, простой $IdleSeconds с." }
+  if ($NoProcmon) { Note "`n**Без Process Monitor (-NoProcmon):** шаги 3 и 10 пропущены, сеть — только опросом соединений раз в 2 с (короткие обращения между опросами не видны)." }
+
+  Stage 'Подготовка'
+  Say 'Скрипт проверит машину и запишет условия аудита.'
+  Say 'Перед началом закройте все программы, кроме этого окна (браузер, Teams, Outlook, OneDrive можно оставить, но тогда их обращения попадут в общий журнал).'
+  Say ''
+
+  $AppExe = ConvertFrom-TypedPath $AppExe
+  while (-not $AppExe -or -not (Test-Path -LiteralPath $AppExe -PathType Leaf)) {
+    if ($AppExe) { Bad "Файл не найден: $AppExe" }
+    if ($Unattended) { Stop-Audit 'Не указан путь к rhizomind.exe (-AppExe).' }
+    $AppExe = ConvertFrom-TypedPath (Ask 'Полный путь к rhizomind.exe (портативная сборка или установленная; пусто — выход)')
+    if (-not $AppExe) { Stop-Audit 'Путь к rhizomind.exe не указан.' }
+  }
+
+  $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+  if (-not $NoProcmon) {
+    $Procmon = ConvertFrom-TypedPath $Procmon
+    while (-not $Procmon -or -not (Test-Path -LiteralPath $Procmon -PathType Leaf)) {
+      if ($Procmon) { Bad "Файл не найден: $Procmon" }
+      if ($Unattended) { Stop-Audit 'Не указан путь к Procmon64.exe (-Procmon) — или запустите с -NoProcmon.' }
+      $Procmon = ConvertFrom-TypedPath (Ask 'Полный путь к Procmon64.exe (Sysinternals Process Monitor; пусто — без Process Monitor)')
+      if (-not $Procmon) {
+        if (Confirm 'Продолжить без Process Monitor (как с ключом -NoProcmon: шаги 3 и 10 пропускаются, остаётся опрос соединений)?') {
+          $NoProcmon = $true
+          Note "`n**Без Process Monitor (выбрано в шаге 1):** шаги 3 и 10 пропущены, сеть — только опросом соединений."
+          break
+        }
+        Stop-Audit 'Process Monitor не указан. Запустите скрипт снова с -Procmon <путь> или с -NoProcmon.'
+      }
+    }
+  }
+  if (-not $NoProcmon) {
+    if ($ProcmonConfig) {
+      $ProcmonConfig = ConvertFrom-TypedPath $ProcmonConfig
+      if (-not (Test-Path -LiteralPath $ProcmonConfig -PathType Leaf)) { Stop-Audit "Файл настроек Process Monitor не найден: $ProcmonConfig" }
+    }
+    if (-not $isAdmin) {
+      Bad 'Process Monitor работает только с правами администратора (ставит свой драйвер).'
+      Say '  Windows покажет запрос UAC при запуске записи (шаг 3) и ещё раз при остановке (шаг 10) — подтверждайте.'
+      Say '  Лучше перезапустить PowerShell «от имени администратора». Без прав — запустите скрипт с ключом -NoProcmon.'
+      if (-not (Confirm 'Продолжить с запросами UAC?')) {
+        Stop-Audit 'Перезапустите PowerShell от имени администратора или запустите скрипт с -NoProcmon.'
+      }
+    }
+    $drive = Get-Item -LiteralPath $OutDir
+    $free = $drive.PSDrive.Free
+    if ($free -and $free -lt 20GB) {
+      Bad ("Свободно на диске {0}: {1:N1} ГБ. Журнал Process Monitor за час — 5–20 ГБ, плюс столько же CSV при разборе." -f $drive.PSDrive.Name, ($free / 1GB))
+      if (-not (Confirm 'Всё равно продолжить?' $true)) { Stop-Audit 'Освободите место или укажите -OutDir на другом диске.' }
+    }
+  }
+
+  $os = Get-CimInstance Win32_OperatingSystem
+  $wv = $null
+  foreach ($k in @(
+      'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+      'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+      'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}')) {
+    if (-not $wv) { $wv = (Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue).pv }
+  }
+  $wlid = Get-Service -Name wlidsvc -ErrorAction SilentlyContinue
+  $appHash = (Get-FileHash -LiteralPath $AppExe -Algorithm SHA256).Hash
+
+  Note "- Windows: $($os.Caption) $($os.Version), сборка $($os.BuildNumber)"
+  Note "- WebView2 Runtime: $wv"
+  Note "- rhizomind.exe: SHA-256 $appHash"
+  Note "- Запуск от администратора: $isAdmin"
+  Note "- Process Monitor: $(if ($NoProcmon) { 'нет (-NoProcmon)' } elseif ($ProcmonConfig) { 'да, свои настройки (/LoadConfig)' } else { 'да, настройки Process Monitor по умолчанию на этой машине' })"
+  if ($wlid) { Note "- Служба wlidsvc: $($wlid.Status), запуск $($wlid.StartType)" }
+
+  $policyRoots = @('HKLM:\SOFTWARE\Policies\Microsoft\Edge\WebView2', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge\WebView2',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection',
+    'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting')
+  Note '- Политики (если пусто — не заданы):'
+  foreach ($r in $policyRoots) {
+    if (Test-Path -LiteralPath $r) {
+      $props = Get-ItemProperty -LiteralPath $r
+      $names = @($props.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { "$($_.Name)=$($_.Value)" })
+      Note ("  - ``{0}``: {1}" -f $r, ($names -join '; '))
+      Say ("Политики в {0}: {1}" -f $r, ($names -join '; '))
+    }
+  }
+  Say ''
+  Say "Windows: $($os.Caption) $($os.BuildNumber); WebView2: $wv; администратор: $isAdmin"
+  if (-not $wv) { Bad 'WebView2 Runtime не найден — Rhizomind не запустится.' }
+  if (-not $isAdmin) { Say 'Без прав администратора журнал DNS не включить, системная очередь WER может быть недоступна.' }
+  Wait-Enter
+
+  # --- Шаг 2. Снимок «до» ----------------------------------------------------
+
+  Stage 'Снимок до запуска'
+  $before = @{
+    temp    = @(Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'rhizomind-webview-*' -ErrorAction SilentlyContinue | ForEach-Object Name)
+    profile = @(Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Rhizomind') -ErrorAction SilentlyContinue | ForEach-Object Name)
+    tokens  = Get-TokenCacheSnapshot
+    wer     = Get-WerQueue
+  }
+  Note "- Остатки временных папок движка в %TEMP%: $($before.temp.Count)"
+  Note "- Файлы в %LOCALAPPDATA%\Rhizomind: $($before.profile -join ', ')"
+  Note "- Файлов в TokenBroker\Cache: $($before.tokens.Count)"
+  foreach ($s in $before.wer.Status) { Note "- Очередь WER: $s" }
+  Good 'Снимок сделан.'
+
+  if ($isAdmin -and (Confirm 'Включить журнал DNS-клиента Windows на время аудита (после аудита вернётся как было)?')) {
+    $dnsLog = Get-WinEvent -ListLog $DnsLogName
+    $script:DnsWasEnabled = [bool]$dnsLog.IsEnabled
+    if (-not $script:DnsWasEnabled) {
+      $dnsLog.IsEnabled = $true
+      $dnsLog.SaveChanges()
+      $script:DnsChanged = $true
+    }
+    $script:DnsUsed = $true
+    Good 'Журнал DNS включён.'
+    Note '- Журнал DNS-клиента: включён на время аудита.'
+  } else {
+    $script:DnsUsed = $false
+    Note '- Журнал DNS-клиента: не включался.'
+  }
+  Wait-Enter
+
+  # --- Шаг 3. Process Monitor ------------------------------------------------
+
+  Stage 'Запуск Process Monitor'
+  $captureStart = Get-Date
+  if ($NoProcmon) {
+    Note '- Пропущен: без Process Monitor (-NoProcmon).'
+    Say 'Пропущен: без Process Monitor.'
+  } else {
+    Say 'Process Monitor будет записывать все события машины в файл capture.pml в папке результатов.'
+    Say 'Окно Process Monitor может появиться свёрнутым — не закрывайте его до шага 10.'
+    if (-not $ProcmonConfig) {
+      Say 'Настройки — те, что последними сохранены в Process Monitor на этой машине. Если в нём был фильтр,'
+      Say 'сбросьте его заранее: Filter → Reset Filter; Options → снять «Show Resolved Network Addresses» (см. инструкцию).'
+    }
+    if (-not $isAdmin) { Say 'Сейчас Windows спросит разрешение (UAC) для Process Monitor — подтвердите.' }
+    $pmArgs = @('/AcceptEula', '/Quiet', '/Minimized', '/BackingFile', "`"$Pml`"")
+    if ($ProcmonConfig) { $pmArgs += @('/LoadConfig', "`"$ProcmonConfig`"") }
+    try {
+      Start-Process -FilePath $Procmon -ArgumentList $pmArgs
+    } catch {
+      Stop-Audit "Process Monitor не запустился ($($_.Exception.Message)). Без прав администратора запустите скрипт с -NoProcmon."
+    }
+    $script:ProcmonStarted = $true
+    Start-Sleep -Seconds 5
+    if (-not (Get-Process -Name 'Procmon', 'Procmon64', 'Procmon64a' -ErrorAction SilentlyContinue)) {
+      Bad 'Процесс Process Monitor не виден. Если запрос UAC был отклонён — запустите скрипт снова от администратора или с -NoProcmon.'
+      if (-not (Confirm 'Process Monitor всё-таки записывает (окно открыто)?')) { Stop-Audit 'Process Monitor не запущен.' }
+    }
+    $captureStart = Get-Date
+    Note "- Запись Process Monitor начата: $($captureStart.ToString('HH:mm:ss'))"
+    Good 'Запись идёт.'
+  }
+  Wait-Enter
+
+  # --- Шаг 4. Запуск Rhizomind и флаги движка --------------------------------
+
+  Stage 'Запуск Rhizomind и проверка флагов движка'
+  # Единственный экземпляр: второй запуск передал бы команду уже открытому
+  # окну и вышел — дерево процессов было бы чужим.
+  while (@(Get-Process -Name 'rhizomind' -ErrorAction SilentlyContinue).Count -gt 0) {
+    Bad 'Rhizomind уже запущен. Закройте все его окна (скрипт должен запустить его сам).'
+    if ($Unattended) { Stop-Audit 'Rhizomind уже запущен.' }
+    Wait-Enter 'Закройте Rhizomind и нажмите Enter'
+  }
+  Step 'Скрипт запустит Rhizomind. Окно может появиться через 1–3 секунды.'
+  $proc = Start-Process -FilePath $AppExe -PassThru
+  $script:RootPid = $proc.Id
+  $browser = $null
+  $tree = @()
+  $deadline = (Get-Date).AddSeconds(20)
+  while (-not $browser -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 2
+    $tree = @(Get-AppTree)
+    $browser = $tree | Where-Object { $_.Name -ieq 'msedgewebview2.exe' -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1
+  }
+  if (-not $browser -and -not $Unattended) {
+    Bad 'Процесс браузера WebView2 не найден. Открылось ли окно Rhizomind? Подождите и нажмите Enter для повторной проверки.'
+    Wait-Enter
+    $tree = @(Get-AppTree)
+    $browser = $tree | Where-Object { $_.Name -ieq 'msedgewebview2.exe' -and $_.CommandLine -notmatch '--type=' } | Select-Object -First 1
+  }
+  Note "- Процессов Rhizomind и движка: $($tree.Count)"
+  $expected = @(
+    @{ flag = '--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection'; must = $true },
+    @{ flag = '--no-proxy-server'; must = $true },
+    @{ flag = '--disable-background-networking'; must = $true },
+    @{ flag = '--disable-component-update'; must = $true },
+    @{ flag = '--disable-domain-reliability'; must = $true },
+    @{ flag = '--no-pings'; must = $true },
+    @{ flag = '--host-resolver-rules='; must = $true },
+    @{ flag = '--edge-webview-disable-crash-reporting=1'; must = $true },
+    @{ flag = '--remote-debugging-port'; must = $false }
+  )
+  $script:FlagViolations = 0
+  if ($browser) {
+    $cmd = [string]$browser.CommandLine
+    Note ''
+    Note '| Флаг | Ожидается | В командной строке процесса браузера |'
+    Note '|---|---|---|'
+    foreach ($e in $expected) {
+      $has = $cmd.Contains($e.flag)
+      $ok = ($has -eq $e.must)
+      $want = 'есть'; if (-not $e.must) { $want = 'нет' }
+      $got = 'нет'; if ($has) { $got = 'есть' }
+      $mark = ''; if (-not $ok) { $mark = ' — **нарушение**'; $script:FlagViolations++ }
+      Note ("| ``{0}`` | {1} | {2}{3} |" -f $e.flag, $want, $got, $mark)
+      if ($ok) { Good "$($e.flag): $got" } else { Bad "$($e.flag): $got (ожидалось: $want)" }
+    }
+    Note ''
+    Note 'Командная строка процесса браузера движка (пути профиля заменены условными обозначениями):'
+    Note ''
+    Note '```'
+    Note (Protect-UserText $cmd)
+    Note '```'
+    $udd = [regex]::Match($cmd, '--user-data-dir="?([^"]+)"?').Groups[1].Value
+    $script:EngineDir = Split-Path -Parent $udd
+    $engineLong = Get-LongPath $script:EngineDir
+    if (-not $engineLong) { $engineLong = $script:EngineDir }
+    $inTemp = (Split-Path -Leaf $script:EngineDir) -like 'rhizomind-webview-*'
+    $underTemp = $false
+    foreach ($t in (Get-PathForms $env:TEMP)) { if ($engineLong.StartsWith($t + '\', [StringComparison]::OrdinalIgnoreCase) -or $script:EngineDir.StartsWith($t + '\', [StringComparison]::OrdinalIgnoreCase)) { $underTemp = $true } }
+    Note ''
+    Note "- Папка данных движка во временной папке ``%TEMP%\rhizomind-webview-*``: $($inTemp -and $underTemp)"
+    if ($inTemp -and $underTemp) { Good "Папка данных: $engineLong" } else { Bad "Папка данных не во временной папке: $engineLong"; $script:FlagViolations++ }
+  } else {
+    Note '- **Процесс браузера WebView2 не найден** — флаги не проверены.'
+    $script:FlagViolations++
+  }
+  Wait-Enter
+
+  # --- Шаг 5. Простой --------------------------------------------------------
+
+  Stage 'Простой: фоновые обращения движка'
+  Say 'Ничего не делайте в Rhizomind: окно открыто, программа простаивает.'
+  Say 'Здесь проявились бы фоновые службы движка: конфигурация и эксперименты, обновление компонентов, отчёты.'
+  if ($Unattended) {
+    $idleSec = [Math]::Max(5, $IdleSeconds)
+  } else {
+    $idleMin = 0
+    while ($true) {
+      $answer = Ask 'Сколько минут ждать' '10'
+      if ([int]::TryParse(([string]$answer).Trim(), [ref]$idleMin) -and $idleMin -gt 0 -and $idleMin -le 240) { break }
+      Say '  Введите целое число минут от 1 до 240.'
+    }
+    $idleSec = $idleMin * 60
+  }
+  Note "- Простой: $idleSec с."
+  Watch-Network 'простой' $idleSec
+
+  # --- Шаги 6–8. Сценарии ----------------------------------------------------
+
+  Stage 'Сценарий: хранилище и заметки'
+  $vaultPath = ''
+  if ($Unattended) {
+    Note '- Пропущен: автоматический режим.'
+  } else {
+    Step 'Если открылось «Управление хранилищами» — создайте хранилище «Аудит» в новой папке на диске C: (кнопка «Обзор…»).'
+    Step 'Создайте 3 заметки и папку; в заметке наберите несколько абзацев, список, задачу - [ ], код в `обратных кавычках`.'
+    Step 'Вставьте вики-ссылку [[Вторая заметка]] и перейдите по ней; создайте заметку по неразрешённой ссылке.'
+    Step 'Ctrl+O — найдите заметку; Alt+← и Alt+→ — назад и вперёд; Ctrl+E — режим исходного текста и обратно.'
+    Step 'Переименуйте заметку в дереве (F2), перетащите в папку, удалите заметку (в корзину).'
+    Step 'Откройте папку хранилища в Проводнике, измените заметку Блокнотом и сохраните — вернитесь в Rhizomind.'
+    Watch-Network 'хранилище и заметки'
+    while ($true) {
+      $vaultPath = ConvertFrom-TypedPath (Ask 'Полный путь к папке хранилища (для разбора журнала; Enter — взять из vaults.json)')
+      $vaultPath = $vaultPath.TrimEnd('\')
+      if (-not $vaultPath -or (Test-Path -LiteralPath $vaultPath -PathType Container)) { break }
+      Bad "Папка не найдена: $vaultPath"
+    }
+  }
+
+  Stage 'Сценарий: поля ввода, контекстное меню, настройки'
+  if ($Unattended) {
+    Note '- Пропущен: автоматический режим.'
+  } else {
+    Step 'Наберите слова с ошибками («превет», «малако») в заметке, в поиске Ctrl+O, в поле переименования, в поиске горячих клавиш и фильтре папок в настройках.'
+    Step 'Проверка орфографии выключена во всех полях (задача 3.3а): красных подчёркиваний быть не должно, словари не скачиваются.'
+    Step 'Откройте «Настройки хранилища»: смените тему, ширину текста, размер шрифта; назначьте горячую клавишу; закройте настройки.'
+    Step 'Щёлкните правой кнопкой: в тексте заметки, на выделенном слове, на пустом месте окна. НИЧЕГО в меню не выбирайте — только перепишите пункты.'
+    Watch-Network 'поля, меню, настройки'
+    $underline = Confirm 'Были ли красные подчёркивания слов с ошибками хоть в одном поле?'
+    Note "- Подчёркивания проверки орфографии: $(if ($underline) { '**были** — нарушение решения задачи 3.3а' } else { 'не было' })"
+    $dict = @()
+    if ($script:EngineDir) {
+      $dict = @(Get-ChildItem -LiteralPath $script:EngineDir -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*.bdic' -or ($_.PSIsContainer -and $_.Name -eq 'Dictionaries') })
+    }
+    if ($dict.Count -eq 0) { Good 'Словарей Hunspell (*.bdic) во временной папке движка нет.' } else { Bad "Во временной папке движка словари: $(@($dict | ForEach-Object Name) -join ', ')" }
+    Note "- Словари Hunspell (*.bdic, Dictionaries) во временной папке движка: $(if ($dict.Count) { '**есть** — ' + (@($dict | ForEach-Object Name) -join ', ') } else { 'нет' })"
+    $menu = Ask 'Перечислите пункты контекстного меню в тексте заметки и на выделении (через запятую)'
+    Note "- Пункты контекстного меню: $menu"
+  }
+
+  Stage 'Сценарий: внешние ссылки'
+  if ($Unattended) {
+    Note '- Пропущен: автоматический режим.'
+  } else {
+    Step 'В заметке наберите [Пример](https://example.com) и щёлкните по ссылке. В окне подтверждения нажмите «Отмена».'
+    Step 'Щёлкните ещё раз и нажмите «Открыть в браузере»: откроется системный браузер. Его соединения — норма, это действие пользователя; закройте браузер.'
+    Step 'Наберите [Почта](mailto:test@example.com), щёлкните — «Отмена».'
+    Step 'Наберите [Файл](file:///C:/Windows/win.ini) и щёлкните — ничего не должно открыться.'
+    Watch-Network 'внешние ссылки'
+    $cancelOk = Confirm 'После «Отмена» браузер не открывался?'
+    $fileOk = Confirm 'Ссылка file: ничего не открыла?'
+    Note "- «Отмена» не открыла браузер: $cancelOk; ссылка file: ничего не открыла: $fileOk"
+  }
+
+  # --- Шаг 9. Второе хранилище и выход ---------------------------------------
+
+  Stage 'Второе хранилище и выход'
+  if ($Unattended) {
+    Say 'Автоматический режим: скрипт закрывает окно Rhizomind (как крестиком «×»).'
+    $rootProc = Get-Process -Id $script:RootPid -ErrorAction SilentlyContinue
+    $closed = $false
+    if ($rootProc) { $closed = $rootProc.CloseMainWindow() }
+    Note "- Окно закрыто сообщением WM_CLOSE (как «×»): $closed"
+  } else {
+    Step 'Через переключатель слева внизу откройте «Управление хранилищами», создайте второе хранилище, откройте его.'
+    Step 'Наберите текст в заметке второго хранилища и сразу закройте окна крестиком «×» (все окна Rhizomind).'
+    Watch-Network 'второе хранилище и выход'
+  }
+  $waitUntil = (Get-Date).AddSeconds(30)
+  while (@(Get-AppTree | Where-Object { Test-OwnImage $_.Name }).Count -gt 0 -and (Get-Date) -lt $waitUntil) { Start-Sleep -Seconds 1 }
+  Start-Sleep -Seconds 3
+  $left = @(Get-AppTree | Where-Object { Test-OwnImage $_.Name })
+  $script:ExitProblems = 0
+  if ($left.Count -gt 0) { Bad "Процессы Rhizomind живы через 30 с после закрытия: $($left.Count)"; $script:ExitProblems++ } else { Good 'Все процессы Rhizomind завершились.' }
+  Note "- Процессы Rhizomind после выхода: $($left.Count)"
+  $tempAfter = @(Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'rhizomind-webview-*' -ErrorAction SilentlyContinue | ForEach-Object Name)
+  $newTemp = @($tempAfter | Where-Object { $before.temp -notcontains $_ })
+  if ($newTemp.Count -eq 0) { Good 'Временная папка движка удалена.' } else { Bad "Осталась временная папка: $($newTemp -join ', ')"; $script:ExitProblems++ }
+  Note "- Новые временные папки движка после выхода: $($newTemp.Count)"
+
+  $tokenChanges = Compare-TokenCache $before.tokens (Get-TokenCacheSnapshot)
+  if ($tokenChanges.Count -eq 0) {
+    Note '- TokenBroker\Cache: без изменений.'
+  } else {
+    Note '- TokenBroker\Cache — изменения:'
+    foreach ($c in $tokenChanges) {
+      Note "  - ``$($c.Name)``: $($c.Change) — $($c.Verdict)"
+      if ($c.Violation) { Bad "TokenBroker\Cache: $($c.Name) $($c.Change)"; $script:ExitProblems++ }
+    }
+  }
+  $werAfter = Get-WerQueue
+  foreach ($s in $werAfter.Status) { Note "- Очередь WER после выхода: $s" }
+  $newWer = @($werAfter.Names | Where-Object { $before.wer.Names -notcontains $_ })
+  Note "- Новые отчёты WER в очереди: $($newWer.Count) $(if ($newWer.Count) { '(' + ($newWer -join '; ') + ')' })"
+
+  $vaultsJson = Join-Path $env:LOCALAPPDATA 'Rhizomind\vaults.json'
+  $vaultRoots = New-Object System.Collections.ArrayList
+  if ($vaultPath) { [void]$vaultRoots.Add($vaultPath) }
+  if (Test-Path -LiteralPath $vaultsJson) {
+    $list = Get-Content -Raw -Encoding UTF8 -LiteralPath $vaultsJson | ConvertFrom-Json
+    $fields = @($list.PSObject.Properties.Name)
+    Note "- vaults.json: поля верхнего уровня $($fields -join ', '); хранилищ $(@($list.vaults).Count)"
+    foreach ($v in @($list.vaults)) {
+      if ($v.path) { [void]$vaultRoots.Add([string]$v.path) }
+      Note ("  - хранилище: поля {0}" -f (@($v.PSObject.Properties.Name) -join ', '))
+    }
+    if ($Unattended) {
+      Note '- В vaults.json нет имён и текста заметок: не проверялось глазами (автоматический режим).'
+    } else {
+      Say ''
+      Say 'Содержимое vaults.json:'
+      Get-Content -Encoding UTF8 -LiteralPath $vaultsJson | Write-Host
+      $noNotes = Confirm 'В vaults.json нет имён заметок и текста (только имена и пути хранилищ, размеры окна)?'
+      Note "- В vaults.json нет имён и текста заметок (проверено глазами): $noNotes"
+    }
+  } else {
+    Note '- vaults.json: нет.'
+  }
+  Wait-Enter
+
+  # --- Шаг 10. Остановить запись и разобрать журнал --------------------------
+
+  Stage 'Остановка Process Monitor и разбор журнала'
+  $ownPids = New-Object System.Collections.Generic.List[int]
+  $ownPids.Add([int]$script:RootPid)
+  foreach ($k in $script:Seen.Keys) { if (Test-OwnImage $script:Seen[$k].Name) { $ownPids.Add([int]$k) } }
+  $analysis = $null
+  if ($NoProcmon) {
+    Note '- Пропущен: без Process Monitor (-NoProcmon).'
+    Say 'Пропущен: без Process Monitor.'
+  } else {
+    Say 'Запись останавливается, журнал выгружается в CSV и разбирается.'
+    Say 'Выгрузка часа записи — 10–40 минут, CSV размером с журнал (гигабайты). Окно не закрывайте.'
+    if (-not $isAdmin) { Say 'Windows спросит разрешение (UAC) для остановки Process Monitor — подтвердите.' }
+    Stop-Procmon
+    Start-Sleep -Seconds 3
+    $saveArgs = @('/AcceptEula', '/Quiet', '/Minimized', '/OpenLog', "`"$Pml`"", '/SaveAs', "`"$Csv`"")
+    if ($ProcmonConfig) { $saveArgs += @('/LoadConfig', "`"$ProcmonConfig`"") }
+    Start-Process -FilePath $Procmon -ArgumentList $saveArgs -Wait
+    while (-not (Test-Path -LiteralPath $Csv)) {
+      Bad 'CSV не получился. Откройте capture.pml в Process Monitor вручную: Filter → Reset Filter, затем File → Save… → «All events», формат CSV, в эту папку как capture.csv.'
+      if (-not (Confirm 'CSV сохранён вручную (иначе — без разбора журнала)?')) { break }
+    }
+    if (Test-Path -LiteralPath $Csv) {
+      $analysis = Invoke-ProcmonAnalysis -CsvPath $Csv -OwnPids $ownPids.ToArray() -VaultRoots $vaultRoots.ToArray() -EngineDir $script:EngineDir
+      Note "- Событий в журнале: $($analysis.Rows); процессов Rhizomind и движка: $($analysis.Own.Count)"
+      Write-Table 'Сеть процессов Rhizomind и движка (должно быть пусто)' $analysis.NetOwn @('Процесс', 'Протокол', 'Адрес') 'summary-network-app.csv'
+      Note "`n- Запросы DNS (UDP Send на порт 53) процессов Rhizomind и движка: $($analysis.DnsOwn) (должно быть 0 — подтверждение ``--host-resolver-rules``); всех процессов машины: $($analysis.DnsAll)"
+      Write-Table 'Сеть всех процессов машины за время аудита (сверка со списком SECURITY.md)' $analysis.NetAll @('Процесс', 'Протокол', 'Адрес', 'Оценка') 'summary-network-all.csv'
+      Write-Table 'Записи файлов процессами Rhizomind вне хранилища, временной папки движка и %LOCALAPPDATA%\Rhizomind' $analysis.FileOut @('Путь', 'Учтено') 'summary-files.csv'
+      Write-Table 'Словари проверки орфографии (Hunspell) — должно быть пусто' $analysis.Dictionaries @('Путь') 'summary-dictionaries.csv'
+      Write-Table 'Записи реестра процессами Rhizomind (по ключам)' $analysis.RegOut @('Ключ', 'Учтено') 'summary-registry.csv'
+    } else {
+      Note '- **Журнал Process Monitor не разобран** (CSV нет).'
+    }
+  }
+
+  if ($script:LiveFindings.Count -gt 0) {
+    Note "`n### Соединения, замеченные опросом во время работы`n"
+    Note '| Этап | Вид | Процесс | Номер | Адрес | Состояние |'
+    Note '|---|---|---|---|---|---|'
+    foreach ($f in $script:LiveFindings) { Note "| $($f.Phase) | $($f.Kind) | $($f.Process) | $($f.Pid) | $($f.Remote) | $($f.State) |" }
+  }
+
+  if ($script:DnsUsed) {
+    $ownSet = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($p in $ownPids) { [void]$ownSet.Add($p) }
+    if ($analysis) { foreach ($p in $analysis.Own) { [void]$ownSet.Add($p) } }
+    $dnsEvents = @(Get-WinEvent -FilterHashtable @{ LogName = $DnsLogName; StartTime = $captureStart } -ErrorAction SilentlyContinue)
+    $dnsOwn = @($dnsEvents | Where-Object { $ownSet.Contains([int]$_.ProcessId) })
+    Note "`n### Запросы DNS процессов Rhizomind и движка (журнал DNS-клиента)`n"
+    $names = @(Get-DnsQueryName $dnsOwn)
+    if ($names.Count -eq 0) { Note 'Нет.' } else { foreach ($n in $names) { Note "- ``$n``" } }
+    Note "`nЖурнал DNS за время аудита — всего событий $($dnsEvents.Count), имён у всех процессов: $(@(Get-DnsQueryName $dnsEvents).Count) (контроль: журнал видит запросы, например браузера на шаге 8)."
+  }
+  Good 'Разбор закончен.'
+  Wait-Enter
+
+  # --- Шаг 11. Итог ----------------------------------------------------------
+
+  Stage 'Итог'
+  $appNet = $script:LiveFindings.Count
+  if ($analysis) { $appNet += $analysis.NetOwn.Count }
+  if ($appNet -eq 0) {
+    Good 'Процессы Rhizomind и движка не обращались к сети.'
+    if ($NoProcmon) {
+      Note "`n**Итог по сети приложения:** опрос соединений обращений не нашёл; журнал Process Monitor не снимался (-NoProcmon) — для критериев 3 и 4 этого недостаточно."
+    } else {
+      Note "`n**Итог по сети приложения:** обращений процессов Rhizomind и движка не найдено."
+    }
+  } else {
+    Bad "Найдены сетевые обращения процессов Rhizomind или движка: $appNet. Это нарушение — пришлите результаты."
+    Note "`n**Итог по сети приложения: найдено $appNet обращений — нарушение, разобрать.**"
+  }
+  Note "- Флаги и папка движка: $(if ($script:FlagViolations) { "**нарушений $($script:FlagViolations)**" } else { 'как ожидается' }); выход: $(if ($script:ExitProblems) { "**проблем $($script:ExitProblems)**" } else { 'чисто' })"
+  Say ''
+  Say "Папка результатов: $OutDir"
+  Say 'Пришлите results.md и summary-*.csv. Файлы capture.pml и capture.csv не пересылайте:'
+  Say 'в них все события машины (имена файлов, пользователя). Удалите их сами, когда разбор закончен.'
+  Note "`nПримечания владельца:`n"
+  $extra = Ask 'Что ещё заметили (Enter — ничего)'
+  if ($extra) { Note $extra }
+  Note "`nАудит завершён: $(Get-Date -Format 'yyyy-MM-dd HH:mm')."
+} catch [System.OperationCanceledException] {
+  Bad $_.Exception.Message
+  if ($script:Results -and (Test-Path -LiteralPath $script:Results)) { Note "`n**Аудит прерван:** $($_.Exception.Message)" }
+  $script:ExitCode = 2
+} catch {
+  Bad "Сбой скрипта: $($_.Exception.Message)"
+  Bad "  строка $($_.InvocationInfo.ScriptLineNumber): $([string]$_.InvocationInfo.Line)"
+  if ($script:Results -and (Test-Path -LiteralPath $script:Results)) { Note "`n**Сбой скрипта:** $($_.Exception.Message) (строка $($_.InvocationInfo.ScriptLineNumber))" }
+  $script:ExitCode = 1
+} finally {
+  if ($script:ProcmonStarted -and -not $script:ProcmonStopped) {
+    try { Stop-Procmon; Write-Host '  Process Monitor остановлен.' -ForegroundColor Yellow } catch { Write-Host "  !!  Не удалось остановить Process Monitor: $($_.Exception.Message). Закройте его окно сами." -ForegroundColor Red }
+  }
+  if ($script:DnsChanged) {
+    try {
+      $dnsLog = Get-WinEvent -ListLog $DnsLogName
+      $dnsLog.IsEnabled = $script:DnsWasEnabled
+      $dnsLog.SaveChanges()
+      $script:DnsChanged = $false
+      Write-Host '  Журнал DNS возвращён в прежнее состояние (выключен).' -ForegroundColor Yellow
+    } catch { Write-Host "  !!  Не удалось вернуть журнал DNS: $($_.Exception.Message). Выключите: wevtutil sl $DnsLogName /e:false" -ForegroundColor Red }
+  }
+  if ($script:RootPid -and $script:ExitCode -ne 0) {
+    $alive = @(Get-AppTree | Where-Object { Test-OwnImage $_.Name })
+    if ($alive.Count -gt 0) { Write-Host '  Rhizomind ещё запущен — закройте его окно сами.' -ForegroundColor Yellow }
+  }
 }
-Say ''
-Say "Папка результатов: $OutDir"
-Say 'Пришлите results.md и summary-*.csv. Файлы capture.pml и capture.csv не пересылайте:'
-Say 'в них все события машины (имена файлов, пользователя). Удалите их сами, когда разбор закончен.'
-Note "`nПримечания владельца:`n"
-$extra = Ask 'Что ещё заметили (Enter — ничего)'
-if ($extra) { Note $extra }
+exit $script:ExitCode

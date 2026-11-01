@@ -254,3 +254,62 @@ jobs:
           path: release/*.zip
           retention-days: 14
           if-no-files-found: error
+
+  # Помощник ручного сетевого аудита (задача 3.3б, решение владельца 102):
+  # синтаксис Windows PowerShell 5.1 (powershell.exe), PSScriptAnalyzer
+  # (правила уровня Error), разбор журнала Process Monitor на образце
+  # tests/audit/fixtures/procmon-sample.csv. Сборка не нужна — отдельное
+  # быстрое задание, основной verify от него не зависит.
+  audit-script:
+    name: Скрипт сетевого аудита (синтаксис и разбор образца)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Синтаксис PowerShell 5.1 и PSScriptAnalyzer
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/audit/check-syntax.ps1
+          exit $LASTEXITCODE
+
+      - name: Разбор журнала Process Monitor на образце
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/audit/parse.tests.ps1
+          exit $LASTEXITCODE
+
+  # Неинтерактивный прогон помощника аудита (-Unattended -NoProcmon, простой
+  # 30 с, без сценариев) на портативной выпускной сборке из этого же прогона
+  # CI: скрипт доходит до results.md, флаги движка на месте. Журнал DNS не
+  # включается. Отдельное задание после verify — его сбой verify не валит.
+  audit-script-run:
+    name: Скрипт сетевого аудита (прогон на выпускной сборке)
+    # ВРЕМЕННО (отладка 3.3б): сборка из прогона main 41303949074
+    permissions:
+      contents: read
+      actions: read
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Портативная сборка из verify
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rhizomind-portable-windows
+          path: ${{ runner.temp }}/portable
+          run-id: 41303949074
+          github-token: ${{ github.token }}
+
+      - name: Неинтерактивный прогон скрипта аудита
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem -LiteralPath "$env:RUNNER_TEMP\portable" -Filter '*.zip' -Recurse | Select-Object -First 1
+          Write-Host "Сборка: $($zip.Name)"
+          $app = Join-Path $env:RUNNER_TEMP 'portable-app'
+          Expand-Archive -LiteralPath $zip.FullName -DestinationPath $app -Force
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/audit/run-unattended.ps1 -AppExe (Join-Path $app 'rhizomind.exe') -IdleSeconds 30
+          exit $LASTEXITCODE
