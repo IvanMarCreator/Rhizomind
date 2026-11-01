@@ -251,6 +251,10 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   //   Direct3D (процесс GPU движка WebView2), без данных хранилища (решение 117,
   //   повторный ручной аудит 01.11.2026). Допускаются только файлы ровно на этой
   //   глубине; кэши драйверов других видеокарт (NVIDIA, AMD) не учтены и валят тест.
+  // - %LOCALAPPDATA%\Microsoft\OneAuth\accounts\<шестнадцатеричное имя> — файл
+  //   учётной записи, который пишет библиотека OneAuth движка WebView2 (решение 118).
+  //   Допускаются только новые и изменённые такие файлы (и сами папки OneAuth,
+  //   accounts); любой другой файл в OneAuth и удаление — нарушение.
   const localAppData = isWindows ? real(env('LOCALAPPDATA')) : '';
   const credentialsFile = isWindows ? path.join(localAppData, 'Microsoft', 'Credentials', 'DFBE70A7E5CC19A398EBF1B96859CE5D') : '';
   const backgroundTokenFile = isWindows
@@ -263,13 +267,20 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     path.dirname(path.dirname(p)) === shaderCacheDir && /^[0-9a-f]{16}$/i.test(path.basename(path.dirname(p))) && !p.endsWith(path.sep);
   const isShaderCacheDir = (p: string) =>
     p === shaderCacheDir + path.sep || (path.dirname(p.slice(0, -1)) === shaderCacheDir && /^[0-9a-f]{16}\\$/i.test(p.slice(shaderCacheDir.length + 1)));
+  const oneAuthDir = isWindows ? path.join(localAppData, 'Microsoft', 'OneAuth') : '';
+  const oneAuthAccounts = path.join(oneAuthDir, 'accounts');
+  const isOneAuthTrace = (p: string) =>
+    p === oneAuthDir + path.sep ||
+    p === oneAuthAccounts + path.sep ||
+    (path.dirname(p) === oneAuthAccounts && /^[0-9a-f]+$/i.test(path.basename(p)));
   const isKnownTrace = (p: string) =>
     isWindows &&
     ((p === credentialsFile && !before.has(p)) ||
       p === backgroundTokenFile ||
       p === vaultsFile ||
       isShaderCacheFile(p) ||
-      isShaderCacheDir(p));
+      isShaderCacheDir(p) ||
+      isOneAuthTrace(p));
   const unexpected = (p: string) => !isHarnessNoise(p) && !isKnownTrace(p);
 
   // Тестовое хранилище с одной заметкой (вне проверяемых папок профиля).

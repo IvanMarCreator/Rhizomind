@@ -438,8 +438,8 @@ $KnownFile = @(
   # Решение 117 (повторный аудит 01.11.2026): кэш шейдеров Direct3D и драйвера Intel (процесс GPU движка).
   @{ re = '\\AppData\\Local\\D3DSCache\\'; why = 'кэш шейдеров Direct3D (движок), решение 117' },
   @{ re = '\\AppData\\LocalLow\\Intel\\ShaderCache\\'; why = 'кэш шейдеров драйвера Intel (движок), решение 117' },
-  # OneAuth: принимается только после проверки владельцем (какой процесс, запись или открытие).
-  @{ re = '\\Microsoft\\OneAuth\\'; why = '**не учтено — проверяется (решение 117)**: процесс и операция уточняются владельцем' }
+  # Решение 118: файл учётной записи пишет библиотека OneAuth движка WebView2; другие файлы в OneAuth — «не учтено».
+  @{ re = '\\Microsoft\\OneAuth\\accounts\\[0-9a-f]+$'; why = 'OneAuth движка WebView2, решение 118' }
 )
 $FileWriteOps = @('WriteFile', 'SetRenameInformationFile', 'SetDispositionInformationFile', 'SetEndOfFileInformationFile',
   'SetAllocationInformationFile', 'SetBasicInformationFile', 'CreateFile')

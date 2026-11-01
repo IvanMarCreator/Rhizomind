@@ -15,3 +15,4 @@
 "10:00:00.0000014","rhizomind.exe","1000","RegSetValue","HKLM\System\CurrentControlSet\Services\bam\State\UserSettings\S-1-5-21-1000\\Device\HarddiskVolume4\Rhizomind\rhizomind.exe","SUCCESS","Type: REG_BINARY, Length: 24, Data: 00"
 "10:00:00.0000015","rhizomind.exe","1000","RegSetValue","HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\ClientStateMedium\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}\lastrun","SUCCESS","Type: REG_SZ, Length: 4, Data: 1"
 "10:00:00.0000016","rhizomind.exe","1000","RegSetValue","HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Notifications\Data\418A073AA3BC3475","SUCCESS","Type: REG_BINARY, Length: 8, Data: 00"
+"10:00:00.0000017","msedgewebview2.exe","1000","WriteFile","C:\Users\Тестовый\AppData\Local\Microsoft\OneAuth\settings.json","SUCCESS","Offset: 0, Length: 10"
