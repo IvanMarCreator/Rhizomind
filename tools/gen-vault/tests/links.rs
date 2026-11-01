@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 struct Scan {
     links: Vec<String>,
     in_code: usize,
+    /// Встраивания `![[...]]` (входят и в `links`).
+    embeds: usize,
 }
 
 fn scan(text: &str) -> Scan {
@@ -67,6 +69,7 @@ fn scan_inline(line: &str, out: &mut Scan) {
             // `[[`, `]]` и ` — ASCII, поэтому индексы рядом с ними — границы символов.
             match line[i + 2..].find("]]") {
                 Some(end) => {
+                    out.embeds += (i > 0 && b[i - 1] == b'!') as usize;
                     out.links.push(line[i + 2..i + 2 + end].to_string());
                     i += 2 + end + 2;
                 }
@@ -159,6 +162,7 @@ fn link_counts_by_kind_match_manifest() {
 
     let (mut total, mut plain, mut alias, mut heading, mut path, mut root) = (0, 0, 0, 0, 0, 0);
     let (mut unresolved, mut ambiguous, mut case_variant, mut in_code) = (0, 0, 0, 0);
+    let mut embed = 0;
     for (file, bytes) in &tree {
         if !file.ends_with(".md") {
             continue;
@@ -166,6 +170,7 @@ fn link_counts_by_kind_match_manifest() {
         let Some(text) = text_of(bytes) else { continue };
         let s = scan(&text);
         in_code += s.in_code;
+        embed += s.embeds;
         for inner in &s.links {
             let p = parts(inner);
             total += 1;
@@ -211,6 +216,7 @@ fn link_counts_by_kind_match_manifest() {
         (unresolved, ambiguous, case_variant, in_code),
         "(неразрешённые, без пути при дубликатах, другой регистр, внутри кода)"
     );
+    assert_eq!(m.embed, embed, "встраивания ![[…]]");
     for (name, n) in [
         ("простые", plain),
         ("псевдоним", alias),
@@ -221,6 +227,7 @@ fn link_counts_by_kind_match_manifest() {
         ("без пути при дубликатах", ambiguous),
         ("другой регистр", case_variant),
         ("внутри кода", in_code),
+        ("встраивание", embed),
     ] {
         assert!(n > 0, "нет ссылок вида «{name}»");
     }
@@ -238,6 +245,11 @@ fn expected_links_resolve_as_manifest_says() {
     for e in &manifest.expected_links {
         let text = text_of(&tree[&e.source]).unwrap();
         let s = scan(&text);
+        assert!(
+            !e.link.starts_with('!'),
+            "{}: `!` встраивания — в поле embed",
+            e.link
+        );
         let inner = e
             .link
             .strip_prefix("[[")
@@ -336,4 +348,93 @@ fn sample_notes_hold_every_kind_and_code_is_not_a_link() {
         .find(|e| e.link == "[[йогурт]]")
         .unwrap();
     assert_eq!(e.target.as_deref(), Some("Юникод/И\u{306}огурт.md"));
+}
+
+/// Все ссылки хранилища вне кода: (заметка-источник, текст ссылки без скобок).
+fn all_links(tree: &BTreeMap<String, Vec<u8>>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (file, bytes) in tree {
+        if !file.ends_with(".md") {
+            continue;
+        }
+        let Some(text) = text_of(bytes) else { continue };
+        for inner in scan(&text).links {
+            out.push((file.clone(), inner));
+        }
+    }
+    out
+}
+
+#[test]
+fn hub_has_100_backlinks() {
+    let (_dir, manifest, tree) = vault(1500, 31);
+    let notes = note_keys(&tree);
+    let hub = manifest.hub.as_ref().expect("в сводке нет узла");
+    assert!(tree.contains_key(&hub.path), "нет {}", hub.path);
+
+    let mut sources = BTreeSet::new();
+    let mut count = 0;
+    for (source, inner) in all_links(&tree) {
+        let hits = resolve(&notes, parts(&inner).target);
+        if hits.len() == 1 && *hits[0] == hub.path {
+            sources.insert(source);
+            count += 1;
+        }
+    }
+    assert_eq!(sources.len(), 100, "заметок, ссылающихся на узел");
+    assert_eq!(hub.backlinks.len(), count, "ссылок на узел в сводке");
+    let listed: BTreeSet<String> = hub.backlinks.iter().map(|b| b.source.clone()).collect();
+    assert_eq!(listed, sources);
+    assert!(
+        hub.backlinks.iter().any(|b| b.embed),
+        "нет встраивания узла"
+    );
+    assert!(
+        hub.backlinks.iter().any(|b| b.link.contains('#')),
+        "нет ссылки на заголовок узла"
+    );
+}
+
+#[test]
+fn folder_1000_has_5000_incoming() {
+    let (_dir, manifest, tree) = vault(2300, 32);
+    let notes = note_keys(&tree);
+    let f = manifest.folder_1000.as_ref().expect("в сводке нет папки");
+    let prefix = format!("{}/", f.path);
+    let inside = |p: &str| p.starts_with(&prefix);
+
+    let in_folder = tree
+        .keys()
+        .filter(|p| p.ends_with(".md") && inside(p))
+        .count();
+    assert_eq!((in_folder, f.notes), (1000, 1000), "заметок в папке");
+
+    let (mut incoming, mut internal, mut with_name) = (0, 0, 0);
+    let mut sources = BTreeSet::new();
+    for (source, inner) in all_links(&tree) {
+        let target = parts(&inner).target;
+        let hits = resolve(&notes, target);
+        if hits.len() != 1 || !inside(hits[0]) {
+            continue;
+        }
+        if inside(&source) {
+            internal += 1;
+        } else {
+            incoming += 1;
+            with_name += target.split('/').any(|c| c == f.path) as usize;
+            sources.insert(source);
+        }
+    }
+    assert_eq!(incoming, 5000, "входящих ссылок");
+    assert_eq!(
+        (
+            f.incoming_links,
+            f.incoming_sources,
+            f.incoming_with_folder_name,
+            f.internal_links
+        ),
+        (incoming, sources.len(), with_name, internal),
+        "(входящие, заметки-источники, с именем папки, внутренние)"
+    );
+    assert!(with_name > 1000 && internal > 0);
 }

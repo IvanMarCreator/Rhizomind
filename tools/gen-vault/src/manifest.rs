@@ -2,9 +2,10 @@
 //! и нагрузочных тестов. Все пути — от корня хранилища, через `/`.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Версия формата манифеста; меняется при несовместимых правках.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Ключ имени генератора — упрощённый. Для его имён (кириллица, латиница,
 /// цифры, одно имя в NFD) он совпадает с ключом ядра; ядро (задача 1.1)
@@ -17,6 +18,8 @@ pub struct Manifest {
     pub format_version: u32,
     pub generator: String,
     pub seed: u64,
+    /// Заданная доля заметок с повторяющимися именами, % (`--dup-share`).
+    pub dup_share: f64,
     /// Число заметок (`.md`), включая образцы.
     pub notes: usize,
     /// Число папок без корня.
@@ -35,6 +38,70 @@ pub struct Manifest {
     /// Ожидаемые разрешения ссылок: все ссылки образцов и ссылки из части
     /// массовых заметок (примерно 300 заметок).
     pub expected_links: Vec<ExpectedLink>,
+    /// Все теги хранилища (С2-3.3) по ключу имени (см. `key_rule`).
+    pub tags: Vec<TagInfo>,
+    /// Ожидаемые теги образцов и части массовых заметок (те же, что в `expected_links`).
+    pub expected_tags: Vec<ExpectedTags>,
+    /// «Узел» — заметка со 100 ссылающимися заметками (замер переименования, С2-8.3).
+    pub hub: Option<Hub>,
+    /// Папка на 1 000 заметок с 5 000 входящих ссылок (замер переноса, С2-8.3).
+    pub folder_1000: Option<BigFolder>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagInfo {
+    /// Ключ имени тега: NFC → нижний регистр → NFC.
+    pub key: String,
+    /// Число заметок с тегом (в тексте или в блоке свойств).
+    pub notes: usize,
+    /// Написание (после NFC: составная и разложенная формы — одно) → число
+    /// вхождений по хранилищу (текст и блок свойств).
+    pub spellings: BTreeMap<String, usize>,
+    /// Показываемое написание (С2-3.3, Р18): самое частое по вхождениям; при
+    /// равенстве — только среди равных по максимуму, из самой старой заметки по
+    /// дате создания файла на диске (`Metadata::created`, где её нет — время
+    /// изменения), при равных датах — по пути от корня (строка через `/`); в
+    /// этой заметке — первое такое вхождение в порядке файла (блок свойств,
+    /// затем текст). Форма NFC.
+    pub display: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpectedTags {
+    pub source: String,
+    /// Ключи тегов заметки, по возрастанию.
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hub {
+    pub path: String,
+    /// Все ссылки на «узел»: ровно 100 заметок-источников, по одной ссылке.
+    pub backlinks: Vec<Backlink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Backlink {
+    pub source: String,
+    /// Текст ссылки со скобками, без `!` встраивания.
+    pub link: String,
+    pub embed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BigFolder {
+    /// Путь папки от корня.
+    pub path: String,
+    /// Заметок в папке и её вложенных папках.
+    pub notes: usize,
+    /// Ссылок из заметок вне папки на заметки в ней.
+    pub incoming_links: usize,
+    /// Заметок вне папки, в которых есть такие ссылки.
+    pub incoming_sources: usize,
+    /// Входящих ссылок с именем папки в пути: при переносе папки их текст меняется.
+    pub incoming_with_folder_name: usize,
+    /// Ссылок между заметками папки.
+    pub internal_links: usize,
 }
 
 /// Число ссылок по видам (вне кода). Виды пересекаются: `[[Папка/Имя#З|п]]`
@@ -60,6 +127,8 @@ pub struct LinkStats {
     pub case_variant: usize,
     /// `[[` внутри кода (блоки ``` и ~~~, отступ, код в строке) — не ссылки.
     pub in_code: usize,
+    /// Встраивания `![[…]]` (входят в `total` и в другие виды).
+    pub embed: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,8 +147,10 @@ pub enum Resolution {
 pub struct ExpectedLink {
     /// Заметка, в которой стоит ссылка.
     pub source: String,
-    /// Текст ссылки со скобками, как в файле.
+    /// Текст ссылки со скобками, как в файле, но без `!` встраивания.
     pub link: String,
+    /// Встраивание: в файле перед ссылкой стоит `!`.
+    pub embed: bool,
     pub resolution: Resolution,
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

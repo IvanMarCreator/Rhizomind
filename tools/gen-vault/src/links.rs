@@ -1,6 +1,6 @@
 //! Вики-ссылки: создание, разрешение по правилам С3.4 и учёт для манифеста.
 
-use crate::layout::{Layout, Special};
+use crate::layout::{Group, Layout, Special};
 use crate::names::name_key;
 use crate::rng::Rng;
 use crate::shortest::shortest_link;
@@ -20,8 +20,10 @@ pub enum Target {
 #[derive(Debug, Clone)]
 pub struct LinkRec {
     pub source: usize,
-    /// Текст ссылки со скобками.
+    /// Текст ссылки со скобками, без `!` встраивания.
     pub raw: String,
+    /// Встраивание `![[…]]`.
+    pub embed: bool,
     pub target_text: String,
     pub heading: Option<String>,
     pub alias: bool,
@@ -97,6 +99,18 @@ impl<'a> Links<'a> {
         heading: Option<&str>,
         alias: Option<&str>,
     ) -> String {
+        self.record(source, target_text, heading, alias, false)
+    }
+
+    /// Ссылка или встраивание (`embed`): записывается и возвращается как в тексте.
+    fn record(
+        &mut self,
+        source: usize,
+        target_text: &str,
+        heading: Option<&str>,
+        alias: Option<&str>,
+        embed: bool,
+    ) -> String {
         let mut raw = format!("[[{target_text}");
         if let Some(h) = heading {
             raw.push('#');
@@ -111,16 +125,91 @@ impl<'a> Links<'a> {
         let written = target_text.rsplit('/').next().unwrap();
         let case_variant =
             matches!(target, Target::Unique(t) if self.layout.notes[t].name != written);
+        let written_raw = if embed {
+            format!("!{raw}")
+        } else {
+            raw.clone()
+        };
         self.records.push(LinkRec {
             source,
-            raw: raw.clone(),
+            embed,
+            raw,
             target_text: target_text.to_string(),
             heading: heading.map(str::to_string),
             alias: alias.is_some(),
             target,
             case_variant,
         });
-        raw
+        written_raw
+    }
+
+    /// Случайная заметка-цель для ссылки из `source`: не она сама, не имя с `#`,
+    /// не «узел» и не большая папка (на них ведут только заданные ссылки).
+    fn random_target(&self, source: usize, rng: &mut Rng) -> usize {
+        let notes = &self.layout.notes;
+        loop {
+            let t = rng.below(notes.len());
+            if t != source
+                && notes[t].special != Special::NotLinked
+                && notes[t].group == Group::General
+            {
+                return t;
+            }
+        }
+    }
+
+    /// Встраивание `![[…]]` случайной заметки, иногда — её заголовка.
+    pub fn embed(&mut self, source: usize, rng: &mut Rng) -> String {
+        let t = self.random_target(source, rng);
+        let note = &self.layout.notes[t];
+        let heading = rng.chance(20).then(|| rng.pick(&note.headings).clone());
+        let text = self.shortest[t].clone();
+        self.record(source, &text, heading.as_deref(), None, true)
+    }
+
+    /// Заданная ссылка из `source` на «узел» или заметку большой папки — в
+    /// разных видах: имя, псевдоним, заголовок, встраивание, путь.
+    pub fn directed(&mut self, source: usize, target: usize, rng: &mut Rng) -> String {
+        let l = self.layout;
+        let note = &l.notes[target];
+        let name = note.name.as_str();
+        let alias = |rng: &mut Rng| Some(*rng.pick(ALIASES));
+        let heading = |rng: &mut Rng| rng.pick(&note.headings).clone();
+        match note.group {
+            Group::Hub => match rng.below(100) {
+                0..=39 => self.link(source, name, None, None),
+                40..=54 => self.link(source, name, None, alias(rng)),
+                55..=69 => self.link(source, name, Some(&heading(rng)), None),
+                70..=84 => self.record(source, name, None, None, true),
+                _ => self.link(source, &format!("/{name}"), None, None),
+            },
+            Group::Folder => {
+                let full = l.note_link_path(target).join("/");
+                let part = format!("{}/{name}", l.folders[note.folder].last().unwrap());
+                let roll = rng.below(100);
+                if l.notes[source].group == Group::Folder {
+                    let text = match roll {
+                        0..=49 => name.to_string(),
+                        50..=79 => part,
+                        _ => full,
+                    };
+                    return self.link(source, &text, None, None);
+                }
+                match roll {
+                    0..=39 => self.link(source, name, None, None),
+                    40..=49 => self.link(source, name, None, alias(rng)),
+                    50..=74 => self.link(source, &full, None, None),
+                    75..=84 => self.link(source, &format!("/{full}"), None, None),
+                    85..=91 => self.link(source, &part, None, None),
+                    92..=95 => self.link(source, name, Some(&heading(rng)), None),
+                    _ => self.record(source, name, None, None, true),
+                }
+            }
+            Group::General => {
+                let text = self.shortest[target].clone();
+                self.link(source, &text, None, None)
+            }
+        }
     }
 
     /// Текст кода с `[[...]]` внутри: учитывается, но ссылкой не является.
@@ -146,10 +235,7 @@ impl<'a> Links<'a> {
             return self.link(source, &text, None, alias);
         }
         let l = self.layout;
-        let mut t = rng.below(l.notes.len());
-        while t == source || l.notes[t].special == Special::NotLinked {
-            t = (t + 1) % l.notes.len();
-        }
+        let t = self.random_target(source, rng);
         let note = &l.notes[t];
         let unique = l.by_key[&name_key(&note.name)].len() == 1;
         let roll = rng.below(100);

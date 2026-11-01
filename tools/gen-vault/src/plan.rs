@@ -1,35 +1,102 @@
 //! Построение раскладки: особые образцы и массовые заметки.
 
 use crate::Config;
-use crate::layout::{AttachmentKind, Eol, Layout, MAX_DEPTH, Special, Style};
+use crate::layout::{AttachmentKind, Eol, Group, Layout, MAX_DEPTH, Special, Style};
 use crate::names::name_key;
 use crate::rng::Rng;
 use crate::words::*;
+use std::ops::Range;
 
 pub fn plan(cfg: &Config, rng: &mut Rng) -> Layout {
     let mut l = Layout::new();
     add_samples(&mut l, cfg);
     l.samples = l.notes.len();
     let open_from = l.folders.len();
-    let bulk_from = l.notes.len();
 
     // Папки для массовых заметок: корень и всё, что создано после образцов.
     let target_folders = open_from + (cfg.notes / 25).max(6);
     while l.folders.len() < target_folders {
-        let parent = random_open_folder(&l, rng, open_from, true);
+        let parent = random_open_folder(&l, rng, open_from..l.folders.len(), true);
         let name = folder_name(rng);
         l.add_folder(parent, &name);
     }
+    let open = open_from..l.folders.len();
 
-    while l.notes.len() < cfg.notes {
-        add_bulk_note(&mut l, rng, open_from, bulk_from);
+    // «Узел» и большая папка (С2-8.3) — до массовых заметок, с уникальными именами.
+    let rest = cfg.notes - l.notes.len();
+    let hub = (rest > 0).then(|| {
+        let (h, style) = (random_headings(rng), bulk_style(rng));
+        l.add_note(0, HUB_NAME, h, style, Special::None, Group::Hub)
+    });
+    let folder_size = FOLDER_NOTES.min(rest.saturating_sub(1) / 2);
+    let mut folder_notes = Vec::with_capacity(folder_size);
+    if folder_size > 0 {
+        let parts: Vec<usize> = (1..=FOLDER_PARTS)
+            .map(|k| l.ensure_folder(&[FOLDER_NAME, &format!("Часть {k}")]))
+            .collect();
+        for i in 0..folder_size {
+            let folder = parts[i % FOLDER_PARTS];
+            let (h, style) = (random_headings(rng), bulk_style(rng));
+            let name = unique_bulk_name(&l, rng, folder);
+            folder_notes.push(l.add_note(folder, &name, h, style, Special::None, Group::Folder));
+        }
     }
-    add_attachments(&mut l, rng, open_from, (cfg.notes / 40).max(4) + 3);
+
+    let general_from = l.notes.len();
+    let dup_target = cfg.dup_share / 100.0 * cfg.notes as f64;
+    let general_total = (cfg.notes - general_from).max(1) as f64;
+    while l.notes.len() < cfg.notes {
+        // Цель по повторам растёт вместе с массовыми заметками: в начале
+        // источников для повтора мало, и все повторы пришлись бы на одно имя.
+        let done = (l.notes.len() - general_from + 1) as f64;
+        let want_dup = (l.dup_members as f64) < dup_target * done / general_total;
+        add_bulk_note(&mut l, rng, &open, general_from, want_dup);
+    }
+    let general: Vec<usize> = (general_from..l.notes.len()).collect();
+    if let Some(hub) = hub {
+        // Разные заметки: частичное перемешивание Фишера — Йетса.
+        let mut pool = general.clone();
+        for i in 0..HUB_BACKLINKS.min(pool.len()) {
+            let j = rng.range(i, pool.len() - 1);
+            pool.swap(i, j);
+            l.extra[pool[i]].push(hub);
+        }
+    }
+    if folder_size > 0 {
+        for _ in 0..folder_size * FOLDER_INCOMING_PER_NOTE {
+            let source = *rng.pick(&general);
+            let target = *rng.pick(&folder_notes);
+            l.extra[source].push(target);
+        }
+        if folder_size > 1 {
+            for i in 0..folder_size {
+                let mut j = rng.below(folder_size - 1);
+                if j >= i {
+                    j += 1;
+                }
+                l.extra[folder_notes[i]].push(folder_notes[j]);
+            }
+        }
+    }
+    add_attachments(&mut l, rng, &open, (cfg.notes / 40).max(4) + 3);
     l
 }
 
+/// Наибольшая группа заметок с одним именем.
+const MAX_DUP_GROUP: usize = 4;
+
+/// «Узел»: заметка в корне, на которую ссылаются ровно `HUB_BACKLINKS` заметок.
+pub const HUB_NAME: &str = "Узел";
+pub const HUB_BACKLINKS: usize = 100;
+/// Большая папка для замера переноса: `FOLDER_NOTES` заметок в `FOLDER_PARTS`
+/// вложенных папках и по `FOLDER_INCOMING_PER_NOTE` входящих ссылки на заметку.
+pub const FOLDER_NAME: &str = "Большой архив";
+pub const FOLDER_PARTS: usize = 5;
+pub const FOLDER_NOTES: usize = 1000;
+pub const FOLDER_INCOMING_PER_NOTE: usize = 5;
+
 /// Вложения: семь в «Вложения» (PNG, PDF, TXT, CSV, ZIP), остальные PNG и PDF — по случайным папкам.
-fn add_attachments(l: &mut Layout, rng: &mut Rng, open_from: usize, count: usize) {
+fn add_attachments(l: &mut Layout, rng: &mut Rng, open: &Range<usize>, count: usize) {
     let inbox = l.ensure_folder(&["Вложения"]);
     l.add_attachment(inbox, "Схема.png", AttachmentKind::Png);
     l.add_attachment(inbox, "diagram.png", AttachmentKind::Png);
@@ -39,7 +106,7 @@ fn add_attachments(l: &mut Layout, rng: &mut Rng, open_from: usize, count: usize
     l.add_attachment(inbox, "данные.csv", AttachmentKind::Csv);
     l.add_attachment(inbox, "Архив.zip", AttachmentKind::Zip);
     while l.attachments.len() < count {
-        let folder = random_open_folder(l, rng, open_from, false);
+        let folder = random_open_folder(l, rng, open.clone(), false);
         let n = rng.range(1, 999);
         let (name, kind) = if l.attachments.len().is_multiple_of(2) {
             (
@@ -56,13 +123,14 @@ fn add_attachments(l: &mut Layout, rng: &mut Rng, open_from: usize, count: usize
     }
 }
 
-/// Корень или папка не из образцов; `for_child` — с местом для вложенной папки.
-fn random_open_folder(l: &Layout, rng: &mut Rng, open_from: usize, for_child: bool) -> usize {
+/// Корень или папка из `open` (не образцы и не большая папка); `for_child` —
+/// с местом для вложенной папки.
+fn random_open_folder(l: &Layout, rng: &mut Rng, open: Range<usize>, for_child: bool) -> usize {
     loop {
-        let idx = if rng.chance(10) || l.folders.len() == open_from {
+        let idx = if rng.chance(10) || open.is_empty() {
             0
         } else {
-            rng.range(open_from, l.folders.len() - 1)
+            rng.range(open.start, open.end - 1)
         };
         if !for_child || l.depth(idx) < MAX_DEPTH {
             return idx;
@@ -130,9 +198,11 @@ fn bulk_style(rng: &mut Rng) -> Style {
     }
 }
 
+/// 3–5 разных заголовков (С2-4.1: оценка размера индекса).
 fn random_headings(rng: &mut Rng) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for _ in 0..rng.range(1, 3) {
+    let n = rng.range(3, 5);
+    let mut out: Vec<String> = Vec::with_capacity(n);
+    while out.len() < n {
         let h = rng.pick(HEADINGS).to_string();
         if !out.contains(&h) {
             out.push(h);
@@ -141,25 +211,45 @@ fn random_headings(rng: &mut Rng) -> Vec<String> {
     out
 }
 
-fn add_bulk_note(l: &mut Layout, rng: &mut Rng, open_from: usize, bulk_from: usize) {
-    let folder = random_open_folder(l, rng, open_from, false);
+/// Массовая заметка; `want_dup` — по возможности с повторяющимся именем.
+fn add_bulk_note(
+    l: &mut Layout,
+    rng: &mut Rng,
+    open: &Range<usize>,
+    bulk_from: usize,
+    want_dup: bool,
+) {
+    let folder = random_open_folder(l, rng, open.clone(), false);
     let style = bulk_style(rng);
     let headings = random_headings(rng);
-    let name = duplicate_name(l, rng, folder, bulk_from)
+    let name = want_dup
+        .then(|| duplicate_name(l, rng, folder, bulk_from))
+        .flatten()
         .unwrap_or_else(|| unique_bulk_name(l, rng, folder));
-    l.add_note(folder, &name, headings, style, Special::None);
+    l.add_note(
+        folder,
+        &name,
+        headings,
+        style,
+        Special::None,
+        Group::General,
+    );
 }
 
-/// Изредка — имя уже существующей массовой заметки из другой папки (дубликат).
+/// Имя уже существующей массовой заметки из другой папки (дубликат), если подходит.
 /// Дубликаты с заметкой в корне делают только образцы: для пары «корень и
 /// глубокая папка» правило С3.4 допускает два прочтения.
 fn duplicate_name(l: &Layout, rng: &mut Rng, folder: usize, bulk_from: usize) -> Option<String> {
-    if folder == 0 || l.notes.len() == bulk_from || !rng.chance(4) {
+    if folder == 0 || l.notes.len() == bulk_from {
         return None;
     }
     let source = &l.notes[rng.range(bulk_from, l.notes.len() - 1)];
     let group = &l.by_key[&name_key(&source.name)];
-    if source.folder == 0 || group.iter().any(|&i| l.notes[i].folder == 0) {
+    // Группа не больше `MAX_DUP_GROUP`: заметки группы пишутся раундами с паузой.
+    if source.folder == 0
+        || group.len() >= MAX_DUP_GROUP
+        || group.iter().any(|&i| l.notes[i].folder == 0)
+    {
         return None;
     }
     // Путь одной заметки не должен совпадать с концом пути другой: правило
@@ -186,7 +276,19 @@ fn add_samples(l: &mut Layout, cfg: &Config) {
     let h = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let note = |l: &mut Layout, folder: &[&str], name: &str, style: Style, special: Special| {
         let f = l.ensure_folder(folder);
-        l.add_note(f, name, h(&["Цели", "Итоги"]), style, special);
+        l.add_note(
+            f,
+            name,
+            // Особые образцы пишут свой текст с двумя заголовками.
+            if matches!(special, Special::None | Special::NotLinked) {
+                h(&["Цели", "Итоги", "Обсуждение"])
+            } else {
+                h(&["Цели", "Итоги"])
+            },
+            style,
+            special,
+            Group::General,
+        );
     };
     let lf = Style::LF;
     note(l, &[], SAMPLE_ALL_LINKS, lf, Special::AllLinks);
