@@ -66,7 +66,7 @@ $topLevel = @(
   @{ Name = 'HKCU\Software'; Path = 'HKCU:\Software' },
   @{ Name = 'HKLM\SOFTWARE'; Path = 'HKLM:\SOFTWARE' },
   @{ Name = 'HKCU\Software\Classes'; Path = 'HKCU:\Software\Classes' },
-  @{ Name = 'HKCU\...\Run'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; Values = $true }
+  @{ Name = 'HKCU\...\Run'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'; RegistryValues = $true }
 )
 
 function Get-UninstallEntries {
@@ -115,7 +115,8 @@ function Get-TopLevel {
   $result = @{}
   foreach ($t in $topLevel) {
     if (-not (Test-Path -LiteralPath $t.Path)) { $result[$t.Name] = @(); continue }
-    if ($t.Values) {
+    # Не $t.Values: у хэш-таблицы это свойство (все значения), оно всегда истинно.
+    if ($t.ContainsKey('RegistryValues')) {
       $result[$t.Name] = @((Get-Item -LiteralPath $t.Path).GetValueNames())
     } else {
       $result[$t.Name] = @(Get-ChildItem -LiteralPath $t.Path -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName })
@@ -245,6 +246,7 @@ Note "- Папка данных программы $dataDir после удал�
 
 Note ''
 Note "Итог: $(if ($script:Failures -eq 0) { 'расхождений нет' } else { "расхождений: $($script:Failures)" })."
+$Report = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Report)
 $dir = Split-Path -Parent $Report
 if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
 [System.IO.File]::WriteAllLines($Report, $script:Lines, (New-Object System.Text.UTF8Encoding $false))
