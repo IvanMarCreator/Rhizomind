@@ -6,6 +6,8 @@ mod common;
 use common::{TempDir, key, read_tree};
 use gen_vault::{Config, Manifest, generate};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::SystemTime;
+use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
 /// Тег по правилам С2-3.3: тело, хотя бы одна не-цифра, `/` не в начале,
@@ -186,7 +188,7 @@ fn notes(tree: &BTreeMap<String, Vec<u8>>) -> Vec<(&String, String)> {
 
 #[test]
 fn tags_in_text_and_frontmatter() {
-    let (_dir, manifest, tree) = vault(1500, 11);
+    let (dir, manifest, tree) = vault(1500, 11);
     let notes = notes(&tree);
 
     // Свой подсчёт: ключ тега → заметки и написания.
@@ -200,7 +202,7 @@ fn tags_in_text_and_frontmatter() {
         for t in f.all() {
             let e = by_key.entry(key(t)).or_default();
             e.0.insert(*path);
-            *e.1.entry(t.clone()).or_default() += 1;
+            *e.1.entry(t.nfc().collect()).or_default() += 1;
         }
         let n = f.keys_set().len();
         if n > 0 {
@@ -270,9 +272,12 @@ fn tags_in_text_and_frontmatter() {
         .map(|(k, (n, s))| (k, (n.len(), s)))
         .collect();
     assert_eq!(got, want, "теги в сводке");
-    for t in &manifest.tags {
-        assert!(t.spellings.contains_key(&t.first_spelling), "{}", t.key);
-    }
+    assert!(
+        manifest.tags.iter().any(|t| t.key == "café") && found_nfd(&notes),
+        "café в NFD есть в файлах, в сводке — одно написание NFC"
+    );
+
+    check_display(dir.path(), &manifest, &notes);
 
     assert!(manifest.expected_tags.len() > 100, "мало ожидаемых тегов");
     for e in &manifest.expected_tags {
@@ -312,4 +317,77 @@ fn bulk_notes_have_3_to_5_headings() {
         "3–5 заголовков: {ok} из {}",
         notes.len()
     );
+}
+
+fn found_nfd(notes: &[(&String, String)]) -> bool {
+    let nfd: String = "café".nfd().collect();
+    notes.iter().any(|(_, t)| t.contains(&nfd))
+}
+
+#[test]
+fn display_spelling_tie_uses_creation_date() {
+    // Малые хранилища: равенство написаний у редких тегов; ищем по зёрнам.
+    let mut ties = 0;
+    for seed in 1..=30 {
+        let (dir, m, tree) = vault(60, seed);
+        ties += check_display(dir.path(), &m, &notes(&tree));
+        for t in &m.tags {
+            assert!(t.spellings.contains_key(&t.display), "{}", t.key);
+            assert!(
+                t.spellings
+                    .keys()
+                    .all(|s| s.nfc().collect::<String>() == *s),
+                "{}: написания не в NFC",
+                t.key
+            );
+        }
+        if ties >= 3 {
+            return;
+        }
+    }
+    panic!("за 30 зёрен тегов с равенством написаний: {ties}");
+}
+
+/// Сверяет `display` каждого тега с правилом Р18: самое частое по вхождениям;
+/// при равенстве — среди равных по максимуму, из самой старой заметки (дата
+/// создания, при равных — путь), первое такое вхождение в порядке файла.
+/// Возвращает число тегов с равенством.
+fn check_display(
+    root: &std::path::Path,
+    manifest: &Manifest,
+    notes: &[(&String, String)],
+) -> usize {
+    let created = |p: &str| -> SystemTime {
+        let m = std::fs::metadata(root.join(p)).unwrap();
+        m.created().or_else(|_| m.modified()).unwrap()
+    };
+    let mut ordered: Vec<(SystemTime, &String, &String)> =
+        notes.iter().map(|(p, t)| (created(p), *p, t)).collect();
+    ordered.sort();
+    let mut ties = 0;
+    for t in &manifest.tags {
+        let max = *t.spellings.values().max().unwrap();
+        let top: BTreeSet<&String> = t
+            .spellings
+            .iter()
+            .filter(|(_, n)| **n == max)
+            .map(|(s, _)| s)
+            .collect();
+        let want = if top.len() == 1 {
+            (*top.iter().next().unwrap()).clone()
+        } else {
+            ties += 1;
+            ordered
+                .iter()
+                .find_map(|(_, _, text)| {
+                    parse(text)
+                        .all()
+                        .map(|s| s.nfc().collect::<String>())
+                        .find(|s| key(s) == t.key && top.contains(s))
+                })
+                .unwrap()
+        };
+        assert_eq!(t.display, want, "показываемое написание тега {}", t.key);
+    }
+    ties
 }

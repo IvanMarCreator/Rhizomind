@@ -89,6 +89,14 @@ fn main() -> ExitCode {
         }
     };
     let elapsed = started.elapsed();
+    let in_groups: usize = manifest.duplicates.iter().map(|g| g.notes.len()).sum();
+    let share = in_groups as f64 * 100.0 / manifest.notes as f64;
+    if (share - args.cfg.dup_share).abs() > 1.0 {
+        eprintln!(
+            "gen-vault: предупреждение: доля повторяющихся имён {share:.1} %, задано --dup-share {} % (малое хранилище: образцы и ограничения повторов)",
+            args.cfg.dup_share
+        );
+    }
     if let Some(path) = &args.manifest {
         let json = serde_json::to_string_pretty(&manifest).expect("манифест сериализуется");
         if let Err(e) = std::fs::write(path, json + "\n") {

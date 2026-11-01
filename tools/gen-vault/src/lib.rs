@@ -23,7 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+use unicode_normalization::UnicodeNormalization;
 
 /// Параметры генерации.
 #[derive(Debug, Clone)]
@@ -164,7 +165,23 @@ pub fn generate(out: &Path, cfg: &Config) -> io::Result<Manifest> {
     }
     write_parallel(&files)?;
 
-    Ok(build_manifest(&layout, cfg, &links, &tag_log, counts))
+    // Даты создания — после записи: файлы пишутся в несколько потоков и
+    // раундами, порядок генерации с ними не совпадает (Р18).
+    let mut created = BTreeMap::new();
+    for (idx, _) in &tag_log.occurrences {
+        if !created.contains_key(idx) {
+            created.insert(*idx, created_time(&out.join(layout.note_path(*idx)))?);
+        }
+    }
+    Ok(build_manifest(
+        &layout, cfg, &links, &tag_log, &created, counts,
+    ))
+}
+
+/// Дата создания файла; где ФС её не хранит — время изменения.
+fn created_time(path: &Path) -> io::Result<SystemTime> {
+    let m = fs::metadata(path)?;
+    m.created().or_else(|_| m.modified())
 }
 
 /// Запись файлов в несколько потоков: на Windows создание файла дорогое
@@ -221,6 +238,7 @@ fn build_manifest(
     cfg: &Config,
     links: &links::Links,
     tag_log: &tags::TagLog,
+    created: &BTreeMap<usize, SystemTime>,
     eol: EolCounts,
 ) -> Manifest {
     let paths = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -279,7 +297,7 @@ fn build_manifest(
         },
         links: link_stats(links),
         expected_links: expected_links(l, links),
-        tags: tag_stats(tag_log),
+        tags: tag_stats(l, tag_log, created),
         expected_tags: expected_tags(l, tag_log),
         hub: hub(l, links),
         folder_1000: big_folder(l, links),
@@ -413,26 +431,58 @@ fn encoding_samples(l: &layout::Layout, cfg: &Config, big_bytes: u64) -> Encodin
     }
 }
 
-/// Сбор по тегу: заметки, написания с числом вхождений, первое написание.
-type TagAcc = (BTreeSet<usize>, BTreeMap<String, usize>, String);
-
-fn tag_stats(log: &tags::TagLog) -> Vec<TagInfo> {
-    // Заметки создаются по порядку индексов, вхождения — в порядке файла.
-    let mut by_key: BTreeMap<String, TagAcc> = BTreeMap::new();
-    for (idx, spelling) in &log.occurrences {
-        let e = by_key
-            .entry(name_key(spelling))
-            .or_insert_with(|| (BTreeSet::new(), BTreeMap::new(), spelling.clone()));
+fn tag_stats(
+    l: &layout::Layout,
+    log: &tags::TagLog,
+    created: &BTreeMap<usize, SystemTime>,
+) -> Vec<TagInfo> {
+    // Ключ → заметки, написания (NFC) с числом вхождений, вхождения по порядку файла.
+    let mut by_key: BTreeMap<String, (BTreeSet<usize>, BTreeMap<String, usize>)> = BTreeMap::new();
+    let nfc: Vec<String> = log
+        .occurrences
+        .iter()
+        .map(|(_, s)| s.nfc().collect())
+        .collect();
+    for ((idx, _), spelling) in log.occurrences.iter().zip(&nfc) {
+        let e = by_key.entry(name_key(spelling)).or_default();
         e.0.insert(*idx);
         *e.1.entry(spelling.clone()).or_default() += 1;
     }
+    // Заметки от самой старой: дата создания, при равных — путь.
+    let mut order: Vec<(SystemTime, String, usize)> = created
+        .iter()
+        .map(|(&i, &t)| (t, l.note_path(i), i))
+        .collect();
+    order.sort();
+    let rank: BTreeMap<usize, usize> = order.iter().enumerate().map(|(r, x)| (x.2, r)).collect();
     by_key
         .into_iter()
-        .map(|(key, (notes, spellings, first_spelling))| TagInfo {
-            key,
-            notes: notes.len(),
-            spellings,
-            first_spelling,
+        .map(|(key, (notes, spellings))| {
+            let max = *spellings.values().max().unwrap();
+            let top: Vec<&String> = spellings
+                .iter()
+                .filter(|(_, n)| **n == max)
+                .map(|(s, _)| s)
+                .collect();
+            let display = if top.len() == 1 {
+                top[0].clone()
+            } else {
+                // Первое вхождение равного по максимуму написания в самой старой заметке.
+                log.occurrences
+                    .iter()
+                    .zip(&nfc)
+                    .enumerate()
+                    .filter(|(_, (_, s))| top.contains(s))
+                    .min_by_key(|(pos, ((idx, _), _))| (rank[idx], *pos))
+                    .map(|(_, (_, s))| s.clone())
+                    .unwrap()
+            };
+            TagInfo {
+                key,
+                notes: notes.len(),
+                spellings,
+                display,
+            }
         })
         .collect()
 }
