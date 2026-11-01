@@ -335,3 +335,118 @@ describe('оболочка окна', () => {
     });
   });
 });
+
+describe('сочетания браузерного движка (решение 94)', () => {
+  function press(target: EventTarget, init: KeyboardEventInit): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  /** Поле формы или текст заметки вне компонентов — для проверки обработчиков окна. */
+  function field(html: string): HTMLElement {
+    const host = document.createElement('div');
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    const element = host.firstElementChild as HTMLElement;
+    element.focus();
+    return element;
+  }
+
+  afterEach(() => {
+    for (const host of document.body.querySelectorAll('[data-test-field]')) host.parentElement?.remove();
+  });
+
+  it('не назначенные Ctrl+P, Ctrl+F, F5, Ctrl+=, Ctrl+U, Ctrl+S, F12 гасятся и ничего не открывают', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+
+    for (const init of [
+      { key: 'p', code: 'KeyP', ctrlKey: true },
+      { key: 'f', code: 'KeyF', ctrlKey: true },
+      { key: 'F5', code: 'F5' },
+      { key: '=', code: 'Equal', ctrlKey: true },
+      { key: 'u', code: 'KeyU', ctrlKey: true },
+      { key: 's', code: 'KeyS', ctrlKey: true },
+      { key: 'F12', code: 'F12' },
+    ]) {
+      expect(press(document.body, init).defaultPrevented, init.code).toBe(true);
+    }
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('Ctrl+P, назначенное быстрому переходу, открывает его — и из поля формы', async () => {
+    await renderShell({
+      ...WITH_VAULT,
+      settings_read: () => ({ settings: { ...SETTINGS, hotkeys: { 'quick_switcher.open': ['Ctrl+KeyP'] } } }),
+      switcher_search: () => ({ items: [] }),
+    });
+    await screen.findByText(/быстрый переход: Ctrl\+P/);
+
+    const input = field('<input data-test-field aria-label="поле" />');
+    expect(press(input, { key: 'з', code: 'KeyP', ctrlKey: true }).defaultPrevented).toBe(true);
+
+    expect(await screen.findByRole('dialog', { name: 'Быстрый переход' })).toBeTruthy();
+  });
+
+  it('Ctrl+N без назначения не создаёт заметку и гасится', async () => {
+    const { calls } = await renderShell({
+      ...WITH_VAULT,
+      settings_read: () => ({ settings: { ...SETTINGS, hotkeys: { 'note.new': [] } } }),
+    });
+    await screen.findByText('Нет открытой заметки');
+
+    expect(press(document.body, { key: 'n', code: 'KeyN', ctrlKey: true }).defaultPrevented).toBe(true);
+
+    expect(calls.map(([command]) => command)).not.toContain('name_check');
+  });
+
+  it('клавиши правки текста, Tab и Esc в поле и в тексте заметки не гасятся', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+    const input = field('<input data-test-field aria-label="поле" />');
+    const text = field('<div data-test-field contenteditable="true">текст</div>');
+
+    for (const target of [input, text]) {
+      for (const init of [
+        { key: 'c', code: 'KeyC', ctrlKey: true },
+        { key: 'v', code: 'KeyV', ctrlKey: true },
+        { key: 'x', code: 'KeyX', ctrlKey: true },
+        { key: 'z', code: 'KeyZ', ctrlKey: true },
+        { key: 'y', code: 'KeyY', ctrlKey: true },
+        { key: 'a', code: 'KeyA', ctrlKey: true },
+        { key: 'ArrowLeft', code: 'ArrowLeft', ctrlKey: true },
+        { key: 'Backspace', code: 'Backspace', ctrlKey: true },
+        { key: 'Delete', code: 'Delete', ctrlKey: true },
+        { key: 'Tab', code: 'Tab' },
+        { key: 'Escape', code: 'Escape' },
+        { key: 'q', code: 'KeyQ', ctrlKey: true, altKey: true },
+      ]) {
+        expect(press(target, init).defaultPrevented, `${target.tagName} ${init.code}`).toBe(false);
+      }
+    }
+  });
+
+  it('элемент получает не назначенное сочетание первым: свой обработчик редактора работает', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+    const text = field('<div data-test-field contenteditable="true">текст</div>');
+    let seenPrevented: boolean | null = null;
+    text.addEventListener('keydown', (event) => (seenPrevented = event.defaultPrevented));
+
+    const event = press(text, { key: 'f', code: 'KeyF', ctrlKey: true });
+
+    expect(seenPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('в окне «Управление хранилищами» Ctrl+P тоже гасится', async () => {
+    await renderShell({
+      vault_current: () => ({ api_version: 1, vault: null }),
+      vault_list: () => ({ vaults: [], last_opened: null }),
+    });
+    await screen.findByText('Пока нет хранилищ');
+
+    expect(press(document.body, { key: 'p', code: 'KeyP', ctrlKey: true }).defaultPrevented).toBe(true);
+  });
+});

@@ -2,6 +2,9 @@
 //! WebView2, созданное тем же кодом, что в приложении. Проверяет то, что видно
 //! только у живого движка:
 //! - `IsReputationCheckingRequired = false` (SmartScreen выключен);
+//! - `AreBrowserAcceleratorKeysEnabled = false`, `IsZoomControlEnabled = false`
+//!   (решение 94), и настоящие нажатия (SendInput) Ctrl+P, Ctrl+F, Ctrl+=, F5,
+//!   F12 доходят до страницы, но печати, перезагрузки и масштаба нет;
 //! - `IsInPrivateModeEnabled = true` у профиля движка, окно показано после проверки;
 //! - `IsCustomCrashReportingEnabled = true` (правка wry): WebView2 запускает
 //!   процесс браузера с ключом `--edge-webview-disable-crash-reporting=1`
@@ -61,6 +64,16 @@ mod windows_only {
         match security::windows::is_reputation_checking_required(controller) {
             Ok(false) => println!("ok: IsReputationCheckingRequired = false"),
             other => failures.push(format!("IsReputationCheckingRequired: {other:?}")),
+        }
+
+        // Сочетания движка (решение 94).
+        match security::windows::are_browser_accelerator_keys_enabled(controller) {
+            Ok(false) => println!("ok: AreBrowserAcceleratorKeysEnabled = false"),
+            other => failures.push(format!("AreBrowserAcceleratorKeysEnabled: {other:?}")),
+        }
+        match security::windows::is_zoom_control_enabled(controller) {
+            Ok(false) => println!("ok: IsZoomControlEnabled = false"),
+            other => failures.push(format!("IsZoomControlEnabled: {other:?}")),
         }
 
         // InPrivate подтверждён движком (ICoreWebView2_13::Profile): без него
@@ -318,6 +331,197 @@ mod windows_only {
         }
     }
 
+    /// Настоящие нажатия клавиш (SendInput): аккорд из модификаторов и клавиши.
+    fn send_chord(modifiers: &[u16], key: u16) -> u32 {
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
+            MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VIRTUAL_KEY,
+        };
+        let input = |vk: u16, up: bool| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    // Код сканирования нужен странице: по нему движок
+                    // заполняет `KeyboardEvent.code` (без него code пустой).
+                    // SAFETY: функция только переводит код клавиши.
+                    wScan: unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) } as u16,
+                    dwFlags: if up {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let mut inputs: Vec<INPUT> = modifiers.iter().map(|&m| input(m, false)).collect();
+        inputs.push(input(key, false));
+        inputs.push(input(key, true));
+        inputs.extend(modifiers.iter().rev().map(|&m| input(m, true)));
+        // SAFETY: массив корректно заполненных INPUT живёт до конца вызова.
+        unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) }
+    }
+
+    /// Ускорители браузера у живого окна (решение 94): настоящие нажатия
+    /// Ctrl+P, Ctrl+F, Ctrl+=, Ctrl+Shift+I, F12, F5 доходят до страницы
+    /// (команды реестра горячих клавиш их получат), но печати нет (событие
+    /// `beforeprint`), перезагрузки нет (метки страницы на месте), масштаб не
+    /// изменился (`devicePixelRatio`). Запасной рубеж интерфейса
+    /// (src/shell/engineShortcuts.ts) отключён: слушатель страницы
+    /// останавливает нажатие раньше оболочки — проверяется настройка движка.
+    /// Контроль детектора: с включёнными на время ускорителями Ctrl+P должен
+    /// вызвать `beforeprint` (пока — только сообщение в журнал).
+    fn check_engine_keys(window: &tauri::WebviewWindow) -> Vec<String> {
+        use ::windows::Win32::UI::Input::KeyboardAndMouse::{
+            VK_CONTROL, VK_ESCAPE, VK_F5, VK_F12, VK_OEM_PLUS, VK_SHIFT,
+        };
+        use ::windows::core::Interface;
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC, ICoreWebView2Settings3,
+        };
+
+        let setup = r#"(() => {
+            window.__rzKeys = [];
+            addEventListener('beforeprint', () => window.__rzKeys.push('beforeprint'));
+            addEventListener('keydown', (e) => {
+              window.__rzKeys.push((e.ctrlKey ? 'Ctrl+' : '') + (e.shiftKey ? 'Shift+' : '') + e.code);
+              e.stopImmediatePropagation();
+            }, true);
+            return String(window.devicePixelRatio);
+          })()"#;
+        let dpr_before = match run_script(window, setup) {
+            Ok(text) => text,
+            Err(error) => {
+                return vec![format!(
+                    "сочетания движка: страница не подготовлена: {error}"
+                )];
+            }
+        };
+        let focus = |window: &tauri::WebviewWindow| {
+            let _ = window.set_focus();
+            let _ = window.with_webview(|webview| {
+                // SAFETY: вызов COM в главном потоке (with_webview).
+                let _ = unsafe {
+                    webview
+                        .controller()
+                        .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+                };
+            });
+            std::thread::sleep(Duration::from_millis(500));
+        };
+        focus(window);
+        let pause = || std::thread::sleep(Duration::from_millis(800));
+        let ctrl = VK_CONTROL.0;
+        let shift = VK_SHIFT.0;
+        let mut sent = 0;
+        for (modifiers, key) in [
+            (vec![ctrl], u16::from(b'P')),
+            (vec![ctrl], u16::from(b'F')),
+            (vec![ctrl], VK_OEM_PLUS.0),
+            (vec![ctrl, shift], u16::from(b'I')),
+            (vec![], VK_F12.0),
+            (vec![], VK_F5.0),
+        ] {
+            sent += send_chord(&modifiers, key);
+            pause();
+        }
+        std::thread::sleep(Duration::from_millis(1500));
+        let mut failures = Vec::new();
+        // Нажатие и отпускание каждой клавиши: 4 + 4 + 4 + 6 + 2 + 2.
+        if sent != 22 {
+            failures.push(format!(
+                "сочетания движка: SendInput принял {sent} событий из 22"
+            ));
+        }
+        // ExecuteScript отдаёт JSON значения скрипта: массив [метки, dpr].
+        let script = "[window.__rzKeys || null, String(window.devicePixelRatio)]";
+        match run_script(window, script) {
+            Ok(result) => {
+                println!("сочетания движка: страница получила {result}");
+                let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
+                let keys: Vec<String> = parsed[0]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if parsed[0].is_null() {
+                    failures.push(format!(
+                        "сочетания движка: страница перезагрузилась (F5/Ctrl+R): {result}"
+                    ));
+                }
+                for code in [
+                    "Ctrl+KeyP",
+                    "Ctrl+KeyF",
+                    "Ctrl+Equal",
+                    "Ctrl+Shift+KeyI",
+                    "F12",
+                    "F5",
+                ] {
+                    if !keys.iter().any(|k| k == code) {
+                        failures.push(format!(
+                            "сочетания движка: нажатие {code} не дошло до страницы"
+                        ));
+                    }
+                }
+                if keys.iter().any(|k| k == "beforeprint") {
+                    failures.push("сочетания движка: Ctrl+P открыл печать".into());
+                }
+                let dpr_after = parsed[1].as_str().unwrap_or_default();
+                if dpr_after != dpr_before.trim_matches('"') {
+                    failures.push(format!(
+                        "сочетания движка: масштаб изменился: было {dpr_before}, стало {dpr_after}"
+                    ));
+                }
+                if failures.is_empty() {
+                    println!(
+                        "ok: сочетания движка доходят до страницы, печати, перезагрузки и масштаба нет"
+                    );
+                }
+            }
+            Err(error) => failures.push(format!("сочетания движка: {error}")),
+        }
+
+        // Контроль детектора печати: ускорители включаются на время.
+        let toggle = |window: &tauri::WebviewWindow, enabled: bool| {
+            let _ = window.with_webview(move |webview| {
+                // SAFETY: вызовы COM в главном потоке (with_webview).
+                let _ = unsafe {
+                    webview
+                        .controller()
+                        .CoreWebView2()
+                        .and_then(|core| core.Settings())
+                        .and_then(|s| s.cast::<ICoreWebView2Settings3>())
+                        .and_then(|s| s.SetAreBrowserAcceleratorKeysEnabled(enabled))
+                };
+            });
+            std::thread::sleep(Duration::from_millis(300));
+        };
+        toggle(window, true);
+        focus(window);
+        send_chord(&[ctrl], u16::from(b'P'));
+        std::thread::sleep(Duration::from_secs(3));
+        let control = run_script(window, "(window.__rzKeys || []).join(',')");
+        send_chord(&[], VK_ESCAPE.0);
+        std::thread::sleep(Duration::from_millis(800));
+        toggle(window, false);
+        match control {
+            Ok(events) if events.contains("beforeprint") => {
+                println!(
+                    "ok: контроль: с ускорителями Ctrl+P открывает печать — детектор работает"
+                );
+            }
+            other => {
+                println!("предупреждение: контроль детектора печати не подтвердился ({other:?})")
+            }
+        }
+        failures
+    }
+
     pub fn main() {
         let shell = Shell::prepare().expect("временная папка движка");
         let data_dir: PathBuf = shell.data_dir().to_path_buf();
@@ -408,7 +612,10 @@ mod windows_only {
                         .last()
                         .and_then(|label| handle.get_webview_window(label))
                     {
-                        Some(window) => failures.extend(check_real_drag(&window)),
+                        Some(window) => {
+                            failures.extend(check_real_drag(&window));
+                            failures.extend(check_engine_keys(&window));
+                        }
                         None => failures.push("нет окна для перетаскивания".into()),
                     }
                     *outcome_for_check.lock().unwrap() = failures;
