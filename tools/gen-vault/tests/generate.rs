@@ -76,11 +76,11 @@ fn dup_share_of(tree: &BTreeMap<String, Vec<u8>>) -> f64 {
 #[test]
 fn dup_share_respected() {
     assert_eq!(Config::new(10, 1).dup_share, 5.0, "по умолчанию 5 %");
-    for share in [5.0, 20.0] {
+    for (share, notes) in [(5.0, 1500), (20.0, 1500), (5.0, 2300)] {
         let dir = TempDir::new("dup");
         let cfg = Config {
             dup_share: share,
-            ..Config::new(1500, 3)
+            ..Config::new(notes, 3)
         };
         let m = generate(dir.path(), &cfg).unwrap();
         let got = dup_share_of(&read_tree(dir.path()));
@@ -90,7 +90,10 @@ fn dup_share_respected() {
         );
         assert_eq!(m.dup_share, share);
         let in_groups: usize = m.duplicates.iter().map(|g| g.notes.len()).sum();
-        assert!((in_groups as f64 * 100.0 / 1500.0 - got).abs() < 1e-9);
+        // Большие группы растягивают запись: раунд на заметку группы с паузой.
+        let biggest = m.duplicates.iter().map(|g| g.notes.len()).max().unwrap();
+        assert!(biggest <= 4, "группа повторов из {biggest} заметок");
+        assert!((in_groups as f64 * 100.0 / notes as f64 - got).abs() < 1e-9);
     }
     let dir = TempDir::new("dup-bad");
     let cfg = Config {

@@ -43,8 +43,14 @@ pub fn plan(cfg: &Config, rng: &mut Rng) -> Layout {
     }
 
     let general_from = l.notes.len();
+    let dup_target = cfg.dup_share / 100.0 * cfg.notes as f64;
+    let general_total = (cfg.notes - general_from).max(1) as f64;
     while l.notes.len() < cfg.notes {
-        add_bulk_note(&mut l, rng, &open, general_from, cfg.dup_share);
+        // Цель по повторам растёт вместе с массовыми заметками: в начале
+        // источников для повтора мало, и все повторы пришлись бы на одно имя.
+        let done = (l.notes.len() - general_from + 1) as f64;
+        let want_dup = (l.dup_members as f64) < dup_target * done / general_total;
+        add_bulk_note(&mut l, rng, &open, general_from, want_dup);
     }
     let general: Vec<usize> = (general_from..l.notes.len()).collect();
     if let Some(hub) = hub {
@@ -75,6 +81,9 @@ pub fn plan(cfg: &Config, rng: &mut Rng) -> Layout {
     add_attachments(&mut l, rng, &open, (cfg.notes / 40).max(4) + 3);
     l
 }
+
+/// Наибольшая группа заметок с одним именем.
+const MAX_DUP_GROUP: usize = 4;
 
 /// «Узел»: заметка в корне, на которую ссылаются ровно `HUB_BACKLINKS` заметок.
 pub const HUB_NAME: &str = "Узел";
@@ -202,19 +211,17 @@ fn random_headings(rng: &mut Rng) -> Vec<String> {
     out
 }
 
-/// Массовая заметка. Повтор имени — пока доля заметок с повторяющимися
-/// именами меньше `dup_share` % от числа заметок на этот момент.
+/// Массовая заметка; `want_dup` — по возможности с повторяющимся именем.
 fn add_bulk_note(
     l: &mut Layout,
     rng: &mut Rng,
     open: &Range<usize>,
     bulk_from: usize,
-    dup_share: f64,
+    want_dup: bool,
 ) {
     let folder = random_open_folder(l, rng, open.clone(), false);
     let style = bulk_style(rng);
     let headings = random_headings(rng);
-    let want_dup = (l.dup_members as f64) < dup_share / 100.0 * (l.notes.len() + 1) as f64;
     let name = want_dup
         .then(|| duplicate_name(l, rng, folder, bulk_from))
         .flatten()
@@ -238,7 +245,11 @@ fn duplicate_name(l: &Layout, rng: &mut Rng, folder: usize, bulk_from: usize) ->
     }
     let source = &l.notes[rng.range(bulk_from, l.notes.len() - 1)];
     let group = &l.by_key[&name_key(&source.name)];
-    if source.folder == 0 || group.iter().any(|&i| l.notes[i].folder == 0) {
+    // Группа не больше `MAX_DUP_GROUP`: заметки группы пишутся раундами с паузой.
+    if source.folder == 0
+        || group.len() >= MAX_DUP_GROUP
+        || group.iter().any(|&i| l.notes[i].folder == 0)
+    {
         return None;
     }
     // Путь одной заметки не должен совпадать с концом пути другой: правило
