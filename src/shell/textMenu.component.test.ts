@@ -1,5 +1,5 @@
 import { undo, history } from '@codemirror/commands';
-import { EditorState } from '@codemirror/state';
+import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClipboardReadOutcome } from '../api/index.ts';
@@ -7,7 +7,10 @@ import { textMenuItems, textTargetOf, type PasteSource, type TextTarget } from '
 
 const views: EditorView[] = [];
 
-function editor(doc: string, options: { readOnly?: boolean; selection?: [number, number] } = {}): EditorView {
+function editor(
+  doc: string,
+  options: { readOnly?: boolean; selection?: [number, number]; extensions?: Extension[] } = {},
+): EditorView {
   const parent = document.createElement('div');
   document.body.appendChild(parent);
   const view = new EditorView({
@@ -15,7 +18,10 @@ function editor(doc: string, options: { readOnly?: boolean; selection?: [number,
     state: EditorState.create({
       doc,
       ...(options.selection ? { selection: { anchor: options.selection[0], head: options.selection[1] } } : {}),
-      extensions: options.readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [history()],
+      extensions: [
+        ...(options.readOnly ? [EditorState.readOnly.of(true), EditorView.editable.of(false)] : [history()]),
+        ...(options.extensions ?? []),
+      ],
     }),
   });
   views.push(view);
@@ -166,11 +172,17 @@ describe('«Вставить» — текст буфера от ядра по щ
   });
 
   it('в редакторе — вместо выделения, одной правкой: Ctrl+Z возвращает текст', async () => {
-    const view = editor('одно два', { selection: [5, 8] });
+    // Правки считаются по транзакциям: вставка несколькими транзакциями — ошибка.
+    let edits = 0;
+    const view = editor('одно два', {
+      selection: [5, 8],
+      extensions: [EditorView.updateListener.of((update) => (edits += update.transactions.filter((tr) => tr.docChanged).length))],
+    });
     const { paste } = source({ outcome: 'text', text: 'три\nчетыре' });
     item(textMenuItems(target(view.contentDOM), paste), 'paste').run();
     await settle();
     expect(view.state.doc.toString()).toBe('одно три\nчетыре');
+    expect(edits).toBe(1);
 
     undo(view);
     expect(view.state.doc.toString()).toBe('одно два');

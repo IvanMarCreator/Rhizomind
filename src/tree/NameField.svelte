@@ -72,6 +72,15 @@
     }, 0);
   }
 
+  /**
+   * Уход фокуса сохраняет имя — кроме ухода в своё контекстное меню (меню
+   * правки текста над полем, решение 97): закрывшись, меню вернёт фокус в поле.
+   */
+  function onblur(event: FocusEvent) {
+    if (event.relatedTarget instanceof Element && event.relatedTarget.closest('[role="menu"]')) return;
+    void commit(true);
+  }
+
   function onkeydown(event: KeyboardEvent) {
     event.stopPropagation();
     if (isUndo(event)) {
@@ -98,7 +107,7 @@
       autocomplete="off"
       oninput={(event) => void field.input(event.currentTarget.value)}
       {onkeydown}
-      onblur={() => void commit(true)}
+      {onblur}
       onclick={(event) => event.stopPropagation()}
       ondblclick={(event) => event.stopPropagation()}
     />

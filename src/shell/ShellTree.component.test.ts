@@ -21,7 +21,7 @@ const SETTINGS: Settings = {
   hotkeys: {},
 };
 
-function setup(settings: Partial<Settings> = {}) {
+function setup(settings: Partial<Settings> = {}, extra: CoreMocks = {}) {
   const vault = new FakeVault([
     { kind: 'folder', path: ['Проекты'] },
     { kind: 'note', path: ['Проекты', 'Встреча.md'] },
@@ -33,6 +33,7 @@ function setup(settings: Partial<Settings> = {}) {
     settings_read: () => ({ settings: { ...SETTINGS, ...settings } }),
     workspace_read: () => ({ workspace: null }),
     workspace_write: () => null,
+    ...extra,
   };
   const calls = mockCore(mocks);
   const model = new WindowModel();
@@ -132,3 +133,51 @@ describe('дерево в оболочке окна', () => {
     expect(calls.find(([c]) => c === 'note_create')?.[1]).toEqual({ request: { dir: [], name: 'Без названия.md' } });
   });
 });
+
+describe('меню правки текста в поле нового имени (решение 97, QA 2.19)', () => {
+  const clipboard: CoreMocks = { clipboard_read_text: () => ({ outcome: 'text', text: ' 2' }) };
+
+  async function pasteFromMenu(field: HTMLInputElement) {
+    field.setSelectionRange(field.value.length, field.value.length);
+    field.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+    const menu = await screen.findByRole('menu', { name: 'Правка текста' });
+    // Фокус ушёл в меню — поле открыто, имя не сохранено.
+    expect(menu.contains(document.activeElement)).toBe(true);
+    await fireEvent.click(within(menu).getByRole('menuitem', { name: /Вставить/ }));
+    await waitFor(() => expect(field.value).toBe('План 2'));
+    expect(document.activeElement).toBe(field);
+  }
+
+  it('в дереве: «Вставить» — текст в поле, поле открыто, переименования нет; Esc отменяет', async () => {
+    const { calls } = setup({}, clipboard);
+    await screen.findByRole('treeitem', { name: 'План' });
+    await fireEvent.click(screen.getByRole('treeitem', { name: 'План' }));
+    await fireEvent.keyDown(screen.getByRole('tree'), { key: 'F2' });
+    const field = screen.getByRole('textbox', { name: 'Новое имя' }) as HTMLInputElement;
+
+    await pasteFromMenu(field);
+
+    expect(screen.getByRole('textbox', { name: 'Новое имя' })).toBe(field);
+    expect(calls.map(([command]) => command)).not.toContain('entry_rename');
+    await fireEvent.keyDown(field, { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: 'Новое имя' })).toBeNull();
+    expect(calls.map(([command]) => command)).not.toContain('entry_rename');
+  });
+
+  it('в шапке заметки: то же', async () => {
+    const { calls } = setup({}, clipboard);
+    await screen.findByRole('treeitem', { name: 'План' });
+    await fireEvent.click(screen.getByRole('treeitem', { name: 'План' }));
+    await fireEvent.click(screen.getByRole('button', { name: 'План' }));
+    const field = screen.getByRole('textbox', { name: 'Новое имя' }) as HTMLInputElement;
+
+    await pasteFromMenu(field);
+
+    expect(screen.getByRole('textbox', { name: 'Новое имя' })).toBe(field);
+    expect(calls.map(([command]) => command)).not.toContain('entry_rename');
+    await fireEvent.keyDown(field, { key: 'Escape' });
+    expect(screen.queryByRole('textbox', { name: 'Новое имя' })).toBeNull();
+    expect(calls.map(([command]) => command)).not.toContain('entry_rename');
+  });
+});
+

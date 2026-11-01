@@ -500,6 +500,31 @@ mod windows_only {
         let [x, y, dpr] = numbers[..] else {
             return vec![format!("меню движка: координаты {coords}")];
         };
+        // Событие движка «запрошено меню» (ICoreWebView2_11::ContextMenuRequested):
+        // при выключенном меню не приходит, при включённом — приходит.
+        let requested = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let requested = requested.clone();
+            let _ = window.with_webview(move |webview| {
+                use webview2_com::ContextMenuRequestedEventHandler;
+                use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_11;
+                let handler = ContextMenuRequestedEventHandler::create(Box::new(move |_, _| {
+                    requested.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }));
+                let mut token = 0i64;
+                // SAFETY: вызовы COM в главном потоке (with_webview); token — локальная переменная.
+                let _ = unsafe {
+                    webview
+                        .controller()
+                        .CoreWebView2()
+                        .and_then(|core| core.cast::<ICoreWebView2_11>())
+                        .and_then(|core| core.add_ContextMenuRequested(&handler, &mut token))
+                };
+            });
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let requests = || requested.load(std::sync::atomic::Ordering::SeqCst);
         let toggle = |window: &tauri::WebviewWindow, enabled: bool| {
             let _ = window.with_webview(move |webview| {
                 // SAFETY: вызовы COM в главном потоке (with_webview).
@@ -535,6 +560,12 @@ mod windows_only {
             failures.push(format!("меню движка: правый щелчок открыл окна {popups:?}"));
             send_chord(&[], VK_ESCAPE.0);
         }
+        let disabled_requests = requests();
+        if disabled_requests > 0 {
+            failures.push(format!(
+                "меню движка: при выключенном меню пришло ContextMenuRequested ({disabled_requests})"
+            ));
+        }
         if failures.is_empty() {
             println!("ok: правый щелчок доходит до страницы, меню движка нет");
         }
@@ -545,9 +576,17 @@ mod windows_only {
         right_click(window, x, y, dpr);
         std::thread::sleep(Duration::from_millis(1500));
         let control = new_windows(&before, &visible_windows());
+        let control_requests = requests() - disabled_requests;
         send_chord(&[], VK_ESCAPE.0);
         std::thread::sleep(Duration::from_millis(500));
         toggle(window, false);
+        if control_requests > 0 {
+            println!(
+                "ok: контроль: с включённым меню движка пришло ContextMenuRequested ({control_requests}) — детектор работает"
+            );
+        } else {
+            println!("предупреждение: контроль ContextMenuRequested не подтвердился");
+        }
         if control.is_empty() {
             println!("предупреждение: контроль детектора меню не подтвердился (новых окон нет)");
         } else {

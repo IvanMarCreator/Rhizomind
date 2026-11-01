@@ -124,8 +124,6 @@ windows-sys = { version = "=0.61.2", features = [
 # дереве через tauri и tempfile.
 libc = "=0.2.191"
 
-# Передача подтверждённого адреса ОС на macOS и Linux (ADR 0009). Без функций
-# `insecure` (запуск через оболочку) и `shellexecute-on-windows`.
 # Буфер обмена для «Вставить» своего меню (src/clipboard/gtk.rs, задача 2.19):
 # тот же GTK, что уже приходит через tauri и wry, новых крейтов нет.
 # Меню WebKitGTK выключено (security::disable_webkit_context_menu, задача
@@ -134,6 +132,8 @@ libc = "=0.2.191"
 gtk = "=0.18.2"
 webkit2gtk = "=2.0.2"
 
+# Передача подтверждённого адреса ОС на macOS и Linux (ADR 0009). Без функций
+# `insecure` (запуск через оболочку) и `shellexecute-on-windows`.
 [target.'cfg(not(windows))'.dependencies]
 open = "=5.4.5"
 
