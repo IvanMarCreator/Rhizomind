@@ -298,6 +298,21 @@ describe('живой предпросмотр и режим исходного �
         }
         return -1;
       };
+      /** Левый край слова `fragment` от края колонки (после номера списка — само слово). */
+      const wordStart = (fragment: string) => {
+        const line = find(fragment);
+        if (!line) return -1;
+        const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const at = (node.textContent ?? '').indexOf(fragment);
+          if (at < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, at);
+          range.setEnd(node, at + 1);
+          return Math.round(range.getBoundingClientRect().left - left);
+        }
+        return -1;
+      };
       const size = (fragment: string) => Number.parseFloat(getComputedStyle(find(fragment) ?? content).fontSize);
       const pad = (fragment: string) => Number.parseFloat(getComputedStyle(find(fragment) ?? content).paddingTop);
       const fences = [...content.querySelectorAll<HTMLElement>('.cm-rz-codeblock-fence')];
@@ -322,7 +337,7 @@ describe('живой предпросмотр и режим исходного �
           title: titleSize(),
           bullet: textStart('Пункт списка'),
           nested: textStart('Вложенный пункт'),
-          ordered: textStart('Первый'),
+          ordered: wordStart('Первый'),
           numberX: center(number).x,
           bulletX: center(bullet).x,
           dot: bullet ? Number.parseFloat(getComputedStyle(bullet, '::before').width) : -1,
@@ -583,43 +598,45 @@ describe('живой предпросмотр и режим исходного �
       const lines = [...content.querySelectorAll<HTMLElement>('.cm-line')];
       const find = (fragment: string) => lines.find((item) => (item.textContent ?? '').includes(fragment));
       const height = (fragment: string) => Math.round(find(fragment)?.getBoundingClientRect().height ?? -1);
+      /** Промежуток под строкой: прозрачная граница снизу, px (строка может переноситься — высоту не сравниваем). */
+      const gap = (fragment: string) => {
+        const line = find(fragment);
+        return line ? Math.round(Number.parseFloat(getComputedStyle(line).borderBottomWidth)) : -1;
+      };
       const fences = [...content.querySelectorAll<HTMLElement>('.cm-rz-codeblock-fence')];
       const process = find('Процесс согласования');
       return {
-        // Абзац перед пустой строкой: 26 + 10.
-        date: height('Дата:'),
-        // Абзац перед заголовком: 26 + 10; заголовок 2: 12 + 27 + 10.
-        paragraph: height('Продолжаем'),
-        h2: height('Решения'),
-        // Пункты одного списка — по 26, последний (перед цитатой) — 26 + 10.
+        gaps: {
+          // Абзац перед пустой строкой и перед заголовком, заголовок перед списком.
+          date: gap('Дата:'),
+          paragraph: gap('Продолжаем'),
+          h2: gap('Решения'),
+          // Пункты одного списка — без промежутка, последний (перед цитатой) — с ним.
+          item1: gap('Пилот запускаем'),
+          item2: gap('Доступы'),
+          item3: gap('Инструкцию'),
+          quote: gap('Пилот не расширяем'),
+          task1: gap('Согласовать'),
+          task2: gap('Подготовить'),
+          task3: gap('Сверить итоги'),
+          params: gap('Параметры пилота'),
+          // Под блоком кода — сверху у следующей строки, у ограды — нет: фон блока без промежутка.
+          codeFence: fences[1] ? Math.round(Number.parseFloat(getComputedStyle(fences[1]).borderBottomWidth)) : -1,
+          processTop: process ? Math.round(Number.parseFloat(getComputedStyle(process).borderTopWidth)) : -1,
+        },
+        // Пункт без промежутка — ровно строка 26; с промежутком — 26 + 10.
         item1: height('Пилот запускаем'),
-        item2: height('Доступы'),
-        item3: height('Инструкцию'),
         quote: height('Пилот не расширяем'),
-        task1: height('Согласовать'),
-        task3: height('Сверить итоги'),
-        params: height('Параметры пилота'),
-        // Блок кода: 12 + 5 × 20 + 12, фон без промежутка; под ним — 10 сверху у следующей строки.
+        // Блок кода: 12 + 5 × 20 + 12.
         codeBlock: fences.length === 2 ? Math.round((fences[1]?.getBoundingClientRect().bottom ?? 0) - (fences[0]?.getBoundingClientRect().top ?? 0)) : -1,
-        processTop: process ? Math.round(Number.parseFloat(getComputedStyle(process).borderTopWidth)) : -1,
-        codeBorder: fences[1] ? getComputedStyle(fences[1]).borderBottomWidth : '',
       };
     }, TEXT);
     const detail = JSON.stringify(look);
     expect(look, detail).toEqual({
-      date: 36,
-      paragraph: 36,
-      h2: 49,
+      gaps: { date: 10, paragraph: 10, h2: 10, item1: 0, item2: 0, item3: 10, quote: 10, task1: 0, task2: 0, task3: 10, params: 10, codeFence: 0, processTop: 10 },
       item1: 26,
-      item2: 26,
-      item3: 36,
       quote: 36,
-      task1: 26,
-      task3: 36,
-      params: 36,
       codeBlock: 124,
-      processTop: 10,
-      codeBorder: '0px',
     });
     await b.execute(() => {
       const body = document.querySelector('main .body');
@@ -671,9 +688,10 @@ describe('живой предпросмотр и режим исходного �
       .up({ button: 0 })
       .perform();
     const selected = await b.execute(() => document.getSelection()?.toString() ?? '');
+    // Начало и конец — посреди слов (60 px от края строки): целиком — средние строки.
+    expect(selected).toContain('запускаем');
     expect(selected).toContain('Доступы');
     expect(selected).toContain('Инструкцию');
-    expect(selected).toContain('Пилот');
     await shotThemes(b, 'gaps-e1-selection');
     expect(readFileSync(path.join(vault, `${E1_NOTE}.md`), 'utf8')).toBe(E1_SAMPLE);
   });
