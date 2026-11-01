@@ -255,6 +255,32 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # SBOM и список лицензий ядра (аудит 3.3, Р9; приложение к выпуску — задача 3.4):
+      # шаг в каждом прогоне, чтобы инструмент не сломался незаметно к выпуску.
+      # cargo-cyclonedx — программа машины сборки, не зависимость Rhizomind (в
+      # Cargo.lock и в программу не попадает); при установке cargo скачивает её с
+      # crates.io — сеть нужна только CI. Сама `npm run sbom` идёт без сети
+      # (CARGO_NET_OFFLINE, npm --offline): крейты всех целей уже скачаны в verify.
+      - name: SBOM (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo install --locked cargo-cyclonedx@0.5.9
+          npm run sbom
+          ls -l release/sbom-rust.cdx.json release/sbom-npm.cdx.json release/licenses-rust.json
+
+      - name: Загрузить SBOM (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rhizomind-sbom
+          path: |
+            release/sbom-rust.cdx.json
+            release/sbom-npm.cdx.json
+            release/licenses-rust.json
+          retention-days: 14
+          if-no-files-found: error
+
   # Помощник ручного сетевого аудита (задача 3.3б, решение владельца 102):
   # синтаксис Windows PowerShell 5.1 (powershell.exe), PSScriptAnalyzer
   # (правила уровня Error), разбор журнала Process Monitor на образце

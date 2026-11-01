@@ -77,6 +77,26 @@ pub fn in_private_check(checked: Option<bool>) -> Result<(), String> {
     }
 }
 
+/// Общее решение перед показом окна (Windows): окно показывается, только если
+/// движок подтвердил InPrivate ([`in_private_check`]) **и** применились все
+/// защитные настройки WebView2, которых нет в Tauri (аудит 3.3, З1).
+/// `failed` — имена настроек, которые движок не принял (SmartScreen,
+/// ускорители браузера и т. д.); такой движок мог бы обращаться к серверам
+/// Microsoft или выполнять команды браузера, поэтому окно не открывается.
+pub fn engine_check(in_private: Option<bool>, failed: &[&str]) -> Result<(), String> {
+    in_private_check(in_private)?;
+    if failed.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Rhizomind не открывает окно: установленная версия WebView2 Runtime не \
+         приняла защитные настройки ({}). Без них движок мог бы обращаться к \
+         серверам Microsoft или выполнять команды браузера. Обновите WebView2 \
+         Runtime (через службу ИТ) и запустите Rhizomind снова.",
+        failed.join(", ")
+    ))
+}
+
 /// Строка `additional_browser_args` для выпускной сборки.
 pub fn browser_args() -> String {
     PROTECTED_BROWSER_ARGS.join(" ")
@@ -215,6 +235,31 @@ mod tests {
             assert!(message.contains("InPrivate"), "{message}");
             assert!(message.contains("WebView2"), "{message}");
         }
+    }
+
+    #[test]
+    fn window_opens_only_when_every_engine_setting_is_applied() {
+        // Аудит 3.3, З1: не выключился SmartScreen или ускорители браузера —
+        // окно не открывается, как и без InPrivate.
+        assert_eq!(engine_check(Some(true), &[]), Ok(()));
+        for failed in [
+            &["SmartScreen"][..],
+            &["ускорители браузера"][..],
+            &["SmartScreen", "ускорители браузера"][..],
+        ] {
+            let message =
+                engine_check(Some(true), failed).expect_err("без защитной настройки окна нет");
+            assert!(message.contains("не открывает окно"), "{message}");
+            assert!(message.contains("WebView2"), "{message}");
+            for name in failed {
+                assert!(message.contains(name), "{message}");
+            }
+        }
+        // Без InPrivate — сообщение про InPrivate, даже если остальное применилось.
+        let message = engine_check(None, &[]).expect_err("без InPrivate окна нет");
+        assert!(message.contains("InPrivate"), "{message}");
+        let message = engine_check(Some(false), &["SmartScreen"]).expect_err("окна нет");
+        assert!(message.contains("InPrivate"), "{message}");
     }
 
     #[test]

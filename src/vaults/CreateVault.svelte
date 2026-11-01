@@ -84,6 +84,7 @@
           class:invalid={model.parentError !== null}
           type="text"
           readonly
+          spellcheck="false"
           value={model.parent ?? ''}
           title={model.parent ?? undefined}
           aria-invalid={model.parentError !== null}

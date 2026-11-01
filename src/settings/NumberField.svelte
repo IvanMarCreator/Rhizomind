@@ -31,6 +31,7 @@
   class="number"
   type="number"
   inputmode="numeric"
+  spellcheck="false"
   {min}
   {max}
   step="1"

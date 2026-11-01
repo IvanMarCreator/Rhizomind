@@ -54,7 +54,7 @@
 <div class="picker" role="dialog" aria-modal="true" aria-label={t('settings.folderPicker.title')} tabindex="-1" {onkeydown}>
   <div class="search">
     <Icon name="search" size={14} />
-    <input bind:this={input} bind:value={filter} placeholder={t('settings.folderPicker.filter')} aria-label={t('settings.folderPicker.filter')} />
+    <input bind:this={input} bind:value={filter} spellcheck="false" placeholder={t('settings.folderPicker.filter')} aria-label={t('settings.folderPicker.filter')} />
   </div>
   <ul class="list" role="listbox" aria-label={t('settings.folderPicker.title')}>
     {#each shown as path (path.join('/'))}

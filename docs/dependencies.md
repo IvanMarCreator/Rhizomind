@@ -6,7 +6,7 @@
 - лицензии крейтов, запрещённые крейты и функции — `cargo deny check` ([src-tauri/deny.toml](../src-tauri/deny.toml));
 - сетевые крейты по каждой десктопной цели и крейты только для тестов (`gen-vault`, `proptest`) в программе и сборке — [tools/check-cargo-tree/](../tools/check-cargo-tree/);
 - лицензии production-зависимостей npm с разбором SPDX — [tools/check-licenses/](../tools/check-licenses/);
-- сетевой код в исходниках и собранном интерфейсе — [tools/check-no-network/](../tools/check-no-network/).
+- сетевой код в исходниках и собранном интерфейсе — [tools/check-no-network/](../tools/check-no-network/); находки в чужом коде без сетевых вызовов проходят только по разобранным исключениям (решение владельца 52, 9 записей в [allowlist.json](../tools/check-no-network/allowlist.json)).
 
 ## Ядро (Rust, `src-tauri/Cargo.toml`) — попадает в программу
 
@@ -33,6 +33,7 @@
 | `notify` | 9.0.0-rc.6 | CC0-1.0 | Уведомления ФС ОС для слежения за хранилищем (ADR 0006): `ReadDirectoryChangesW`, inotify, FSEvents; событие Rescan при переполнении буфера. Кандидат в выпуск — версия точная, обновление с прогоном нагрузочных тестов. Приносит `inotify` 0.11.5 и `inotify-sys` (ISC), `mio` 1.2.4 на Linux (функции `os-poll`, `os-ext`, без `net`), `xxhash-rust` (BSL-1.0), `walkdir` | Нет: только уведомления файловой системы. `cargo tree` по десктопным целям — без сетевых крейтов; `mio/net` запрещён в `deny.toml` |
 | `notify-debouncer-full` | 0.8.0-rc.2 | MIT OR Apache-2.0 | Склейка событий и пар переименования. Используется без кэша идентификаторов (`NoCache`): `FileIdMap` обходит дерево по ссылкам и вышел бы за контур хранилища | Нет |
 | `file-id` | 0.2.3 | MIT OR Apache-2.0 | Идентификатор файла (128-битный FileId NTFS, inode) — распознавание переименований и перемещений; уже был в дереве через `notify-debouncer-full` | Нет |
+| `dirs` | 7.0.0 | MIT OR Apache-2.0 | Папка списка хранилищ: `data_local_dir()` — `%LOCALAPPDATA%` на Windows, не перемещаемый профиль (решение 46, модуль `registry`). Приносит `dirs-sys` 0.5.0 (MIT OR Apache-2.0); оба уже были в дереве через `tauri` | Нет: только чтение известных папок ОС |
 
 Функция `isolation` приносит крейты шифрования RustCrypto: `aes-gcm` 0.10.3, `aes` 0.8.4, `aead` 0.5.2, `cipher` 0.4.4, `ctr` 0.9.2, `ghash` 0.5.1, `polyval` 0.6.2, `universal-hash` 0.5.1, `inout` 0.1.4, `opaque-debug` 0.3.1 (MIT OR Apache-2.0), `subtle` 2.6.1 (BSD-3-Clause), `getrandom` 0.2.17, `rand_core` 0.6.4 (MIT OR Apache-2.0) — без сетевого кода, проверены `cargo deny`.
 
@@ -48,6 +49,7 @@
 | `proptest` | 1.12.0 | MIT OR Apache-2.0 | Свойства: ключ имени идемпотентен, кратчайший различающий путь разрешается обратно, разбор ссылок и проверка имён не падают на любой строке. Без функций по умолчанию (`fork`, `timeout` не нужны), только `std`. Приносит `rand` 0.10, `rand_xorshift`, `chacha20`, `regex-syntax`, `num-traits`, `core_detect` и др. (только тесты) | Нет |
 | `gen-vault` | 0.1.0 (путь `tools/gen-vault`) | GPL-3.0-only | Генератор тестового хранилища (задача 1.6): нагрузочные тесты наблюдателя (10 000 заметок); образцы кодировок, невалидный UTF-8 и большой файл в тестах `vault`; сверка `links` с манифестом (`expected_links`, `duplicates`) и 10 000 имён для теста производительности `switcher` | Нет |
 | `junction` | 2.1.0 | MIT | Только Windows: точки соединения NTFS в тестах контура хранилища | Нет |
+| `windows` с функцией `Win32_UI_Input_KeyboardAndMouse` | 0.62.2 | MIT OR Apache-2.0 | Только Windows: настоящая мышь и клавиатура (`SendInput`) в `tests/webview2_runtime.rs`; тот же крейт, что в программе, функция — только для тестов | Нет |
 
 ## Генератор тестового хранилища (`tools/gen-vault/Cargo.toml`) — в программу не попадает
 
@@ -65,10 +67,10 @@
 
 | Пакет | Версия | Лицензия | Зачем | Сетевой код |
 |---|---|---|---|---|
-| `svelte` | 5.57.2 | MIT | Фреймворк интерфейса (ADR 0002) | Нет; собранный интерфейс проверяется `check-no-network` |
+| `svelte` | 5.57.2 | MIT | Фреймворк интерфейса (ADR 0002). В `dependencies` пакета — и компилятор, поэтому `check:licenses` видит 18 его зависимостей: `acorn` 8.19.0, `@sveltejs/acorn-typescript` 1.0.13, `esrap` 2.4.0, `magic-string` 0.30.21, `zimmerframe` 1.1.5, `locate-character` 3.0.0, `is-reference` 3.0.3, `@types/estree` 1.0.9, `@jridgewell/remapping` 2.3.5, `@jridgewell/gen-mapping` 0.3.13, `@jridgewell/trace-mapping` 0.3.31, `@jridgewell/resolve-uri` 3.1.2, `@jridgewell/sourcemap-codec` 1.6.0 (компилятор и карты кода — работают только при сборке), `clsx` 2.1.1, `devalue` 5.9.4, `esm-env` 1.2.2 (часть может попасть в собранный интерфейс), `aria-query` 5.3.1 и `axobject-query` 4.1.0 (Apache-2.0; подсказки доступности компилятора). Все MIT, кроме двух Apache-2.0 | Нет; собранный интерфейс проверяется `check-no-network` |
 | `@tauri-apps/api` | 2.12.4 | Apache-2.0 OR MIT | `invoke` для команд ядра (только через `src/api/`) и подмена ядра в тестах | Нет: вызовы идут по IPC Tauri внутри процесса |
 | `@codemirror/state` | 6.7.6 | MIT | Редактор (ADR 0001, задача 2.4): документ, транзакции, `EditorState.lineSeparator` («байт в байт»). Приносит `@marijn/find-cluster-break` 1.0.4 (MIT; в его пакете лежит скрипт сборки `bin/build-extenders.js` с `fetch` таблиц Unicode с unicode.org — он запускается только автором пакета при подготовке выпуска, в `exports` не входит и в сборку интерфейса не попадает, это подтверждает `check-no-network` по `dist/`) | Нет: в коде пакета нет `fetch`, `XMLHttpRequest`, `WebSocket`, `window.open`; адреса — только в комментариях |
-| `@codemirror/view` | 6.43.14 | MIT | Редактор: отображение и ввод в WebView, атрибуты поля (`spellcheck="false"`). Приносит `style-mod` 4.1.4, `w3c-keyname` 2.2.8, `crelt` 1.0.7 (MIT). Выпуск 6.43.15 (19.10.2026) моложе двух недель — взят предыдущий | Нет сетевых вызовов. `check-no-network` помечает в сборке как подозрительные шесть мест: `x instanceof Function` (проверка типа), `doc.defaultView \|\| window` (запасной объект окна) и в `style-mod` `typeof globalThis < "u" ? globalThis : window` со счётчиком по `Symbol.for` — решение по проверке за владельцем (отчёт задачи 2.4) |
+| `@codemirror/view` | 6.43.14 | MIT | Редактор: отображение и ввод в WebView, атрибуты поля (`spellcheck="false"`). Приносит `style-mod` 4.1.4, `w3c-keyname` 2.2.8, `crelt` 1.0.7 (MIT). Выпуск 6.43.15 (19.10.2026) моложе двух недель — взят предыдущий | Нет сетевых вызовов. Места, которые `check-no-network` помечал в сборке (`x instanceof Function` — проверка типа, `doc.defaultView \|\| window` — запасной объект окна, в `style-mod` `typeof globalThis < "u" ? globalThis : window` со счётчиком по `Symbol.for`), разобраны по решению владельца 52: они — среди 9 разобранных исключений `tools/check-no-network/allowlist.json` (копия — в `SECURITY.md`), сетевого действия в них нет |
 | `@codemirror/commands` | 6.11.1 | MIT | Редактор: стандартные клавиши и отмена (`history`). Приносит `@codemirror/language` 6.13.1, `@codemirror/streamparser` 6.0.0, `@lezer/common` 1.5.3, `@lezer/highlight` 1.2.5, `@lezer/lr` 1.4.11 (MIT; нужны и задаче 2.5 для разбора Markdown) | Нет |
 
 ## Встроенные ресурсы интерфейса — попадают в программу
@@ -112,7 +114,7 @@ OFL 1.1 разрешает встраивать шрифты в программ
 | Rust | 1.99.1 | MIT OR Apache-2.0 | Компилятор, закреплён в `rust-toolchain.toml` |
 | `cargo-deny` | 0.20.2 | MIT OR Apache-2.0 | Лицензии, запреты, источники, уязвимости (база RustSec скачивается при проверке) |
 | `tauri-driver` | 2.1.0 | Apache-2.0 OR MIT | WebDriver-сервер для сценарных тестов |
-| `cargo-cyclonedx` | 0.5.9 | Apache-2.0 | SBOM ядра |
+| `cargo-cyclonedx` | 0.5.9 | Apache-2.0 | SBOM ядра (`npm run sbom`). Отдельная программа машины сборки, не зависимость Rhizomind: в `Cargo.lock` и в программу не попадает. Ставится `cargo install --locked` — скачивание с crates.io только при установке (в CI — шаг «SBOM», задача 3.3а); сама `npm run sbom` работает без сети (`CARGO_NET_OFFLINE`) |
 | msedgedriver | версия WebView2 | Microsoft | WebDriver для WebView2 на Windows (CI скачивает под установленную версию) |
 | `webkit2gtk-driver` | из Ubuntu | LGPL-2.1 | WebDriver для WebKitGTK на Linux |
 
