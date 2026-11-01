@@ -154,3 +154,28 @@ describe('Tab и Shift+Tab', () => {
     expect(editor.state.doc.toString()).toBe('текст');
   });
 });
+
+describe('перенумерация в редакторе (задача 2.21)', () => {
+  it.each<EditorMode>(['live_preview', 'source'])('режим %s: Tab пересчитывает номера, Ctrl+Z — одним шагом', async (mode) => {
+    const editor = open('1. а\n2. б\n3. в', mode);
+    editor.dispatch({ selection: { anchor: '1. а\n2. б'.length } });
+    await press(editor, 'Tab');
+    expect(editor.state.doc.toString()).toBe('1. а\n\t1. б\n2. в');
+    await press(editor, 'z', { ctrlKey: true });
+    expect(editor.state.doc.toString()).toBe('1. а\n2. б\n3. в');
+  });
+
+  it('Shift+Tab возвращает пункт и пересчитывает номера', async () => {
+    const editor = open('1. а\n\t1. б\n2. в');
+    editor.dispatch({ selection: { anchor: '1. а\n\t1. б'.length } });
+    await press(editor, 'Tab', { shiftKey: true });
+    expect(editor.state.doc.toString()).toBe('1. а\n2. б\n3. в');
+  });
+
+  it('Backspace в начале строки соединяет пункты — номера ниже сдвигаются', async () => {
+    const editor = open('1. а\n2. б\n3. в');
+    editor.dispatch({ selection: { anchor: '1. а\n'.length } });
+    await press(editor, 'Backspace');
+    expect(editor.state.doc.toString()).toBe('1. а2. б\n2. в');
+  });
+});

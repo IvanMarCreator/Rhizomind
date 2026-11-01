@@ -2,6 +2,7 @@
 // курсором и Ctrl+щелчок на ней, Ctrl+щелчок в режиме исходного текста,
 // неразрешённая ссылка — вид и создание заметки, переход к заголовку,
 // автодополнение. Вики-ссылка никогда не уходит в open_external.
+import { deleteCharBackward } from '@codemirror/commands';
 import { EditorView } from '@codemirror/view';
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
@@ -443,6 +444,28 @@ describe('автодополнение после [[', () => {
     // Пока список открыт, курсор внутри цели его не закрывает.
     view.dispatch({ selection: { anchor: doc.length }, userEvent: 'select' });
     expect(activeCompletion(view.state)).not.toBeNull();
+  });
+
+  it('Backspace в незакрытой цели открывает и обновляет список, как ввод символа (задача 2.21)', async () => {
+    const { view, calls } = await openHome({
+      extra: { links_suggest: ({ query }) => ({ items: query.length > 0 ? ITEMS : [] }) },
+    });
+    const at = view.state.doc.length;
+    view.dispatch({ changes: { from: at, insert: '\n[[Новая' } });
+    view.dispatch({ selection: { anchor: view.state.doc.length }, userEvent: 'select.pointer' });
+    expect(activeCompletion(view.state)).toBeNull();
+
+    // Backspace тем же путём, что клавиша (команда сочетания по умолчанию).
+    expect(deleteCharBackward(view)).toBe(true);
+    expect(activeCompletion(view.state)?.query).toBe('Нова');
+    await waitFor(() => expect(view.dom.querySelectorAll('[role="option"]')).toHaveLength(3));
+    expect(called(calls, 'links_suggest').at(-1)?.[1]).toMatchObject({ request: { query: 'Нова' } });
+
+    // Esc закрыл список этой ссылки — Backspace его не возвращает.
+    await fireEvent.keyDown(view.contentDOM, { key: 'Escape' });
+    expect(activeCompletion(view.state)).toBeNull();
+    deleteCharBackward(view);
+    expect(activeCompletion(view.state)).toBeNull();
   });
 
   it('открытой заметки в списке нет', async () => {

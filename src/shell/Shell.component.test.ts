@@ -163,6 +163,33 @@ describe('оболочка окна', () => {
     expect(preview.getAttribute('aria-checked')).toBe('false');
   });
 
+  it('aria-keyshortcuts переключателя режима — из реестра горячих клавиш (задача 2.21)', async () => {
+    await renderShell({
+      ...WITH_VAULT,
+      workspace_read: () => ({ workspace: savedLayout(['Встреча.md']) }),
+      settings_read: () => ({ settings: { ...SETTINGS, hotkeys: { 'editor.toggle-mode': ['Ctrl+Shift+KeyM'] } } }),
+    });
+
+    await screen.findByRole('navigation', { name: 'Путь к заметке' });
+    for (const name of ['Живой предпросмотр', 'Исходный текст']) {
+      await waitFor(() =>
+        expect(screen.getByRole('radio', { name }).getAttribute('aria-keyshortcuts')).toBe('Control+Shift+M'),
+      );
+    }
+  });
+
+  it('у переключателя режима без сочетания нет aria-keyshortcuts (задача 2.21)', async () => {
+    await renderShell({
+      ...WITH_VAULT,
+      workspace_read: () => ({ workspace: savedLayout(['Встреча.md']) }),
+      settings_read: () => ({ settings: { ...SETTINGS, hotkeys: { 'editor.toggle-mode': [] } } }),
+    });
+
+    await screen.findByRole('navigation', { name: 'Путь к заметке' });
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Исходный текст' }).hasAttribute('aria-keyshortcuts')).toBe(false));
+    expect(screen.getByRole('radio', { name: 'Живой предпросмотр' }).hasAttribute('aria-keyshortcuts')).toBe(false);
+  });
+
   it('повреждённая раскладка: окно открывается, внизу уведомление, его можно закрыть', async () => {
     await renderShell({ ...WITH_VAULT, workspace_read: () => ({ workspace: { format: 'чужой' } }) });
 

@@ -116,8 +116,9 @@ export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink
     lock.of(lockExtension(readOnly)),
     modeSlot.of(modeExtension(mode, onOpenLink)),
     history(),
-    listContinuation(),
+    // Пара раньше списков: Enter в только что вставленной паре решается в ней (2.21).
     bracketPairs(),
+    listContinuation(),
     keymap.of(editorKeymap),
     // Одиночный `\r`, NUL и другие невидимые символы видны значком.
     highlightSpecialChars(),
