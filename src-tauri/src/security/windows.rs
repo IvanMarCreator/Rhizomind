@@ -1,5 +1,6 @@
-//! Меры, которые есть только на Windows: SmartScreen и ускорители браузера в
-//! WebView2, отчёты Windows об ошибках (WER) для процесса `rhizomind.exe`.
+//! Меры, которые есть только на Windows: SmartScreen, ускорители браузера и
+//! меню движка в WebView2, отчёты Windows об ошибках (WER) для процесса
+//! `rhizomind.exe`.
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2_13, ICoreWebView2Controller, ICoreWebView2Settings, ICoreWebView2Settings3,
@@ -90,6 +91,29 @@ pub fn disable_browser_accelerator_keys(
             .cast::<ICoreWebView2Settings3>()?
             .SetAreBrowserAcceleratorKeysEnabled(false)
     }
+}
+
+/// Выключает стандартное контекстное меню движка (решение 97):
+/// `AreDefaultContextMenusEnabled = false`. В нём «Обновить», «Сохранить как»,
+/// «Печать» — обход решений 94/96 и риск потери ввода. Tauri этой настройки не
+/// передаёт (у wry `with_default_context_menus`, по умолчанию `true`). Своё
+/// меню правки текста — `src/shell/textMenu.ts`, меню дерева —
+/// `src/tree/FileTree.svelte`.
+pub fn disable_default_context_menus(
+    controller: &ICoreWebView2Controller,
+) -> windows::core::Result<()> {
+    // SAFETY: см. settings.
+    unsafe { settings(controller)?.SetAreDefaultContextMenusEnabled(false) }
+}
+
+/// Значение `AreDefaultContextMenusEnabled` (для интеграционного теста).
+pub fn are_default_context_menus_enabled(
+    controller: &ICoreWebView2Controller,
+) -> windows::core::Result<bool> {
+    let mut value = BOOL::default();
+    // SAFETY: см. settings; value — локальная переменная.
+    unsafe { settings(controller)?.AreDefaultContextMenusEnabled(&mut value)? };
+    Ok(value.as_bool())
 }
 
 /// Значение `AreBrowserAcceleratorKeysEnabled` (для интеграционного теста).

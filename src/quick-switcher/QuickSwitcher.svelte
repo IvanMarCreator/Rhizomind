@@ -172,6 +172,8 @@
   function onFocusIn(event: FocusEvent) {
     if (!dialog || !input) return;
     if (event.target instanceof Node && dialog.contains(event.target)) return;
+    // Меню правки текста над полем (решение 97): закрывшись, оно вернёт фокус в поле.
+    if (event.target instanceof Element && event.target.closest('[role="menu"]')) return;
     input.focus();
   }
 

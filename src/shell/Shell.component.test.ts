@@ -450,3 +450,109 @@ describe('сочетания браузерного движка (решение
     expect(press(document.body, { key: 'p', code: 'KeyP', ctrlKey: true }).defaultPrevented).toBe(true);
   });
 });
+
+describe('своё контекстное меню (решение 97)', () => {
+  function rightClick(target: Element, x = 20, y = 20): MouseEvent {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  afterEach(() => {
+    for (const host of document.body.querySelectorAll('[data-test-host]')) host.remove();
+  });
+
+  it('в поле ввода — меню правки текста; Esc закрывает и возвращает фокус', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+    const host = document.createElement('div');
+    host.dataset.testHost = '';
+    host.innerHTML = '<input aria-label="поле" value="abc" />';
+    document.body.appendChild(host);
+    const input = host.querySelector('input') as HTMLInputElement;
+    input.focus();
+    input.setSelectionRange(0, 2);
+
+    rightClick(input);
+
+    const menu = await screen.findByRole('menu', { name: 'Правка текста' });
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent?.replace(/\s+/g, ' ').trim())).toEqual([
+      'Вырезать Ctrl+X',
+      'Копировать Ctrl+C',
+      'Вставить Ctrl+V',
+      'Выделить всё Ctrl+A',
+    ]);
+    expect(within(menu).getByRole('menuitem', { name: /Вставить/ }).getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement?.textContent).toContain('Вырезать');
+
+    await fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(document.activeElement?.textContent).toContain('Копировать');
+    await fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    // «Вставить» неактивен — фокус его пропускает.
+    expect(document.activeElement?.textContent).toContain('Выделить всё');
+
+    await fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('«Выделить всё» из меню выделяет значение поля', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+    const host = document.createElement('div');
+    host.dataset.testHost = '';
+    host.innerHTML = '<input aria-label="поле" value="abcdef" />';
+    document.body.appendChild(host);
+    const input = host.querySelector('input') as HTMLInputElement;
+
+    rightClick(input);
+    await fireEvent.click(await screen.findByRole('menuitem', { name: /Выделить всё/ }));
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 6]);
+  });
+
+  it('лента, шапка заметки и пустая область: правый щелчок ничего не открывает', async () => {
+    await renderShell(WITH_VAULT);
+    const empty = await screen.findByText('Нет открытой заметки');
+
+    rightClick(screen.getByRole('toolbar', { name: 'Лента иконок' }));
+    rightClick(screen.getByRole('banner', { name: 'Заметка' }));
+    rightClick(empty);
+
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('щелчок мимо закрывает меню', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+    const host = document.createElement('div');
+    host.dataset.testHost = '';
+    host.innerHTML = '<input aria-label="поле" value="abc" />';
+    document.body.appendChild(host);
+
+    rightClick(host.querySelector('input') as HTMLInputElement);
+    await screen.findByRole('menu', { name: 'Правка текста' });
+    await fireEvent.pointerDown(screen.getByRole('toolbar', { name: 'Лента иконок' }));
+
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
+
+describe('меню правки текста в быстром переходе (решение 97)', () => {
+  it('фокус переходит в меню и после Esc возвращается в поле; окно не закрывается', async () => {
+    await renderShell({ ...WITH_VAULT, switcher_search: () => ({ items: [] }) });
+    await screen.findByText('Нет открытой заметки');
+    await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
+    const input = await screen.findByRole('combobox', { name: 'Быстрый переход' });
+
+    input.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+    const menu = await screen.findByRole('menu', { name: 'Правка текста' });
+    expect(menu.contains(document.activeElement)).toBe(true);
+
+    await fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Быстрый переход' })).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+  });
+});
