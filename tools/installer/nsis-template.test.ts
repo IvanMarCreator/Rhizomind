@@ -20,13 +20,18 @@ function upstreamFromCli(): string {
   const reverted = revertPatches(ours);
   const [prefix, suffix] = reverted.split(WEBVIEW2_REMOVED);
   if (prefix === undefined || suffix === undefined) throw new Error('в шаблоне нет пометки о вырезанном разделе WebView2');
+  // CLI для Windows собран из исходников с концами строк CRLF (git на Windows),
+  // для Linux — с LF: ищем в обоих видах, сравниваем в LF.
   for (const file of cliBinaries()) {
     const binary = readFileSync(file);
-    const start = binary.indexOf(prefix);
-    if (start === -1) continue;
-    const end = binary.indexOf(suffix, start + prefix.length);
-    if (end === -1) continue;
-    return binary.subarray(start, end + Buffer.byteLength(suffix)).toString('utf8');
+    for (const eol of ['\n', '\r\n']) {
+      const [head, tail] = [prefix, suffix].map((part) => part.replaceAll('\n', eol)) as [string, string];
+      const start = binary.indexOf(head);
+      if (start === -1) continue;
+      const end = binary.indexOf(tail, start + Buffer.byteLength(head));
+      if (end === -1) continue;
+      return binary.subarray(start, end + Buffer.byteLength(tail)).toString('utf8').replaceAll('\r\n', '\n');
+    }
   }
   throw new Error(
     'шаблон NSIS без наших правок не найден в @tauri-apps/cli: шаблон бандлера изменился — перенесите правки (tools/installer/nsis-template.ts)',
