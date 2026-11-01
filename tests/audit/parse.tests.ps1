@@ -68,6 +68,90 @@ Check 'итог: журнал не разобран — «не доказано�
 Check 'итог: журнал с событиями Rhizomind — «разобран»' ((Get-ProcmonVerdict -NoProcmon:$false -Analysis $r) -eq 'analysed')
 Check 'итог: -NoProcmon — «без журнала»' ((Get-ProcmonVerdict -NoProcmon:$true -Analysis $null) -eq 'no-procmon')
 
+# --- Полнота журнала (задача 3.3в, решение 107а) -----------------------------
+
+Check 'классы: Get-OperationClass' (
+  (Get-OperationClass 'RegQueryValue') -eq 'Registry' -and (Get-OperationClass 'TCP Send') -eq 'Network' -and
+  (Get-OperationClass 'UDP Receive') -eq 'Network' -and (Get-OperationClass 'Process Start') -eq 'Process' -and
+  (Get-OperationClass 'Thread Exit') -eq 'Process' -and (Get-OperationClass 'Load Image') -eq 'Process' -and
+  (Get-OperationClass 'Process Profiling') -eq 'Profiling' -and (Get-OperationClass 'CreateFile') -eq 'File' -and
+  (Get-OperationClass 'IRP_MJ_CLOSE') -eq 'File')
+Check 'классы: в образце есть все четыре класса' ($r.Classes.File -gt 0 -and $r.Classes.Registry -gt 0 -and $r.Classes.Process -gt 0 -and $r.Classes.Network -gt 0) (Format-ClassCounter $r.Classes)
+Check 'классы: сумма по классам = числу событий' (($r.Classes.File + $r.Classes.Registry + $r.Classes.Process + $r.Classes.Network + $r.Classes.Profiling) -eq $r.Rows)
+Check 'классы: у корневого процесса посчитаны' ($r.RootClasses.Process -gt 0) (Format-ClassCounter $r.RootClasses)
+Check 'полнота: образец — причин «не доказано» нет' (@(Get-ProcmonGap $r).Count -eq 0) (@(Get-ProcmonGap $r) -join '; ')
+Check 'полнота: столбцы образца на месте' (@($r.MissingColumns).Count -eq 0)
+Check 'контроль: события на пути TokenBroker\Cache посчитаны' ($r.TokenBrokerRows -ge 1) "tb=$($r.TokenBrokerRows)"
+
+# Журнал как в первом аудите владельца: сеть других процессов есть, событий
+# Rhizomind, реестра и процессов нет.
+$rOwner = Invoke-ProcmonAnalysis -CsvPath (Join-Path $PSScriptRoot 'fixtures\procmon-no-app.csv') -OwnPids @(19544) -AppDataDir 'C:\nonexistent'
+$gaps = @(Get-ProcmonGap $rOwner)
+Check 'журнал владельца: итог «не доказано»' ((Get-ProcmonVerdict -NoProcmon:$false -Analysis $rOwner) -eq 'not-proven')
+Check 'журнал владельца: причина — нет событий корневого процесса с номером' (@($gaps | Where-Object { $_ -like '*корневого процесса Rhizomind (PID 19544)*' }).Count -eq 1) ($gaps -join '; ')
+Check 'журнал владельца: причина — нет событий реестра' (@($gaps | Where-Object { $_ -like '*событий реестра*' }).Count -eq 1)
+Check 'журнал владельца: причина — нет событий процессов' (@($gaps | Where-Object { $_ -like '*событий процессов*' }).Count -eq 1)
+Check 'журнал владельца: сеть и файлы — не в причинах (сеть есть)' (@($gaps | Where-Object { $_ -like '*сетевых*' }).Count -eq 0)
+Check 'журнал не выгружен: конкретная причина' ((@(Get-ProcmonGap $null) -join '') -like '*capture.csv нет*')
+
+$tmp = Join-Path $env:TEMP ('audit-tests-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmp | Out-Null
+try {
+  $badCols = Join-Path $tmp 'cols.csv'
+  @('"Time of Day","Process Name","Operation"', '"10:00:00","rhizomind.exe","CreateFile"') | Set-Content -LiteralPath $badCols -Encoding UTF8
+  $rCols = Invoke-ProcmonAnalysis -CsvPath $badCols -OwnPids @(1) -AppDataDir 'C:\nonexistent'
+  Check 'полнота: CSV без столбцов PID, Path… — причина названа' ((@(Get-ProcmonGap $rCols) -join '; ') -like '*нет столбцов PID, Path, Result, Detail*') (@(Get-ProcmonGap $rCols) -join '; ')
+
+  # Пробная запись
+  $pOk = Test-ProcmonProbe -CsvPath (Join-Path $PSScriptRoot 'fixtures\procmon-probe-ok.csv') -ProbePid 99999
+  Check 'проба: тестовый процесс найден по метке, классы File, Registry, Process есть — проходит' ($pOk.Ok -and ($pOk.Pids -contains 4242)) "$($pOk.Reason) pids=$($pOk.Pids -join ',')"
+  Check 'проба: события тестового процесса посчитаны по классам' ($pOk.Classes.File -eq 2 -and $pOk.Classes.Registry -eq 2 -and $pOk.Classes.Process -eq 4) (Format-ClassCounter $pOk.Classes)
+  $pOwner = Test-ProcmonProbe -CsvPath (Join-Path $PSScriptRoot 'fixtures\procmon-no-app.csv') -ProbePid 4242
+  Check 'проба: журнал без событий тестового процесса — не проходит, причина «отбрасывает события»' ((-not $pOwner.Ok) -and $pOwner.Reason -like '*нет ни одного события тестового процесса*отбрасывает*') $pOwner.Reason
+  $fileOnly = Join-Path $tmp 'probe-file-only.csv'
+  @('"Time of Day","Process Name","PID","Operation","Path","Result","Detail"',
+    '"10:00:00","cmd.exe","77","CreateFile","C:\x\procmon-probe.txt","SUCCESS","OpenResult: Created"') | Set-Content -LiteralPath $fileOnly -Encoding UTF8
+  $pFile = Test-ProcmonProbe -CsvPath $fileOnly -ProbePid 77
+  Check 'проба: только файловые события — не проходит, названы классы Registry, Process' ((-not $pFile.Ok) -and $pFile.Reason -like '*классов Registry, Process*') $pFile.Reason
+  $pNone = Test-ProcmonProbe -CsvPath (Join-Path $tmp 'nope.csv') -ProbePid 77
+  Check 'проба: CSV нет — не проходит' ((-not $pNone.Ok) -and $pNone.Reason -like '*не выгрузилась*') $pNone.Reason
+
+  # Номер rhizomind.exe из results.md (имя канала движка)
+  Check 'RootPid из results.md: --mojo-named-platform-channel-pipe=19544.…' ((Get-RootPidFromResult 'x --mojo-named-platform-channel-pipe=19544.7780.123456789 --y') -eq 19544)
+  Check 'RootPid из results.md: канала нет — 0' ((Get-RootPidFromResult 'nothing') -eq 0)
+
+  # Режим только разбора (-AnalyzeOnly) отдельным процессом PowerShell
+  $exe = (Get-Process -Id $PID).Path
+  $out1 = Join-Path $tmp 'reanalysis-sample'
+  & $exe -NoProfile -ExecutionPolicy Bypass -File $auditScript -AnalyzeOnly -Csv (Join-Path $PSScriptRoot 'fixtures\procmon-sample.csv') -RootPid 1000 -OutDir $out1 | ForEach-Object { Write-Host "  | $_" }
+  Check '-AnalyzeOnly на образце: код 0' ($LASTEXITCODE -eq 0) "code=$LASTEXITCODE"
+  $t1 = ''
+  if (Test-Path -LiteralPath (Join-Path $out1 'results.md')) { $t1 = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $out1 'results.md') }
+  Check '-AnalyzeOnly: results.md с классами событий' ($t1 -like '*Классы событий в журнале (все процессы): файлы *, реестр *, процессы *, сеть *') $t1
+  Check '-AnalyzeOnly: в образце сеть движка — итог «нарушение»' ($t1 -like '*найдено * обращений — нарушение*')
+  Check '-AnalyzeOnly: временная папка движка найдена по командной строке в журнале' ($t1 -like '*rhizomind-webview-4242-0123456789abcdef*')
+  Check '-AnalyzeOnly: записи движка во временной папке не попали в «не учтено»' (-not ((Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $out1 'summary-files.csv')) -like '*rhizomind-webview-4242*'))
+
+  # Журнал как у владельца; RootPid — из results.md рядом с CSV
+  $ownerDir = Join-Path $tmp 'rhizomind-audit-2026-11-01-1922'
+  New-Item -ItemType Directory -Path $ownerDir | Out-Null
+  Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'fixtures\procmon-no-app.csv') -Destination (Join-Path $ownerDir 'capture.csv')
+  Set-Content -LiteralPath (Join-Path $ownerDir 'results.md') -Encoding UTF8 -Value '```', 'msedgewebview2.exe --embedded-browser-webview=1 --mojo-named-platform-channel-pipe=19544.20112.5822364170375591133', '```'
+  & $exe -NoProfile -ExecutionPolicy Bypass -File $auditScript -AnalyzeOnly -Csv (Join-Path $ownerDir 'capture.csv') | ForEach-Object { Write-Host "  | $_" }
+  Check '-AnalyzeOnly без -RootPid: код 0' ($LASTEXITCODE -eq 0) "code=$LASTEXITCODE"
+  $re = @(Get-ChildItem -LiteralPath $ownerDir -Directory -Filter 'reanalysis-*')
+  Check '-AnalyzeOnly: итог в подпапке reanalysis-<дата>, исходный results.md не тронут' ($re.Count -eq 1 -and (Get-Content -Raw -LiteralPath (Join-Path $ownerDir 'results.md')) -like '*19544.20112*')
+  $t2 = ''
+  if ($re.Count -eq 1) { $t2 = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $re[0].FullName 'results.md') }
+  Check '-AnalyzeOnly: RootPid 19544 взят из results.md' ($t2 -like '*PID 19544 (источник: results.md*') $t2
+  Check '-AnalyzeOnly: итог «не доказано» с конкретной причиной' ($t2 -like '***не доказано** — нет ни одного события корневого процесса Rhizomind (PID 19544)*')
+
+  & $exe -NoProfile -ExecutionPolicy Bypass -File $auditScript -AnalyzeOnly -Csv (Join-Path $tmp 'nope.csv') -RootPid 1 | ForEach-Object { Write-Host "  | $_" }
+  Check '-AnalyzeOnly: CSV нет — код 2' ($LASTEXITCODE -eq 2) "code=$LASTEXITCODE"
+} finally {
+  Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # --- Мелкие функции -----------------------------------------------------------
 
 Check 'д/н: «д», «Да», «l», «yes» — да' (@('д', 'Да', 'l', 'YES' | ForEach-Object { ConvertTo-YesNo $_ }) -notcontains $false)
