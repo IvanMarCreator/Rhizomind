@@ -2,7 +2,8 @@
 // решение 72, макет Э13). Заметка со всеми элементами С3.3 на настоящем ядре:
 // снимки в светлой и тёмной теме — курсор вне разметки, курсор на строке с
 // разметкой, режим исходного текста (Ctrl+E); переключение режима не меняет
-// файл; чекбокс щелчком; выбранный режим помнится после перезапуска.
+// файл; чекбокс щелчком; выбранный режим помнится после перезапуска; Enter
+// продолжает список (решение 92).
 import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -385,6 +386,21 @@ describe('живой предпросмотр и режим исходного �
     });
     expect(readFileSync(file, 'utf8')).toBe(SAMPLE.replace('- [ ] Открытая задача', '- [x] Открытая задача'));
     await shotThemes(b, 'checkbox-toggled');
+  });
+
+  it('Enter продолжает список, пустой Enter завершает его (решение 92, задача 2.15)', async () => {
+    const b = browser();
+    const before = readFileSync(file, 'utf8');
+    await cursorTo(b, 'Последняя строка.');
+    // По одной клавише: WebKitWebDriver склеивает одинаковые клавиши подряд в одном вызове.
+    for (const key of ['Enter', ...'- one', 'Enter', ...'two', 'Enter', ...'three', 'Enter', 'Enter', ...'end']) await b.keys(key);
+    const expected = before.replace('Последняя строка.\n', 'Последняя строка.\n- one\n- two\n- three\nend\n');
+    expect(expected, 'образец изменён').not.toBe(before);
+    await b.waitUntil(() => readFileSync(file, 'utf8') === expected, {
+      timeout: 10_000,
+      timeoutMsg: `в файле не тот текст: ${JSON.stringify(readFileSync(file, 'utf8').slice(-80))}`,
+    });
+    await shotThemes(b, 'list-continued');
   });
 
   it('ссылка длиннее колонки переносится, абзацы не шире колонки (Е1, решение 83); нарушений CSP по стилям нет', async () => {
