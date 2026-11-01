@@ -186,10 +186,26 @@ async function waitForFile(file: string, present = true): Promise<void> {
   }
 }
 
+/**
+ * Текст файла; файла нет — пустая строка. Ядро пишет заметку атомарно
+ * (временный файл → замена): на Windows между `existsSync` и `readFileSync`
+ * старый файл может уже исчезнуть, а новый ещё не встать на место — тогда
+ * `ENOENT` значит «файла сейчас нет», и ожидание повторяет чтение (CI,
+ * запуск 41307051366, задача 3.2).
+ */
+function readIfExists(file: string): string {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw error;
+  }
+}
+
 async function waitForContent(file: string, wanted: string, timeout = 5_000): Promise<void> {
   const deadline = Date.now() + timeout;
   for (;;) {
-    const text = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const text = readIfExists(file);
     if (text.includes(wanted)) return;
     if (Date.now() > deadline) throw new Error(`в ${file} нет «${wanted}»: ${JSON.stringify(text.slice(0, 200))}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
