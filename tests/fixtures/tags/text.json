@@ -424,6 +424,78 @@
     },
     {
       "rule": "Т1",
+      "kind": "tag",
+      "note": "перед # символы ASCII категории S*: + = > $ ~ (Р17 п.3)",
+      "text": "+#а =#б >#в $#г ~#д",
+      "tags": [
+        {
+          "raw": "#а",
+          "name": "а",
+          "from": 1,
+          "to": 3,
+          "byte_from": 1,
+          "byte_to": 4
+        },
+        {
+          "raw": "#б",
+          "name": "б",
+          "from": 5,
+          "to": 7,
+          "byte_from": 6,
+          "byte_to": 9
+        },
+        {
+          "raw": "#в",
+          "name": "в",
+          "from": 9,
+          "to": 11,
+          "byte_from": 11,
+          "byte_to": 14
+        },
+        {
+          "raw": "#г",
+          "name": "г",
+          "from": 13,
+          "to": 15,
+          "byte_from": 16,
+          "byte_to": 19
+        },
+        {
+          "raw": "#д",
+          "name": "д",
+          "from": 17,
+          "to": 19,
+          "byte_from": 21,
+          "byte_to": 24
+        }
+      ]
+    },
+    {
+      "rule": "Т1",
+      "kind": "tag",
+      "note": "перед # символы не-ASCII категории S*: © (So) и → (Sm) (Р17 п.3)",
+      "text": "©#тег →#ещё",
+      "tags": [
+        {
+          "raw": "#тег",
+          "name": "тег",
+          "from": 1,
+          "to": 5,
+          "byte_from": 2,
+          "byte_to": 9
+        },
+        {
+          "raw": "#ещё",
+          "name": "ещё",
+          "from": 7,
+          "to": 11,
+          "byte_from": 13,
+          "byte_to": 20
+        }
+      ]
+    },
+    {
+      "rule": "Т1",
       "kind": "not_tag",
       "note": "перед # & — мнемоника HTML (Р17 п.3)",
       "text": "&#123; и &#тег",
