@@ -1,8 +1,9 @@
-//! Меры, которые есть только на Windows: SmartScreen в WebView2 и отчёты
-//! Windows об ошибках (WER) для процесса `rhizomind.exe`.
+//! Меры, которые есть только на Windows: SmartScreen и ускорители браузера в
+//! WebView2, отчёты Windows об ошибках (WER) для процесса `rhizomind.exe`.
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2_13, ICoreWebView2Controller, ICoreWebView2Settings8,
+    ICoreWebView2_13, ICoreWebView2Controller, ICoreWebView2Settings, ICoreWebView2Settings3,
+    ICoreWebView2Settings8,
 };
 use windows::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode,
@@ -62,6 +63,58 @@ pub fn is_reputation_checking_required(
     let mut value = BOOL::default();
     // SAFETY: см. settings8; value — локальная переменная.
     unsafe { settings8(controller)?.IsReputationCheckingRequired(&mut value)? };
+    Ok(value.as_bool())
+}
+
+fn settings(controller: &ICoreWebView2Controller) -> windows::core::Result<ICoreWebView2Settings> {
+    // SAFETY: вызовы COM на главном потоке, где wry создал контроллер.
+    unsafe { controller.CoreWebView2()?.Settings() }
+}
+
+/// Выключает ускорители браузера (решение владельца 94):
+/// `ICoreWebView2Settings3::AreBrowserAcceleratorKeysEnabled = false`. По
+/// документации Microsoft это сочетания возможностей браузера — печать
+/// (Ctrl+P), поиск на странице (Ctrl+F, F3), перезагрузка (Ctrl+R, F5),
+/// масштаб (Ctrl+плюс/минус), средства разработчика (F12, Ctrl+Shift+C),
+/// клавиши «Назад», «Вперёд», «Поиск»; клавиши перемещения и правки текста
+/// (Home/End, Ctrl+X/C/V, Ctrl+A, Ctrl+Z) остаются. Нажатие по-прежнему
+/// доходит до страницы — команды реестра горячих клавиш работают. Tauri этой
+/// настройки не открывает (у wry она есть, но Tauri её не передаёт).
+/// Запасной рубеж в интерфейсе — `src/shell/engineShortcuts.ts`.
+pub fn disable_browser_accelerator_keys(
+    controller: &ICoreWebView2Controller,
+) -> windows::core::Result<()> {
+    // SAFETY: см. settings.
+    unsafe {
+        settings(controller)?
+            .cast::<ICoreWebView2Settings3>()?
+            .SetAreBrowserAcceleratorKeysEnabled(false)
+    }
+}
+
+/// Значение `AreBrowserAcceleratorKeysEnabled` (для интеграционного теста).
+pub fn are_browser_accelerator_keys_enabled(
+    controller: &ICoreWebView2Controller,
+) -> windows::core::Result<bool> {
+    let mut value = BOOL::default();
+    // SAFETY: см. settings; value — локальная переменная.
+    unsafe {
+        settings(controller)?
+            .cast::<ICoreWebView2Settings3>()?
+            .AreBrowserAcceleratorKeysEnabled(&mut value)?
+    };
+    Ok(value.as_bool())
+}
+
+/// Значение `IsZoomControlEnabled` — масштаб страницы сочетаниями и
+/// Ctrl+колесом (для интеграционного теста; выключает его
+/// `zoom_hotkeys_enabled(false)` при создании окна).
+pub fn is_zoom_control_enabled(
+    controller: &ICoreWebView2Controller,
+) -> windows::core::Result<bool> {
+    let mut value = BOOL::default();
+    // SAFETY: см. settings; value — локальная переменная.
+    unsafe { settings(controller)?.IsZoomControlEnabled(&mut value)? };
     Ok(value.as_bool())
 }
 

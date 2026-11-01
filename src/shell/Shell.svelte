@@ -22,6 +22,7 @@
   import { FileTreeState, type TreeHost } from '../tree/tree.svelte.ts';
   import VaultManager from '../vaults/VaultManager.svelte';
   import EmptyState from './EmptyState.svelte';
+  import { isEngineShortcut } from './engineShortcuts.ts';
   import NoteHeader from './NoteHeader.svelte';
   import Notifications from './Notifications.svelte';
   import Ribbon from './Ribbon.svelte';
@@ -213,10 +214,16 @@
    * Поля формы — после самого поля, на всплытии: поле переименования
    * останавливает нажатие у себя, и команды окна в нём не выполняются;
    * клавиши правки текста остаются полю (решение 81).
+   *
+   * Последним — сочетания браузерного движка (решение 94): если нажатие не
+   * стало командой и элемент его не обработал, действие движка (печать,
+   * поиск, перезагрузка, масштаб…) гасится.
    */
   function onKeydownBubble(event: KeyboardEvent) {
-    if (!isFormField(event.target) || event.defaultPrevented) return;
-    runCommand(event, windowCommandInText(model.hotkeys, event));
+    if (isFormField(event.target) && !event.defaultPrevented) {
+      runCommand(event, windowCommandInText(model.hotkeys, event));
+    }
+    if (!event.defaultPrevented && isEngineShortcut(event)) event.preventDefault();
   }
 
   function runCommand(event: KeyboardEvent, command: CommandId | null) {

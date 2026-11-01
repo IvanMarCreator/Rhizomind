@@ -217,6 +217,9 @@ fn build_window<R: Runtime>(
         .additional_browser_args(shell.browser_args())
         // Автозаполнение форм (в Tauri по умолчанию включено).
         .general_autofill_enabled(false)
+        // Масштаб страницы сочетаниями и Ctrl+колесом (решение 94; в Tauri
+        // по умолчанию тоже выключен — здесь явно).
+        .zoom_hotkeys_enabled(false)
         // Windows: окно показывается только после проверки InPrivate у
         // живого движка (harden_platform_webview).
         .visible(!cfg!(windows))
@@ -246,7 +249,8 @@ fn build_window<R: Runtime>(
     Ok(window)
 }
 
-/// Настройки WebView2, которых нет в Tauri: SmartScreen выключается, номер
+/// Настройки WebView2, которых нет в Tauri: SmartScreen и ускорители браузера
+/// (Ctrl+P, Ctrl+F, F5, F12…) выключаются, номер
 /// процесса браузера запоминается для удаления папки данных после выхода;
 /// окно показывается, только если движок подтвердил InPrivate, и выходит на
 /// передний план с фокусом; развёрнутое окно разворачивается после показа (скрытое окно Windows при развороте
@@ -260,6 +264,11 @@ fn harden_platform_webview<R: Runtime>(window: &WebviewWindow<R>, maximize: bool
             let controller = webview.controller();
             if let Err(error) = security::windows::disable_smartscreen(&controller) {
                 eprintln!("Rhizomind: не удалось выключить SmartScreen WebView2: {error}");
+            }
+            // Печать, поиск, перезагрузка, средства разработчика по сочетаниям
+            // движка — выключены (решение 94).
+            if let Err(error) = security::windows::disable_browser_accelerator_keys(&controller) {
+                eprintln!("Rhizomind: не удалось выключить ускорители браузера WebView2: {error}");
             }
             if let Ok(pid) = security::windows::browser_process_id(&controller) {
                 app.state::<Shell>().data_dir.set_browser_pid(pid);
