@@ -606,3 +606,29 @@ describe('«Вставить» из своего меню (решение 98)', 
   });
 });
 
+
+describe('клавиши меню, когда фокус вернулся на место щелчка (WebKitGTK)', () => {
+  it('Esc закрывает меню, стрелка уводит фокус в меню', async () => {
+    await renderShell(WITH_VAULT);
+    await screen.findByText('Нет открытой заметки');
+    const host = document.createElement('div');
+    host.dataset.testHost = '';
+    host.innerHTML = '<input aria-label="поле" value="abc" />';
+    document.body.appendChild(host);
+    const input = host.querySelector('input') as HTMLInputElement;
+
+    input.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+    const menu = await screen.findByRole('menu', { name: 'Правка текста' });
+    input.focus();
+
+    const down = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+    input.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    expect(menu.contains(document.activeElement)).toBe(true);
+
+    input.focus();
+    await fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    host.remove();
+  });
+});

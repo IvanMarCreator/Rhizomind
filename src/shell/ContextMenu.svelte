@@ -32,8 +32,27 @@
     const onPointerDown = (event: PointerEvent) => {
       if (menu && !menu.contains(event.target as Node)) onClose();
     };
+    // Фокус может вернуться туда, где щёлкнули (WebKitGTK ставит его после
+    // события contextmenu): клавиши меню работают и тогда — Esc и Tab
+    // закрывают, стрелки уводят фокус в меню, а не в дерево или поле.
+    const onWindowKeydown = (event: KeyboardEvent) => {
+      if (!menu || menu.contains(document.activeElement)) return;
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        event.stopPropagation();
+        focusItem(event.key === 'ArrowUp' || event.key === 'End' ? -1 : 0);
+      }
+    };
     window.addEventListener('pointerdown', onPointerDown, true);
-    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onWindowKeydown, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onWindowKeydown, true);
+    };
   });
 
   function buttons(): HTMLButtonElement[] {
