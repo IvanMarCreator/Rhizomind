@@ -1,0 +1,232 @@
+# Выпуск (задача 3.4): портативный zip, MSI (для всех пользователей), NSIS (для
+# текущего пользователя), SBOM, список лицензий ядра, SHA-256 всех файлов и
+# черновик релиза в GitHub Releases с описанием из CHANGELOG.md.
+#
+# Когда запускается:
+# - тег v0.1.0 — сборка и ЧЕРНОВИК релиза (draft: виден только участникам
+#   репозитория). Публикует черновик человек на странице Releases (решение
+#   владельца 105: v0.1.0 — после ручного сетевого аудита на второй машине);
+# - тег v0.1.0-rc.N — кандидат для ручного аудита: тоже черновик, с пометкой
+#   «пререлиз» и строкой «Кандидат для ручного аудита, не для распространения»;
+#   тег ставится обычным `git push origin v0.1.0-rc.N`, gh не нужен;
+# - ветка task/*-release — пробный прогон: всё то же, но без релиза (в облачной
+#   среде агентов gh не авторизован, ручной запуск через API недоступен);
+# - ручной запуск (workflow_dispatch) — по умолчанию без релиза; черновик —
+#   только если запуск на теге и отмечено «Создать черновик релиза».
+#
+# Права: сборка — только чтение кода; запись (contents: write) — только у
+# задания, которое создаёт черновик, и только на теге. Сторонних действий для
+# релиза нет: черновик создаёт gh — CLI GitHub из образа раннера. Все actions
+# закреплены по SHA коммита (ADR 0009). Кэша Rust нет: выпуск собирается с нуля.
+# Сеть нужна только машине сборки (npm, crates.io, инструменты WiX и NSIS
+# бандлера Tauri с GitHub); в установщики сетевой код не попадает.
+name: Выпуск
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["task/*-release"]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Создать черновик релиза (только при запуске на теге v*)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Сборка выпуска (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      candidate: ${{ steps.version.outputs.candidate }}
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Установить Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust из rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+
+      # Скрипты установки пакетов не запускаются (.npmrc: ignore-scripts=true).
+      - name: Зависимости интерфейса
+        run: npm ci
+
+      # Тег должен совпадать с версией в package.json, tauri.conf.json и
+      # Cargo.toml. v0.1.0 — выпуск: у раздела версии в CHANGELOG.md настоящая
+      # дата. v0.1.0-rc.N — кандидат для ручного аудита: дата может быть
+      # заглушкой, описание начинается строкой «Кандидат для ручного аудита…».
+      - name: Версия и описание выпуска
+        id: version
+        shell: bash
+        run: |
+          candidate=false
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            out=$(node tools/release/cli.ts version --tag "$GITHUB_REF_NAME")
+            read -r version candidate <<< "$out"
+          else
+            out=$(node tools/release/cli.ts version)
+            read -r version _ <<< "$out"
+          fi
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            node tools/release/cli.ts notes "$version" "$RUNNER_TEMP/release-notes.md"
+          elif [ "$candidate" = true ]; then
+            node tools/release/cli.ts notes "$version" "$RUNNER_TEMP/release-notes.md" --candidate
+          else
+            node tools/release/cli.ts notes "$version" "$RUNNER_TEMP/release-notes.md" --require-date
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          mkdir -p release-notes
+          cp "$RUNNER_TEMP/release-notes.md" release-notes/notes.md
+          cat release-notes/notes.md
+
+      # Одна сборка программы на всё: установщики и портативный zip упаковывают
+      # один и тот же rhizomind.exe (build.beforeBundleCommand и
+      # package-portable отказываются упаковывать тестовую сборку).
+      - name: Программа и установщики MSI, NSIS
+        run: npm run package:installers
+
+      - name: Портативный zip
+        run: node tools/package-portable/cli.ts
+
+      # Крейты всех целей — для перечня зависимостей без сети (npm run sbom
+      # идёт с CARGO_NET_OFFLINE). cargo-cyclonedx и cargo-deny — программы
+      # машины сборки, в Rhizomind не входят.
+      - name: SBOM и список лицензий ядра
+        shell: bash
+        run: |
+          cargo install --locked cargo-deny@0.20.2
+          cargo install --locked cargo-cyclonedx@0.5.9
+          cargo fetch --locked
+          npm run sbom
+
+      - name: Файлы выпуска
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          out=dist-release
+          rm -rf "$out"; mkdir -p "$out"
+          bundle=src-tauri/target/release/bundle
+          msi=$(ls "$bundle"/msi/*.msi); nsis=$(ls "$bundle"/nsis/*-setup.exe)
+          [ "$(echo "$msi" | wc -l)" = 1 ] && [ "$(echo "$nsis" | wc -l)" = 1 ] || { echo "ожидался один MSI и один NSIS: $msi $nsis"; exit 1; }
+          cp "$msi" "$out/rhizomind-$VERSION-windows-x64.msi"
+          cp "$nsis" "$out/rhizomind-$VERSION-windows-x64-user-setup.exe"
+          cp "release/rhizomind-$VERSION-windows-x64-portable.zip" "$out/"
+          cp release/sbom-rust.cdx.json release/sbom-npm.cdx.json release/licenses-rust.json "$out/"
+          ls -l "$out"
+
+      # Установка, запуск и удаление на чистом раннере: MSI — для всех
+      # пользователей (у раннера права администратора), NSIS — для текущего
+      # пользователя; что пишет каждый установщик и что остаётся — в отчёте.
+      - name: Проверка установщиков (поставить, запустить, удалить)
+        shell: powershell
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/installer/check-installers.ps1 `
+            -Msi "dist-release\rhizomind-$env:VERSION-windows-x64.msi" `
+            -Nsis "dist-release\rhizomind-$env:VERSION-windows-x64-user-setup.exe" `
+            -Report "installer-check\installer-check.md"
+          exit $LASTEXITCODE
+
+      - name: Контрольные суммы SHA-256
+        run: node tools/release/cli.ts checksums dist-release
+
+      - name: Загрузить файлы выпуска
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rhizomind-release-${{ steps.version.outputs.version }}
+          path: dist-release/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Загрузить описание выпуска
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes/notes.md
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Загрузить отчёт проверки установщиков
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installer-check
+          path: installer-check/
+          retention-days: 30
+          if-no-files-found: warn
+
+  draft:
+    name: Черновик релиза
+    needs: build
+    if: ${{ github.ref_type == 'tag' && (github.event_name == 'push' || inputs.create_release) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Файлы выпуска
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rhizomind-release-${{ needs.build.outputs.version }}
+          path: dist-release
+
+      - name: Описание выпуска
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: release-notes
+
+      # Контрольные суммы сверяются ещё раз после передачи между заданиями.
+      # Релиз создаётся черновиком: публикует человек. Повторный запуск на том
+      # же теге заменяет файлы черновика, а не создаёт второй.
+      - name: Создать черновик релиза
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          CANDIDATE: ${{ needs.build.outputs.candidate }}
+        run: |
+          prerelease=(); title="Rhizomind $VERSION"
+          if [ "$CANDIDATE" = true ]; then prerelease=(--prerelease); title="Rhizomind $TAG (кандидат для аудита)"; fi
+          cd dist-release
+          sha256sum --check SHA256SUMS.txt
+          ls -l
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != true ]; then
+              echo "Релиз $TAG уже опубликован — файлы не заменяются"; exit 1
+            fi
+            gh release upload "$TAG" ./* --clobber
+            gh release edit "$TAG" --notes-file ../release-notes/notes.md "${prerelease[@]}"
+          else
+            gh release create "$TAG" ./* --draft --verify-tag "${prerelease[@]}" \
+              --title "$title" --notes-file ../release-notes/notes.md
+          fi
+          gh release view "$TAG" --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[].name]}'
