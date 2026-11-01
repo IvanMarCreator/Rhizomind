@@ -12,8 +12,8 @@
 
 ### Страница интерфейса
 - **CSP** задаётся в `tauri.conf.json` и не содержит внешних хостов:
-  `default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
-  На Windows интерфейс и вызовы ядра идут через `http://tauri.localhost` и `http://ipc.localhost`: эти адреса перехватывает wry внутри процесса приложения, до сети они не доходят. Tauri добавляет в CSP хэши своих скриптов. Точная строка уточняется в задаче каркаса и проверяется тестом.
+  `default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' blob: data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
+  На Windows интерфейс и вызовы ядра идут через `http://tauri.localhost` и `http://ipc.localhost`: эти адреса перехватывает wry внутри процесса приложения, до сети они не доходят. Tauri добавляет в CSP хэши своих скриптов. Точная строка уточняется в задаче каркаса и проверяется тестом. Источник `asset:` / `http://asset.localhost` в `img-src` убран (аудит 3.3, З2): протокол `asset:` выключен (`protocol-asset` запрещён в `deny.toml`), упоминание в CSP только вызывало вопросы.
 - **Isolation pattern** включён: каждый вызов ядра проходит через изолированный iframe и шифруется (AES-GCM); код в изолированном iframe проверяет имя команды по списку разрешённых.
 - **`freezePrototype: true`** — прототипы встроенных объектов заморожены, подмена `Object.prototype` чужим скриптом не влияет на мост к ядру.
 - **Запрет навигации, новых окон и загрузок:** обработчики `on_navigation` (разрешён только адрес своего интерфейса), `on_new_window` (запрет), `on_download` (запрет). Разрешения браузера (камера, микрофон, геолокация, уведомления) отклоняются через `with_webview`.
@@ -50,3 +50,7 @@
 - Права плагина `opener` для интерфейса: открытие ссылки без подтверждения.
 - Права `fs:*` с областью «хранилище»: область плагина расширяется выбором в диалоге, а символические ссылки и точки соединения NTFS он не проверяет так, как нужно нам; файлы — только своими командами.
 - Проверка сетевого кода только регулярными выражениями (как в каркасе Electron): обходится и даёт ложные срабатывания.
+
+## Дополнение (01.11.2026, решение 99)
+
+Вместо `cargo-about` список лицензий Rust-крейтов для выпуска получается командой `cargo deny list` — этот инструмент уже закреплён в CI (`cargo deny check`); результат — `release/licenses-rust.json`, его строит `tools/sbom/cli.ts` вместе с SBOM CycloneDX 1.5 для цели `x86_64-pc-windows-msvc`.

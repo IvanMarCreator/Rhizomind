@@ -14,12 +14,23 @@ fn config() -> Value {
 }
 
 const EXPECTED_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; \
-connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; \
+connect-src ipc: http://ipc.localhost; img-src 'self' blob: data:; \
 object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 #[test]
 fn csp_has_no_external_hosts_and_matches_adr_0009() {
     assert_eq!(config()["app"]["security"]["csp"], EXPECTED_CSP);
+}
+
+#[test]
+fn csp_does_not_mention_disabled_asset_protocol() {
+    // Протокол `asset:` выключен (функция `protocol-asset` запрещена в
+    // deny.toml) — в CSP выпуска и разработки его нет (аудит 3.3, З2).
+    let security = &config()["app"]["security"];
+    for key in ["csp", "devCsp"] {
+        let csp = security[key].as_str().expect(key);
+        assert!(!csp.contains("asset"), "{key}: {csp}");
+    }
 }
 
 /// CSP как словарь «директива → источники».
