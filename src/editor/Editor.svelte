@@ -188,9 +188,9 @@
   .title {
     margin: 0 0 10px;
     color: var(--text-primary);
-    font-size: 28px;
+    font-size: calc(var(--note-font-size, 16px) * 1.75);
     font-weight: 700;
-    line-height: 36px;
+    line-height: 1.2857;
     overflow-wrap: anywhere;
   }
 

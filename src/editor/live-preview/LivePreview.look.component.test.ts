@@ -26,7 +26,10 @@ const SAMPLE = [
   '> > Вложенная',
   '> > > Третий уровень',
   '- Пункт списка',
+  '  - Вложенный',
+  '    - Ещё глубже',
   '- [ ] Задача',
+  '1. Первый',
   '```',
   'код',
   '```',
@@ -133,20 +136,64 @@ describe('цитата: по полосе 3 px на каждый уровень,
   });
 });
 
-describe('списки: маркер в колонке 20, зазор 6 до текста (Н8)', () => {
-  it('точка заменяет маркер вместе с пробелом: колонка 20 px и зазор 6 px', () => {
-    const element = line(mount(16), 'Пункт списка');
+describe('списки: маркер в колонке 20, зазор 6 до текста (Н8); размеры — от размера шрифта (задача 2.20)', () => {
+  // Размеры значков — в `em` от размера шрифта: при 32 px вдвое больше, чем при 16.
+  it.each([16, 32])('точка заменяет маркер вместе с пробелом: колонка 20 и зазор 6 при 16 px (при %i)', (base) => {
+    const k = base / 16;
+    const element = line(mount(base), 'Пункт списка');
     expect(element.textContent).toBe('Пункт списка');
     const bullet = element.querySelector('.cm-rz-bullet') as HTMLElement;
     const style = getComputedStyle(bullet);
-    expect([style.width, style.marginRight]).toEqual(['20px', '6px']);
+    expect([px(style.width), px(style.marginRight)]).toEqual([20 * k, 6 * k]);
+    // Точка — псевдоэлемент: jsdom его стили не считает, размер — в сценарном тесте.
   });
 
-  it('чекбокс 16 px по центру колонки 20 и зазор 6: поля 2 и 8 px', () => {
-    const element = line(mount(16), 'Задача');
+  it.each([16, 32])('чекбокс 16 по центру колонки 20 и зазор 6 при 16 px: поля 2 и 8 (при %i)', (base) => {
+    const k = base / 16;
+    const element = line(mount(base), 'Задача');
     expect(element.textContent).toBe('Задача');
     const style = getComputedStyle(element.querySelector('.cm-rz-checkbox') as HTMLElement);
-    expect([style.width, style.marginLeft, style.marginRight]).toEqual(['16px', '2px', '8px']);
+    expect([style.width, style.height, style.marginLeft, style.marginRight].map(px)).toEqual([16 * k, 16 * k, 2 * k, 8 * k]);
+  });
+
+  it.each([16, 32])('номер нумерованного списка — в колонке маркера, как точка; пробел за ним без ширины (при %i)', (base) => {
+    const k = base / 16;
+    const element = line(mount(base), 'Первый');
+    // Пробел за номером остаётся в тексте строки — без ширины.
+    expect(element.textContent).toBe('1. Первый');
+    const number = getComputedStyle(element.querySelector('.cm-rz-list-number') as HTMLElement);
+    expect([number.display, px(number.minWidth), px(number.marginRight), number.textAlign]).toEqual(['inline-block', 20 * k, 6 * k, 'center']);
+    const gap = getComputedStyle(element.querySelector('.cm-rz-list-gap') as HTMLElement);
+    expect([gap.display, gap.width, gap.overflow]).toEqual(['inline-block', '0px', 'hidden']);
+  });
+
+  it.each([16, 32])('вложенный пункт: отступ 26 на уровень при 16 px вместо ширины пробелов (при %i)', (base) => {
+    const k = base / 16;
+    const target = mount(base);
+    for (const [fragment, width] of [['Вложенный', 26], ['Ещё глубже', 52]] as const) {
+      const indent = line(target, fragment).querySelector('.cm-rz-list-indent') as HTMLElement;
+      const style = getComputedStyle(indent);
+      expect([style.display, px(style.width), style.overflow], fragment).toEqual(['inline-block', width * k, 'hidden']);
+    }
+  });
+});
+
+describe('промежуток между блоками: 10 px при 16 (tokens.md, задача 2.20)', () => {
+  const GAP = 'calc(var(--note-font-size, 16px) * 0.625)';
+  it('у последней строки блока — прозрачная граница снизу, фон и полосы цитаты в неё не заходят', () => {
+    const target = mount(16);
+    const style = getComputedStyle(line(target, 'Текст'));
+    expect([style.borderBottomWidth, style.borderBottomStyle, style.backgroundClip]).toEqual([GAP, 'solid', 'padding-box']);
+    const quote = getComputedStyle(line(target, 'Третий уровень'));
+    expect([quote.borderBottomWidth, quote.backgroundClip]).toEqual([GAP, 'padding-box']);
+    // Строки одной цитаты и одного списка — без промежутка.
+    expect(getComputedStyle(line(target, 'Вложенная')).borderBottomWidth).toBe('0px');
+    expect(getComputedStyle(line(target, 'Пункт списка')).borderBottomWidth).toBe('0px');
+  });
+
+  it('под блоком кода — граница сверху у следующей строки', () => {
+    const style = getComputedStyle(line(mount(16), 'Ссылка:'));
+    expect([style.borderTopWidth, style.borderTopStyle]).toEqual([GAP, 'solid']);
   });
 });
 
