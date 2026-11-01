@@ -37,7 +37,8 @@
 #     была (в том числе при сбое скрипта), события скрипт не стирает;
 #   - сам Windows PowerShell ведёт свои журналы (история команд PSReadLine и
 #     т. п.) — как при любом запуске PowerShell.
-# Удаляет скрипт только то, что создал сам. Журнал Process Monitor
+# Скрипт ничего не удаляет (и свои capture.pml/capture.csv тоже — их удаляете
+# вы после разбора). Журнал Process Monitor
 # (capture.pml, capture.csv) содержит всё, что делала машина: его не
 # пересылайте, пересылайте results.md и summary-*.csv.
 param(
@@ -97,11 +98,11 @@ function Ask([string] $question, [string] $default = '') {
 }
 
 # Ответ «да/нет». Принимает русскую и английскую раскладку: «д» на английской
-# раскладке — «l», «н» на английской — «y» (это «yes»), поэтому «y» — «да»,
-# «т» (n на русской раскладке) — «нет».
+# раскладке — «l». Одиночное «y» не принимается: это «н» в английской
+# раскладке (принимается «yes»); «т» (n на русской раскладке) — «нет».
 function ConvertTo-YesNo([string] $answer) {
   $a = ([string]$answer).Trim().ToLowerInvariant()
-  if ($a -in @('д', 'да', 'l', 'y', 'yes', 'lf')) { return $true }
+  if ($a -in @('д', 'да', 'l', 'yes', 'lf')) { return $true }
   if ($a -in @('н', 'нет', 'n', 'no', 'т', 'ytn')) { return $false }
   return $null
 }
@@ -431,11 +432,15 @@ function Invoke-ProcmonAnalysis {
     [Parameter(Mandatory = $true)] [string] $CsvPath,
     [int[]] $OwnPids = @(),
     [string[]] $VaultRoots = @(),
+    [int] $RootPid = 0,
     [string] $EngineDir = '',
     [string] $AppDataDir = (Join-Path $env:LOCALAPPDATA 'Rhizomind')
   )
   $own = New-Object 'System.Collections.Generic.HashSet[int]'
   foreach ($p in $OwnPids) { if ($p) { [void]$own.Add([int]$p) } }
+  # Корневой процесс (rhizomind.exe, запущенный скриптом): по умолчанию — первый
+  # из OwnPids. Нет его событий в журнале — журнал ничего не доказывает.
+  if (-not $RootPid -and @($OwnPids).Count -gt 0) { $RootPid = [int]@($OwnPids)[0] }
 
   # Разрешённые для записи префиксы — во всех формах пути (полная и 8.3).
   $allowed = New-Object System.Collections.Generic.List[string]
@@ -451,7 +456,7 @@ function Invoke-ProcmonAnalysis {
   $longCache = @{}
 
   $r = [pscustomobject]@{
-    Rows = 0; Own = $own
+    Rows = 0; RootRows = 0; Own = $own
     NetOwn = @{}; NetAll = @{}; FileOut = @{}; RegOut = @{}; Dictionaries = @{}
     DnsOwn = 0; DnsAll = 0
   }
@@ -461,6 +466,7 @@ function Invoke-ProcmonAnalysis {
     $op = [string]$_.Operation
     $procName = [string]$_.'Process Name'
     $procId = 0; [void][int]::TryParse([string]$_.PID, [ref]$procId)
+    if ($RootPid -and $procId -eq $RootPid) { $r.RootRows++ }
     if ($op -eq 'Process Create' -and $own.Contains($procId)) {
       $m = [regex]::Match([string]$_.Detail, 'PID: (\d+), Command line: (.*)')
       if ($m.Success -and $m.Groups[2].Value -match 'msedgewebview2\.exe|rhizomind\.exe') { [void]$own.Add([int]$m.Groups[1].Value) }
@@ -510,6 +516,17 @@ function Invoke-ProcmonAnalysis {
   return $r
 }
 
+# Что доказывает журнал Process Monitor для итога:
+#   no-procmon — запуск с -NoProcmon (итог только по опросу соединений);
+#   not-proven — журнал не разобран (CSV нет), пуст или в нём нет ни одного
+#                события корневого процесса Rhizomind (фильтр, /LoadConfig);
+#   analysed   — разобран и содержит события Rhizomind.
+function Get-ProcmonVerdict([switch] $NoProcmon, [object] $Analysis) {
+  if ($NoProcmon) { return 'no-procmon' }
+  if ($null -eq $Analysis -or $Analysis.Rows -eq 0 -or $Analysis.RootRows -eq 0) { return 'not-proven' }
+  return 'analysed'
+}
+
 function Write-Table([string] $title, [hashtable] $data, [string[]] $headers, [string] $file) {
   Note "`n### $title`n"
   if ($data.Count -eq 0) { Note 'Нет.'; return }
@@ -530,7 +547,9 @@ if ($LibraryOnly) { return }
 
 # =============================================================================
 # Сценарий. Всё — внутри try/finally: при любом сбое или Ctrl+C Process Monitor
-# останавливается, журнал DNS возвращается как был.
+# останавливается, журнал DNS возвращается как был. Закрытие окна PowerShell
+# крестиком finally НЕ выполняет: тогда остановите Process Monitor сами
+# (Procmon64.exe /Terminate) и верните журнал DNS (wevtutil sl … /e:false).
 # =============================================================================
 
 $script:ProcmonStarted = $false
@@ -538,6 +557,7 @@ $script:ProcmonStopped = $false
 $script:DnsChanged = $false
 $script:DnsWasEnabled = $false
 $script:ExitCode = 0
+$script:Completed = $false
 $script:EngineDir = ''
 
 function Stop-Procmon {
@@ -979,8 +999,9 @@ try {
       if (-not (Confirm 'CSV сохранён вручную (иначе — без разбора журнала)?')) { break }
     }
     if (Test-Path -LiteralPath $Csv) {
-      $analysis = Invoke-ProcmonAnalysis -CsvPath $Csv -OwnPids $ownPids.ToArray() -VaultRoots $vaultRoots.ToArray() -EngineDir $script:EngineDir
-      Note "- Событий в журнале: $($analysis.Rows); процессов Rhizomind и движка: $($analysis.Own.Count)"
+      $analysis = Invoke-ProcmonAnalysis -CsvPath $Csv -OwnPids $ownPids.ToArray() -RootPid $script:RootPid -VaultRoots $vaultRoots.ToArray() -EngineDir $script:EngineDir
+      Note "- Событий в журнале: $($analysis.Rows); из них корневого процесса Rhizomind: $($analysis.RootRows); процессов Rhizomind и движка: $($analysis.Own.Count)"
+      if ($analysis.RootRows -eq 0) { Bad 'В журнале нет ни одного события Rhizomind — скорее всего, в Process Monitor остался фильтр (Filter → Reset Filter).' }
       Write-Table 'Сеть процессов Rhizomind и движка (должно быть пусто)' $analysis.NetOwn @('Процесс', 'Протокол', 'Адрес') 'summary-network-app.csv'
       Note "`n- Запросы DNS (UDP Send на порт 53) процессов Rhizomind и движка: $($analysis.DnsOwn) (должно быть 0 — подтверждение ``--host-resolver-rules``); всех процессов машины: $($analysis.DnsAll)"
       Write-Table 'Сеть всех процессов машины за время аудита (сверка со списком SECURITY.md)' $analysis.NetAll @('Процесс', 'Протокол', 'Адрес', 'Оценка') 'summary-network-all.csv'
@@ -1018,7 +1039,11 @@ try {
   Stage 'Итог'
   $appNet = $script:LiveFindings.Count
   if ($analysis) { $appNet += $analysis.NetOwn.Count }
-  if ($appNet -eq 0) {
+  $pmVerdict = Get-ProcmonVerdict -NoProcmon:$NoProcmon -Analysis $analysis
+  if ($appNet -eq 0 -and $pmVerdict -eq 'not-proven') {
+    Bad 'Не доказано: журнал Process Monitor не разобран или не содержит событий Rhizomind. Опрос соединений обращений не нашёл, но этого мало.'
+    Note "`n**Итог по сети приложения:** **не доказано: журнал Process Monitor не разобран или не содержит событий Rhizomind (фильтр?)** Опрос соединений обращений не нашёл; аудит нужно повторить с рабочим журналом."
+  } elseif ($appNet -eq 0) {
     Good 'Процессы Rhizomind и движка не обращались к сети.'
     if ($NoProcmon) {
       Note "`n**Итог по сети приложения:** опрос соединений обращений не нашёл; журнал Process Monitor не снимался (-NoProcmon) — для критериев 3 и 4 этого недостаточно."
@@ -1038,6 +1063,7 @@ try {
   $extra = Ask 'Что ещё заметили (Enter — ничего)'
   if ($extra) { Note $extra }
   Note "`nАудит завершён: $(Get-Date -Format 'yyyy-MM-dd HH:mm')."
+  $script:Completed = $true
 } catch [System.OperationCanceledException] {
   Bad $_.Exception.Message
   if ($script:Results -and (Test-Path -LiteralPath $script:Results)) { Note "`n**Аудит прерван:** $($_.Exception.Message)" }
@@ -1060,7 +1086,8 @@ try {
       Write-Host '  Журнал DNS возвращён в прежнее состояние (выключен).' -ForegroundColor Yellow
     } catch { Write-Host "  !!  Не удалось вернуть журнал DNS: $($_.Exception.Message). Выключите: wevtutil sl $DnsLogName /e:false" -ForegroundColor Red }
   }
-  if ($script:RootPid -and $script:ExitCode -ne 0) {
+  # Сбой, остановка или Ctrl+C (после Ctrl+C catch не выполняется — только finally).
+  if ($script:RootPid -and -not $script:Completed) {
     $alive = @(Get-AppTree | Where-Object { Test-OwnImage $_.Name })
     if ($alive.Count -gt 0) { Write-Host '  Rhizomind ещё запущен — закройте его окно сами.' -ForegroundColor Yellow }
   }
