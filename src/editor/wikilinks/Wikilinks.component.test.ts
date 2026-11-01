@@ -118,7 +118,7 @@ afterEach(() => {
 });
 
 describe('щелчок по вики-ссылке (С3.4, решение 76)', () => {
-  it('вне строки с курсором — обычный щелчок открывает заметку и переходит к заголовку', async () => {
+  it('курсор на другой строке — обычный щелчок открывает заметку и переходит к заголовку', async () => {
     const { view, model, calls } = await openHome();
     cursorToEnd(view);
 
@@ -132,9 +132,19 @@ describe('щелчок по вики-ссылке (С3.4, решение 76)', (
     expect(model.canGoBack).toBe(true);
   });
 
-  it('на строке с курсором обычный щелчок — правка, Ctrl+щелчок — переход', async () => {
+  it('курсор на строке, но вне ссылки (решение 93) — обычный щелчок открывает', async () => {
     const { view, model } = await openHome();
     view.dispatch({ selection: { anchor: 2 } });
+
+    await fireEvent.mouseDown(wikiLink(view, 'Альфа/Встреча#Итоги|итоги'), { button: 0 });
+
+    await waitFor(() => expect(model.currentPath).toEqual(MEETING));
+  });
+
+  it('курсор в ссылке (раскрыта) — обычный щелчок — правка, Ctrl+щелчок — переход (решения 76, 93)', async () => {
+    const { view, model } = await openHome();
+    // Прежде курсор стоял в «См.»: по решению 93 это вне ссылки — она не раскрыта.
+    view.dispatch({ selection: { anchor: HOME_TEXT.indexOf('итоги]]') + 2 } });
 
     await fireEvent.mouseDown(wikiLink(view, 'Альфа/Встреча#Итоги|итоги'), { button: 0 });
     await new Promise((resolve) => setTimeout(resolve, 20));

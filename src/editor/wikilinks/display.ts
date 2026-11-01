@@ -47,7 +47,7 @@ export function wikiPieces(text: string, open: number, close: number): Piece[] |
   const bar = inner.indexOf('|');
   if (target.alias !== null && bar >= 0) {
     const [from, to] = trimmed(text, innerFrom + bar + 1, close);
-    return [{ kind: 'hide', from: open, to: from }, mark(from, to), { kind: 'hide', from: to, to: end }];
+    return [{ kind: 'hide', from: open, to: from, owner: link }, mark(from, to), { kind: 'hide', from: to, to: end, owner: link }];
   }
 
   // Цель без псевдонима: имя — последний компонент пути до `#`.
@@ -63,13 +63,13 @@ export function wikiPieces(text: string, open: number, close: number): Piece[] |
   const nameTo = visibleFrom + target.name.length;
 
   if (target.heading === null) {
-    return [{ kind: 'hide', from: open, to: visibleFrom }, mark(visibleFrom, nameTo), { kind: 'hide', from: nameTo, to: end }];
+    return [{ kind: 'hide', from: open, to: visibleFrom, owner: link }, mark(visibleFrom, nameTo), { kind: 'hide', from: nameTo, to: end, owner: link }];
   }
   const [headingFrom, headingTo] = trimmed(text, pathEnd + 1, targetEnd);
   return [
-    { kind: 'hide', from: open, to: visibleFrom },
+    { kind: 'hide', from: open, to: visibleFrom, owner: link },
     mark(visibleFrom, headingTo),
-    { kind: 'widget', widget: 'wiki-heading', from: nameTo, to: headingFrom },
-    { kind: 'hide', from: headingTo, to: end },
+    { kind: 'widget', widget: 'wiki-heading', from: nameTo, to: headingFrom, owner: link },
+    { kind: 'hide', from: headingTo, to: end, owner: link },
   ];
 }

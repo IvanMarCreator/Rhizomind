@@ -11,7 +11,7 @@
    Правила строк — с `.cm-content`: они сильнее `.cm-line { padding: 0 }`
    в NoteText.svelte и базовой темы в codemirror-base.css. */
 
-/* Разметка на строке с курсором. */
+/* Разметка у элемента с курсором (решение 93). */
 .cm-editor .cm-rz-markup {
   color: var(--text-faint);
 }

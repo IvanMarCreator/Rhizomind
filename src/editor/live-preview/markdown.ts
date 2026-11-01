@@ -40,14 +40,21 @@ export interface MarkPiece extends Span {
 
 /**
  * Что сделать с участком строки:
- * - `hide` — разметка: скрыть вне строки с курсором, приглушить на ней;
- * - `widget` — разметка, которую вне строки с курсором заменяет значок
- *   (точка списка, чекбокс, линия); на строке с курсором — приглушить;
+ * - `hide` — разметка: скрыть, пока элемент не раскрыт, приглушить в раскрытом;
+ * - `widget` — разметка, которую в нераскрытом элементе заменяет значок
+ *   (точка списка, чекбокс, линия); в раскрытом — приглушить;
  * - `mark` — оформить текст классом всегда.
+ *
+ * `owner` — элемент, которому принадлежит разметка (решение 93): элемент
+ * раскрыт, если курсор или выделение задевает `owner`, включая его края. У
+ * строчных элементов это весь элемент от открывающих до закрывающих
+ * символов; у маркеров блоков (`#`, `>`, `-`, `1.`, `[ ]`, линия) — вся
+ * строка: блок — один элемент, его маркер виден, когда курсор в любом месте
+ * строки (уточнение владельца к решению 93).
  */
 export type Piece =
-  | ({ kind: 'hide' } & Span)
-  | ({ kind: 'widget'; widget: WidgetKind } & Span)
+  | ({ kind: 'hide'; owner: Span } & Span)
+  | ({ kind: 'widget'; widget: WidgetKind; owner: Span } & Span)
   | MarkPiece;
 
 export interface LineMarkup {
@@ -86,6 +93,9 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
   const classes: string[] = [];
   let pos = 0;
 
+  // Маркеры блока — один элемент на всю строку (решение 93).
+  const block: Span = { from: 0, to: text.length };
+
   // Цитата, в том числе вложенная: `> > текст` — по полосе на уровень.
   let depth = 0;
   for (;;) {
@@ -93,7 +103,7 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
     const m = QUOTE_AT.exec(text);
     if (!m) break;
     const indent = m[0].indexOf('>');
-    pieces.push({ kind: 'hide', from: pos + indent, to: pos + m[0].length });
+    pieces.push({ kind: 'hide', from: pos + indent, to: pos + m[0].length, owner: block });
     pos += m[0].length;
     depth++;
   }
@@ -104,7 +114,7 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
   if (rule && (rule[1] !== '-' || breaksParagraph(previous))) {
     const from = pos + rest.length - rest.trimStart().length;
     const to = pos + rest.trimEnd().length;
-    pieces.push({ kind: 'widget', widget: 'rule', from, to });
+    pieces.push({ kind: 'widget', widget: 'rule', from, to, owner: block });
     return { lineClass: joinClasses(classes), pieces };
   }
 
@@ -115,12 +125,12 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
   const list = heading ? null : LIST.exec(rest);
   if (heading) {
     const level = heading[2]?.length ?? 1;
-    pieces.push({ kind: 'hide', from: pos + (heading[1]?.length ?? 0), to: pos + heading[0].length });
     contentFrom = pos + heading[0].length;
+    pieces.push({ kind: 'hide', from: pos + (heading[1]?.length ?? 0), to: contentFrom, owner: block });
     const close = headingClose(text, contentFrom);
     if (close) {
       contentTo = close.from;
-      pieces.push({ kind: 'hide', from: close.from, to: close.to });
+      pieces.push({ kind: 'hide', from: close.from, to: close.to, owner: block });
     }
     classes.push(`cm-rz-heading cm-rz-h${level}`);
   } else if (list) {
@@ -132,11 +142,11 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
     if (task) {
       const boxFrom = markerTo + task[0].length - 3;
       const checked = task[1] !== ' ';
-      if (ordered) pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
-      else pieces.push({ kind: 'hide', from: markerFrom, to: boxFrom });
       // Значок с пробелом за ним: зазор до текста задаёт значок (tokens.md «Списки»).
       const boxTo = boxFrom + 3 + (isBlank(text[boxFrom + 3]) ? 1 : 0);
-      pieces.push({ kind: 'widget', widget: checked ? 'checkbox-checked' : 'checkbox', from: boxFrom, to: boxTo });
+      if (ordered) pieces.push({ kind: 'mark', cls: 'cm-rz-list-number', from: markerFrom, to: markerTo });
+      else pieces.push({ kind: 'hide', from: markerFrom, to: boxFrom, owner: block });
+      pieces.push({ kind: 'widget', widget: checked ? 'checkbox-checked' : 'checkbox', from: boxFrom, to: boxTo, owner: block });
       if (checked) classes.push('cm-rz-task-done');
       contentFrom = boxTo;
     } else if (ordered) {
@@ -144,7 +154,7 @@ export function parseLine(text: string, previous: string | null): LineMarkup {
       contentFrom = markerTo;
     } else {
       const bulletTo = markerTo + (isBlank(text[markerTo]) ? 1 : 0);
-      pieces.push({ kind: 'widget', widget: 'bullet', from: markerFrom, to: bulletTo });
+      pieces.push({ kind: 'widget', widget: 'bullet', from: markerFrom, to: bulletTo, owner: block });
       contentFrom = bulletTo;
     }
   }
@@ -272,9 +282,10 @@ function codeSpan(ctx: InlineContext, start: number, to: number, out: Piece[]): 
   const close = closingRun(ctx, openEnd, openEnd - start);
   if (close >= to) return openEnd;
   const end = close + (openEnd - start);
-  out.push({ kind: 'hide', from: start, to: openEnd });
+  const owner = { from: start, to: end };
+  out.push({ kind: 'hide', from: start, to: openEnd, owner });
   if (close > openEnd) out.push({ kind: 'mark', cls: 'cm-rz-code', from: openEnd, to: close });
-  out.push({ kind: 'hide', from: close, to: end });
+  out.push({ kind: 'hide', from: close, to: end, owner });
   return end;
 }
 
@@ -388,12 +399,13 @@ function link(ctx: InlineContext, start: number, to: number, out: Piece[]): numb
 
   const target = destination(ctx, close + 2, to);
   if (!target) return start + 1;
-  out.push({ kind: 'hide', from: start, to: start + 1 });
+  const owner = { from: start, to: target.end };
+  out.push({ kind: 'hide', from: start, to: start + 1, owner });
   if (close > start + 1) {
-    out.push({ kind: 'mark', cls: 'cm-rz-link', url: target.url, link: { from: start, to: target.end }, from: start + 1, to: close });
+    out.push({ kind: 'mark', cls: 'cm-rz-link', url: target.url, link: owner, from: start + 1, to: close });
     parseInline(ctx, start + 1, close, out);
   }
-  out.push({ kind: 'hide', from: close, to: target.end });
+  out.push({ kind: 'hide', from: close, to: target.end, owner });
   return target.end;
 }
 
@@ -549,9 +561,10 @@ function emphasis(delimiters: Delimiter[], out: Piece[]): void {
       const cls = closer.char === '~' ? 'cm-rz-strike' : EMPHASIS_CLASS[use];
       const openMarker = opener.to - use;
       const closeMarker = closer.from + use;
-      out.push({ kind: 'hide', from: openMarker, to: opener.to });
+      const owner = { from: openMarker, to: closeMarker };
+      out.push({ kind: 'hide', from: openMarker, to: opener.to, owner });
       if (closer.from > opener.to) out.push({ kind: 'mark', cls, from: opener.to, to: closer.from });
-      out.push({ kind: 'hide', from: closer.from, to: closeMarker });
+      out.push({ kind: 'hide', from: closer.from, to: closeMarker, owner });
       opener.to = openMarker;
       closer.from = closeMarker;
       // Серии между парой больше ни с чем не сопоставляются.

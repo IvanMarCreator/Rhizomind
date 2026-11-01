@@ -1,15 +1,18 @@
 // Живой предпросмотр (С3.3, ADR 0001): оформление поверх текста. Документ
-// редактора не меняется — разметка только прячется (вне строки с курсором)
-// или приглушается (на ней). Режим исходного текста — без этого расширения:
-// вся разметка видна как есть.
+// редактора не меняется — разметка только прячется или приглушается. По
+// решению 93 раскрыт (разметка видна приглушённо) только элемент, который
+// задевает курсор или выделение, включая его края: строчный элемент — сам по
+// себе, маркер блока (`#`, `>`, `-`, `1.`, `[ ]`) — когда курсор где угодно
+// на его строке. Режим исходного текста — без этого расширения: вся разметка
+// видна как есть.
 //
 // Ссылки `[текст](адрес)` — без элементов `<a>` и переходов в окне: щелчок
 // передаёт адрес наверх, окно открывает его командой ядра `open_external`
 // с подтверждением (С3.4, docs/SECURITY.md). Вики-ссылки (задача 2.6) —
 // только переход к заметке хранилища через `WikiHost`, никогда не
-// `open_external`. Щелчок открывает ссылку вне строки с курсором, на ней —
-// Ctrl+щелчок (решение 76); в режиме исходного текста — Ctrl+щелчок
-// (`sourceLinks`).
+// `open_external`. Щелчок открывает нераскрытую ссылку, раскрытую (курсор в
+// ней или у её края) — Ctrl+щелчок (решения 76 и 93); в режиме исходного
+// текста — Ctrl+щелчок (`sourceLinks`).
 import {
   Facet,
   RangeSet,
@@ -385,16 +388,9 @@ function lineDecoration(cls: string): Decoration {
 
 // ---- Оформление --------------------------------------------------------------
 
-/** Строки, на которых стоит курсор или выделение: там разметка видна. */
-function activeLines(state: EditorState): { from: number; to: number }[] {
-  return state.selection.ranges.map((range) => ({
-    from: state.doc.lineAt(range.from).from,
-    to: state.doc.lineAt(range.to).to,
-  }));
-}
-
-function touches(active: { from: number; to: number }[], from: number, to: number): boolean {
-  return active.some((range) => range.from <= to && range.to >= from);
+/** Задевает ли курсор или выделение участок `[from, to]`, включая края (решение 93). */
+function touches(state: EditorState, from: number, to: number): boolean {
+  return state.selection.ranges.some((range) => range.from <= to && range.to >= from);
 }
 
 /**
@@ -408,7 +404,6 @@ export function previewDecorations(
   const blocks = state.field(blocksField, false);
   // Поле блоков есть и в исходном тексте (`blockTracking`): оформление — только в живом предпросмотре.
   if (!blocks || !state.facet(livePreviewOn)) return Decoration.none;
-  const active = activeLines(state);
   const out: Range<Decoration>[] = [];
   const { doc } = state;
   const resolution = state.field(resolutionField, false);
@@ -423,13 +418,15 @@ export function previewDecorations(
 
       const block = blockAt(state, blocks, line.from);
       if (block) {
-        codeLine(block, line, touches(active, block.from, block.to), out);
+        codeLine(block, line, touches(state, block.from, block.to), out);
         continue;
       }
 
       const previous = n > 1 && !blockAt(state, blocks, doc.line(n - 1).from) ? doc.line(n - 1).text : null;
       const markup = parseLine(line.text, previous);
-      const revealed = touches(active, line.from, line.to);
+      // Строка без курсора — ничего не раскрыто: без проверки каждого элемента.
+      const lineActive = touches(state, line.from, line.to);
+      const revealed = (owner: Span) => lineActive && touches(state, line.from + owner.from, line.from + owner.to);
       if (markup.lineClass) out.push(lineDecoration(markup.lineClass).range(line.from));
       for (const piece of markup.pieces) {
         const from = line.from + piece.from;
@@ -437,11 +434,11 @@ export function previewDecorations(
         if (from >= to) continue;
         if (piece.kind === 'mark') {
           out.push(pieceMark(piece, resolution).range(from, to));
-          // Вне строки с курсором: на ней адрес и так виден.
-          if (!revealed && piece.url !== undefined && isExternalUrl(piece.url)) {
+          // У нераскрытой ссылки: в раскрытой адрес и так виден.
+          if (piece.url !== undefined && isExternalUrl(piece.url) && !(piece.link && revealed(piece.link))) {
             out.push(Decoration.widget({ widget: new ExternalMarkWidget(piece.url), side: -1 }).range(to));
           }
-        } else if (revealed) {
+        } else if (revealed(piece.owner)) {
           out.push(MARKUP.range(from, to));
         } else {
           out.push((piece.kind === 'hide' ? HIDE : widgetDecorations[piece.widget]).range(from, to));
@@ -517,9 +514,20 @@ export interface LivePreviewOptions {
   onOpenLink?: ((url: string) => void) | undefined;
 }
 
-function revealedAt(state: EditorState, pos: number): boolean {
+/** Ссылка в позиции `pos` раскрыта: курсор или выделение задевает её целиком со скобками (решение 93). */
+function linkRevealedAt(state: EditorState, pos: number): boolean {
   const line = state.doc.lineAt(pos);
-  return touches(activeLines(state), line.from, line.to);
+  if (!touches(state, line.from, line.to)) return false;
+  const previous = line.number > 1 ? state.doc.line(line.number - 1).text : null;
+  const offset = pos - line.from;
+  return parseLine(line.text, previous).pieces.some(
+    (piece) =>
+      piece.kind === 'mark' &&
+      piece.link !== undefined &&
+      offset >= piece.link.from &&
+      offset < piece.link.to &&
+      touches(state, line.from + piece.link.from, line.from + piece.link.to),
+  );
 }
 
 /** Ссылка под щелчком: внешний адрес или текст вики-ссылки между `[[` и `]]`. */
@@ -733,8 +741,8 @@ export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension 
         const hit: LinkHit = wikiText
           ? { wiki: wikiText.getAttribute('data-rz-wiki') ?? '' }
           : { url: linkText.getAttribute('data-rz-url') ?? '' };
-        // На строке с курсором ссылка — текст для правки; открыть — Ctrl+щелчок (решение 76).
-        if (!event.ctrlKey && !event.metaKey && revealedAt(view.state, view.posAtDOM(linkText))) return false;
+        // Раскрытая ссылка (курсор в ней или у края) — текст для правки; открыть — Ctrl+щелчок (решения 76, 93).
+        if (!event.ctrlKey && !event.metaKey && linkRevealedAt(view.state, view.posAtDOM(linkText))) return false;
         if (!follow(view, hit, onOpenLink)) return false;
         event.preventDefault();
         return true;
