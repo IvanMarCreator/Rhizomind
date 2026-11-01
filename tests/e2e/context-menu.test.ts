@@ -3,9 +3,9 @@
 // «Копировать», «Вставить», «Выделить всё»); в дереве — своё меню; в
 // остальных местах правый щелчок ничего не делает.
 //
-// «Копировать» из меню кладёт выделение в буфер обмена ОС — проверяется
-// вставкой Ctrl+V. «Вставить» в меню пока неактивен: программное чтение
-// буфера страницей запрещено (docs/SECURITY.md). Настоящий правый щелчок
+// Буфер обмена — общий системный (решение 98): «Копировать» из меню кладёт
+// выделение в буфер ОС — проверяется вставкой Ctrl+V; «Вставить» из меню
+// берёт текст командой ядра `clipboard_read_text`. Настоящий правый щелчок
 // мышью (SendInput) при выключенном меню движка — в
 // src-tauri/tests/webview2_runtime.rs.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -29,7 +29,7 @@ describe('своё контекстное меню вместо меню дви�
     if (vault) removeTestVault(vault);
   });
 
-  it('правый щелчок в тексте: своё меню; «Копировать» + Ctrl+V вставляет копию', async () => {
+  it('правый щелчок в тексте: своё меню; «Копировать», Ctrl+V и «Вставить» из меню', async () => {
     const { browser } = session;
     await browser.$('[role="treeitem"][aria-label="Заметка"]').click();
     const content = browser.$('.cm-content');
@@ -46,7 +46,7 @@ describe('своё контекстное меню вместо меню дви�
         (item) => `${item.querySelector('.label')?.textContent ?? ''}:${item.getAttribute('aria-disabled') ?? 'false'}`,
       ),
     MENU);
-    expect(items).toEqual(['Вырезать:false', 'Копировать:false', 'Вставить:true', 'Выделить всё:false']);
+    expect(items).toEqual(['Вырезать:false', 'Копировать:false', 'Вставить:false', 'Выделить всё:false']);
 
     await menu.$('[role="menuitem"]*=Копировать').click();
     await menu.waitForExist({ reverse: true, timeout: 5_000 });
@@ -58,12 +58,23 @@ describe('своё контекстное меню вместо меню дви�
       timeout: 5_000,
       timeoutMsg: `после вставки: «${await content.getText()}»`,
     });
+
+    // «Вставить» из меню: щелчок правее конца строки ставит туда курсор.
+    await browser.keys(' ');
+    await browser.$('.cm-line').click({ button: 'right' });
+    await menu.waitForDisplayed({ timeout: 5_000 });
+    await menu.$('[role="menuitem"]*=Вставить').click();
+    await menu.waitForExist({ reverse: true, timeout: 5_000 });
+    await browser.waitUntil(async () => (await content.getText()).trim() === 'альфа альфа альфа', {
+      timeout: 5_000,
+      timeoutMsg: `после «Вставить» из меню: «${await content.getText()}»`,
+    });
   });
 
   it('правый щелчок по ленте и шапке заметки ничего не открывает', async () => {
     const { browser } = session;
     await browser.$('[role="toolbar"][aria-label="Лента иконок"]').click({ button: 'right' });
-    await browser.$('[role="banner"][aria-label="Заметка"]').click({ button: 'right' });
+    await browser.$('header[aria-label="Заметка"]').click({ button: 'right' });
     await browser.pause(500);
     expect(await browser.$('[role="menu"]').isExisting()).toBe(false);
   });
@@ -73,7 +84,8 @@ describe('своё контекстное меню вместо меню дви�
     await browser.$('[role="treeitem"][aria-label="Заметка"]').click({ button: 'right' });
     const menu = browser.$('[role="menu"][aria-label="Действия с файлами"]');
     await menu.waitForDisplayed({ timeout: 5_000 });
-    await browser.keys('Escape');
+    // Закрытие щелчком мимо (клавиатуру меню проверяют компонентные тесты).
+    await browser.$('[role="toolbar"][aria-label="Лента иконок"]').click();
     await menu.waitForExist({ reverse: true, timeout: 5_000 });
   });
 });

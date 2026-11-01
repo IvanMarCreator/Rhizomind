@@ -379,30 +379,40 @@ mod windows_only {
     /// останавливает нажатие раньше оболочки — проверяется настройка движка.
     /// Контроль детектора: с включёнными на время ускорителями Ctrl+P должен
     /// вызвать `beforeprint` (пока — только сообщение в журнал).
-    /// Видимые окна верхнего уровня процесса `pid` (меню движка — такое окно
-    /// процесса браузера WebView2).
-    fn visible_windows_of(pid: u32) -> Vec<isize> {
+    /// Видимые окна верхнего уровня всех процессов: номер окна и класс. Меню
+    /// движка — всплывающее окно верхнего уровня (процесс браузера WebView2
+    /// или приложения — не важно: ищутся новые окна после щелчка).
+    fn visible_windows() -> Vec<(isize, String)> {
         use ::windows::Win32::Foundation::{HWND, LPARAM};
         use ::windows::Win32::UI::WindowsAndMessaging::{
-            EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+            EnumWindows, GetClassNameW, IsWindowVisible,
         };
         unsafe extern "system" fn collect(hwnd: HWND, param: LPARAM) -> ::windows::core::BOOL {
-            // SAFETY: param — указатель на (pid, Vec), живой на время EnumWindows.
-            let (pid, found) = unsafe { &mut *(param.0 as *mut (u32, Vec<isize>)) };
-            let mut owner = 0u32;
+            // SAFETY: param — указатель на Vec, живой на время EnumWindows.
+            let found = unsafe { &mut *(param.0 as *mut Vec<(isize, String)>) };
             // SAFETY: функции только читают сведения об окне.
             unsafe {
-                GetWindowThreadProcessId(hwnd, Some(&mut owner));
-                if owner == *pid && IsWindowVisible(hwnd).as_bool() {
-                    found.push(hwnd.0 as isize);
+                if IsWindowVisible(hwnd).as_bool() {
+                    let mut name = [0u16; 128];
+                    let len = GetClassNameW(hwnd, &mut name).max(0) as usize;
+                    found.push((hwnd.0 as isize, String::from_utf16_lossy(&name[..len])));
                 }
             }
             true.into()
         }
-        let mut state: (u32, Vec<isize>) = (pid, Vec::new());
-        // SAFETY: state живёт до конца вызова, collect не сохраняет указатель.
-        let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut state as *mut _ as isize)) };
-        state.1
+        let mut found: Vec<(isize, String)> = Vec::new();
+        // SAFETY: found живёт до конца вызова, collect не сохраняет указатель.
+        let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut found as *mut _ as isize)) };
+        found
+    }
+
+    /// Окна из `after`, которых не было в `before`.
+    fn new_windows(before: &[(isize, String)], after: &[(isize, String)]) -> Vec<String> {
+        after
+            .iter()
+            .filter(|(h, _)| !before.iter().any(|(b, _)| b == h))
+            .map(|(_, class)| class.clone())
+            .collect()
     }
 
     /// Настоящий правый щелчок (SendInput) в точке страницы (CSS-пиксели).
@@ -490,13 +500,6 @@ mod windows_only {
         let [x, y, dpr] = numbers[..] else {
             return vec![format!("меню движка: координаты {coords}")];
         };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = window.with_webview(move |webview| {
-            let _ = tx.send(security::windows::browser_process_id(&webview.controller()).ok());
-        });
-        let Some(pid) = rx.recv_timeout(Duration::from_secs(10)).ok().flatten() else {
-            return vec!["меню движка: нет номера процесса браузера".into()];
-        };
         let toggle = |window: &tauri::WebviewWindow, enabled: bool| {
             let _ = window.with_webview(move |webview| {
                 // SAFETY: вызовы COM в главном потоке (with_webview).
@@ -514,11 +517,10 @@ mod windows_only {
 
         let _ = window.set_focus();
         std::thread::sleep(Duration::from_millis(500));
-        let before = visible_windows_of(pid);
+        let before = visible_windows();
         let sent = right_click(window, x, y, dpr);
         std::thread::sleep(Duration::from_millis(1500));
-        let after = visible_windows_of(pid);
-        let popups = after.iter().filter(|h| !before.contains(h)).count();
+        let popups = new_windows(&before, &visible_windows());
         let mut failures = Vec::new();
         if sent != 3 {
             failures.push(format!("меню движка: SendInput принял {sent} событий из 3"));
@@ -529,10 +531,8 @@ mod windows_only {
                 "меню движка: правый щелчок не дошёл до страницы ({other:?})"
             )),
         }
-        if popups > 0 {
-            failures.push(format!(
-                "меню движка: правый щелчок открыл окно ({popups} новых окон процесса браузера)"
-            ));
+        if !popups.is_empty() {
+            failures.push(format!("меню движка: правый щелчок открыл окна {popups:?}"));
             send_chord(&[], VK_ESCAPE.0);
         }
         if failures.is_empty() {
@@ -541,22 +541,19 @@ mod windows_only {
 
         // Контроль: с включённым меню движка окно меню появляется.
         toggle(window, true);
-        let before = visible_windows_of(pid);
+        let before = visible_windows();
         right_click(window, x, y, dpr);
         std::thread::sleep(Duration::from_millis(1500));
-        let control = visible_windows_of(pid)
-            .iter()
-            .filter(|h| !before.contains(h))
-            .count();
+        let control = new_windows(&before, &visible_windows());
         send_chord(&[], VK_ESCAPE.0);
         std::thread::sleep(Duration::from_millis(500));
         toggle(window, false);
-        if control > 0 {
-            println!(
-                "ok: контроль: с включённым меню движка правый щелчок открывает окно меню — детектор работает"
-            );
-        } else {
+        if control.is_empty() {
             println!("предупреждение: контроль детектора меню не подтвердился (новых окон нет)");
+        } else {
+            println!(
+                "ok: контроль: с включённым меню движка правый щелчок открывает окна {control:?} — детектор работает"
+            );
         }
         failures
     }

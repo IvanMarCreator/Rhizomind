@@ -7,7 +7,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { onCoreEvent } from '../api/index.ts';
+  import { core, onCoreEvent } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
@@ -134,7 +134,13 @@
     // Выделение могло смениться курсором — цель читается заново.
     const target = textTargetOf(event.target) ?? found;
     const at = byKeyboard ? target.anchor() : { x: event.clientX, y: event.clientY };
-    textMenu = { ...at, items: textMenuItems(target), target };
+    // «Вставить» — только в окне хранилища (право команды ядра); буфер
+    // читается по щелчку по пункту, не здесь.
+    const source =
+      model.status.kind === 'ready' && model.vault
+        ? { read: () => core.clipboardReadText(), notify: (text: string) => model.notify(text) }
+        : null;
+    textMenu = { ...at, items: textMenuItems(target, source), target };
   }
 
   function closeTextMenu() {

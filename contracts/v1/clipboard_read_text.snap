@@ -1,0 +1,21 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "clipboard_read_text",
+  "errors": [
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    },
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
+    }
+  ],
+  "request": null,
+  "response": {
+    "outcome": "text",
+    "text": "Текст из буфера\nвторая строка"
+  }
+}

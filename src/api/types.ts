@@ -318,6 +318,19 @@ export interface WindowShownNoteRequest {
   path: VaultPath | null;
 }
 
+// ---- Буфер обмена ------------------------------------------------------------
+
+/**
+ * Текст системного буфера обмена для пункта «Вставить» своего меню (задача
+ * 2.19, решение 98): только окно хранилища в фокусе; длиннее предела размера
+ * редактируемого файла — `too_large`.
+ */
+export type ClipboardReadOutcome =
+  | { outcome: 'text'; text: string }
+  | { outcome: 'empty' }
+  | { outcome: 'too_large'; limit_bytes: number }
+  | { outcome: 'not_focused' };
+
 // ---- Карта команд и событий -----------------------------------------------
 
 /**
@@ -358,6 +371,8 @@ export interface CoreCommands {
   window_close_cancel: { request: null; response: null };
   /** Показанная заметка: заголовок окна «<заметка> — <хранилище> — Rhizomind» ставит ядро (задача 2.12). */
   window_shown_note: { request: WindowShownNoteRequest; response: null };
+  /** Текст буфера обмена — только по щелчку пользователя по «Вставить» (задача 2.19). */
+  clipboard_read_text: { request: null; response: ClipboardReadOutcome };
 }
 
 export type CommandName = keyof CoreCommands;

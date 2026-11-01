@@ -721,3 +721,36 @@ fn core_refuses_manager_commands_from_other_windows() {
         assert_eq!(error.field.as_deref(), Some("window"), "{name}");
     }
 }
+
+/// Буфер обмена (задача 2.19, решение 98): второй рубеж в ядре. Окно без
+/// хранилища — `no_vault_open`; окно хранилища не в фокусе (скрытое, фоновое
+/// — щелчка пользователя в нём не было) буфер не читает. Окну управления
+/// команда не разрешена правами (`each_window_kind_is_denied_the_other_kinds_commands`).
+#[test]
+fn clipboard_read_text_only_for_focused_vault_window() {
+    let app = app();
+    let main = window(&app, MAIN);
+
+    let error = invoke(&main, "clipboard_read_text", json!({})).expect_err("нет хранилища");
+    assert_eq!(
+        core_error("clipboard_read_text", error).code,
+        ErrorCode::NoVaultOpen
+    );
+
+    let _vault_dir = bind_stub_vault(&app, MAIN);
+    assert!(
+        !main.is_focused().unwrap_or(false),
+        "окно теста не в фокусе"
+    );
+    let response = invoke(&main, "clipboard_read_text", json!({})).expect("ответ");
+    assert_eq!(response, json!({ "outcome": "not_focused" }));
+
+    let manager = manager_window(&app);
+    let error = invoke(&manager, "clipboard_read_text", json!({})).expect_err("окно управления");
+    assert!(
+        error
+            .as_str()
+            .is_some_and(|text| text.contains("not allowed")),
+        "{error}"
+    );
+}

@@ -482,13 +482,13 @@ describe('своё контекстное меню (решение 97)', () => {
       'Вставить Ctrl+V',
       'Выделить всё Ctrl+A',
     ]);
-    expect(within(menu).getByRole('menuitem', { name: /Вставить/ }).getAttribute('aria-disabled')).toBe('true');
+    // В окне хранилища «Вставить» активен (команда ядра, решение 98).
+    expect(within(menu).getByRole('menuitem', { name: /Вставить/ }).getAttribute('aria-disabled')).toBeNull();
     expect(document.activeElement?.textContent).toContain('Вырезать');
 
     await fireEvent.keyDown(menu, { key: 'ArrowDown' });
     expect(document.activeElement?.textContent).toContain('Копировать');
-    await fireEvent.keyDown(menu, { key: 'ArrowDown' });
-    // «Вставить» неактивен — фокус его пропускает.
+    await fireEvent.keyDown(menu, { key: 'End' });
     expect(document.activeElement?.textContent).toContain('Выделить всё');
 
     await fireEvent.keyDown(menu, { key: 'Escape' });
@@ -556,3 +556,53 @@ describe('меню правки текста в быстром переходе 
     expect(document.activeElement).toBe(input);
   });
 });
+
+describe('«Вставить» из своего меню (решение 98)', () => {
+  function fieldWith(value: string): HTMLInputElement {
+    const host = document.createElement('div');
+    host.dataset.testHost = '';
+    host.innerHTML = `<input aria-label="поле" value="${value}" />`;
+    document.body.appendChild(host);
+    return host.querySelector('input') as HTMLInputElement;
+  }
+
+  afterEach(() => {
+    for (const host of document.body.querySelectorAll('[data-test-host]')) host.remove();
+  });
+
+  it('буфер читается только по щелчку по «Вставить», не при открытии меню', async () => {
+    const { calls } = await renderShell({
+      ...WITH_VAULT,
+      clipboard_read_text: () => ({ outcome: 'text', text: 'XY' }),
+    });
+    await screen.findByText('Нет открытой заметки');
+    const input = fieldWith('ab');
+    input.setSelectionRange(1, 1);
+    const reads = () => calls.filter(([command]) => command === 'clipboard_read_text').length;
+
+    input.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+    await screen.findByRole('menu', { name: 'Правка текста' });
+    await fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    expect(reads()).toBe(0);
+
+    await fireEvent.click(screen.getByRole('menuitem', { name: /Вставить/ }));
+
+    await waitFor(() => expect(input.value).toBe('aXYb'));
+    expect(reads()).toBe(1);
+  });
+
+  it('в окне «Управление хранилищами» «Вставить» неактивен (права команды нет)', async () => {
+    await renderShell({
+      vault_current: () => ({ api_version: 1, vault: null }),
+      vault_list: () => ({ vaults: [], last_opened: null }),
+    });
+    await screen.findByText('Пока нет хранилищ');
+    const input = fieldWith('ab');
+
+    input.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 }));
+
+    const menu = await screen.findByRole('menu', { name: 'Правка текста' });
+    expect(within(menu).getByRole('menuitem', { name: /Вставить/ }).getAttribute('aria-disabled')).toBe('true');
+  });
+});
+

@@ -3,14 +3,19 @@
 // «Обновить», «Сохранить как», «Печать» — обход решений 94/96 и риск потери
 // ввода, инвариант 4).
 //
-// Пункты: «Вырезать», «Копировать», «Вставить», «Выделить всё». Вырезать и
-// копировать — командой движка `copy`/`cut` по щелчку пользователя: читать
-// буфер обмена для этого не нужно, новых прав нет. «Вставить» — пока
-// неактивный пункт с подсказкой Ctrl+V: программное чтение буфера требует
-// разрешения ClipboardRead, а все разрешения страницы отклоняются
-// (docs/SECURITY.md); Ctrl+V с клавиатуры — встроенная вставка движка.
+// Пункты: «Вырезать», «Копировать», «Вставить», «Выделить всё». Буфер обмена
+// — общий системный (решение 98). Вырезать и копировать — командой движка
+// `copy`/`cut` по щелчку пользователя: так же движок делает Ctrl+C/Ctrl+X,
+// читать буфер для этого не нужно. «Вставить» — текст буфера даёт команда
+// ядра `clipboard_read_text`, и только по щелчку по пункту (не при открытии
+// меню): разрешение движка ClipboardRead странице не выдаётся
+// (docs/SECURITY.md). Вставка — обычная правка: одна отмена Ctrl+Z,
+// автосохранение, не в режиме только чтения; длиннее предела размера
+// редактируемого файла — уведомление, текст не вставляется.
 import { selectAll } from '@codemirror/commands';
 import { EditorView } from '@codemirror/view';
+import type { ClipboardReadOutcome } from '../api/index.ts';
+import { userMessage } from '../i18n/errors.ts';
 import { t } from '../i18n/index.ts';
 import type { MenuItem } from './menu.ts';
 
@@ -25,6 +30,17 @@ export interface TextTarget {
   selectAll(): void;
   /** Точка для меню, открытого с клавиатуры (Shift+F10, клавиша меню). */
   anchor(): { x: number; y: number };
+  /**
+   * Вставить текст вместо выделения как ввод пользователя; `false` — поле
+   * или редактор стали только для чтения, текст не вставлен.
+   */
+  insertText(text: string): boolean;
+}
+
+/** Откуда «Вставить» берёт текст: окно хранилища — команда ядра, иначе пункт неактивен. */
+export interface PasteSource {
+  read(): Promise<ClipboardReadOutcome>;
+  notify(text: string): void;
 }
 
 /** Поля, где правится текст (флажки, кнопки и ползунки — нет). */
@@ -47,6 +63,23 @@ function inputTarget(field: HTMLInputElement | HTMLTextAreaElement): TextTarget 
     anchor: () => {
       const box = field.getBoundingClientRect();
       return { x: box.left + 8, y: box.bottom };
+    },
+    insertText: (text) => {
+      if (field.readOnly || field.disabled) return false;
+      // В однострочном поле переносов нет — как при вставке Ctrl+V.
+      const value = field instanceof HTMLInputElement ? text.replace(/\r?\n/g, ' ') : text.replace(/\r\n/g, '\n');
+      field.focus();
+      // insertText движка — ввод пользователя: событие input, отмена Ctrl+Z.
+      try {
+        if (document.execCommand('insertText', false, value)) return true;
+      } catch {
+        // Движок без команд правки — вставка ниже.
+      }
+      const from = field.selectionStart ?? field.value.length;
+      const to = field.selectionEnd ?? from;
+      field.setRangeText(value, from, to, 'end');
+      field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: value }));
+      return true;
     },
   };
 }
@@ -81,6 +114,14 @@ function editorTarget(view: EditorView): TextTarget {
       const fallback = view.contentDOM.getBoundingClientRect();
       return { x: box?.left ?? fallback.left, y: box?.bottom ?? fallback.top };
     },
+    insertText: (text) => {
+      // Состояние читается заново: пока шёл запрос, заметка могла стать только для чтения.
+      if (view.state.readOnly) return false;
+      view.focus();
+      // Одна транзакция — одна отмена; правка пользователя — автосохранение.
+      view.dispatch(view.state.replaceSelection(text), { userEvent: 'input.paste', scrollIntoView: true });
+      return true;
+    },
   };
 }
 
@@ -101,8 +142,24 @@ function edit(target: TextTarget, command: 'copy' | 'cut') {
   document.execCommand(command);
 }
 
-/** Пункты меню для цели. */
-export function textMenuItems(target: TextTarget): MenuItem[] {
+/** «Вставить»: текст буфера от ядра — в поле или редактор. */
+async function paste(target: TextTarget, source: PasteSource): Promise<void> {
+  let result: ClipboardReadOutcome;
+  try {
+    result = await source.read();
+  } catch (error) {
+    source.notify(userMessage(error));
+    return;
+  }
+  if (result.outcome === 'too_large') source.notify(t('textMenu.pasteTooLarge'));
+  else if (result.outcome === 'text') target.insertText(result.text);
+}
+
+/**
+ * Пункты меню для цели. Буфер обмена здесь не читается: только щелчок по
+ * «Вставить» вызывает `source.read`.
+ */
+export function textMenuItems(target: TextTarget, source: PasteSource | null = null): MenuItem[] {
   return [
     {
       id: 'cut',
@@ -122,9 +179,11 @@ export function textMenuItems(target: TextTarget): MenuItem[] {
       id: 'paste',
       label: t('textMenu.paste'),
       shortcut: 'Ctrl+V',
-      // Чтение буфера обмена страницей запрещено (docs/SECURITY.md).
-      disabled: true,
-      run: () => undefined,
+      // Без команды ядра (окно управления) пункт неактивен; Ctrl+V работает.
+      disabled: source === null || target.readOnly,
+      run: () => {
+        if (source) void paste(target, source);
+      },
     },
     { id: 'select-all', label: t('textMenu.selectAll'), shortcut: 'Ctrl+A', run: () => target.selectAll() },
   ];

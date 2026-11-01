@@ -30,6 +30,7 @@ use tauri::{
 use webview_traces::WebviewDataDir;
 
 // Модули ядра (спецификация 0.1, С5.2) и команды API v1 (С5.5) — задача 0.4.
+pub mod clipboard;
 pub mod commands;
 pub mod dialogs;
 pub mod events;
