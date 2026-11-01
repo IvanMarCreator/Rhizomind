@@ -117,6 +117,11 @@ async function cursorTo(browser: WebdriverIO.Browser, fragment: string): Promise
   await browser.keys('End');
 }
 
+/** Нажать клавишу `times` раз. */
+async function press(browser: WebdriverIO.Browser, key: string, times: number): Promise<void> {
+  for (let k = 0; k < times; k += 1) await browser.keys(key);
+}
+
 function modeChecked(browser: WebdriverIO.Browser): Promise<string> {
   return browser.execute(
     () => document.querySelector('[role="radiogroup"] [role="radio"][aria-checked="true"]')?.getAttribute('aria-label') ?? '',
@@ -432,12 +437,13 @@ describe('живой предпросмотр и режим исходного �
     await cursorTo(b, 'Начало.');
     await b.keys(['ArrowDown', 'Home']);
     expect(await lineText(b, 'текст')).toBe('> текст ссылка↗ и зачёркнутое');
-    await b.keys(['ArrowRight', 'ArrowRight', 'ArrowRight']);
+    // По одной клавише: повторы в одном массиве WebdriverIO нажимает как одну.
+    await press(b, 'ArrowRight', 3);
     // Курсор в слове «текст»: виден `>`, ссылка и зачёркнутое оформлены.
     expect(await lineText(b, 'текст')).toBe('> текст ссылка↗ и зачёркнутое');
     await shotThemes(b, 'element-quote-text');
     // Шесть шагов вправо — внутрь ссылки: видны `>` и её разметка, зачёркнутое оформлено.
-    await b.keys(['ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowRight', 'ArrowRight']);
+    await press(b, 'ArrowRight', 6);
     expect(await lineText(b, 'текст')).toBe('> текст [ссылка](https://a.example/1) и зачёркнутое');
     await shotThemes(b, 'element-quote-link');
     // Строка ниже: курсор в начале — всё оформлено; у второй ссылки — раскрыта только она.
@@ -446,7 +452,7 @@ describe('живой предпросмотр и режим исходного �
     // Курсор ушёл со строки цитаты — `>` снова спрятан (полоса цитаты).
     expect(await lineText(b, 'текст')).toBe('текст ссылка↗ и зачёркнутое');
     await b.keys('End');
-    for (let k = 0; k < 8; k += 1) await b.keys('ArrowLeft');
+    await press(b, 'ArrowLeft', 8);
     expect(await lineText(b, 'См.')).toBe('См. а↗, б и [в](https://a.example/2) конец');
     await shotThemes(b, 'element-second-link');
     expect(readFileSync(path.join(vault, `${INLINE_NOTE}.md`), 'utf8')).toBe(INLINE_SAMPLE);
