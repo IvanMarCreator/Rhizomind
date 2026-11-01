@@ -53,6 +53,31 @@ Check 'Process Monitor запускался с /BackingFile capture.pml' ($log -
 Check 'finally остановил Process Monitor (/Terminate)' ($log -match '/Terminate')
 Check 'Rhizomind при сбое на шаге 3 не запускался' (@(Get-Process -Name 'rhizomind' -ErrorAction SilentlyContinue).Count -eq 0)
 
+# Process Monitor «записывал», но CSV не получился: итог не должен говорить
+# «обращений не найдено». Заглушка запускает копию ping.exe под именем
+# Procmon64.exe (скрипт видит процесс Process Monitor), на /Terminate
+# завершает её, CSV не создаёт.
+$fakeDir = Join-Path $base 'procmon-nocsv'
+New-Item -ItemType Directory -Force -Path $fakeDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination (Join-Path $fakeDir 'Procmon64.exe') -Force
+$fakeStub = Join-Path $fakeDir 'Procmon-stub.cmd'
+Set-Content -LiteralPath $fakeStub -Encoding ASCII -Value @(
+  '@echo off',
+  'echo %* >> "%~dp0calls.log"',
+  'echo %* | findstr /C:"/BackingFile" >nul && start "" "%~dp0Procmon64.exe" -n 900 127.0.0.1',
+  'echo %* | findstr /C:"/Terminate" >nul && taskkill /F /IM Procmon64.exe >nul 2>&1',
+  'exit /b 0')
+$outNoCsv = Join-Path $base 'audit-nocsv'
+if (Test-Path -LiteralPath $outNoCsv) { Remove-Item -LiteralPath $outNoCsv -Recurse -Force }
+$code = Invoke-Audit @('-Unattended', '-AppExe', $AppExe, '-Procmon', $fakeStub, '-IdleSeconds', '5', '-OutDir', $outNoCsv)
+Check 'Process Monitor без CSV: скрипт доходит до конца (код 0)' ($code -eq 0) "code=$code"
+$noCsvText = ''
+if (Test-Path -LiteralPath (Join-Path $outNoCsv 'results.md')) { $noCsvText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $outNoCsv 'results.md') }
+Check 'Process Monitor без CSV: итог «не доказано»' ($noCsvText.Contains('**не доказано: журнал Process Monitor не разобран или не содержит событий Rhizomind (фильтр?)**'))
+Check 'Process Monitor без CSV: нет ложного «обращений не найдено»' (-not $noCsvText.Contains('обращений процессов Rhizomind и движка не найдено'))
+Check 'Process Monitor без CSV: заглушка остановлена (/Terminate)' ((Get-Content -Raw -LiteralPath (Join-Path $fakeDir 'calls.log')) -match '/Terminate')
+Get-Process -Name 'Procmon64', 'rhizomind' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
 # --- Прогон на выпускной сборке ----------------------------------------------
 
 $out = Join-Path $base 'audit-unattended'

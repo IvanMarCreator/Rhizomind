@@ -58,9 +58,20 @@ Check 'файлы: словарь Hunspell во временной папке д
 Check 'реестр: EdgeWebView — учтено (решение 61)' ((Find-Key $r.RegOut "HKCU\Software\Microsoft\EdgeWebView\StabilityMetrics`tдвижок WebView2, решение 61").Count -eq 1) ($r.RegOut.Keys -join ' | ')
 Check 'реестр: неизвестный ключ — «не учтено»' ((Find-Key $r.RegOut "HKCU\Software\Rhizomind\Unknown`t**не учтено**").Count -eq 1)
 
+# Журнал без событий Rhizomind (старый фильтр Process Monitor) — разбор должен
+# это видеть, иначе итог «обращений не найдено» был бы ложным.
+Check 'разбор: событий корневого процесса Rhizomind в образце — есть' ($r.RootRows -gt 0) "root=$($r.RootRows)"
+$rNoRoot = Invoke-ProcmonAnalysis -CsvPath (Join-Path $PSScriptRoot 'fixtures\procmon-sample.csv') -OwnPids @(9999) -AppDataDir 'C:\nonexistent'
+Check 'разбор: журнал без строк с PID корневого процесса — RootRows = 0' ($rNoRoot.RootRows -eq 0) "root=$($rNoRoot.RootRows)"
+Check 'итог: журнал без событий Rhizomind — «не доказано»' ((Get-ProcmonVerdict -NoProcmon:$false -Analysis $rNoRoot) -eq 'not-proven')
+Check 'итог: журнал не разобран — «не доказано»' ((Get-ProcmonVerdict -NoProcmon:$false -Analysis $null) -eq 'not-proven')
+Check 'итог: журнал с событиями Rhizomind — «разобран»' ((Get-ProcmonVerdict -NoProcmon:$false -Analysis $r) -eq 'analysed')
+Check 'итог: -NoProcmon — «без журнала»' ((Get-ProcmonVerdict -NoProcmon:$true -Analysis $null) -eq 'no-procmon')
+
 # --- Мелкие функции -----------------------------------------------------------
 
-Check 'д/н: «д», «Да», «l», «y», «yes» — да' (@('д', 'Да', 'l', 'y', 'YES' | ForEach-Object { ConvertTo-YesNo $_ }) -notcontains $false)
+Check 'д/н: «д», «Да», «l», «yes» — да' (@('д', 'Да', 'l', 'YES' | ForEach-Object { ConvertTo-YesNo $_ }) -notcontains $false)
+Check 'д/н: одиночное «y» («н» в английской раскладке) — не ответ' ($null -eq (ConvertTo-YesNo 'y'))
 Check 'д/н: «н», «нет», «n», «т» — нет' (@('н', 'нет', 'n', 'т' | ForEach-Object { ConvertTo-YesNo $_ }) -notcontains $true)
 Check 'д/н: «может» — не ответ' ($null -eq (ConvertTo-YesNo 'может'))
 Check 'путь: кавычки «Копировать как путь» убираются' ((ConvertFrom-TypedPath ' "C:\Tools\Procmon64.exe" ') -eq 'C:\Tools\Procmon64.exe')
