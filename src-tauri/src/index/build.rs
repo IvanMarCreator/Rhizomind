@@ -5,15 +5,15 @@
 //! следующую заметку списка, читает её через [`Vault::read_note`] (контур
 //! хранилища, как у редактора) и разбирает — **без замка индекса**; замок на
 //! запись берётся только на вставку пачки из [`BATCH`] заметок. Ход сборки
-//! сообщается после каждой пачки, тоже вне замка; как часто показывать его
-//! окну, решает вызывающий. Сети и записи на диск здесь нет.
+//! сообщается после каждой пачки, тоже вне замка индекса, по порядку; как
+//! часто показывать его окну, решает вызывающий. Сети и записи на диск здесь нет.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Mutex, PoisonError, RwLock};
 
 use super::{NoteEntry, VaultIndex};
-use crate::commands::{CoreResult, IndexStatus, VaultPath};
+use crate::commands::{CoreResult, IndexState, IndexStatus, VaultPath};
 use crate::markdown;
 use crate::vault::{NoteRef, Vault};
 
@@ -43,9 +43,10 @@ pub fn read_entry(vault: &Vault, note: &NoteRef) -> CoreResult<NoteEntry> {
 ///   наблюдателя): изменённое снаружи сборка не перекрывает.
 /// - Новая сборка того же индекса останавливает старую: та дочитывает
 ///   текущие заметки и выходит без ошибки.
-/// - `on_progress` вызывается вне замка: «строится» с ходом
-///   `{done, total}` (сначала `total = 0` — идёт обход папки) и последним —
-///   «готов».
+/// - `on_progress` вызывается вне замка индекса и по одному: «строится» с
+///   ходом `{done, total}` (сначала `total = 0` — идёт обход папки), `done`
+///   не убывает (отставший ход из другого потока пропускается), последним —
+///   всегда «готов» с `done = total`.
 /// - Хранилище недоступно (обход папки не удался) — ошибка, индекс
 ///   остаётся «строится».
 pub fn rebuild(
@@ -53,6 +54,47 @@ pub fn rebuild(
     index: &RwLock<VaultIndex>,
     on_progress: &(dyn Fn(IndexStatus) + Sync),
 ) -> CoreResult<()> {
+    rebuild_with(vault, index, on_progress, &|_| {})
+}
+
+/// Ход сборки по порядку: вызовы колбэка не пересекаются, ход «строится» с
+/// `done` меньше уже отданного пропускается (пачки из разных потоков
+/// вставляются под замком индекса по порядку, а сообщаются уже вне его).
+struct Reporter<'a> {
+    on_progress: &'a (dyn Fn(IndexStatus) + Sync),
+    /// Последний отданный `done` «строится»; замок — только на вызов колбэка.
+    last_done: Mutex<Option<u32>>,
+}
+
+impl Reporter<'_> {
+    fn report(&self, status: IndexStatus) {
+        let mut last = self
+            .last_done
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if status.state == IndexState::Building {
+            if last.is_some_and(|done| status.done < done) {
+                return;
+            }
+            *last = Some(status.done);
+        }
+        (self.on_progress)(status);
+    }
+}
+
+/// [`rebuild`] со швом для тестов: `after_read` вызывается в рабочем потоке
+/// после чтения заметки и до вставки её пачки.
+pub(super) fn rebuild_with(
+    vault: &Vault,
+    index: &RwLock<VaultIndex>,
+    on_progress: &(dyn Fn(IndexStatus) + Sync),
+    after_read: &(dyn Fn(&VaultPath) + Sync),
+) -> CoreResult<()> {
+    let reporter = Reporter {
+        on_progress,
+        last_done: Mutex::new(None),
+    };
+    let on_progress = |status| reporter.report(status);
     let write = || index.write().unwrap_or_else(PoisonError::into_inner);
     let (id, status) = {
         let mut index = write();
@@ -78,6 +120,7 @@ pub fn rebuild(
             let note = notes.get(next.fetch_add(1, Ordering::Relaxed));
             if let Some(note) = note {
                 batch.push((note.path.clone(), read_entry(vault, note).ok()));
+                after_read(&note.path);
             }
             let flush = batch.len() == BATCH || (note.is_none() && !batch.is_empty());
             if flush {

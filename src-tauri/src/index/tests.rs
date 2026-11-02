@@ -465,6 +465,11 @@ fn rebuild_indexes_vault_and_reports_progress() {
     let seen = seen.into_inner().expect("ход");
     assert!(!seen.is_empty());
     assert!(seen.windows(2).all(|w| w[0].done <= w[1].done));
+    assert!(
+        seen[..seen.len() - 1]
+            .iter()
+            .all(|s| s.state == IndexState::Building)
+    );
     assert!(seen.iter().all(|s| s.total == 121 || s.total == 0));
     assert_eq!(seen.last().expect("последний").state, IndexState::Ready);
 
@@ -517,6 +522,30 @@ fn update_during_build_wins_over_build() {
     .expect("собран");
     // Изменения наблюдателя легли до вставки первой пачки сборки (ход с
     // `total` сообщается до чтения), но сборка их не перекрыла.
+    let index = index.read().expect("индекс");
+    let keys: Vec<String> = tag_list(&index).into_iter().map(|t| t.0).collect();
+    assert_eq!(keys, vec!["в", "новый"]);
+}
+
+#[test]
+fn update_between_read_and_insert_wins_over_build() {
+    // Сборка уже прочитала старую «А», но ещё не вставила её пачку (вставка
+    // идёт в том же потоке после крючка); в этот момент наблюдатель
+    // обновляет «А» и удаляет «Б» (прочитанную сборкой или ещё нет).
+    let d = disk(&[("А.md", "#старый"), ("Б.md", "#б"), ("В.md", "#в")]);
+    let index = RwLock::new(VaultIndex::new());
+    let fired = std::sync::atomic::AtomicBool::new(false);
+    super::build::rebuild_with(&d.vault, &index, &|_| {}, &|path| {
+        if *path == vp("А.md") {
+            fired.store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut index = index.write().expect("индекс");
+            assert!(index.entries().all(|(p, _)| *p != vp("А.md")));
+            index.upsert(vp("А.md"), entry("#новый", 1));
+            index.remove(&vp("Б.md"));
+        }
+    })
+    .expect("собран");
+    assert!(fired.into_inner());
     let index = index.read().expect("индекс");
     let keys: Vec<String> = tag_list(&index).into_iter().map(|t| t.0).collect();
     assert_eq!(keys, vec!["в", "новый"]);
