@@ -127,6 +127,11 @@ impl VaultIndex {
         self.entries.iter()
     }
 
+    /// Запись заметки `path`, если есть (сверка с диском, задача 0.2-1.3).
+    pub fn entry(&self, path: &VaultPath) -> Option<&NoteEntry> {
+        self.entries.get(path)
+    }
+
     /// Строится или готов и ход сборки (команда `index_status`, событие
     /// `index:status`). У готового индекса `done = total` = число заметок.
     pub fn status(&self) -> IndexStatus {
