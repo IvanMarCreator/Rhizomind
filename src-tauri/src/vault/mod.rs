@@ -75,6 +75,18 @@ pub struct NoteRef {
     pub created_ms: i64,
 }
 
+/// Заметка с размером и датой изменения из обхода папки
+/// ([`Vault::note_stats`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteStat {
+    /// Путь и дата создания — как в [`Vault::notes`].
+    pub note: NoteRef,
+    /// Размер файла, байт.
+    pub size: u64,
+    /// Дата изменения, мс UTC.
+    pub modified_ms: i64,
+}
+
 /// Почему корзина ОС не приняла элемент.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrashFailure {
@@ -344,6 +356,33 @@ impl Vault {
                     .unwrap_or(0);
                 notes.push(NoteRef { path, created_ms });
             }
+        })?;
+        Ok(notes)
+    }
+
+    /// Заметки с размером и датой изменения из обхода папки — сверка
+    /// индекса при открытии без чтения файлов (задача 0.2-1.3). Размер и
+    /// дата — те же, что у версии [`Self::read_note`]; файлы не открываются.
+    pub fn note_stats(&self) -> CoreResult<Vec<NoteStat>> {
+        let mut notes = Vec::new();
+        self.walk(self.root(), &mut Vec::new(), &mut |path, kind, entry| {
+            if kind != EntryKind::Note {
+                return;
+            }
+            let Ok(meta) = entry.metadata() else {
+                // Заметку удалили во время обхода.
+                return;
+            };
+            let created_ms = meta
+                .created()
+                .or_else(|_| meta.modified())
+                .map(millis)
+                .unwrap_or(0);
+            notes.push(NoteStat {
+                note: NoteRef { path, created_ms },
+                size: meta.len(),
+                modified_ms: meta.modified().map(millis).unwrap_or(0),
+            });
         })?;
         Ok(notes)
     }
@@ -961,14 +1000,26 @@ impl Vault {
         self.contour.check_opened(&handle, &self.service, true)
     }
 
-    /// Служебный файл `.rhizomind/<name>`. Служебная папка и итоговый путь
-    /// файла проверены по дескриптору; файл больше 4 МБ не читается.
+    /// Служебный файл `.rhizomind/<name>` с общим пределом 4 МБ.
     fn read_service_file(&self, name: &str) -> CoreResult<ServiceRead> {
+        self.read_service_file_limited(name, MAX_SERVICE_FILE_BYTES)
+    }
+
+    /// Служебный файл `.rhizomind/<name>` с собственным пределом `limit`
+    /// (файл индекса — 256 МБ, задача 0.2-1.3; остальные служебные файлы —
+    /// через [`Self::read_service_file`] с общими 4 МБ). Служебная папка и
+    /// итоговый путь файла проверены по дескриптору; файл больше предела не
+    /// читается (`TooLarge`, по размеру до чтения и по прочитанному).
+    pub(crate) fn read_service_file_limited(
+        &self,
+        name: &str,
+        limit: u64,
+    ) -> CoreResult<ServiceRead> {
         self.check_service_dir()?;
         let path = self.service.join(name);
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() => return Err(contour::outside_vault()),
-            Ok(meta) if !meta.is_file() || meta.len() > MAX_SERVICE_FILE_BYTES => {
+            Ok(meta) if !meta.is_file() || meta.len() > limit => {
                 return Ok(ServiceRead::TooLarge);
             }
             Ok(_) => {}
@@ -978,10 +1029,10 @@ impl Vault {
         let file = File::open(&path).map_err(io_error)?;
         self.contour.check_opened_in(&file, &path, &self.service)?;
         let mut bytes = Vec::new();
-        file.take(MAX_SERVICE_FILE_BYTES + 1)
+        file.take(limit.saturating_add(1))
             .read_to_end(&mut bytes)
             .map_err(io_error)?;
-        Ok(if bytes.len() as u64 <= MAX_SERVICE_FILE_BYTES {
+        Ok(if bytes.len() as u64 <= limit {
             ServiceRead::Bytes(bytes)
         } else {
             ServiceRead::TooLarge
@@ -1056,10 +1107,11 @@ impl Vault {
         self.write_service_file(WORKSPACE_FILE, &bytes)
     }
 
-    /// Атомарно пишет служебный файл `.rhizomind/<name>`. Служебная папка
+    /// Атомарно пишет служебный файл `.rhizomind/<name>` (в том числе
+    /// индекс, `index::store`). Служебная папка
     /// проверена по дескриптору, временный файл — тоже (до записи байтов);
     /// файл-ссылка не заменяется (`outside_vault`).
-    fn write_service_file(&self, name: &str, bytes: &[u8]) -> CoreResult<()> {
+    pub(crate) fn write_service_file(&self, name: &str, bytes: &[u8]) -> CoreResult<()> {
         self.check_service_dir()?;
         let path = self.service.join(name);
         let exists = match std::fs::symlink_metadata(&path) {
@@ -1084,10 +1136,11 @@ impl Vault {
 }
 
 /// Результат чтения служебного файла.
-enum ServiceRead {
+#[derive(Debug)]
+pub enum ServiceRead {
     /// Файла нет.
     Missing,
-    /// Файл больше 4 МБ или не обычный файл — не читается.
+    /// Файл больше предела (общий — 4 МБ) или не обычный файл — не читается.
     TooLarge,
     /// Содержимое.
     Bytes(Vec<u8>),
