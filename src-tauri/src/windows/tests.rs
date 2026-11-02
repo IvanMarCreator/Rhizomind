@@ -1077,3 +1077,104 @@ fn window_title_note_cut_keeps_combining_marks() {
         format!("{}…{suffix}", "а".repeat(room - 2))
     );
 }
+
+// ---- Индекс при закрытии окна (задача 0.2-1.3, решение 67) ----------------------
+
+/// Пишет индекс хранилища `root` и запоминает, что запись была (окно 1.4
+/// регистрирует такую запись при открытии хранилища).
+fn index_writer(root: std::path::PathBuf, calls: Arc<AtomicUsize>) -> closing::IndexWriter {
+    Arc::new(move || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        let vault = crate::vault::Vault::open(&root).expect("хранилище");
+        let index = std::sync::RwLock::new(crate::index::VaultIndex::new());
+        crate::index::rebuild(&vault, &index, &|_| {}).expect("индекс");
+        crate::index::store::IndexStore::new().write_now(&vault, &index);
+    })
+}
+
+/// Индекс пишется после записи заметок (ответа `window_close_ready`) и до
+/// уничтожения окна.
+#[test]
+fn index_written_after_notes_on_close() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let index_file = temp.path().join("А").join(".rhizomind").join("index.json");
+    let calls = Arc::new(AtomicUsize::new(0));
+    app.state::<Closing>().set_index_writer(
+        first.label(),
+        index_writer(temp.path().join("А"), Arc::clone(&calls)),
+    );
+
+    assert!(on_close_requested(&first.as_ref().window()));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "до записи заметок — нет");
+    assert!(!index_file.exists());
+
+    call(&first, "window_close_ready", json!({})).expect("window_close_ready");
+    wait_for("уничтожение окна", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(index_file.is_file(), "индекс записан до уничтожения окна");
+    closing::on_window_event(&first.as_ref().window(), &tauri::WindowEvent::Destroyed);
+    assert!(app.state::<Closing>().is_idle());
+}
+
+/// До предела закрытия осталось меньше запаса на запись индекса — индекс не
+/// пишется (при следующем открытии его доберёт сверка), окно закрывается.
+#[test]
+fn index_skipped_when_close_deadline_near() {
+    assert!(closing::index_write_fits(
+        Instant::now(),
+        Instant::now() + closing::INDEX_CLOSE_RESERVE + Duration::from_millis(100)
+    ));
+    assert!(!closing::index_write_fits(
+        Instant::now(),
+        Instant::now() + closing::INDEX_CLOSE_RESERVE / 2
+    ));
+
+    let (app, temp) = app_with(Closing::new(Duration::from_millis(500)));
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let calls = Arc::new(AtomicUsize::new(0));
+    app.state::<Closing>().set_index_writer(
+        first.label(),
+        index_writer(temp.path().join("А"), Arc::clone(&calls)),
+    );
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&first, "window_close_ready", json!({})).expect("window_close_ready");
+    wait_for("уничтожение окна", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "индекс не пишется");
+    assert!(
+        !temp
+            .path()
+            .join("А")
+            .join(".rhizomind")
+            .join("index.json")
+            .exists()
+    );
+}
+
+/// Нет ответа интерфейса за предел (ввод не подтверждён) — индекс не пишется.
+#[test]
+fn index_not_written_without_answer() {
+    let (app, temp) = app_with(Closing::new(Duration::from_millis(100)));
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let calls = Arc::new(AtomicUsize::new(0));
+    app.state::<Closing>().set_index_writer(
+        first.label(),
+        index_writer(temp.path().join("А"), Arc::clone(&calls)),
+    );
+    assert!(on_close_requested(&first.as_ref().window()));
+    wait_for("уничтожение по пределу", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

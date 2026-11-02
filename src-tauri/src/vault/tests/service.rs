@@ -173,3 +173,68 @@ fn create_makes_a_new_vault_folder_only_once() {
     assert!(root.join(".rhizomind").is_dir());
     drop(opened);
 }
+
+/// Задача 0.2-1.3: свой предел чтения у файла индекса не ослабляет общий
+/// предел 4 МБ остальных служебных файлов (файл — разреженный).
+#[test]
+fn service_file_over_4mb_still_rejected() {
+    let t = TestVault::new();
+    let big = 4 * 1024 * 1024 + 1;
+    for name in ["workspace.json", "settings.json"] {
+        let file = std::fs::File::create(t.root().join(".rhizomind").join(name)).expect("файл");
+        file.set_len(big).expect("размер");
+    }
+    assert_eq!(t.vault.read_workspace(), Ok(None), "раскладка больше 4 МБ");
+    assert_eq!(
+        t.vault.read_settings(),
+        Ok(Settings::default()),
+        "настройки больше 4 МБ — по умолчанию"
+    );
+    assert!(matches!(
+        t.vault
+            .read_service_file_limited("workspace.json", 4 * 1024 * 1024),
+        Ok(super::super::ServiceRead::TooLarge)
+    ));
+}
+
+/// Собственный предел: файл больше 4 МБ читается, если предел выше; больше
+/// своего предела — не читается.
+#[test]
+fn service_file_limited_reads_up_to_own_limit() {
+    let t = TestVault::new();
+    let bytes = vec![b'x'; 5 * 1024 * 1024];
+    std::fs::write(t.root().join(".rhizomind/index.json"), &bytes).expect("файл");
+    match t
+        .vault
+        .read_service_file_limited("index.json", 8 * 1024 * 1024)
+    {
+        Ok(super::super::ServiceRead::Bytes(read)) => assert_eq!(read.len(), bytes.len()),
+        other => panic!("ожидалось содержимое: {:?}", other.map(|_| ())),
+    }
+    assert!(matches!(
+        t.vault.read_service_file_limited("index.json", 1024),
+        Ok(super::super::ServiceRead::TooLarge)
+    ));
+    assert!(matches!(
+        t.vault.read_service_file_limited("missing.json", 1024),
+        Ok(super::super::ServiceRead::Missing)
+    ));
+}
+
+/// Сверка индекса при открытии: размер и дата изменения из обхода папки — те
+/// же, что у версии при чтении заметки.
+#[test]
+fn note_stats_match_read_versions() {
+    let t = TestVault::new();
+    t.put("a.md", "\u{feff}раз\r\nдва\n");
+    t.put("папка/b.md", "три");
+    t.put("c.txt", "не заметка");
+    let mut stats = t.vault.note_stats().expect("обход");
+    stats.sort_by(|a, b| a.note.path.components().cmp(b.note.path.components()));
+    assert_eq!(stats.len(), 2);
+    for stat in &stats {
+        let read = t.vault.read_note(&stat.note.path).expect("заметка");
+        assert_eq!(stat.size, read.version.size);
+        assert_eq!(stat.modified_ms, read.version.modified_ms);
+    }
+}

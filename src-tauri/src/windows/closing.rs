@@ -26,6 +26,15 @@
 //!
 //! Ответы интерфейса действуют только на своё окно: окно выбирается по метке
 //! окна вызова, а без ожидания ответ ничего не делает.
+//!
+//! **Индекс хранилища** (задача 0.2-1.3, С2-4.1): после ответа
+//! `window_close_ready` (заметки записаны) и до уничтожения окна пишется
+//! `.rhizomind/index.json` — запись, которую окно зарегистрировало
+//! ([`Closing::set_index_writer`], задача 0.2-1.4). Только если до предела
+//! закрытия (решение 67, отсчёт от `CloseRequested`) остаётся не меньше
+//! [`INDEX_CLOSE_RESERVE`]; запись дольше оставшегося времени окно не
+//! держит. Иначе индекс не пишется: при следующем открытии сверка доберёт
+//! изменения. Без ответа (предел вышел) и при отмене индекс не пишется.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -38,6 +47,19 @@ use crate::commands::{Core, VaultId, WindowCloseRequestedPayload, event};
 
 /// Сколько ядро ждёт ответа интерфейса после закрытия окна.
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Запас до предела закрытия, без которого индекс при закрытии не пишется.
+pub const INDEX_CLOSE_RESERVE: Duration = Duration::from_secs(2);
+
+/// Запись индекса хранилища окна при закрытии: пишет сразу, без срока
+/// (`index::store::IndexStore::write_now`); ошибки — молча.
+pub type IndexWriter = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+/// Успеет ли запись индекса: до предела закрытия `deadline` от `now`
+/// остаётся не меньше [`INDEX_CLOSE_RESERVE`].
+pub fn index_write_fits(now: Instant, deadline: Instant) -> bool {
+    deadline.saturating_duration_since(now) >= INDEX_CLOSE_RESERVE
+}
 
 /// Ответ интерфейса на `window:close-requested`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +97,19 @@ pub struct Closing {
     exiting: std::sync::atomic::AtomicBool,
     /// Окно вышло из цикла закрытия (уничтожено или показано снова).
     changed: Condvar,
+    /// Запись индекса хранилища по метке окна.
+    index_writers: IndexWriters,
+}
+
+/// Записи индекса по метке окна.
+#[derive(Default)]
+struct IndexWriters(Mutex<HashMap<String, IndexWriter>>);
+
+impl std::fmt::Debug for IndexWriters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let writers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        f.debug_set().entries(writers.keys()).finish()
+    }
 }
 
 impl Default for Closing {
@@ -93,7 +128,52 @@ impl Closing {
             gone: Mutex::default(),
             exiting: std::sync::atomic::AtomicBool::new(false),
             changed: Condvar::new(),
+            index_writers: IndexWriters::default(),
         }
+    }
+
+    /// Запись индекса хранилища окна `label` при закрытии (окно открыло
+    /// хранилище — задача 0.2-1.4). Окно уничтожено — запись забывается.
+    pub fn set_index_writer(&self, label: &str, writer: IndexWriter) {
+        self.index_writers
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(label.to_owned(), writer);
+    }
+
+    fn index_writer(&self, label: &str) -> Option<IndexWriter> {
+        self.index_writers
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(label)
+            .cloned()
+    }
+
+    /// После записи заметок: пишет индекс окна `label`, если он есть и
+    /// успевает до `deadline` с запасом. Запись идёт в отдельном потоке;
+    /// дольше `deadline` её не ждут (атомарная запись, оборванная выходом,
+    /// оставляет только временный файл в `.rhizomind/tmp/`, его уберёт
+    /// следующее открытие). `true` — запись начата.
+    fn write_index(&self, label: &str, deadline: Instant) -> bool {
+        let Some(writer) = self.index_writer(label) else {
+            return false;
+        };
+        if !index_write_fits(Instant::now(), deadline) {
+            return false;
+        }
+        let (done, wait) = mpsc::channel();
+        let started = std::thread::Builder::new()
+            .name("rhizomind-close-index".into())
+            .spawn(move || {
+                writer();
+                let _ = done.send(());
+            });
+        if started.is_ok() {
+            let _ = wait.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+        started.is_ok()
     }
 
     /// Предел ожидания ответа интерфейса.
@@ -150,6 +230,11 @@ impl Closing {
 
     /// Окно уничтожено (`Destroyed`): вышло из цикла закрытия навсегда.
     pub fn destroyed(&self, label: &str) {
+        self.index_writers
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(label);
         self.gone
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -271,10 +356,11 @@ pub fn on_close_requested<R: Runtime>(window: &tauri::Window<R>) -> bool {
     );
     let app = window.app_handle().clone();
     let timeout = closing.timeout();
+    let deadline = Instant::now() + timeout;
     let waiter_label = label.clone();
     let waiter = std::thread::Builder::new()
         .name("rhizomind-close".into())
-        .spawn(move || finish(&app, &waiter_label, &answers, timeout));
+        .spawn(move || finish(&app, &waiter_label, &answers, deadline));
     if waiter.is_err() {
         // Поток не создать (нехватка ресурсов): ждать некому — закрыть сразу,
         // как раньше, а не держать скрытое окно вечно.
@@ -283,29 +369,36 @@ pub fn on_close_requested<R: Runtime>(window: &tauri::Window<R>) -> bool {
     true
 }
 
-/// Ждёт ответа интерфейса и закрывает окно (или показывает его снова).
+/// Ждёт ответа интерфейса до `deadline` и закрывает окно (или показывает
+/// его снова); после записи заметок — индекс, если успевает.
 fn finish<R: Runtime>(
     app: &tauri::AppHandle<R>,
     label: &str,
     answers: &Receiver<Answer>,
-    timeout: Duration,
+    deadline: Instant,
 ) {
     let Some(closing) = app.try_state::<Closing>() else {
         return;
     };
-    let window = app.get_webview_window(label);
+    let timeout = deadline.saturating_duration_since(Instant::now());
     let answer = match answers.recv_timeout(timeout) {
+        Ok(Answer::Ready) => {
+            // Заметки записаны — индекс после них (С2-4.1, решение 67).
+            closing.write_index(label, deadline);
+            Answer::Ready
+        }
         Ok(answer) => answer,
         Err(RecvTimeoutError::Timeout) => {
             // Без имён и текста заметок (инвариант 3).
             eprintln!(
                 "Rhizomind: окно хранилища не подтвердило запись ввода за {} с и закрыто без подтверждения",
-                timeout.as_secs()
+                closing.timeout().as_secs()
             );
             Answer::Ready
         }
         Err(RecvTimeoutError::Disconnected) => Answer::Ready,
     };
+    let window = app.get_webview_window(label);
     match (answer, window) {
         (Answer::Cancel, Some(window)) if let Some(name) = lost_storage(app, label) => {
             // Решение владельца 66: хранилище на внешнем носителе пропало —
