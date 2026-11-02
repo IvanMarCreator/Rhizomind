@@ -304,3 +304,74 @@ describe('отмена и Backspace у свёрнутого блока', () => {
     expect(collapsed(view)).toBe(false);
   });
 });
+
+describe('заметка только из блока свойств: составление, пустой блок, Backspace', () => {
+  const ONLY = '---\ntags: [проект]\n---';
+  let view: EditorView | null = null;
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+  });
+
+  function make(text: string, cursor = text.length): EditorView {
+    view = new EditorView({ parent: document.body, state: createEditorState(text, { mode: 'live_preview' }) });
+    view.dispatch({ selection: { anchor: cursor } });
+    return view;
+  }
+
+  /** Составление: событие `compositionstart`, затем шаги правками с меткой `input.type.compose`. */
+  function compose(editor: EditorView, steps: readonly string[]): void {
+    editor.contentDOM.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+    const at = editor.state.selection.main.head;
+    let previous = '';
+    for (const step of steps) {
+      editor.dispatch({
+        changes: { from: at, to: at + previous.length, insert: step },
+        selection: { anchor: at + step.length },
+        userEvent: 'input.type.compose',
+      });
+      previous = step;
+    }
+    editor.contentDOM.dispatchEvent(new CompositionEvent('compositionend', { data: previous, bubbles: true }));
+  }
+
+  it('составление (IME) в конце блока без текста под ним — с новой строки, блок цел', () => {
+    const editor = make(ONLY);
+    expect(collapsed(editor)).toBe(true);
+    compose(editor, ['п', 'пр', 'привет']);
+    expect(editor.state.doc.toString()).toBe(`${ONLY}\nпривет`);
+    expect(collapsed(editor)).toBe(true);
+    // Отмена возвращает файл к исходному виду (набранное и новая строка).
+    let undos = 0;
+    while (editor.state.doc.toString() !== ONLY && undos < 5) {
+      undo(editor);
+      undos++;
+    }
+    expect(editor.state.doc.toString()).toBe(ONLY);
+    expect(undos).toBeLessThanOrEqual(2);
+  });
+
+  it('пустой блок `---\\n---`: щелчок ставит курсор на новую пустую строку между `---`, ввод — внутри блока', () => {
+    const editor = make('---\n---');
+    const row = editor.contentDOM.querySelector('.cm-rz-properties');
+    if (!row) throw new Error('нет строки «Свойства»');
+    row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    expect(editor.state.doc.toString()).toBe('---\n\n---');
+    expect(editor.state.selection.main.head).toBe(4);
+    expect(collapsed(editor)).toBe(false);
+    type(editor, 'a: 1');
+    expect(editor.state.doc.toString()).toBe('---\na: 1\n---');
+    undo(editor);
+    undo(editor);
+    expect(editor.state.doc.toString()).toBe('---\n---');
+  });
+
+  it('Backspace в конце свёрнутого блока без текста под ним раскрывает блок, ничего не удаляя', () => {
+    const editor = make(ONLY);
+    expect(collapsed(editor)).toBe(true);
+    editor.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+    expect(editor.state.doc.toString()).toBe(ONLY);
+    expect(editor.state.selection.main.head).toBe(ONLY.length);
+    expect(collapsed(editor)).toBe(false);
+  });
+});

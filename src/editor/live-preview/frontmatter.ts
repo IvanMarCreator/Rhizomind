@@ -32,6 +32,7 @@ import {
   EditorSelection,
   EditorState,
   Prec,
+  StateEffect,
   StateField,
   Transaction,
   type Extension,
@@ -217,7 +218,7 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
   const view: PropertiesView = {
     from: span.from,
     to: span.to,
-    expanded: expandedAt(state, span, old?.expanded === true),
+    expanded: expandedAt(state, span, old?.expanded === true || tr?.effects.some((effect) => effect.is(expandEffect)) === true),
     tags: old && sameTags(old.tags, tags) ? old.tags : tags,
   };
   if (previous && old && old.from === view.from && old.to === view.to && old.expanded === view.expanded && old.tags === view.tags) {
@@ -225,6 +226,9 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
   }
   return { view, decorations: decorate(state, view) };
 }
+
+/** Раскрыть блок при курсоре на его краю (конец блока без текста под ним): Backspace там. */
+const expandEffect = StateEffect.define<null>();
 
 function propertiesField(lookup: PropertiesLookup) {
   return StateField.define<FieldValue>({
@@ -282,26 +286,68 @@ function down(extend: boolean): Command {
 }
 
 /**
- * Backspace в начале строки под свёрнутым блоком склеил бы её с `---` и
- * разрушил блок: вместо этого блок раскрывается, курсор — в конце `---`,
- * ничего не удаляется.
+ * Backspace в начале строки под свёрнутым блоком склеил бы её с `---`, а в
+ * конце свёрнутого блока без текста под ним стёр бы `-` из невидимой
+ * `---`: вместо этого блок раскрывается, курсор — в конце `---`, ничего не
+ * удаляется.
  */
 const backspace: Command = (editor) => {
   const { state } = editor;
   const view = collapsedView(state);
   const { main } = state.selection;
-  if (!view || state.selection.ranges.length !== 1 || !main.empty || main.head !== view.to + 1) return false;
-  editor.dispatch({ selection: EditorSelection.cursor(view.to), scrollIntoView: true, userEvent: 'select' });
+  if (!view || state.selection.ranges.length !== 1 || !main.empty) return false;
+  if (main.head !== view.to + 1 && !(main.head === view.to && view.to >= state.doc.length)) return false;
+  editor.dispatch({
+    selection: EditorSelection.cursor(view.to),
+    effects: expandEffect.of(null),
+    scrollIntoView: true,
+    userEvent: 'select',
+  });
   return true;
 };
 
-/** Щелчок по строке «Свойства»: курсор в конец первой строки блока — блок раскрыт для правки. */
+/**
+ * Составление (IME) в конце свёрнутого блока без текста под ним дописало бы
+ * текст к `---`, а переносить правки составления нельзя — их узел уже в окне.
+ * Поэтому до появления узла составления отдельной правкой вставляется
+ * перевод строки, и составление идёт на новой строке под блоком.
+ */
+function newLineBeforeComposition(editor: EditorView): void {
+  const { state } = editor;
+  const view = collapsedView(state);
+  const { main } = state.selection;
+  if (!view || view.to < state.doc.length || state.selection.ranges.length !== 1 || !main.empty) return;
+  if (main.head !== view.to && main.head !== view.from) return;
+  editor.dispatch({
+    changes: { from: view.to, insert: '\n' },
+    selection: EditorSelection.cursor(view.to + 1),
+    scrollIntoView: true,
+    userEvent: 'input.type',
+    // Мимо `guardStart`: перевод строки уже на своём месте, второй не нужен.
+    filter: false,
+  });
+}
+
+/**
+ * Щелчок по строке «Свойства»: курсор в конец первой строки свойств — блок
+ * раскрыт для правки. В пустом блоке `---` / `---` строки свойств нет:
+ * между ограничителями вставляется пустая строка (правка по щелчку, её можно
+ * отменить), курсор — на ней; иначе ввод дописывался бы к `---`.
+ */
 function expandAt(editor: EditorView, view: PropertiesView): void {
   const { doc } = editor.state;
-  const second = doc.lineAt(view.from).number + 1;
-  // Конец блока, под которым нет текста, — край свёрнутой строки: тогда — конец первой строки `---`.
-  const target = second <= doc.lines && doc.line(second).to < view.to ? doc.line(second).to : doc.lineAt(view.from).to;
-  editor.dispatch({ selection: { anchor: target }, scrollIntoView: true, userEvent: 'select.pointer' });
+  const first = doc.lineAt(view.from);
+  const second = first.number + 1;
+  if (second <= doc.lines && doc.line(second).to < view.to) {
+    editor.dispatch({ selection: { anchor: doc.line(second).to }, scrollIntoView: true, userEvent: 'select.pointer' });
+  } else {
+    editor.dispatch({
+      changes: { from: first.to, insert: '\n' },
+      selection: { anchor: first.to + 1 },
+      scrollIntoView: true,
+      userEvent: 'input',
+    });
+  }
   editor.focus();
 }
 
@@ -391,6 +437,10 @@ export function frontmatterPreview(lookup: PropertiesLookup): Extension {
       ]),
     ),
     EditorView.domEventHandlers({
+      compositionstart(_event, editor) {
+        newLineBeforeComposition(editor);
+        return false;
+      },
       mousedown(event, editor) {
         if (event.button !== 0 || !(event.target instanceof Element)) return false;
         const row = event.target.closest('.cm-rz-properties');
