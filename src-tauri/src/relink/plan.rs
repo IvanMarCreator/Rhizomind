@@ -45,6 +45,11 @@ use crate::names::{self, NameKey};
 /// перенесённая в не-заметку (`.md` → `.txt`), из списка «после» пропадает
 /// (как при удалении). Тот же вход — тот же план.
 ///
+/// Допущение: «откуда», которого нет в точном написании, сопоставляется по
+/// ключу. На Linux, где рядом бывают `А.md` и `а.md`, повтор уже
+/// выполненного переименования может так попасть на двойника; в Windows и
+/// macOS двойников нет.
+///
 /// Заметки плана — по пути (после изменения), ссылки заметки — по порядку
 /// в тексте; одна и та же ссылка, повторённая в тексте, — столько раз,
 /// сколько повторена. Новая цель, которую нельзя написать в ссылке
@@ -69,8 +74,8 @@ pub fn plan(
         .iter()
         .filter_map(|path| before.spelled(path))
         .collect();
-    let (renames, mut unmatched) = matched(before, collapse(renames), &replaced);
-    let after = before.after_replacing(&replaced, &renames);
+    let (accepted, unmatched) = accept(before, renames, &replaced);
+    let after = before.after_replacing(&replaced, &collapse(&accepted));
     let moves: HashMap<&VaultPath, &VaultPath> =
         after.moves().iter().map(|(from, to)| (from, to)).collect();
     let names: HashSet<NameKey> = moves
@@ -120,7 +125,6 @@ pub fn plan(
         })
         .collect();
     notes.sort_by(|a, b| a.path.components().cmp(b.path.components()));
-    unmatched.sort_by(|a, b| a.from.components().cmp(b.from.components()));
     RelinkPlan { notes, unmatched }
 }
 
@@ -158,48 +162,132 @@ impl Rules<'_> {
     }
 }
 
-/// Делит свёрнутые переименования на сопоставленные со списком «до» (в
-/// написании списка: [`Links::after_renames`] сравнивает пути точно) и
-/// несопоставленные. «Откуда» нет в точном написании — сопоставление по
-/// ключу ([`Links::spelled`]: регистр, NFC/NFD в путях событий ОС). Не
-/// сопоставлено: «откуда» нет в списке (уже переименовано, не заметка,
-/// корень); «откуда» и «куда» — один и тот же путь списка (повтор смены
-/// регистра); «куда» занято по ключу ([`Links::occupied`]) заметкой,
-/// которая не уходит этой же пачкой и не помечена как затёртая (`replaced`).
-/// Догадок «это повтор» нет: всё, что не сопоставлено, возвращается.
-fn matched(
+/// Проверяет события по порядку на состоянии «список до, затёртые
+/// `replaced` убраны, принятые события выполнены» — как их выполнил бы диск
+/// (Windows): «откуда» есть (точно, иначе единственное написание по ключам
+/// компонентов: регистр, NFC/NFD в путях событий ОС); «куда» не занято по
+/// ключу ничем, кроме переносимого (смена регистра — можно), в том числе
+/// заметкой, которую принесло прошлое событие пачки; не внутрь себя;
+/// «откуда» по ключу не совпадает с «куда» в точном написании (повтор уже
+/// выполненной смены регистра).
+/// Возвращает принятые события с «откуда» в написании состояния (для
+/// точного сворачивания цепочек) и непринятые как есть. Занятость
+/// проверяется до сворачивания, поэтому звено цепочки на занятую цель
+/// помечается, а обмен через временное имя проходит.
+fn accept(
     before: &Links,
-    renames: Vec<PathRename>,
+    renames: &[PathRename],
     replaced: &[VaultPath],
 ) -> (Vec<PathRename>, Vec<PathRename>) {
+    let mut state = Overlay {
+        before,
+        gone: replaced.to_vec(),
+        arrived: Vec::new(),
+    };
+    let mut accepted = Vec::new();
     let mut unmatched = Vec::new();
-    let mut found: Vec<(PathRename, PathRename)> = Vec::new();
-    for rename in renames {
-        match before.spelled(&rename.from) {
-            Some(from) if from != rename.to => {
-                let spelled = PathRename {
-                    from,
-                    to: rename.to.clone(),
-                };
-                found.push((rename, spelled));
-            }
-            _ => unmatched.push(rename),
+    for event in renames {
+        match state.step(event) {
+            Some(from) => accepted.push(PathRename {
+                from,
+                to: event.to.clone(),
+            }),
+            None => unmatched.push(event.clone()),
         }
     }
-    let freed: Vec<VaultPath> = found
-        .iter()
-        .map(|(_, r)| r.from.clone())
-        .chain(replaced.iter().cloned())
-        .collect();
-    let mut out = Vec::new();
-    for (event, rename) in found {
-        if before.occupied(&rename.to, &freed) {
-            unmatched.push(event);
+    (accepted, unmatched)
+}
+
+/// Состояние пачки поверх списка «до»: ушедшие заметки списка и пути
+/// заметок, перенесённых принятыми событиями.
+struct Overlay<'a> {
+    before: &'a Links,
+    gone: Vec<VaultPath>,
+    arrived: Vec<VaultPath>,
+}
+
+fn keys(path: &[String]) -> Vec<NameKey> {
+    path.iter().map(|c| names::key(c)).collect()
+}
+
+/// `path` — это `at` или внутри `at`.
+fn at_or_inside(path: &[String], at: &[String]) -> bool {
+    path.len() >= at.len() && path.starts_with(at)
+}
+
+impl Overlay<'_> {
+    /// Выполняет событие; `None` — невыполнимо (состояние не меняется).
+    fn step(&mut self, event: &PathRename) -> Option<VaultPath> {
+        let (from, to) = (event.from.components(), event.to.components());
+        if from.is_empty() || to.is_empty() {
+            return None;
+        }
+        let (from_keys, to_keys) = (keys(from), keys(to));
+        if to_keys.len() > from_keys.len() && to_keys.starts_with(&from_keys) {
+            return None;
+        }
+        let gone = &self.gone;
+        let present = |path: &VaultPath| {
+            !gone
+                .iter()
+                .any(|g| at_or_inside(path.components(), g.components()))
+        };
+        let (exact, keyed) = self.before.notes_at(&event.from);
+        let exact_b: Vec<VaultPath> = exact.into_iter().filter(|p| present(p)).collect();
+        let keyed_b: Vec<VaultPath> = keyed.into_iter().filter(|p| present(p)).collect();
+        let exact_a: Vec<usize> = (0..self.arrived.len())
+            .filter(|&i| at_or_inside(self.arrived[i].components(), from))
+            .collect();
+        let keyed_a: Vec<usize> = (0..self.arrived.len())
+            .filter(|&i| keys(self.arrived[i].components()).starts_with(&from_keys))
+            .collect();
+        let (moving_b, moving_a) = if exact_b.is_empty() && exact_a.is_empty() {
+            (keyed_b, keyed_a)
         } else {
-            out.push(rename);
+            (exact_b, exact_a)
+        };
+        let prefix = |path: &VaultPath| {
+            VaultPath::from_components(path.components()[..from.len()].iter().cloned())
+        };
+        let spellings: HashSet<VaultPath> = moving_b
+            .iter()
+            .chain(moving_a.iter().map(|&i| &self.arrived[i]))
+            .map(prefix)
+            .collect();
+        if spellings.len() != 1 {
+            return None;
         }
+        let canon = spellings.into_iter().next()?;
+        if canon == event.to && event.from != event.to {
+            // «Откуда» в другом написании уже стоит как «куда»: повтор
+            // выполненной смены регистра.
+            return None;
+        }
+        let mut freed = self.gone.clone();
+        freed.extend(moving_b.iter().cloned());
+        let busy_b = self.before.occupied(&event.to, &freed);
+        let busy_a = (0..self.arrived.len()).any(|i| {
+            !moving_a.contains(&i) && keys(self.arrived[i].components()).starts_with(&to_keys)
+        });
+        if busy_b || busy_a {
+            return None;
+        }
+        let moved = |path: &VaultPath| {
+            VaultPath::from_components(to.iter().chain(&path.components()[from.len()..]).cloned())
+        };
+        let mut arrived: Vec<VaultPath> = Vec::new();
+        for (i, path) in self.arrived.iter().enumerate() {
+            arrived.push(if moving_a.contains(&i) {
+                moved(path)
+            } else {
+                path.clone()
+            });
+        }
+        arrived.extend(moving_b.iter().map(moved));
+        self.arrived = arrived;
+        self.gone.extend(moving_b);
+        Some(canon)
     }
-    (out, unmatched)
 }
 
 /// Ключ имени заметки без `.md`; не заметка — `None`.

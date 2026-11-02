@@ -180,6 +180,32 @@ impl Links {
         })
     }
 
+    /// Заметки списка в `path` (заметка) или внутри него (папка): точно
+    /// по написанию и по ключам компонентов (второй список включает первый).
+    pub fn notes_at(&self, path: &VaultPath) -> (Vec<VaultPath>, Vec<VaultPath>) {
+        let want = path.components();
+        let (mut exact, mut keyed) = (Vec::new(), Vec::new());
+        if want.is_empty() {
+            return (exact, keyed);
+        }
+        let folder: Vec<NameKey> = want.iter().map(|c| names::key(c)).collect();
+        let note: Option<Vec<NameKey>> = crate::switcher::link_path(path)
+            .map(|parts| parts.iter().map(|c| names::key(c)).collect());
+        for entry in &self.entries {
+            let have = entry.note.path.components();
+            let keys = entry.note.keys();
+            if (have.len() == want.len() && note.as_deref() == Some(keys))
+                || (have.len() > want.len() && keys[..want.len()] == folder[..])
+            {
+                if have == want || (have.len() > want.len() && have.starts_with(want)) {
+                    exact.push(entry.note.path.clone());
+                }
+                keyed.push(entry.note.path.clone());
+            }
+        }
+        (exact, keyed)
+    }
+
     /// Путь `path` в написании списка: точное совпадение (заметка или
     /// папка), иначе единственная заметка или папка с теми же ключами
     /// компонентов. Несколько написаний с одним ключом (Linux: `А.md` и

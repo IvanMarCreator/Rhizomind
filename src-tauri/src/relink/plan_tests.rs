@@ -568,6 +568,51 @@ fn before_already_updated_reported_unmatched() {
 }
 
 #[test]
+fn two_renames_into_one_target_unmatched() {
+    let vault = Vault::new(&[
+        ("Икс.md", 1, ""),
+        ("Игрек.md", 2, ""),
+        ("Заметка.md", 3, "[[Икс]] [[Игрек]]"),
+    ]);
+    let first = rename("Икс.md", "Ц.md");
+    for second in [rename("Игрек.md", "Ц.md"), rename("Игрек.md", "ц.md")] {
+        let plan = vault.plan(&[first.clone(), second.clone()]);
+        // Первое выполнимо, второе — на занятое первым.
+        assert_eq!(plan.unmatched, vec![second.clone()], "{plan:?}");
+        assert_eq!(
+            plan.notes[0].links,
+            vec![planned("Икс", "Ц", "Ц.md")],
+            "{second:?}"
+        );
+    }
+    // Папка, затем заметка на место заметки, пришедшей с папкой.
+    let vault = Vault::new(&[
+        ("Альфа/Х.md", 1, ""),
+        ("Игрек.md", 2, ""),
+        ("Заметка.md", 3, "[[Х]] [[Игрек]]"),
+    ]);
+    let second = rename("Игрек.md", "Ц/х.md");
+    let plan = vault.plan(&[rename("Альфа", "Ц"), second.clone()]);
+    assert_eq!(plan.unmatched, vec![second]);
+}
+
+#[test]
+fn chain_through_occupied_unmatched() {
+    // А → Б при занятой Б без пометки о замене, затем Б → В: занятость
+    // проверяется до сворачивания цепочки.
+    let vault = Vault::new(&[
+        ("А.md", 1, ""),
+        ("Б.md", 2, ""),
+        ("Заметка.md", 3, "[[А]] [[Б]]"),
+    ]);
+    let first = rename("А.md", "Б.md");
+    let plan = vault.plan(&[first.clone(), rename("Б.md", "В.md")]);
+    assert_eq!(plan.unmatched, vec![first]);
+    // Б → В выполнимо само по себе: переносит прежнюю Б.
+    assert_eq!(plan.notes[0].links, vec![planned("Б", "В", "В.md")]);
+}
+
+#[test]
 fn replace_existing_note() {
     // Перенос А на место существующей Б с заменой (Проводник): Б затёрта.
     let text = "[[Альфа/Встреча]] [[Встреча]] [[Бета/Встреча#x]]";
@@ -806,7 +851,8 @@ fn exists(paths: &[String], path: &str) -> bool {
 /// Случай: хранилище «до» и переименования по очереди; `None` — операция
 /// невозможна на диске (цель занята, папка в саму себя, нечего
 /// переименовать).
-fn build_case(raw: &Raw) -> Option<(Vault, Vec<PathRename>)> {
+/// Хранилище сырого случая: заметки без повторов пути и тексты со ссылками.
+fn vault_of(raw: &Raw) -> Vault {
     let mut notes: Vec<(String, i64)> = Vec::new();
     for (path, created) in &raw.notes {
         if !notes.iter().any(|(p, _)| p == path) {
@@ -827,6 +873,18 @@ fn build_case(raw: &Raw) -> Option<(Vault, Vec<PathRename>)> {
                 .join(" ")
         })
         .collect();
+    Vault {
+        notes: notes
+            .into_iter()
+            .zip(texts)
+            .map(|((path, created), text)| (path, created, text))
+            .collect(),
+    }
+}
+
+fn build_case(raw: &Raw) -> Option<(Vault, Vec<PathRename>)> {
+    let vault = vault_of(raw);
+    let paths: Vec<String> = vault.notes.iter().map(|(p, ..)| p.clone()).collect();
     let chosen = &paths[raw.which % paths.len()];
     let first = if raw.folder_op {
         let folders: Vec<&str> = chosen.split('/').collect();
@@ -868,13 +926,6 @@ fn build_case(raw: &Raw) -> Option<(Vault, Vec<PathRename>)> {
         };
         step(to, next, &mut current)?;
     }
-    let vault = Vault {
-        notes: notes
-            .into_iter()
-            .zip(texts)
-            .map(|((path, created), text)| (path, created, text))
-            .collect(),
-    };
     Some((vault, renames))
 }
 
@@ -889,7 +940,17 @@ fn key_path(path: &str) -> Vec<names::NameKey> {
 /// двойник с тем же ключом пути (Linux), не проверяются: на неё нельзя
 /// сослаться никак.
 fn check_same_notes(vault: &Vault, renames: &[PathRename]) -> Result<(), TestCaseError> {
-    let plan = vault.plan(renames);
+    check_same_notes_for(vault, &vault.plan(renames), renames)
+}
+
+/// Как `check_same_notes`, но план уже посчитан, а `renames` — принятые
+/// переименования в написании списка (модель диска).
+fn check_same_notes_for(
+    vault: &Vault,
+    plan: &RelinkPlan,
+    renames: &[PathRename],
+) -> Result<(), TestCaseError> {
+    let plan = plan.clone();
     let after = vault.apply(renames, &plan);
     let before_links = vault.links();
     let after_links = after.links();
@@ -941,18 +1002,147 @@ fn check_same_notes(vault: &Vault, renames: &[PathRename]) -> Result<(), TestCas
     Ok(())
 }
 
+/// Событие пачки для свойства «каждое переименование учтено»: откуда —
+/// заметка, её папка, «куда» прошлого события или несуществующий путь.
+#[derive(Debug, Clone)]
+struct RawEvent {
+    from_kind: u8,
+    which: usize,
+    depth: usize,
+    note_to: String,
+    folder_to: &'static str,
+}
+
+fn event_strategy() -> impl Strategy<Value = RawEvent> {
+    (
+        0u8..4,
+        0usize..64,
+        0usize..3,
+        path_strategy(),
+        prop::sample::select(FOLDER_TO),
+    )
+        .prop_map(|(from_kind, which, depth, note_to, folder_to)| RawEvent {
+            from_kind,
+            which,
+            depth,
+            note_to,
+            folder_to,
+        })
+}
+
+/// Модель диска: можно ли выполнить событие на состоянии `state` (пути
+/// заметок сейчас) и в каком написании «откуда». Правила — как в Windows:
+/// «откуда» точно, иначе единственное написание по ключу; «куда» не занято
+/// по ключу ничем, кроме переносимого; не внутрь себя.
+fn model_step(state: &mut [String], from: &str, to: &str) -> Option<PathRename> {
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    let (fk, tk) = (key_path(from), key_path(to));
+    if tk.len() > fk.len() && tk.starts_with(&fk) {
+        return None;
+    }
+    let exact: Vec<usize> = (0..state.len())
+        .filter(|&i| state[i] == from || state[i].starts_with(&format!("{from}/")))
+        .collect();
+    let moving = if exact.is_empty() {
+        let keyed: Vec<usize> = (0..state.len())
+            .filter(|&i| key_path(&state[i]).starts_with(&fk))
+            .collect();
+        let mut spellings: Vec<String> = keyed
+            .iter()
+            .map(|&i| {
+                state[i]
+                    .split('/')
+                    .take(fk.len())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect();
+        spellings.dedup();
+        spellings.sort();
+        spellings.dedup();
+        if spellings.len() != 1 {
+            return None;
+        }
+        keyed
+    } else {
+        exact
+    };
+    let canon: String = state[moving[0]]
+        .split('/')
+        .take(fk.len())
+        .collect::<Vec<_>>()
+        .join("/");
+    if canon == to && from != to {
+        return None;
+    }
+    let busy =
+        (0..state.len()).any(|j| !moving.contains(&j) && key_path(&state[j]).starts_with(&tk));
+    if busy {
+        return None;
+    }
+    let op = rename(&canon, to);
+    for &i in &moving {
+        state[i] = moved(&state[i], std::slice::from_ref(&op));
+    }
+    Some(op)
+}
+
+/// Каждое событие пачки либо выполнимо на диске и учтено в плане (ссылки
+/// на перенесённое ведут туда же — `check_same_notes`), либо стоит в
+/// `unmatched`; выполнимое не помечается, невыполнимое не проходит молча.
+fn check_accounted(vault: &Vault, events: &[RawEvent]) -> Result<(), TestCaseError> {
+    let paths: Vec<String> = vault.notes.iter().map(|(p, ..)| p.clone()).collect();
+    let mut renames = Vec::new();
+    let mut prev_to: Option<(String, bool)> = None;
+    for e in events {
+        let chosen = &paths[e.which % paths.len()];
+        let folders: Vec<&str> = chosen.split('/').collect();
+        let folders = &folders[..folders.len() - 1];
+        let (from, folder) = match e.from_kind {
+            0 => (chosen.clone(), false),
+            1 if !folders.is_empty() => (folders[..1 + e.depth % folders.len()].join("/"), true),
+            2 if prev_to.is_some() => prev_to.clone().unwrap_or_default(),
+            3 => ("Нет/Такой.md".to_owned(), false),
+            _ => (chosen.clone(), false),
+        };
+        let to = if folder {
+            e.folder_to.to_owned()
+        } else {
+            e.note_to.clone()
+        };
+        prev_to = Some((to.clone(), folder));
+        renames.push(rename(&from, &to));
+    }
+    let mut state = paths.clone();
+    let mut valid = Vec::new();
+    let mut invalid = Vec::new();
+    for r in &renames {
+        match model_step(&mut state, &text_of(&r.from), &text_of(&r.to)) {
+            Some(op) => valid.push(op),
+            None => invalid.push(r.clone()),
+        }
+    }
+    let plan = vault.plan(&renames);
+    prop_assert_eq!(&plan.unmatched, &invalid, "{:?}", renames);
+    check_same_notes_for(vault, &plan, &valid)
+}
+
 /// План повторяется: тот же вход — тот же план (порядок карт индекса не
 /// влияет); то же переименование, пришедшее ещё раз после выполнения
-/// (переименованное уже на месте), — пустой план. Повтор проверяется, когда
-/// путей «откуда» после операции нет (цепочка `Бета → Омега`,
-/// `Омега → Бета/Альфа` снова создаёт `Бета` — тогда повтор неотличим от
-/// нового переименования).
+/// (переименованное уже на месте), — пустой план с пометкой (`unmatched`).
+/// Повтор проверяется, когда путей «откуда» после операции нет ни точно,
+/// ни по ключу: цепочка `Бета → Омега`, `Омега → Бета/Альфа` снова создаёт
+/// `Бета`, а на Linux двойник `альфа/Мой.md` подходит к «откуда»
+/// `Альфа/Мой.md` по ключу — тогда повтор неотличим от нового
+/// переименования.
 fn check_idempotent(vault: &Vault, renames: &[PathRename]) -> Result<(), TestCaseError> {
     let plan = vault.plan(renames);
     prop_assert_eq!(&vault.plan(renames), &plan);
     let after = vault.apply(renames, &plan);
     let links = after.links();
-    if renames.iter().all(|r| !links.has_path(&r.from)) {
+    if renames.iter().all(|r| links.notes_at(&r.from).1.is_empty()) {
         let again = after.plan(renames);
         prop_assert!(again.notes.is_empty(), "{:?}", again);
         prop_assert!(!again.unmatched.is_empty(), "повтор без пометки");
@@ -985,6 +1175,27 @@ fn any_path() -> impl Strategy<Value = VaultPath> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
 
+    /// Пачка без отбора: каждое переименование учтено или помечено.
+    #[test]
+    fn every_rename_accounted(
+        notes in prop::collection::vec((path_strategy(), 0i64..3), 1..8),
+        links in prop::collection::vec(prop::collection::vec((0usize..64, 0u8..8, 0u8..8), 0..5), 8),
+        events in prop::collection::vec(event_strategy(), 1..5),
+    ) {
+        let raw = Raw {
+            notes,
+            links,
+            folder_op: false,
+            which: 0,
+            depth: 0,
+            note_to: String::new(),
+            folder_to: "Омега",
+            chain: None,
+        };
+        let vault = vault_of(&raw);
+        check_accounted(&vault, &events)?;
+    }
+
     /// Любой вход без отбора `build_case`: план не паникует.
     #[test]
     fn plan_never_panics(
@@ -1015,6 +1226,27 @@ proptest! {
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(10_000))]
+
+    /// `every_rename_accounted` на 10 000 случаях.
+    #[test]
+    #[ignore = "10 000 случаев: cargo test --lib relink::plan -- --ignored"]
+    fn every_rename_accounted_10000(
+        notes in prop::collection::vec((path_strategy(), 0i64..3), 1..8),
+        links in prop::collection::vec(prop::collection::vec((0usize..64, 0u8..8, 0u8..8), 0..5), 8),
+        events in prop::collection::vec(event_strategy(), 1..5),
+    ) {
+        let raw = Raw {
+            notes,
+            links,
+            folder_op: false,
+            which: 0,
+            depth: 0,
+            note_to: String::new(),
+            folder_to: "Омега",
+            chain: None,
+        };
+        check_accounted(&vault_of(&raw), &events)?;
+    }
 
     /// То же на 10 000 случаях (план 0.2: `--ignored`, долго для CI).
     #[test]
