@@ -337,6 +337,95 @@
   background-color: var(--tag-bg-hover);
 }
 
+/* ---- Блок свойств (0.2-3.2, макет П-4, tokens.md «Строка „Свойства“») ----
+   Свёрнут: строка с рамкой `border/default`, отступы 4 / 8, скругление 6,
+   промежуток 8; шеврон и значок 14 `icon/muted`, «Свойства» 13 `text/muted`,
+   справа — теги плашками 12 Medium, отступы 1 / 7, скругление 9. Промежуток
+   до текста ниже — отступом внутри строки-обёртки (поля CodeMirror не меряет).
+   Раскрыт: исходный текст шрифтом заметки на фоне `bg/code`; промежуток —
+   сверху у строки под блоком (`cm-rz-gap-before`, как под блоком кода). */
+
+.cm-editor .cm-rz-properties-wrap {
+  padding-bottom: calc(var(--note-font-size, 16px) * 0.625);
+}
+
+.cm-editor .cm-rz-properties {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  line-height: 20px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cm-editor .cm-rz-properties:hover {
+  background: var(--bg-hover);
+}
+
+.cm-editor .cm-rz-properties-icon {
+  flex: none;
+  color: var(--icon-muted);
+}
+
+.cm-editor .cm-rz-properties-label {
+  flex: none;
+}
+
+.cm-editor .cm-rz-properties-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.cm-editor .cm-rz-properties-tag {
+  padding: 1px 7px;
+  border-radius: 9px;
+  background-color: var(--tag-bg);
+  color: var(--tag-text);
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.cm-editor .cm-rz-properties-tag:hover {
+  background-color: var(--tag-bg-hover);
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-properties-source {
+  padding: 0 8px;
+  background: var(--bg-code);
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-properties-source-first {
+  padding-top: 4px;
+  border-radius: 6px 6px 0 0;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-properties-source-last {
+  padding-bottom: 4px;
+  border-radius: 0 0 6px 6px;
+}
+
+.cm-editor .cm-content .cm-line.cm-rz-properties-source-first.cm-rz-properties-source-last {
+  border-radius: 6px;
+}
+
+/* Строки-ограничители `---` / `...` бледнее текста свойств (макет П-4). */
+.cm-editor .cm-content .cm-line.cm-rz-properties-delimiter {
+  color: var(--text-secondary);
+}
+
 /* ---- Горизонтальная линия ---- */
 
 .cm-editor .cm-rz-rule {

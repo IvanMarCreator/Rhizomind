@@ -1,6 +1,6 @@
 // Переход по вики-ссылке к открытой заметке (С3.4, решения 85, 86): курсор
 // встаёт в начало строки заголовка `[[Заметка#Заголовок]]` (без заголовка
-// или если его нет — в начало заметки), строка прокручивается вверх видимой
+// или если его нет — в начало текста под блоком свойств, 0.2-3.2), строка прокручивается вверх видимой
 // части, фокус — в тексте: можно сразу печатать. Сравнение заголовков — без
 // учёта регистра (ключ имени ядра), с нормализацией Unicode. Переход из вида
 // «Обратные ссылки» (0.2-2.2) ставит курсор на саму ссылку: строка и столбец
@@ -9,6 +9,7 @@ import { EditorSelection, type Text } from '@codemirror/state';
 import { EditorView, ViewPlugin } from '@codemirror/view';
 import { MAX_BLOCK_TEXT, fenceStep, findProperties, type CodeBlock, type OpenFence } from '../live-preview/markdown.ts';
 import { nameKey } from '../../core/names/index.ts';
+import { textStart } from '../live-preview/frontmatter.ts';
 import { wikiHost, type LinkPosition } from './host.ts';
 
 const HEADING = /^ {0,3}#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
@@ -46,13 +47,13 @@ export function positionAt(doc: Text, at: LinkPosition): number {
 }
 
 /**
- * Курсор на ссылку `link` или к заголовку `heading` (нет его или `null` — в начало заметки),
+ * Курсор на ссылку `link` или к заголовку `heading` (нет его или `null` — в начало текста под блоком свойств),
  * прокрутка к нему и фокус в текст: можно сразу печатать (решение 86). В
  * заметке только для чтения фокус не ставится, как при открытии (NoteText).
  */
 export function arriveAt(view: EditorView, heading: string | null, link?: LinkPosition): void {
   const doc = view.state.doc;
-  const at = link ? positionAt(doc, link) : ((heading === null ? null : findHeading(doc, heading)) ?? 0);
+  const at = link ? positionAt(doc, link) : ((heading === null ? null : findHeading(doc, heading)) ?? textStart(doc));
   view.dispatch({
     selection: EditorSelection.cursor(at),
     // Ссылка из обратных ссылок — в середине видимой части, заголовок — вверху.
