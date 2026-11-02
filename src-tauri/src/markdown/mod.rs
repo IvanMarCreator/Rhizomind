@@ -111,7 +111,6 @@ pub struct WikiLink {
 
 /// Разбирает текст заметки. Не паникует ни на каком входе; текст больше
 /// [`FRONTMATTER_MAX_NOTE_BYTES`] — без блока свойств.
-///
 pub fn parse(text: &str) -> ParsedNote {
     scan(text).into_parsed()
 }
@@ -119,10 +118,13 @@ pub fn parse(text: &str) -> ParsedNote {
 #[cfg(test)]
 mod tests;
 
-/// Тег с положением в тексте (для образцов).
+/// Тег с положением в тексте. Положения (`span` здесь и ниже) сверяются с
+/// образцами и нужны переписыванию ссылок (`relink::rewrite`, задача 0.2-4.4);
+/// индексу ([`parse`]) — нет.
 #[derive(Debug, Clone)]
 pub(crate) struct SpannedTag {
     pub tag: Tag,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub span: Range<usize>,
 }
 
@@ -130,6 +132,7 @@ pub(crate) struct SpannedTag {
 #[derive(Debug, Clone)]
 pub(crate) struct SpannedHeading {
     pub heading: Heading,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub span: Range<usize>,
 }
 
@@ -137,7 +140,9 @@ pub(crate) struct SpannedHeading {
 #[derive(Debug, Clone)]
 pub(crate) struct SpannedLink {
     pub link: WikiLink,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub heading_span: Option<Range<usize>>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub alias_span: Option<Range<usize>>,
 }
 

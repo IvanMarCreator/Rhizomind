@@ -112,7 +112,7 @@ HEADER = (
 
 def rust(tables):
     out = [f'//! {line}' if line else '//!' for line in HEADER.split('\n')]
-    out += ['', f'/// Версия Unicode, из которой построены таблицы.', f'pub const UNICODE_VERSION: &str = "{UNICODE_VERSION}";', '']
+    out += ['', f'/// Версия Unicode, из которой построены таблицы (сверка с TypeScript в тестах).', '#[cfg_attr(not(test), allow(dead_code))]', f'pub const UNICODE_VERSION: &str = "{UNICODE_VERSION}";', '']
     for name, doc, rs in tables:
         out.append(f'/// {doc}')
         out.append('#[rustfmt::skip]')
