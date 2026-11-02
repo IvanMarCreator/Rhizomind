@@ -35,12 +35,15 @@ use crate::names::{self, NameKey};
 ///
 /// `renames` — события по порядку (как их видит наблюдатель): цепочки
 /// `А → Б`, `Б → В` сворачиваются в `А → В`, «туда и обратно» — в ничто.
-/// Путь «откуда» в другом регистре или форме Unicode сопоставляется по
-/// ключу — но только если «куда» ещё нет в списке «до»: иначе это повтор
-/// уже выполненного переименования (событие пришло ещё раз), и такое
-/// переименование пропускается. Заметка, перенесённая в
-/// не-заметку (`.md` → `.txt`), из списка «после» пропадает: ссылки на неё
-/// не переписываются (как при удалении).
+/// `replaced` — заметки списка «до», которые пачка затёрла (перенос с
+/// заменой в Проводнике: тот же идентификатор у переносимого файла); их нет
+/// в списке «после», ссылки на них не переписываются (как при удалении).
+/// Переименование, которое не сопоставить со списком «до» (см. `matched`:
+/// «откуда» нет, «куда» занято без пометки о замене, повтор уже
+/// выполненного), ничего не переписывает и возвращается в
+/// [`RelinkPlan::unmatched`] — вызывающий сообщает о сбое. Заметка,
+/// перенесённая в не-заметку (`.md` → `.txt`), из списка «после» пропадает
+/// (как при удалении). Тот же вход — тот же план.
 ///
 /// Заметки плана — по пути (после изменения), ссылки заметки — по порядку
 /// в тексте; одна и та же ссылка, повторённая в тексте, — столько раз,
@@ -48,20 +51,28 @@ use crate::names::{self, NameKey};
 /// (`names::is_linkable`) или которая не ведёт на заметку однозначно
 /// (Linux: две заметки с одним ключом пути), в план не попадает: правкой
 /// ссылку не исправить.
-pub fn plan(index: &VaultIndex, before: &Links, renames: &[PathRename]) -> RelinkPlan {
-    let renames: Vec<PathRename> = collapse(renames)
-        .into_iter()
-        .filter_map(|rename| spelled(before, rename))
+///
+/// Требование к выполнению плана (0.2-4.5): ссылка уже переписана, если её
+/// цель в свежем тексте однозначно ведёт в `points_to` по списку «после».
+/// Переписывать только ссылки с целью, равной `old_target`, которые туда
+/// однозначно не ведут. Журнал хранит по заметке тройки (`old_target`,
+/// `new_target`, `points_to`). Сравнивать цели без этой проверки нельзя:
+/// после переименования папки новая цель одной ссылки может совпасть со
+/// старой целью другой в той же заметке (`[[Альфа/Встреча]]`).
+pub fn plan(
+    index: &VaultIndex,
+    before: &Links,
+    renames: &[PathRename],
+    replaced: &[VaultPath],
+) -> RelinkPlan {
+    let replaced: Vec<VaultPath> = replaced
+        .iter()
+        .filter_map(|path| before.spelled(path))
         .collect();
-    if renames.is_empty() {
-        return RelinkPlan::default();
-    }
-    let after = before.after_renames(&renames);
+    let (renames, mut unmatched) = matched(before, collapse(renames), &replaced);
+    let after = before.after_replacing(&replaced, &renames);
     let moves: HashMap<&VaultPath, &VaultPath> =
         after.moves().iter().map(|(from, to)| (from, to)).collect();
-    if moves.is_empty() {
-        return RelinkPlan::default();
-    }
     let names: HashSet<NameKey> = moves
         .iter()
         .flat_map(|(from, to)| [name_key(from), name_key(to)])
@@ -77,10 +88,12 @@ pub fn plan(index: &VaultIndex, before: &Links, renames: &[PathRename]) -> Relin
     for name in &names {
         for (from, link) in index.links_named(name) {
             let note = match moves.get(from) {
-                Some(&to) if !after.contains(to) => continue,
                 Some(&to) => to,
                 None => from,
             };
+            if replaced.contains(from) || !after.contains(note) {
+                continue;
+            }
             let decision = decided
                 .entry(link.target.as_str())
                 .or_insert_with(|| rules.decide(&link.target));
@@ -107,7 +120,8 @@ pub fn plan(index: &VaultIndex, before: &Links, renames: &[PathRename]) -> Relin
         })
         .collect();
     notes.sort_by(|a, b| a.path.components().cmp(b.path.components()));
-    RelinkPlan { notes }
+    unmatched.sort_by(|a, b| a.from.components().cmp(b.from.components()));
+    RelinkPlan { notes, unmatched }
 }
 
 /// Списки «до» и «после» и перемещения — для решения по одной цели.
@@ -144,20 +158,48 @@ impl Rules<'_> {
     }
 }
 
-/// Переименование в написании списка «до» ([`Links::after_renames`]
-/// сравнивает пути точно). «Откуда» нет в точном написании — сопоставление
-/// по ключу ([`Links::spelled`]), если «куда» ещё нет в списке; если есть —
-/// это повтор уже выполненного переименования, и по ключу «откуда» попало
-/// бы на другую заметку: `None`. Нечего переименовывать — тоже `None`.
-fn spelled(before: &Links, rename: PathRename) -> Option<PathRename> {
-    if before.has_path(&rename.from) {
-        return Some(rename);
+/// Делит свёрнутые переименования на сопоставленные со списком «до» (в
+/// написании списка: [`Links::after_renames`] сравнивает пути точно) и
+/// несопоставленные. «Откуда» нет в точном написании — сопоставление по
+/// ключу ([`Links::spelled`]: регистр, NFC/NFD в путях событий ОС). Не
+/// сопоставлено: «откуда» нет в списке (уже переименовано, не заметка,
+/// корень); «откуда» и «куда» — один и тот же путь списка (повтор смены
+/// регистра); «куда» занято по ключу ([`Links::occupied`]) заметкой,
+/// которая не уходит этой же пачкой и не помечена как затёртая (`replaced`).
+/// Догадок «это повтор» нет: всё, что не сопоставлено, возвращается.
+fn matched(
+    before: &Links,
+    renames: Vec<PathRename>,
+    replaced: &[VaultPath],
+) -> (Vec<PathRename>, Vec<PathRename>) {
+    let mut unmatched = Vec::new();
+    let mut found: Vec<(PathRename, PathRename)> = Vec::new();
+    for rename in renames {
+        match before.spelled(&rename.from) {
+            Some(from) if from != rename.to => {
+                let spelled = PathRename {
+                    from,
+                    to: rename.to.clone(),
+                };
+                found.push((rename, spelled));
+            }
+            _ => unmatched.push(rename),
+        }
     }
-    if before.has_path(&rename.to) {
-        return None;
+    let freed: Vec<VaultPath> = found
+        .iter()
+        .map(|(_, r)| r.from.clone())
+        .chain(replaced.iter().cloned())
+        .collect();
+    let mut out = Vec::new();
+    for (event, rename) in found {
+        if before.occupied(&rename.to, &freed) {
+            unmatched.push(event);
+        } else {
+            out.push(rename);
+        }
     }
-    let from = before.spelled(&rename.from)?;
-    Some(PathRename { from, ..rename })
+    (out, unmatched)
 }
 
 /// Ключ имени заметки без `.md`; не заметка — `None`.
@@ -183,6 +225,7 @@ fn collapse(renames: &[PathRename]) -> Vec<PathRename> {
     for event in renames {
         let from = event.from.components();
         if from.is_empty() {
+            out.push(event.clone());
             continue;
         }
         let mut renamed_itself = false;

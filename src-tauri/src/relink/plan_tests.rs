@@ -96,7 +96,14 @@ impl Vault {
     }
 
     fn plan(&self, renames: &[PathRename]) -> RelinkPlan {
-        plan(&self.index(), &self.links(), renames)
+        self.plan_replacing(renames, &[])
+    }
+
+    /// План, когда переименования заменяют заметки `replaced` (перенос с
+    /// заменой в Проводнике).
+    fn plan_replacing(&self, renames: &[PathRename], replaced: &[&str]) -> RelinkPlan {
+        let replaced: Vec<VaultPath> = replaced.iter().map(|path| p(path)).collect();
+        plan(&self.index(), &self.links(), renames, &replaced)
     }
 
     /// Хранилище после переименований и выполненного плана: у каждой
@@ -104,6 +111,16 @@ impl Vault {
     /// после» этой заметки (одна цель в одной заметке ведёт в одно место,
     /// поэтому таблица однозначна).
     fn apply(&self, renames: &[PathRename], plan: &RelinkPlan) -> Vault {
+        self.apply_replacing(renames, &[], plan)
+    }
+
+    /// Как [`Vault::apply`], заметки `replaced` затёрты переименованием.
+    fn apply_replacing(
+        &self,
+        renames: &[PathRename],
+        replaced: &[&str],
+        plan: &RelinkPlan,
+    ) -> Vault {
         for note in &plan.notes {
             assert!(
                 self.notes
@@ -117,6 +134,7 @@ impl Vault {
         let notes = self
             .notes
             .iter()
+            .filter(|(path, ..)| !replaced.contains(&path.as_str()))
             .map(|(path, created, text)| {
                 let after = moved(path, renames);
                 let text = match plan.notes.iter().find(|n| n.path == p(&after)) {
@@ -504,22 +522,82 @@ fn move_to_non_note_skipped() {
     );
 }
 
+/// Переименование, которое не сопоставить со списком «до», — в плане как
+/// несопоставленное, а не тихий пустой план.
+fn assert_unmatched(plan: &RelinkPlan, op: &PathRename) {
+    assert!(plan.notes.is_empty(), "{plan:?}");
+    assert_eq!(plan.unmatched, vec![op.clone()]);
+    assert!(!plan.is_empty());
+}
+
 #[test]
-fn replayed_rename_changes_nothing() {
-    // Переименование, которое уже выполнено: «куда» уже есть в списке, а
-    // «откуда» по ключу совпало бы с другой заметкой — её не трогаем.
+fn replayed_rename_reported_unmatched() {
+    // Повтор выполненного: «куда» уже есть, «откуда» по ключу совпало бы с
+    // другой заметкой — её не трогаем, переименование помечено.
     let vault = Vault::new(&[
         ("Альфа/Встреча.md", 1, ""),
         ("Альфа/Планёрка.md", 1, ""),
         ("Заметка.md", 2, "[[Встреча]] [[Планёрка]]"),
     ]);
-    assert!(
-        vault
-            .plan(&[rename("Альфа/встреча.md", "Альфа/Планёрка.md")])
-            .is_empty()
-    );
+    let op = rename("Альфа/встреча.md", "Альфа/Планёрка.md");
+    assert_unmatched(&vault.plan(std::slice::from_ref(&op)), &op);
+    // Смена регистра, пришедшая ещё раз.
+    let op = rename("Альфа/ВСТРЕЧА.md", "Альфа/Встреча.md");
+    assert_unmatched(&vault.plan(std::slice::from_ref(&op)), &op);
 }
 
+#[test]
+fn before_already_updated_reported_unmatched() {
+    // В «до» пришёл список, который наблюдатель уже обновил.
+    let vault = Vault::new(&[
+        ("Бета/Встреча.md", 1, ""),
+        ("Заметка.md", 2, "[[Альфа/Встреча]] [[Встреча]]"),
+    ]);
+    let op = rename("Альфа/Встреча.md", "Бета/Встреча.md");
+    assert_unmatched(&vault.plan(std::slice::from_ref(&op)), &op);
+    // Нечего переименовывать: нет такого пути, корень, пустой компонент.
+    for op in [
+        rename("Нет/Такой.md", "Нет/Другой.md"),
+        PathRename {
+            from: VaultPath::root(),
+            to: p("Омега"),
+        },
+    ] {
+        assert_unmatched(&vault.plan(std::slice::from_ref(&op)), &op);
+    }
+}
+
+#[test]
+fn replace_existing_note() {
+    // Перенос А на место существующей Б с заменой (Проводник): Б затёрта.
+    let text = "[[Альфа/Встреча]] [[Встреча]] [[Бета/Встреча#x]]";
+    let vault = Vault::new(&[
+        ("Альфа/Встреча.md", 1, ""),
+        ("Бета/Встреча.md", 2, ""),
+        ("Гамма/Встреча.md", 3, ""),
+        ("Заметка.md", 4, text),
+    ]);
+    for to in ["Бета/Встреча.md", "Бета/встреча.md"] {
+        let op = [rename("Альфа/Встреча.md", to)];
+        let plan = vault.plan_replacing(&op, &["Бета/Встреча.md"]);
+        assert!(plan.unmatched.is_empty(), "{plan:?}");
+        let name = to.trim_end_matches(".md");
+        assert_eq!(
+            plan.notes[0].links,
+            vec![planned("Альфа/Встреча", name, to)],
+            "{to}"
+        );
+        // `[[Встреча]]` вела на А и ведёт на неё; ссылка на затёртую Б
+        // остаётся как была (как при удалении).
+        let after = vault.apply_replacing(&op, &["Бета/Встреча.md"], &plan);
+        assert_eq!(
+            after.text("Заметка.md"),
+            format!("[[{name}]] [[Встреча]] [[Бета/Встреча#x]]")
+        );
+        // Без пометки о замене «куда» занято — несопоставленное.
+        assert_unmatched(&vault.plan(&op), &op[0]);
+    }
+}
 #[test]
 fn name_ending_in_md_keeps_suffix() {
     // Заметка `Итоги.md.md`: цель `Итоги.md.md`, а не `Итоги.md` (ревью 4.4).
@@ -717,11 +795,12 @@ fn link_text(target: &str, decor: u8) -> String {
     format!("{bang}[[{target}{tail}]]")
 }
 
-/// Есть ли в списке заметка или папка с ровно этим путём.
+/// Занят ли путь заметкой или папкой — по ключам компонентов, как в
+/// Windows (переименование на место `а.md` рядом с `А.md` план вернёт
+/// несопоставленным).
 fn exists(paths: &[String], path: &str) -> bool {
-    paths
-        .iter()
-        .any(|p| p == path || p.starts_with(&format!("{path}/")))
+    let want = key_path(path);
+    paths.iter().any(|p| key_path(p).starts_with(&want))
 }
 
 /// Случай: хранилище «до» и переименования по очереди; `None` — операция
@@ -763,7 +842,13 @@ fn build_case(raw: &Raw) -> Option<(Vault, Vec<PathRename>)> {
     let mut renames = Vec::new();
     let mut current = paths.clone();
     let mut step = |from: String, to: String, current: &mut Vec<String>| -> Option<()> {
-        if from == to || exists(current, &to) || to.starts_with(&format!("{from}/")) {
+        // Занято чем-то, кроме самого переименуемого (смена регистра — можно).
+        let others: Vec<String> = current
+            .iter()
+            .filter(|p| **p != from && !p.starts_with(&format!("{from}/")))
+            .cloned()
+            .collect();
+        if from == to || exists(&others, &to) || to.starts_with(&format!("{from}/")) {
             return None;
         }
         let op = rename(&from, &to);
@@ -868,13 +953,52 @@ fn check_idempotent(vault: &Vault, renames: &[PathRename]) -> Result<(), TestCas
     let after = vault.apply(renames, &plan);
     let links = after.links();
     if renames.iter().all(|r| !links.has_path(&r.from)) {
-        prop_assert!(after.plan(renames).is_empty(), "{:?}", after.plan(renames));
+        let again = after.plan(renames);
+        prop_assert!(again.notes.is_empty(), "{:?}", again);
+        prop_assert!(!again.unmatched.is_empty(), "повтор без пометки");
     }
     Ok(())
 }
 
+/// Произвольный путь: пустой, корень, `.txt`, `..`, несуществующий.
+fn any_path() -> impl Strategy<Value = VaultPath> {
+    prop::collection::vec(
+        prop_oneof![
+            prop::sample::select(vec![
+                "",
+                ".",
+                "..",
+                "Альфа",
+                "а.md",
+                "А.MD",
+                "x.txt",
+                "Встреча.md"
+            ])
+            .prop_map(str::to_owned),
+            "\\PC{0,8}",
+        ],
+        0..4,
+    )
+    .prop_map(VaultPath::from_components)
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1000))]
+
+    /// Любой вход без отбора `build_case`: план не паникует.
+    #[test]
+    fn plan_never_panics(
+        notes in prop::collection::vec((any_path(), 0i64..3, "\\PC{0,40}|(\\[\\[[^\\]]{0,12}\\]\\] ?){0,4}"), 0..8),
+        renames in prop::collection::vec((any_path(), any_path()), 0..4),
+        replaced in prop::collection::vec(any_path(), 0..3),
+    ) {
+        let index = VaultIndex::from_entries(notes.iter().map(|(path, created, text)| {
+            (path.clone(), NoteEntry { created_ms: *created, parsed: markdown::parse(text), ..NoteEntry::default() })
+        }));
+        let links = Links::new(notes.iter().map(|(path, created, _)| NoteRef { path: path.clone(), created_ms: *created }).collect());
+        let renames: Vec<PathRename> = renames.into_iter().map(|(from, to)| PathRename { from, to }).collect();
+        let _ = plan(&index, &links, &renames, &replaced);
+    }
 
     #[test]
     fn links_point_to_same_notes_after_op(raw in raw_strategy()) {
@@ -934,7 +1058,7 @@ fn relink_plan_folder_1000() {
     let (index, links) = (vault.index(), vault.links());
     let op = [rename("Большой архив", "Архив 2026")];
     let start = Instant::now();
-    let plan = plan(&index, &links, &op);
+    let plan = plan(&index, &links, &op, &[]);
     let took = start.elapsed();
     eprintln!("relink_plan_folder_1000: {took:?}");
     assert_eq!((plan.note_count(), plan.link_count()), (1000, 3000));

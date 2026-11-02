@@ -16,7 +16,7 @@
 //!
 //! План — [`plan()`] (0.2-4.3), переписывание текста — [`rewrite`] (0.2-4.4).
 
-use crate::commands::VaultPath;
+use crate::commands::{PathRename, VaultPath};
 
 mod plan;
 mod rewrite;
@@ -51,12 +51,18 @@ pub struct NotePlan {
 pub struct RelinkPlan {
     /// Заметки плана; заметка без ссылок для переписывания сюда не попадает.
     pub notes: Vec<NotePlan>,
+    /// Переименования, которые не удалось сопоставить со списком заметок
+    /// «до» (нечего переименовывать, «куда» занято без пометки о замене,
+    /// повтор уже выполненного): по ним ничего не переписано, вызывающий
+    /// сообщает о сбое, а не молчит (план 0.2, «Дополнительно» к 0.2-4.3).
+    pub unmatched: Vec<PathRename>,
 }
 
 impl RelinkPlan {
-    /// Переписывать нечего.
+    /// Переписывать нечего и все переименования сопоставлены. План без
+    /// заметок, но с несопоставленными переименованиями, — не пустой.
     pub fn is_empty(&self) -> bool {
-        self.notes.is_empty()
+        self.notes.is_empty() && self.unmatched.is_empty()
     }
 
     /// Сколько заметок будет переписано.
@@ -78,7 +84,7 @@ mod tests {
 
     #[test]
     fn empty_plan_counts_nothing() {
-        let plan = plan(&VaultIndex::new(), &Links::default(), &[]);
+        let plan = plan(&VaultIndex::new(), &Links::default(), &[], &[]);
         assert!(plan.is_empty());
         assert_eq!((plan.note_count(), plan.link_count()), (0, 0));
     }

@@ -88,7 +88,24 @@ impl Links {
     /// Заметка переезжает со своей датой создания. Переименование того,
     /// чего нет в списке, ничего не меняет.
     pub fn after_renames(&self, renames: &[PathRename]) -> NotesView<'_> {
+        self.after_replacing(&[], renames)
+    }
+
+    /// Как [`Links::after_renames`], но заметки `replaced` (пути списка
+    /// «до») затёрты переименованиями пачки — перенос с заменой: их нет в
+    /// списке «после», и переименования их не переносят.
+    pub fn after_replacing(&self, replaced: &[VaultPath], renames: &[PathRename]) -> NotesView<'_> {
+        let gone: HashSet<usize> = replaced
+            .iter()
+            .filter_map(|path| match self.view().find(path) {
+                Some(Id::Base(i)) => Some(i),
+                _ => None,
+            })
+            .collect();
         let mut targets: HashMap<usize, VaultPath> = HashMap::new();
+        for &i in &gone {
+            targets.insert(i, VaultPath::root());
+        }
         for rename in renames {
             let from = rename.from.components();
             if from.is_empty() {
@@ -109,9 +126,13 @@ impl Links {
                 }
             }
         }
-        let mut moved: Vec<(usize, VaultPath)> = targets.into_iter().collect();
+        let mut moved: Vec<(usize, VaultPath)> = targets
+            .into_iter()
+            .filter(|(i, _)| !gone.contains(i))
+            .collect();
         moved.sort_by_key(|(i, _)| *i);
         let mut view = self.view();
+        view.removed.extend(gone);
         for (i, to) in moved {
             let note = &self.entries[i].note;
             view.removed.insert(i);
@@ -136,6 +157,27 @@ impl Links {
                     let have = entry.note.path.components();
                     have.len() > want.len() && have.starts_with(want)
                 }))
+    }
+
+    /// Занят ли путь `path` (заметка или папка) в списке — по ключам
+    /// компонентов, как в Windows (`Бета/встреча.md` занят заметкой
+    /// `Бета/Встреча.md`), не считая заметок в `freed` и внутри них (точные
+    /// пути списка: то, что уходит или затирается той же пачкой).
+    pub fn occupied(&self, path: &VaultPath, freed: &[VaultPath]) -> bool {
+        let want = path.components();
+        let folder: Vec<NameKey> = want.iter().map(|c| names::key(c)).collect();
+        let note: Option<Vec<NameKey>> = crate::switcher::link_path(path)
+            .map(|parts| parts.iter().map(|c| names::key(c)).collect());
+        self.entries.iter().any(|entry| {
+            let have = entry.note.path.components();
+            let keys = entry.note.keys();
+            let hit = (have.len() == want.len() && note.as_deref() == Some(keys))
+                || (have.len() > want.len() && keys[..want.len()] == folder[..]);
+            hit && !freed.iter().any(|f| {
+                let f = f.components();
+                have == f || (have.len() > f.len() && have.starts_with(f))
+            })
+        })
     }
 
     /// Путь `path` в написании списка: точное совпадение (заметка или
