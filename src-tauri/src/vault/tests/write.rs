@@ -419,7 +419,7 @@ fn swap(text: &str) -> Option<String> {
         .then(|| text.replace("Встреча", "Планёрка"))
 }
 
-fn no_journal(_: &str) -> Result<(), CoreError> {
+fn no_journal(_: &str, _: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
@@ -432,12 +432,15 @@ fn rebuilt_note_keeps_bom_and_crlf_and_records_own_write() {
     );
     let mut hashes = Vec::new();
 
-    let result =
-        t.vault
-            .write_note_rebuilt(&vp("Список.md"), LIMIT, &swap, &mut |hash: &str| {
-                hashes.push(hash.to_owned());
-                Ok(())
-            });
+    let result = t.vault.write_note_rebuilt(
+        &vp("Список.md"),
+        LIMIT,
+        &swap,
+        &mut |before: &str, after: &str| {
+            hashes.push((before.to_owned(), after.to_owned()));
+            Ok(())
+        },
+    );
 
     let Ok(Rebuilt::Written(version)) = result else {
         panic!("ожидалась запись: {result:?}");
@@ -445,9 +448,14 @@ fn rebuilt_note_keeps_bom_and_crlf_and_records_own_write() {
     let expected = "\u{feff}[[Планёрка]]\r\n".as_bytes();
     assert_eq!(t.bytes("Список.md"), expected);
     assert_eq!(version.hash, blake3::hash(expected).to_hex().to_string());
+    let read = blake3::hash(
+        b"\xEF\xBB\xBF[[\xD0\x92\xD1\x81\xD1\x82\xD1\x80\xD0\xB5\xD1\x87\xD0\xB0]]\r\n",
+    )
+    .to_hex()
+    .to_string();
     assert_eq!(
         hashes,
-        std::slice::from_ref(&version.hash),
+        [(read, version.hash.clone())],
         "журнал узнал хэш до замены"
     );
     assert!(
@@ -533,11 +541,12 @@ fn rebuilt_skips_large_invalid_readonly_and_outside() {
 fn rebuilt_journal_failure_writes_nothing() {
     let t = TestVault::new();
     t.put("Список.md", "Встреча\n");
-    let result =
-        t.vault
-            .write_note_rebuilt(&vp("Список.md"), LIMIT, &swap, &mut |_: &str| {
-                Err(CoreError::new(ErrorCode::IoFailed))
-            });
+    let result = t.vault.write_note_rebuilt(
+        &vp("Список.md"),
+        LIMIT,
+        &swap,
+        &mut |_: &str, _: &str| Err(CoreError::new(ErrorCode::IoFailed)),
+    );
     assert_eq!(result, Err(RelinkFailureReason::Io));
     assert_eq!(t.bytes("Список.md"), "Встреча\n".as_bytes());
 }

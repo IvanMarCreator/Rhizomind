@@ -552,22 +552,42 @@ fn forged_journal_is_untrusted() {
         })
     };
     let journal = |notes: Vec<serde_json::Value>| {
-        serde_json::to_vec(&serde_json::json!({
+        let mut bytes = serde_json::to_vec(&serde_json::json!({
             "format_version": 1,
             "renames": [],
-            "writing": null,
             "notes": notes,
         }))
-        .expect("json")
+        .expect("json");
+        bytes.push(b'\n');
+        bytes
+    };
+    let with_marks = |marks: &str| {
+        let mut bytes = journal(vec![link(
+            "Список.md",
+            "Встреча",
+            "Планёрка",
+            "Планёрка.md",
+        )]);
+        bytes.extend_from_slice(marks.as_bytes());
+        bytes
     };
     let mut huge = vec![b' '; 33 * 1024 * 1024];
     huge.extend_from_slice(b"{}");
     let cases: Vec<Vec<u8>> = vec![
         b"not json".to_vec(),
         b"[1,2,3]".to_vec(),
-        br#"{"format_version": 2, "renames": [], "writing": null, "notes": []}"#.to_vec(),
+        br#"{"format_version": 2, "renames": [], "notes": []}"#.to_vec(),
         br#"{"format_version": [1,1,1,1,1,1,1,1], "renames": [], "notes": []}"#.to_vec(),
-        br#"{"format_version": 1, "renames": [], "writing": null, "notes": [], "x": 1}"#.to_vec(),
+        br#"{"format_version": 1, "renames": [], "notes": [], "x": 1}"#.to_vec(),
+        // Прежний формат с полем `writing` — лишнее поле.
+        br#"{"format_version": 1, "renames": [], "writing": null, "notes": []}"#.to_vec(),
+        // Испорченная строка отметки в середине — журнал не годится.
+        with_marks("мусор\n{\"done\":0}\n"),
+        // Отметка о заметке, которой нет в заголовке.
+        with_marks("{\"done\":7}\n"),
+        with_marks("{\"start\":{\"note\":99,\"before\":\"a\",\"after\":\"b\"}}\n"),
+        // Неизвестный вид отметки.
+        with_marks("{\"undo\":0}\n"),
         huge,
         journal(vec![
             link("../outside/secret.md", "Встреча", "Планёрка", "Планёрка.md"),
@@ -681,11 +701,131 @@ fn resume_leaves_links_that_already_lead_there() {
             points_to: vp("Папка/Встреча.md"),
         }],
     }];
-    crate::relink::journal::write(&fx.vault, &[], None, &plan).expect("журнал");
+    drop(crate::relink::journal::start(&fx.vault, &[], &plan).expect("журнал"));
 
     let report = fx.resume().expect("доделка");
 
     assert_eq!(fx.text("Список.md"), "[[Встреча]] и [[Встреча]]\n");
     assert!(report.updated.is_empty() && report.failed.is_empty());
+    assert!(!fx.journal().exists());
+}
+
+/// Пользователь поправил заметку, записанную прямо перед падением, до
+/// следующего открытия: на диске ни прочитанное, ни записанное содержимое.
+/// Переписывать вслепую нельзя (после перестановки папок `[[Альфа/Встреча]]`
+/// стала бы `[[Гамма/Встреча]]`) — заметка в `failed`, текст пользователя как
+/// есть, повтора нет (найдено QA 0.2-4.5).
+#[test]
+fn user_edited_written_note_not_rewritten_on_resume() {
+    let both = "[[Альфа/Встреча]] и [[Бета/Встреча]]\n";
+    let mut fx = Fx::new(&[
+        ("Альфа/Встреча.md", b"# A\n"),
+        ("Бета/Встреча.md", b"# B\n"),
+        ("X.md", both.as_bytes()),
+        ("Y.md", both.as_bytes()),
+    ]);
+    let (plan, renames) = fx.rename(&[("Альфа", "Гамма"), ("Бета", "Альфа")]);
+    crash_after(1);
+    fx.run(&plan, &renames);
+    let done = "[[Гамма/Встреча]] и [[Альфа/Встреча]]\n";
+    let edited = format!("{done}ещё\n");
+    fx.put("X.md", &edited);
+
+    fx.reopen();
+    let report = fx.resume().expect("доделка");
+
+    assert_eq!(fx.text("X.md"), edited, "ссылка не переписана второй раз");
+    assert_eq!(fx.text("Y.md"), done);
+    assert_eq!(report.failed, [failed("X.md", RelinkFailureReason::Io)]);
+    assert!(report.retry.notes.is_empty(), "вслепую не повторяется");
+    assert!(!fx.journal().exists());
+}
+
+/// Отметка о начале записи есть, а замены не было (падение между ними): на
+/// диске прочитанное содержимое — заметка переписывается доделкой.
+#[test]
+fn started_but_not_replaced_rewritten_on_resume() {
+    let mut fx = meeting(&[("Другая.md", "[[Встреча]]\n".as_bytes())]);
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+    let index = plan
+        .notes
+        .iter()
+        .position(|n| n.path == vp("Список.md"))
+        .expect("в плане");
+    let before = blake3::hash(&fx.bytes("Список.md")).to_hex().to_string();
+    let mut writer =
+        crate::relink::journal::start(&fx.vault, &renames, &plan.notes).expect("журнал");
+    writer
+        .started(index, &before, "чужой-хэш")
+        .expect("отметка");
+    drop(writer);
+
+    fx.reopen();
+    let report = fx.resume().expect("доделка");
+
+    assert_eq!(fx.text("Список.md"), "до [[Планёрка]] после\n");
+    assert_eq!(fx.text("Другая.md"), "[[Планёрка]]\n");
+    assert!(report.failed.is_empty());
+}
+
+/// Оборванная последняя строка отметки (падение посреди дописывания)
+/// отбрасывается; доделка проходит.
+#[test]
+fn torn_last_mark_line_is_dropped() {
+    let mut fx = meeting(&[
+        ("A.md", "[[Встреча]]\n".as_bytes()),
+        ("B.md", "[[Встреча]]\n".as_bytes()),
+    ]);
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+    crash_after(1);
+    fx.run(&plan, &renames);
+    let mut bytes = std::fs::read(fx.journal()).expect("журнал");
+    bytes.extend_from_slice(br#"{"start":{"note":2,"bef"#);
+    std::fs::write(fx.journal(), bytes).expect("журнал");
+
+    fx.reopen();
+    let report = fx.resume().expect("доделка");
+
+    for path in ["A.md", "B.md"] {
+        assert_eq!(fx.text(path), "[[Планёрка]]\n", "{path}");
+    }
+    assert_eq!(fx.text("Список.md"), "до [[Планёрка]] после\n");
+    assert!(report.failed.is_empty());
+    assert!(!fx.journal().exists());
+}
+
+/// Объём журнала на заметку — O(1): заголовок плюс две короткие отметки на
+/// заметку. Замер на 10 000 заметках (`--ignored`, CI — шаг производительности).
+#[test]
+#[ignore = "замер: cargo test --release --lib relink::run -- --ignored --nocapture"]
+fn journal_volume_10000_notes() {
+    const N: usize = 10_000;
+    let fx = meeting(&[]);
+    for i in 0..N {
+        fx.put(
+            &format!("Папка/Заметка {i}.md"),
+            format!("{i}: [[Встреча]]\n"),
+        );
+    }
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+    assert_eq!(plan.note_count(), N + 1);
+    let links = fx.links();
+    crate::relink::journal::reset_bytes_written();
+    let started = std::time::Instant::now();
+
+    let report = run(&fx.vault, &links.view(), &plan, &renames, &mut |_, _| {});
+
+    let elapsed = started.elapsed();
+    let bytes = crate::relink::journal::bytes_written();
+    eprintln!(
+        "journal_volume_10000_notes: {} заметок за {:.2} с, записано в журнал {} байт ({:.0} байт на заметку)",
+        report.updated.len(),
+        elapsed.as_secs_f64(),
+        bytes,
+        bytes as f64 / (N + 1) as f64
+    );
+    assert_eq!(report.updated.len(), N + 1);
+    assert!(report.failed.is_empty());
+    assert!(bytes < 1000 * (N as u64 + 1), "O(1) на заметку: {bytes}");
     assert!(!fx.journal().exists());
 }

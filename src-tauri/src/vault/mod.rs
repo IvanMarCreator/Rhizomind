@@ -639,10 +639,10 @@ impl Vault {
     ///   заново из свежего, до [`WRITE_ATTEMPTS`] попыток; после этого —
     ///   `busy`. Чужая правка не затирается (инвариант 4), копия конфликта не
     ///   нужна: новый текст всегда построен из того, что на диске.
-    /// - `before_replace(хэш нового содержимого)` вызывается перед заменой
-    ///   (после записи временного файла, до повторной сверки с диском) —
-    ///   отметка в журнале обновления ссылок; ошибка — `io`, файл не
-    ///   заменяется.
+    /// - `before_replace(хэш прочитанного, хэш нового содержимого)`
+    ///   вызывается перед заменой (после записи временного файла, до
+    ///   повторной сверки с диском) — отметка в журнале обновления ссылок;
+    ///   ошибка — `io`, файл не заменяется.
     /// - Своя запись — в журнал своих записей до замены (наблюдатель не
     ///   примет её за внешнюю); дата создания сохраняется, как у
     ///   [`Self::write_note`].
@@ -651,7 +651,7 @@ impl Vault {
         path: &VaultPath,
         max_bytes: u64,
         build: &dyn Fn(&str) -> Option<String>,
-        before_replace: &mut dyn FnMut(&str) -> CoreResult<()>,
+        before_replace: &mut dyn FnMut(&str, &str) -> CoreResult<()>,
     ) -> Result<Rebuilt, RelinkFailureReason> {
         let io = |_| RelinkFailureReason::Io;
         let abs = self.contour.resolve(path).map_err(io)?;
@@ -683,7 +683,7 @@ impl Vault {
             let temp = self.temp(atomic::Kind::Note, &bytes).map_err(io)?;
             atomic::temp_written_hook();
             let hash = blake3::hash(&bytes).to_hex().to_string();
-            before_replace(&hash).map_err(io)?;
+            before_replace(&disk_hash, &hash).map_err(io)?;
             // Повторная сверка перед заменой: внешняя правка — строим заново.
             if self.disk_hash_and_size(&abs).map_err(io)? != (disk_hash, disk.len() as u64) {
                 continue;
@@ -1232,13 +1232,12 @@ impl Vault {
         }
     }
 
-    /// Удаляет служебный файл `.rhizomind/<name>` (журнал обновления
-    /// ссылок по завершении). Служебная папка проверена по дескриптору;
-    /// ссылка или не файл не удаляются (`outside_vault`); файла нет — не
-    /// ошибка.
-    pub(crate) fn remove_service_file(&self, name: &str) -> CoreResult<()> {
+    /// Удаляет служебный файл `file` из `.rhizomind/`. Служебная папка
+    /// проверена по дескриптору; ссылка или не файл не удаляются
+    /// (`outside_vault`); файла нет — не ошибка.
+    pub(crate) fn remove_service_file(&self, file: ServiceFile) -> CoreResult<()> {
         self.check_service_dir()?;
-        let path = self.service.join(name);
+        let path = self.service.join(file.name());
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
                 Err(contour::outside_vault())
@@ -1250,6 +1249,62 @@ impl Vault {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(io_error(e)),
         }
+    }
+
+    /// Открывает существующий служебный файл `file` в `.rhizomind/` для
+    /// дописывания в конец (отметки журнала обновления ссылок). Имя
+    /// фиксированное ([`ServiceFile`]); служебная папка проверена по
+    /// дескриптору; файл-ссылка или не файл — `outside_vault`; итоговый путь
+    /// открытого файла проверен по дескриптору **до** первой записи. Файла
+    /// нет — `not_found` (он создаётся атомарно [`Self::write_service_file`]).
+    pub(crate) fn open_service_append(&self, file: ServiceFile) -> CoreResult<ServiceAppend> {
+        self.check_service_dir()?;
+        let path = self.service.join(file.name());
+        let meta = std::fs::symlink_metadata(&path).map_err(io_error)?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(contour::outside_vault());
+        }
+        let handle = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(io_error)?;
+        self.contour
+            .check_opened_in(&handle, &path, &self.service)?;
+        Ok(ServiceAppend(handle))
+    }
+}
+
+/// Служебные файлы с фиксированным именем, которые ядро удаляет или
+/// дописывает (не через атомарную замену).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceFile {
+    /// Журнал обновления ссылок `link-update.json` (задача 0.2-4.5).
+    LinkUpdate,
+}
+
+impl ServiceFile {
+    /// Имя файла в `.rhizomind/`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ServiceFile::LinkUpdate => "link-update.json",
+        }
+    }
+}
+
+/// Служебный файл, открытый для дописывания ([`Vault::open_service_append`]);
+/// дескриптор проверен по контуру.
+#[derive(Debug)]
+pub struct ServiceAppend(File);
+
+impl ServiceAppend {
+    /// Дописывает `bytes` в конец; `sync` — сбросить на диск до возврата.
+    pub fn append(&mut self, bytes: &[u8], sync: bool) -> CoreResult<()> {
+        use std::io::Write;
+        self.0.write_all(bytes).map_err(io_error)?;
+        if sync {
+            self.0.sync_data().map_err(io_error)?;
+        }
+        Ok(())
     }
 }
 
