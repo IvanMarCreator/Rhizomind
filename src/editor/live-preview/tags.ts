@@ -16,7 +16,7 @@
 //
 // Щелчок как у ссылок (решения 76, 93): курсор в теге или у его края —
 // обычный щелчок ставит курсор (тег можно править), Ctrl+щелчок открывает.
-import { Facet, Prec, type EditorState, type Extension, type Range } from '@codemirror/state';
+import { Facet, Prec, StateEffect, type EditorState, type Extension, type Range } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import { LineClassifier, indentColumns, tagsInParagraph, type LineSpan, type TextTag } from '../../core/tags/index.ts';
 
@@ -154,7 +154,7 @@ const plaques = new Map<string, Decoration>();
 function plaque(name: string): Decoration {
   let decoration = plaques.get(name);
   if (!decoration) {
-    decoration = Decoration.mark({ class: 'cm-rz-tag', attributes: { 'data-rz-tag': name } });
+    decoration = Decoration.mark({ class: 'cm-rz-tag', attributes: { 'data-rz-tag': name }, inclusiveEnd: true });
     if (plaques.size > 1000) plaques.clear();
     plaques.set(name, decoration);
   }
@@ -167,19 +167,65 @@ export function tagDecorations(state: EditorState, ranges: readonly { from: numb
   return Decoration.set(out);
 }
 
+/** Пересчитать плашки: составление (IME) кончилось. */
+const recount = StateEffect.define<null>();
+
+/**
+ * Плашки видимой части. Пока идёт составление (IME), плашки только
+ * сдвигаются за правкой: новая или изменённая плашка разрезала бы узел
+ * составления, и браузер дописал бы набранное заново («#тег#те#т»).
+ * Пересчёт — после `compositionend`.
+ */
 const plaquePlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    #stale = false;
+    #timer: ReturnType<typeof setTimeout> | null = null;
+    readonly #view: EditorView;
 
     constructor(view: EditorView) {
+      this.#view = view;
       this.decorations = tagDecorations(view.state, view.visibleRanges);
     }
 
     update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged) this.decorations = tagDecorations(update.state, update.view.visibleRanges);
+      const changed = update.docChanged || update.viewportChanged;
+      if (update.view.composing || update.view.compositionStarted) {
+        if (changed) {
+          this.decorations = this.decorations.map(update.changes);
+          this.#stale = true;
+        }
+        return;
+      }
+      const asked = update.transactions.some((tr) => tr.effects.some((effect) => effect.is(recount)));
+      if (changed || asked || this.#stale) {
+        this.#stale = false;
+        this.decorations = tagDecorations(update.state, update.view.visibleRanges);
+      }
+    }
+
+    /** Составление кончилось: пересчитать, когда редактор закончит его разбор. */
+    compositionEnded() {
+      if (this.#timer !== null) clearTimeout(this.#timer);
+      this.#timer = setTimeout(() => {
+        this.#timer = null;
+        const view = this.#view;
+        if (this.#stale && !view.composing && !view.compositionStarted) view.dispatch({ effects: recount.of(null) });
+      }, 0);
+    }
+
+    destroy() {
+      if (this.#timer !== null) clearTimeout(this.#timer);
     }
   },
-  { decorations: (plugin) => plugin.decorations },
+  {
+    decorations: (plugin) => plugin.decorations,
+    eventHandlers: {
+      compositionend() {
+        this.compositionEnded();
+      },
+    },
+  },
 );
 
 /**
