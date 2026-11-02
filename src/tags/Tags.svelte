@@ -75,6 +75,7 @@
     {@const percent = model.status.percent}
     {@const text = percent === null ? t('tags.indexBuildingUnknown') : t('tags.indexBuilding', { percent })}
     <div class="state">
+      <span class="state-icon" aria-hidden="true"><Icon name="loader-circle" size={18} /></span>
       <p class="state-text">{text}</p>
       <div
         class="progress"
@@ -108,7 +109,7 @@
             onclick={() => model.toggle(summary.key)}
           >
             <span class="chevron" aria-hidden="true"><TreeIcon name="chevron-right" size={14} /></span>
-            <span class="hash" aria-hidden="true">#</span><span class="name">{summary.tag}</span>
+            <span class="label"><span class="hash" aria-hidden="true">#</span><span class="name">{summary.tag}</span></span>
             <span class="count" aria-hidden="true">{summary.count}</span>
           </button>
           {#if expanded}
@@ -256,6 +257,13 @@
     transform: rotate(90deg);
   }
 
+  /* «#» вплотную к имени, как в макете («#2026»). */
+  .label {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
   .hash {
     flex: none;
     color: var(--text-faint);
@@ -314,6 +322,11 @@
     align-items: center;
     gap: 8px;
     padding: 24px 14px;
+  }
+
+  /* Значок 18 `icon/muted` (П-3). */
+  .state-icon {
+    color: var(--icon-muted);
   }
 
   .state-text {

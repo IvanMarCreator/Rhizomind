@@ -34,7 +34,8 @@
     | 'hash'
     | 'panel-right'
     | 'arrow-down-a-z'
-    | 'arrow-down-wide-narrow';
+    | 'arrow-down-wide-narrow'
+    | 'loader-circle';
 </script>
 
 <script lang="ts">
@@ -188,6 +189,8 @@
     <path d="M11 4h10" />
     <path d="M11 8h7" />
     <path d="M11 12h4" />
+  {:else if name === 'loader-circle'}
+    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
   {/if}
 </svg>
 

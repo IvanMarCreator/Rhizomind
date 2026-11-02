@@ -153,6 +153,32 @@ describe('вид «Теги»', () => {
     expect(screen.queryByRole('list', { name: '#пилот' })).toBeNull();
   });
 
+  it('раскрыть → свернуть → раскрыть: запоздавший ответ первого раскрытия не затирает свежий', async () => {
+    const pending: ((notes: VaultPath[]) => void)[] = [];
+    mockCore({
+      tags_list: () => ({ status: 'ready', tags: [tag('пилот', 1)] }),
+      tag_notes: () =>
+        new Promise((resolve) =>
+          pending.push((notes) => resolve({ status: 'ready', notes_total: notes.length, notes })),
+        ),
+    });
+    const model = new TagsModel(new RightPanelModel(testPanelHost({ open: true, view: 'tags' })));
+    render(Tags, { model, current: null, onOpen: () => {} });
+    const button = await screen.findByRole('button', { name: /^#пилот,/ });
+
+    await fireEvent.click(button);
+    await fireEvent.click(button);
+    await fireEvent.click(button);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]?.([['Новая.md']]);
+    await screen.findByRole('button', { name: /Новая/ });
+    pending[0]?.([['Старая.md']]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const list = screen.getByRole('list', { name: '#пилот' });
+    expect(within(list).getAllByRole('button').map((row) => row.textContent?.trim())).toEqual(['Новая']);
+  });
+
   it('щелчок по заметке открывает её; открытая заметка выделена', async () => {
     const current = ['Проекты', 'План работ.md'];
     const { opened } = setup(

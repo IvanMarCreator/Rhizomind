@@ -50,8 +50,13 @@ export class TagsModel {
   readonly #panel: TagsPanel;
   /** Поколение запроса списка: ответ старого запроса не затирает новый. */
   #generation = 0;
-  /** Поколение запроса заметок по ключу тега. */
+  /**
+   * Последний запрос заметок по ключу тега. Номера сквозные для всех тегов
+   * и не сбрасываются: ответ на запрос до сворачивания тега не примется
+   * за ответ на запрос после повторного раскрытия.
+   */
   #notesGeneration: Record<string, number> = {};
+  #notesRequests = 0;
 
   constructor(panel: TagsPanel) {
     this.#panel = panel;
@@ -158,11 +163,10 @@ export class TagsModel {
     }
     this.#tags = reply.tags;
     this.#setStatus({ kind: 'ready' });
-    // Тег, у которого не осталось заметок, исчез из ответа — и из раскрытых.
-    // Тег, раскрытый из редактора, остаётся раскрытым, даже если его нет:
-    // заметки покажут «нет заметок» (тег могли стереть только что).
+    // Тег, у которого не осталось заметок, исчез из ответа — и из раскрытых
+    // (в том числе раскрытый из редактора, но ещё не попавший в индекс).
     const known = (key: string) => reply.tags.some((summary) => summary.key === key);
-    const kept = this.#expanded.filter((key) => known(key) || key === this.revealed);
+    const kept = this.#expanded.filter(known);
     this.#forgetNotes((key) => kept.includes(key));
     this.#expanded = kept;
     await Promise.all(kept.map((key) => this.#loadNotes(key)));
@@ -185,7 +189,7 @@ export class TagsModel {
   }
 
   async #loadNotes(key: string): Promise<void> {
-    const generation = (this.#notesGeneration[key] ?? 0) + 1;
+    const generation = ++this.#notesRequests;
     this.#notesGeneration = { ...this.#notesGeneration, [key]: generation };
     if (!this.#notes[key]) this.#notes = { ...this.#notes, [key]: { kind: 'loading' } };
     const current = () => this.#notesGeneration[key] === generation && this.isExpanded(key);
