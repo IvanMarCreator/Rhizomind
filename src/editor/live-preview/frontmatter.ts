@@ -39,7 +39,7 @@ import {
   type Text,
   type TransactionSpec,
 } from '@codemirror/state';
-import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, type Command, type DecorationSet } from '@codemirror/view';
+import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, type Command, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import { frontmatterTags } from '../../core/tags/index.ts';
 import { t } from '../../i18n/index.ts';
 import { MAX_BLOCK_TEXT, findProperties, type Span } from './markdown.ts';
@@ -61,15 +61,27 @@ interface FieldValue {
   decorations: DecorationSet;
 }
 
-/** Курсор (голова любого выделения) в блоке после его начала или в начале раскрытого блока — блок раскрыт. */
+/**
+ * Курсор (голова любого выделения) внутри блока — блок раскрыт. Края блока:
+ * начало текста и конец блока, за которым текста нет (заметка только из
+ * блока свойств), — места курсора «перед» и «под» свёрнутой строкой: там
+ * блок остаётся, каким был. Конец блока с текстом ниже — внутри блока.
+ */
 function expandedAt(state: EditorState, span: Span, wasExpanded: boolean): boolean {
-  return state.selection.ranges.some((range) => (range.head > span.from || (wasExpanded && range.head === span.from)) && range.head <= span.to);
+  const atEnd = span.to >= state.doc.length;
+  return state.selection.ranges.some((range) => {
+    const { head } = range;
+    if (head > span.from && head < span.to) return true;
+    if (head === span.to) return !atEnd || wasExpanded;
+    return head === span.from && wasExpanded;
+  });
 }
 
 /**
  * Начало текста под блоком свойств: начало строки после закрывающей (если
- * после блока текста нет — конец блока); без блока или в заметке больше
- * 10 МБ (решение 77) — `0`. Сюда встаёт курсор при открытии заметки.
+ * после блока текста нет — конец блока: ввод там начинается с новой строки,
+ * см. `guardStart`); без блока или в заметке больше 10 МБ (решение 77) —
+ * `0`. Сюда встаёт курсор при открытии заметки.
  */
 export function textStart(doc: Text): number {
   const properties = doc.length > MAX_BLOCK_TEXT ? null : findProperties(doc);
@@ -269,11 +281,26 @@ function down(extend: boolean): Command {
   };
 }
 
+/**
+ * Backspace в начале строки под свёрнутым блоком склеил бы её с `---` и
+ * разрушил блок: вместо этого блок раскрывается, курсор — в конце `---`,
+ * ничего не удаляется.
+ */
+const backspace: Command = (editor) => {
+  const { state } = editor;
+  const view = collapsedView(state);
+  const { main } = state.selection;
+  if (!view || state.selection.ranges.length !== 1 || !main.empty || main.head !== view.to + 1) return false;
+  editor.dispatch({ selection: EditorSelection.cursor(view.to), scrollIntoView: true, userEvent: 'select' });
+  return true;
+};
+
 /** Щелчок по строке «Свойства»: курсор в конец первой строки блока — блок раскрыт для правки. */
 function expandAt(editor: EditorView, view: PropertiesView): void {
   const { doc } = editor.state;
   const second = doc.lineAt(view.from).number + 1;
-  const target = second <= doc.lines ? Math.min(doc.line(second).to, view.to) : view.to;
+  // Конец блока, под которым нет текста, — край свёрнутой строки: тогда — конец первой строки `---`.
+  const target = second <= doc.lines && doc.line(second).to < view.to ? doc.line(second).to : doc.lineAt(view.from).to;
   editor.dispatch({ selection: { anchor: target }, scrollIntoView: true, userEvent: 'select.pointer' });
   editor.focus();
 }
@@ -288,18 +315,25 @@ const guardStart = EditorState.transactionFilter.of((tr): Transaction | readonly
   const before = propertiesView(tr.startState);
   if (before?.expanded) return tr;
   if (before && tr.docChanged && tr.isUserEvent('input') && !tr.isUserEvent('input.type.compose')) {
-    let atStart = true;
+    const length = tr.startState.doc.length;
+    // Под блоком нет текста: конец блока — тоже край свёрнутой строки.
+    const noBody = before.to >= length;
+    let at: number | null = null;
+    let single = true;
     let inserted = '';
     tr.changes.iterChanges((fromA, toA, _fromB, _toB, text) => {
-      if (fromA !== 0 || toA !== 0) atStart = false;
+      if (fromA !== toA || (fromA !== before.from && !(noBody && fromA === before.to)) || (at !== null && at !== fromA)) single = false;
+      at = fromA;
       inserted += text.toString();
     });
-    if (atStart) {
-      const start = textStart(tr.startState.doc);
-      const offset = Math.min(tr.newSelection.main.head, inserted.length);
+    if (single && at !== null) {
+      // Без текста под блоком набранное начинается с новой строки: `---` остаётся закрывающей строкой.
+      const start = noBody ? length : textStart(tr.startState.doc);
+      const prefix = noBody ? '\n' : '';
+      const offset = Math.min(Math.max(tr.newSelection.main.head - at, 0), inserted.length);
       return {
-        changes: { from: start, insert: inserted },
-        selection: EditorSelection.cursor(start + offset),
+        changes: { from: start, insert: prefix + inserted },
+        selection: EditorSelection.cursor(start + prefix.length + offset),
         scrollIntoView: true,
         userEvent: tr.annotation(Transaction.userEvent) ?? 'input',
       };
@@ -315,20 +349,27 @@ const guardStart = EditorState.transactionFilter.of((tr): Transaction | readonly
 
 /**
  * Курсор уже в начале текста, когда расширение подключается (переключение
- * из исходного текста, редактор без заданного выделения): после создания —
- * в начало текста под свёрнутым блоком. Правкой это сделать нельзя: фильтр
- * правок не видит переключения режима.
+ * из исходного текста, редактор без заданного выделения) или после отмены
+ * и повтора: затем — в начало текста под свёрнутым блоком. Правкой это
+ * сделать нельзя: фильтр правок не видит переключения режима, отмена идёт
+ * мимо фильтра.
  */
 const startOnAttach = ViewPlugin.define((view) => {
   let alive = true;
-  queueMicrotask(() => {
-    if (!alive || view.composing) return;
-    const { main } = view.state.selection;
-    const shown = collapsedView(view.state);
-    if (!shown || view.state.selection.ranges.length !== 1 || !main.empty || main.head !== shown.from) return;
-    view.dispatch({ selection: EditorSelection.cursor(textStart(view.state.doc)) });
-  });
+  const relocate = () =>
+    queueMicrotask(() => {
+      if (!alive || view.composing) return;
+      const { main } = view.state.selection;
+      const shown = collapsedView(view.state);
+      if (!shown || view.state.selection.ranges.length !== 1 || !main.empty || main.head !== shown.from) return;
+      view.dispatch({ selection: EditorSelection.cursor(textStart(view.state.doc)) });
+    });
+  relocate();
   return {
+    // Отмена и повтор идут мимо фильтра правок и возвращают прежнее выделение — меняется только выделение.
+    update(update: ViewUpdate) {
+      if (update.transactions.some((tr) => tr.isUserEvent('undo') || tr.isUserEvent('redo'))) relocate();
+    },
     destroy() {
       alive = false;
     },
@@ -346,6 +387,7 @@ export function frontmatterPreview(lookup: PropertiesLookup): Extension {
       keymap.of([
         { key: 'ArrowUp', run: up(false), shift: up(true) },
         { key: 'ArrowDown', run: down(false), shift: down(true) },
+        { key: 'Backspace', run: backspace },
       ]),
     ),
     EditorView.domEventHandlers({

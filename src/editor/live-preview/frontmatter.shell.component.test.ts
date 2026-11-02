@@ -52,10 +52,10 @@ const HOME_TEXT = 'См. [[Встреча]].\n';
 const BLOCK = '---\ntags: [проект]\ntitle: Встреча\n---\n';
 const MEETING_TEXT = `${BLOCK}Текст встречи\n`;
 
-async function openShell(first: VaultPath, settings: Settings = SETTINGS) {
+async function openShell(first: VaultPath, settings: Settings = SETTINGS, meetingText = MEETING_TEXT) {
   const files = new Map<string, string>([
     [HOME.join('/'), HOME_TEXT],
-    [MEETING.join('/'), MEETING_TEXT],
+    [MEETING.join('/'), meetingText],
   ]);
   const entries: TreeEntry[] = [
     { path: HOME, kind: 'note' },
@@ -68,7 +68,12 @@ async function openShell(first: VaultPath, settings: Settings = SETTINGS) {
     workspace_read: () => ({ workspace: null }),
     workspace_write: () => null,
     tree_list: () => ({ entries }),
-    note_read: ({ path }): NoteReadResponse => ({ text: files.get(path.join('/')) ?? '', version: VERSION, read_only: null }),
+    // Ядро при чтении приводит `\r\n` к `\n` (как в Editor.component.test.ts).
+    note_read: ({ path }): NoteReadResponse => ({
+      text: (files.get(path.join('/')) ?? '').replaceAll('\r\n', '\n'),
+      version: VERSION,
+      read_only: null,
+    }),
     note_write: () => ({ outcome: 'saved', version: VERSION }),
     links_resolve: ({ targets }) => ({
       results: targets.map((target) => ({ target, path: target === 'Встреча' ? MEETING : null })),
@@ -211,5 +216,91 @@ describe('ввод в начало текста при свёрнутом бло
     editor.dispatch({ selection: { anchor: 0 }, userEvent: 'select' });
     expect(editor.state.selection.main.head).toBe(0);
     expect(collapsed(editor)).toBe(false);
+  });
+});
+
+describe('заметка только из блока свойств, без перевода строки в конце', () => {
+  const ONLY = '---\ntags: [проект]\n---';
+
+  it('открытие заметки и ввод — блок цел, набранное с новой строки', async () => {
+    const { view } = await openShell(MEETING, SETTINGS, ONLY);
+    expect(collapsed(view)).toBe(true);
+    type(view, 'Привет');
+    expect(view.state.doc.toString()).toBe(`${ONLY}\nПривет`);
+    expect(collapsed(view)).toBe(true);
+    // Набор подряд — одна группа отмены вместе с новой строкой: текст файла возвращается к прежнему.
+    undo(view);
+    expect(view.state.doc.toString()).toBe(ONLY);
+  });
+
+  it('переход по ссылке и ввод — блок цел', async () => {
+    const { view, model } = await openShell(HOME, SETTINGS, ONLY);
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    const link = await waitFor(() => {
+      const element = view.contentDOM.querySelector('[data-rz-wiki="Встреча"]');
+      if (!element) throw new Error('нет ссылки');
+      return element;
+    });
+    await fireEvent.mouseDown(link, { button: 0 });
+    await waitFor(() => expect(model.currentPath).toEqual(MEETING));
+    const meeting = await editorView(view);
+    await waitFor(() => expect(meeting.hasFocus).toBe(true));
+    expect(collapsed(meeting)).toBe(true);
+    type(meeting, 'Привет');
+    expect(meeting.state.doc.toString()).toBe(`${ONLY}\nПривет`);
+  });
+
+  it('файл с переводами CRLF: открытие и ввод — блок цел', async () => {
+    const { view } = await openShell(MEETING, SETTINGS, '---\r\ntags: x\r\n---');
+    expect(collapsed(view)).toBe(true);
+    type(view, 'Привет');
+    expect(view.state.doc.toString()).toBe('---\ntags: x\n---\nПривет');
+  });
+
+  it('вставка в позицию 0 и в конец блока — с новой строки, отмена одной правкой', () => {
+    for (const at of [0, ONLY.length]) {
+      const editor = new EditorView({ parent: document.body, state: createEditorState(ONLY, { mode: 'live_preview' }) });
+      editor.dispatch({ selection: { anchor: at } });
+      expect(collapsed(editor)).toBe(true);
+      editor.dispatch({ changes: { from: at, insert: 'Вставка' }, selection: { anchor: at + 7 }, userEvent: 'input.paste' });
+      expect(editor.state.doc.toString(), `позиция ${at}`).toBe(`${ONLY}\nВставка`);
+      expect(editor.state.selection.main.head).toBe(editor.state.doc.length);
+      expect(collapsed(editor)).toBe(true);
+      undo(editor);
+      expect(editor.state.doc.toString()).toBe(ONLY);
+      editor.destroy();
+    }
+  });
+});
+
+describe('отмена и Backspace у свёрнутого блока', () => {
+  let view: EditorView | null = null;
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+  });
+
+  it('после отмены курсор не остаётся в начале текста при свёрнутом блоке', async () => {
+    view = new EditorView({ parent: document.body, state: createEditorState(MEETING_TEXT, { mode: 'live_preview' }) });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Курсор в 0 в обход фильтра правок (как его восстанавливает отмена), затем ввод — он уходит под блок.
+    view.dispatch({ selection: { anchor: 0 }, filter: false });
+    view.dispatch({ changes: { from: 0, insert: 'Х' }, userEvent: 'input.type' });
+    expect(view.state.doc.toString()).toBe(`${BLOCK}ХТекст встречи\n`);
+    // Отмена идёт мимо фильтра и возвращает выделение, бывшее до ввода, — 0.
+    undo(view);
+    expect(view.state.doc.toString()).toBe(MEETING_TEXT);
+    await waitFor(() => expect(view?.state.selection.main.head).toBe(BLOCK.length));
+    expect(collapsed(view)).toBe(true);
+  });
+
+  it('Backspace в начале строки под свёрнутым блоком раскрывает блок, ничего не удаляя', () => {
+    view = new EditorView({ parent: document.body, state: createEditorState(MEETING_TEXT, { mode: 'live_preview' }) });
+    view.dispatch({ selection: { anchor: BLOCK.length } });
+    expect(collapsed(view)).toBe(true);
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+    expect(view.state.doc.toString()).toBe(MEETING_TEXT);
+    expect(view.state.selection.main.head).toBe(BLOCK.length - 1);
+    expect(collapsed(view)).toBe(false);
   });
 });
