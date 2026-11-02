@@ -1,16 +1,15 @@
 <!--
   Вид «Теги» в правой панели (0.2-2.3, С2-3.3 «Список тегов», макет П-2 —
-  кадры 66-2781 / 66-3207): переключатель порядка «по имени / по числу
-  заметок», теги с числом заметок («#» бледнее имени), щелчок раскрывает
+  кадры 66-2781 / 66-3207): теги с числом заметок («#» бледнее имени), щелчок раскрывает
   под тегом его заметки (по имени, папка серым при повторе имени), щелчок
-  по заметке открывает её. Данные и порядок — в модели (model.svelte.ts);
+  по заметке открывает её. Переключатель порядка «по имени / по числу» —
+  в заголовке панели (TagOrderSwitch.svelte). Данные и порядок — в модели (model.svelte.ts);
   вид подключает её к событиям ядра, пока он на экране.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import type { VaultPath } from '../api/index.ts';
-  import type { TagOrder } from '../core/layout/layout.ts';
-  import { t, type MessageKey } from '../i18n/index.ts';
+  import { t } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
   import TreeIcon from '../tree/TreeIcon.svelte';
   import type { TagsModel } from './model.svelte.ts';
@@ -25,11 +24,6 @@
     current: VaultPath | null;
     onOpen: (path: VaultPath) => void;
   } = $props();
-
-  const ORDERS: { order: TagOrder; label: MessageKey; icon: 'arrow-down-a-z' | 'arrow-down-wide-narrow' }[] = [
-    { order: 'name', label: 'tags.order.name', icon: 'arrow-down-a-z' },
-    { order: 'count', label: 'tags.order.count', icon: 'arrow-down-wide-narrow' },
-  ];
 
   let list: HTMLElement | undefined = $state();
 
@@ -53,24 +47,6 @@
 </script>
 
 <div class="tags">
-  <div class="toolbar">
-    <div class="order" role="group" aria-label={t('tags.order')}>
-      {#each ORDERS as item (item.order)}
-        <button
-          type="button"
-          class="order-button"
-          class:active={model.order === item.order}
-          aria-pressed={model.order === item.order}
-          aria-label={t(item.label)}
-          title={t(item.label)}
-          onclick={() => model.setOrder(item.order)}
-        >
-          <Icon name={item.icon} size={14} />
-        </button>
-      {/each}
-    </div>
-  </div>
-
   {#if model.status.kind === 'building'}
     {@const percent = model.status.percent}
     {@const text = percent === null ? t('tags.indexBuildingUnknown') : t('tags.indexBuilding', { percent })}
@@ -156,45 +132,6 @@
     font-size: var(--font-size-ui);
   }
 
-  /* Переключатель порядка (tokens.md «0.2»): сегментный, сегменты 24 × 22, иконка 14. */
-  .toolbar {
-    display: flex;
-    flex: none;
-    justify-content: flex-end;
-    padding: 0 10px 4px;
-  }
-
-  .order {
-    display: flex;
-    gap: 2px;
-    padding: 2px;
-    border-radius: 7px;
-    background: var(--bg-hover);
-  }
-
-  .order-button {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    color: var(--icon-muted);
-    box-sizing: border-box;
-  }
-
-  .order-button:hover:not(.active) {
-    color: var(--icon-default);
-    cursor: pointer;
-  }
-
-  .order-button.active {
-    border-color: var(--border-default);
-    background: var(--bg-app);
-    color: var(--text-primary);
-  }
-
-  .order-button:focus-visible,
   .tag-row:focus-visible,
   .note-row:focus-visible {
     outline: 2px solid var(--accent);

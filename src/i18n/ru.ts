@@ -298,6 +298,19 @@ export const ru = {
   'rightPanel.resize': 'Ширина правой панели',
   'note.header.rightPanel': 'Правая панель',
 
+  // 0.2-2.2 Вид «Обратные ссылки» (С2-3.2, макет П-А, П-3)
+  'backlinks.list': 'Ссылающиеся заметки',
+  'backlinks.empty': 'Нет обратных ссылок',
+  'backlinks.building': 'Индекс строится…',
+  'backlinks.buildingPercent': 'Индекс строится… {percent} %',
+  'backlinks.truncated': 'Показаны не все обратные ссылки',
+  'backlinks.failed': 'Не удалось показать обратные ссылки. {message}',
+  'backlinks.open': 'Открыть «{name}»',
+  'backlinks.openIn': 'Открыть «{name}» ({folder})',
+  'backlinks.collapse': 'Свернуть',
+  'backlinks.expand': 'Развернуть',
+  'backlinks.vaultRoot': 'корень хранилища',
+
   // 0.2-2.3 Вид «Теги» (С2-3.3 «Список тегов», макет П-2)
   'tags.order': 'Порядок тегов',
   'tags.order.name': 'По имени',

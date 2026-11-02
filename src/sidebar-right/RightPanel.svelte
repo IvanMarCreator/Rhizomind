@@ -2,7 +2,7 @@
   Правая боковая панель (С2-3.1, решения 108 и 119, макет П-А — кадры 66-2 и
   65-2): вверху значки видов «Обратные ссылки» (link) и «Теги» (hash), под
   ними название вида заглавными и число — как «ФАЙЛЫ» слева; ширина — левой
-  границей (мышью и стрелками). Содержимое видов приходит снаружи
+  границей (мышью, стрелками, Home и End). Содержимое видов приходит снаружи
   (`backlinks`, `tags`): виды — задачи 0.2-2.2 и 0.2-2.3; число в заголовке
   ставит вид через `panel.setCount`. В 0.4 значки станут вкладками панели.
 -->
@@ -18,6 +18,7 @@
     shortcuts = { backlinks: null, tags: null },
     backlinks,
     tags,
+    headerActions,
   }: {
     panel: RightPanelModel;
     /** Сочетания команд видов для подсказок (`Ctrl+Shift+B`); `null` — не назначено. */
@@ -26,6 +27,8 @@
     backlinks?: Snippet;
     /** Вид «Теги» (0.2-2.3). */
     tags?: Snippet;
+    /** Действия заголовка текущего вида — справа от названия (порядок тегов, макет П-2). */
+    headerActions?: Snippet<[RightPanelView]>;
   } = $props();
 
   const VIEWS: { view: RightPanelView; label: MessageKey; icon: 'link' | 'hash' }[] = [
@@ -92,6 +95,9 @@
   function onResizeKeydown(event: KeyboardEvent): void {
     if (event.key === 'ArrowLeft') panel.resizeBy(RESIZE_STEP);
     else if (event.key === 'ArrowRight') panel.resizeBy(-RESIZE_STEP);
+    // Home и End — к пределам (WAI-ARIA, window splitter): самая узкая и самая широкая.
+    else if (event.key === 'Home') panel.resizeBy(RIGHT_PANEL_WIDTH.min - panel.width);
+    else if (event.key === 'End') panel.resizeBy(RIGHT_PANEL_WIDTH.max - panel.width);
     else return;
     event.preventDefault();
   }
@@ -140,12 +146,15 @@
     {/each}
   </div>
 
-  <h2 class="heading">
-    <span class="name">{t(LABELS[panel.view])}</span>
-    {#if count !== null}
-      <span class="count">{count}</span>
-    {/if}
-  </h2>
+  <div class="heading-row">
+    <h2 class="heading">
+      <span class="name">{t(LABELS[panel.view])}</span>
+      {#if count !== null}
+        <span class="count">{count}</span>
+      {/if}
+    </h2>
+    {@render headerActions?.(panel.view)}
+  </div>
 
   <div
     class="body"
@@ -248,14 +257,24 @@
   }
 
   /* Название вида: 11 Semi Bold заглавными, разрядка 6 %, `text/muted`; число `text/faint`; высота 30, слева 14. */
-  .heading {
+  .heading-row {
     display: flex;
     flex: none;
     align-items: center;
     gap: 6px;
     height: 30px;
+    padding-right: 10px;
+  }
+
+  .heading {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 30px;
     margin: 0;
-    padding: 0 10px 0 14px;
+    padding: 0 0 0 14px;
     overflow: hidden;
     font-size: var(--font-size-heading);
     line-height: 14px;

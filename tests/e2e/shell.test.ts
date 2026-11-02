@@ -72,4 +72,58 @@ describe('оболочка окна', () => {
       await saveScreenshot(browser, `shell-${theme}`);
     }
   });
+
+  // 0.2-2.2 (по QA 0.2-2.1): правая панель открыта, вид «Обратные ссылки».
+  // Заметка не открыта — «Нет обратных ссылок», число 0; индекса в ядре ещё
+  // нет (0.2-1.2–1.4), с открытой заметкой было бы «Индекс строится…».
+  it.each(['light', 'dark'] as const)('правая панель открыта, тема %s: снимок экрана', async (theme) => {
+    const { browser } = session;
+    try {
+      const panel = browser.$('aside[aria-label="Правая панель"]');
+      if (!(await panel.isExisting())) await browser.$('button[aria-label="Правая панель"]').click();
+      await panel.waitForDisplayed({ timeout: 10_000 });
+      await browser.execute((name) => {
+        document.documentElement.dataset.theme = name;
+      }, theme);
+      // textContent, не getText: WebKitGTK отдаёт в getText заголовка только число.
+      const heading = await browser.execute(
+        () => document.querySelector('aside[aria-label="Правая панель"] h2')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      );
+      expect(heading).toMatch(/^Обратные ссылки/);
+      const bodyText = () =>
+        browser.execute(() => document.querySelector('aside[aria-label="Правая панель"] [role="tabpanel"]')?.textContent ?? '');
+      await browser.waitUntil(async () => /Индекс строится|Нет обратных ссылок/.test(await bodyText()), {
+        timeout: 10_000,
+      });
+    } finally {
+      await saveScreenshot(browser, `right-panel-${theme}`);
+    }
+  });
+
+  // 0.2-2.3: вид «Теги» в панели; переключатель порядка — в заголовке справа
+  // (макет П-2). Индекса в ядре ещё нет — «Индекс строится…».
+  it.each(['light', 'dark'] as const)('вид «Теги» открыт, тема %s: снимок экрана', async (theme) => {
+    const { browser } = session;
+    try {
+      const panel = browser.$('aside[aria-label="Правая панель"]');
+      if (!(await panel.isExisting())) await browser.$('button[aria-label="Правая панель"]').click();
+      await panel.waitForDisplayed({ timeout: 10_000 });
+      await panel.$('button[role="tab"][aria-label="Теги"]').click();
+      await browser.execute((name) => {
+        document.documentElement.dataset.theme = name;
+      }, theme);
+      const look = await browser.execute(() => {
+        const aside = document.querySelector('aside[aria-label="Правая панель"]');
+        return {
+          heading: aside?.querySelector('h2')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          order: aside?.querySelector('h2')?.parentElement?.querySelector('[role="group"]')?.getAttribute('aria-label') ?? '',
+        };
+      });
+      expect(look.heading).toMatch(/^Теги/);
+      expect(look.order).toBe('Порядок тегов');
+    } finally {
+      await saveScreenshot(browser, `right-panel-tags-${theme}`);
+    }
+  });
 });
+

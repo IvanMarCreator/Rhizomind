@@ -7,6 +7,12 @@
 import { Facet } from '@codemirror/state';
 import type { LinkSuggestion } from '../../api/index.ts';
 
+/** Место в тексте заметки: строка с 1 и столбец в единицах UTF-16 (как у ядра). */
+export interface LinkPosition {
+  line: number;
+  column: number;
+}
+
 /** Событие окна для открытого редактора. */
 export type WikiEvent =
   /** Дерево хранилища изменилось: разрешение ссылок спросить заново. */
@@ -14,8 +20,9 @@ export type WikiEvent =
   /**
    * Переход по ссылке к этой заметке (решение 86): фокус в текст, курсор на
    * заголовок (`[[Заметка#Заголовок]]`) или, без него или если его нет, в начало.
+   * `at` — переход из вида «Обратные ссылки» (0.2-2.2): курсор на эту ссылку.
    */
-  | { kind: 'arrive'; heading: string | null };
+  | { kind: 'arrive'; heading: string | null; at?: LinkPosition };
 
 export interface WikiHost {
   /** Разрешены ли цели (ключи `targetKey`); ошибка — ответа нет. */

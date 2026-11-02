@@ -11,6 +11,7 @@ import type { RightPanel as PanelState } from '../core/layout/layout.ts';
 import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
 import { testPanelHost } from '../sidebar-right/testing.svelte.ts';
 import { TagsModel } from './model.svelte.ts';
+import TagOrderSwitch from './TagOrderSwitch.svelte';
 import Tags from './Tags.svelte';
 
 const tag = (name: string, count: number, key = name.toLowerCase()): TagSummary => ({ tag: name, key, count });
@@ -88,7 +89,9 @@ describe('вид «Теги»', () => {
   });
 
   it('переключатель по имени / по числу, запоминается', async () => {
-    const { host, panel } = setup({ tags: [tag('бета', 2), tag('альфа', 2), tag('гамма', 9), tag('дельта', 1)] });
+    const { host, panel, model } = setup({ tags: [tag('бета', 2), tag('альфа', 2), tag('гамма', 9), tag('дельта', 1)] });
+    // Переключатель — отдельный компонент: он стоит в заголовке панели (макет П-2).
+    render(TagOrderSwitch, { model });
     await screen.findByRole('button', { name: /^#альфа,/ });
     const byName = screen.getByRole('button', { name: 'По имени' });
     const byCount = screen.getByRole('button', { name: 'По числу заметок' });
@@ -277,5 +280,11 @@ describe('вид «Теги»', () => {
     // Повторный вызов не сворачивает тег.
     model.reveal('проект');
     expect(model.isExpanded('проект')).toBe(true);
+  });
+
+  it('в самом виде переключателя порядка нет — он в заголовке панели', async () => {
+    setup({ tags: [tag('а', 1)] });
+    await screen.findByRole('button', { name: /^#а,/ });
+    expect(screen.queryByRole('group', { name: 'Порядок тегов' })).toBeNull();
   });
 });

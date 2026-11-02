@@ -197,7 +197,9 @@ function readIfExists(file: string): string {
   try {
     return readFileSync(file, 'utf8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    // EBUSY — файл в этот миг заменяется (Windows, CI 41436759615): тоже повтор.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'EBUSY') return '';
     throw error;
   }
 }
