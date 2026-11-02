@@ -14,13 +14,16 @@
 //! знак плана (`commands::RelinkToken`) и может лишь подтвердить или
 //! отклонить его (С2-6 «Граница»).
 //!
-//! Задача 0.2-0.1 — только типы и сигнатуры: план пустой, переписывать
-//! нечего.
+//! Задача 0.2-0.1 — типы и сигнатуры: план пока пустой; переписывание
+//! текста — [`rewrite`] (0.2-4.4).
 
 use crate::commands::{PathRename, VaultPath};
 use crate::index::VaultIndex;
 use crate::links::Links;
-use crate::markdown::WikiLink;
+
+mod rewrite;
+
+pub use rewrite::rewrite;
 
 /// Одна ссылка плана: на какую цель переписать и куда она должна вести.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,17 +82,6 @@ pub fn plan(index: &VaultIndex, before: &Links, renames: &[PathRename]) -> Relin
     RelinkPlan::default()
 }
 
-/// Новый текст заметки: ссылки находятся заново тем же разбором
-/// (`markdown::parse`), у каждой `new_target` решает, на что заменить цель
-/// (`None` — оставить). Меняются только байты целей; BOM, переносы строк,
-/// всё остальное — как было. `None` в ответе — менять нечего.
-///
-/// Заглушка 0.2-0.1: менять нечего (0.2-4.4).
-pub fn rewrite(text: &str, new_target: &dyn Fn(&WikiLink) -> Option<String>) -> Option<String> {
-    let _ = (text, new_target);
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +91,5 @@ mod tests {
         let plan = plan(&VaultIndex::new(), &Links::default(), &[]);
         assert!(plan.is_empty());
         assert_eq!((plan.note_count(), plan.link_count()), (0, 0));
-        assert_eq!(rewrite("[[Встреча]]", &|_| Some("Планёрка".into())), None);
     }
 }
