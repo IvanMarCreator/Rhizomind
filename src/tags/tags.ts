@@ -1,5 +1,5 @@
 // Вид «Теги» (0.2-2.3, С2-3.3): порядок тегов и строки заметок тега —
-// чистые функции без состояния (модель — tags.svelte.ts).
+// чистые функции без состояния (модель — model.svelte.ts).
 import type { TagSummary, VaultPath } from '../api/index.ts';
 import type { TagOrder } from '../core/layout/layout.ts';
 import { nameKey } from '../core/names/index.ts';

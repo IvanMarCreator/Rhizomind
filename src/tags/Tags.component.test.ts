@@ -10,7 +10,7 @@ import { emitCoreEvent, indexMocks, mockCore, type CoreMocks, type IndexFake } f
 import type { RightPanel as PanelState } from '../core/layout/layout.ts';
 import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
 import { testPanelHost } from '../sidebar-right/testing.svelte.ts';
-import { TagsModel } from './tags.svelte.ts';
+import { TagsModel } from './model.svelte.ts';
 import Tags from './Tags.svelte';
 
 const tag = (name: string, count: number, key = name.toLowerCase()): TagSummary => ({ tag: name, key, count });

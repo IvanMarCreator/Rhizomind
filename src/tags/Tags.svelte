@@ -3,7 +3,7 @@
   кадры 66-2781 / 66-3207): переключатель порядка «по имени / по числу
   заметок», теги с числом заметок («#» бледнее имени), щелчок раскрывает
   под тегом его заметки (по имени, папка серым при повторе имени), щелчок
-  по заметке открывает её. Данные и порядок — в модели (tags.svelte.ts);
+  по заметке открывает её. Данные и порядок — в модели (model.svelte.ts);
   вид подключает её к событиям ядра, пока он на экране.
 -->
 <script lang="ts">
@@ -13,7 +13,7 @@
   import { t, type MessageKey } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
   import TreeIcon from '../tree/TreeIcon.svelte';
-  import type { TagsModel } from './tags.svelte.ts';
+  import type { TagsModel } from './model.svelte.ts';
 
   let {
     model,
