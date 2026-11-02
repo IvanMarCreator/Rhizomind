@@ -1,44 +1,11 @@
-// Блок свойств в живом предпросмотре (0.2-3.2, С2-3.4, решение 112): разбор
-// блока и его тегов против общих образцов tests/fixtures/frontmatter/ (те же,
-// что у ядра, `markdown::tests::fixtures_frontmatter`) и состояние
-// «свёрнут / раскрыт» без окна.
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Блок свойств в живом предпросмотре (0.2-3.2, С2-3.4, решение 112):
+// состояние «свёрнут / раскрыт» без окна. Разбор блока и тегов — в
+// src/core/tags/frontmatter.test.ts.
 import { EditorSelection, type EditorState } from '@codemirror/state';
 import { describe, expect, it } from 'vitest';
 import { createEditorState } from '../codemirror.ts';
-import { frontmatterTags, parseFrontmatter, propertiesView } from './frontmatter.ts';
+import { propertiesView } from './frontmatter.ts';
 import { MAX_BLOCK_TEXT } from './markdown.ts';
-
-const FIXTURES = join(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'frontmatter', 'tags.json');
-
-interface FrontmatterCase {
-  rule: string;
-  note: string;
-  text: string;
-  block: { from: number; to: number } | null;
-  tags: string[];
-}
-
-const cases = (JSON.parse(readFileSync(FIXTURES, 'utf8')) as { cases: FrontmatterCase[] }).cases;
-
-describe('fixtures: frontmatter', () => {
-  it('образцы прочитаны', () => {
-    expect(cases.length).toBeGreaterThanOrEqual(15);
-  });
-
-  it.each(cases.map((c) => [`${c.rule} ${c.note}`, c] as const))('%s', (_name, c) => {
-    const parsed = parseFrontmatter(c.text);
-    expect(parsed ? { from: parsed.from, to: parsed.to } : null).toEqual(c.block ? { from: c.block.from, to: c.block.to } : null);
-    expect(parsed?.tags ?? []).toEqual(c.tags);
-  });
-});
-
-describe('теги блока для строки «Свойства»', () => {
-  it('повторы одного тега (с точностью до регистра) — один раз, в первом написании', () => {
-    expect(frontmatterTags('---\ntags: [проект, Проект, идея]\ntag: проект\n---')).toEqual(['проект', 'идея']);
-  });
-});
 
 const NOTE = '---\ntags: [проект, идея]\ntitle: Встреча\n---\nТекст заметки\nвторая строка';
 const BLOCK_END = NOTE.indexOf('---\nТекст') + 3;

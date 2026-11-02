@@ -8,124 +8,42 @@
 //
 // Где блок, решает разбор блоков редактора (`blocksField` в index.ts):
 // незакрытый блок — не блок, в заметке больше 10 МБ блок не распознаётся
-// (решение 77). Теги блока — свой разбор ровно форм С2-3.3 (Р14, Р17 п.7,
-// Р18), как у ядра (src-tauri/src/markdown/frontmatter.rs); обе стороны
-// проверяются общими образцами tests/fixtures/frontmatter/.
+// (решение 77). Теги блока — общий разбор src/core/tags/frontmatter.ts.
 //
 // Когда блок раскрыт: курсор (голова любого выделения) стоит в блоке после
-// его первого символа — `(from, to]`. Начало текста (`from`) — край строки
-// «Свойства»: курсор там виден перед ней, блок свёрнут (новая заметка
-// открывается с курсором в начале — блок не раскрывается сам). Так курсор
-// никогда не оказывается внутри скрытого текста. Стрелки ↑/↓ обходят
-// свёрнутый блок как одну строку: ↑ из строки под блоком ставит курсор в
-// конец блока (он раскрывается), ↓ из начала текста — на строку под блоком.
+// его первого символа — `(from, to]`, или в его начале, если блок уже был
+// раскрыт (Home в первой строке). Так курсор никогда не оказывается внутри
+// скрытого текста. Стрелки ↑/↓ обходят свёрнутый блок как одну строку: ↑ из
+// строки под блоком ставит курсор в конец блока (он раскрывается).
+//
+// Начало текста при свёрнутом блоке — перед `---`: ввод там разрушил бы блок
+// (инвариант 4, замечание QA). Поэтому заметка открывается и переход по
+// `[[ссылке]]` без заголовка ведёт с курсором в начало текста под блоком
+// (`textStart`, NoteText.svelte и wikilinks/reveal.ts); курсор, поставленный
+// в начало текста при свёрнутом блоке (Ctrl+Home, переключение режима и
+// др.), переходит туда же;
+// ввод и вставка в начало текста при свёрнутом блоке уходят под блок одной
+// правкой (одна отмена).
 //
 // Составление (IME): ввод в раскрытом блоке оставляет курсор в блоке — блок
 // не сворачивается; оформление раскрытого блока — только классы строк (одни
 // и те же объекты оформления), узлы текста не разрезаются.
-import { EditorSelection, Prec, StateField, type EditorState, type Extension, type Range, type Transaction } from '@codemirror/state';
-import { Decoration, EditorView, WidgetType, keymap, type Command, type DecorationSet } from '@codemirror/view';
-import { isTagName, tagKey } from '../../core/tags/index.ts';
+import {
+  EditorSelection,
+  EditorState,
+  Prec,
+  StateField,
+  Transaction,
+  type Extension,
+  type Range,
+  type Text,
+  type TransactionSpec,
+} from '@codemirror/state';
+import { Decoration, EditorView, ViewPlugin, WidgetType, keymap, type Command, type DecorationSet } from '@codemirror/view';
+import { frontmatterTags } from '../../core/tags/index.ts';
 import { t } from '../../i18n/index.ts';
-import { PROPERTIES_CLOSE, PROPERTIES_OPEN, type Span } from './markdown.ts';
+import { MAX_BLOCK_TEXT, findProperties, type Span } from './markdown.ts';
 import { tagOpener } from './tags.ts';
-
-// ---- Разбор блока и тегов ----------------------------------------------------
-
-/** Блок свойств: от первой `---` до конца закрывающей строки без перевода строки; теги по порядку. */
-export interface Frontmatter extends Span {
-  tags: string[];
-}
-
-/** Строки текста: переводы `\r\n`, `\r`, `\n` (как у ядра). */
-function* lines(text: string): Generator<Span> {
-  let start = 0;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch !== 0x0a && ch !== 0x0d) continue;
-    yield { from: start, to: i };
-    if (ch === 0x0d && text.charCodeAt(i + 1) === 0x0a) i++;
-    start = i + 1;
-  }
-  yield { from: start, to: text.length };
-}
-
-const SPACES = /^[ \t]*|[ \t]*$/g;
-
-/** Ключ `tags:`/`tag:` в начале строки (регистр ключа не важен) — значение после `:`. */
-function tagsValue(line: string): string | null {
-  const colon = line.indexOf(':');
-  if (colon < 0) return null;
-  const key = line.slice(0, colon).toLowerCase();
-  return key === 'tags' || key === 'tag' ? line.slice(colon + 1) : null;
-}
-
-/** Элемент списка `- значение` (отступ пробелами и табуляциями допустим) — значение. */
-function listItem(line: string): string | null {
-  const rest = line.replace(/^[ \t]*/, '');
-  if (!rest.startsWith('-')) return null;
-  const after = rest.slice(1);
-  return after === '' || after.startsWith(' ') || after.startsWith('\t') ? after : null;
-}
-
-/** Одно значение: без пробелов по краям, без парных кавычек и `#` впереди; тег, если подходит целиком. */
-function pushValue(raw: string, out: string[]): void {
-  let value = raw.replace(SPACES, '');
-  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-    value = value.slice(1, -1);
-  }
-  if (value.startsWith('#')) value = value.slice(1);
-  if (isTagName(value)) out.push(value);
-}
-
-function splitValues(raw: string, out: string[]): void {
-  for (const part of raw.split(',')) pushValue(part, out);
-}
-
-/**
- * Блок свойств в начале `text` и теги ключей `tags`/`tag` из него (формы
- * `[a, b]`, `a, b`, `a`, список строками `- a`); `null` — блока нет
- * (незакрытый — не блок). Размер текста не проверяется: в редакторе блок
- * не ищется в заметке больше 10 МБ (решение 77).
- */
-export function parseFrontmatter(text: string): Frontmatter | null {
-  const all = lines(text);
-  const first = all.next();
-  if (first.done || !PROPERTIES_OPEN.test(text.slice(first.value.from, first.value.to))) return null;
-  const tags: string[] = [];
-  let inList = false;
-  for (const span of all) {
-    const line = text.slice(span.from, span.to);
-    if (PROPERTIES_CLOSE.test(line)) return { from: 0, to: span.to, tags };
-    if (inList) {
-      const item = listItem(line);
-      if (item !== null) {
-        pushValue(item, tags);
-        continue;
-      }
-    }
-    inList = false;
-    const value = tagsValue(line);
-    if (value === null) continue;
-    const raw = value.replace(SPACES, '');
-    if (raw === '') inList = true;
-    else if (raw.startsWith('[')) {
-      if (raw.length >= 2 && raw.endsWith(']')) splitValues(raw.slice(1, -1), tags);
-    } else splitValues(raw, tags);
-  }
-  return null;
-}
-
-/** Теги блока свойств для строки «Свойства»: без повторов (`#Проект` и `#проект` — один), в первом написании. */
-export function frontmatterTags(text: string): string[] {
-  const seen = new Set<string>();
-  return (parseFrontmatter(text)?.tags ?? []).filter((tag) => {
-    const key = tagKey(tag);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 // ---- Состояние: свёрнут или раскрыт ------------------------------------------
 
@@ -143,9 +61,19 @@ interface FieldValue {
   decorations: DecorationSet;
 }
 
-/** Курсор (голова любого выделения) в блоке после его начала — блок раскрыт. */
-function expandedAt(state: EditorState, span: Span): boolean {
-  return state.selection.ranges.some((range) => range.head > span.from && range.head <= span.to);
+/** Курсор (голова любого выделения) в блоке после его начала или в начале раскрытого блока — блок раскрыт. */
+function expandedAt(state: EditorState, span: Span, wasExpanded: boolean): boolean {
+  return state.selection.ranges.some((range) => (range.head > span.from || (wasExpanded && range.head === span.from)) && range.head <= span.to);
+}
+
+/**
+ * Начало текста под блоком свойств: начало строки после закрывающей (если
+ * после блока текста нет — конец блока); без блока или в заметке больше
+ * 10 МБ (решение 77) — `0`. Сюда встаёт курсор при открытии заметки.
+ */
+export function textStart(doc: Text): number {
+  const properties = doc.length > MAX_BLOCK_TEXT ? null : findProperties(doc);
+  return properties ? Math.min(properties.to + 1, doc.length) : 0;
 }
 
 function sameTags(a: readonly string[], b: readonly string[]): boolean {
@@ -251,7 +179,13 @@ function decorate(state: EditorState, view: PropertiesView): DecorationSet {
   const first = state.doc.lineAt(view.from).number;
   const last = state.doc.lineAt(view.to).number;
   for (let n = first; n <= last; n++) {
-    const cls = [SOURCE_LINE, n === first ? `${SOURCE_LINE}-first` : '', n === last ? `${SOURCE_LINE}-last` : '']
+    const cls = [
+      SOURCE_LINE,
+      n === first ? `${SOURCE_LINE}-first` : '',
+      n === last ? `${SOURCE_LINE}-last` : '',
+      // Строки-ограничители `---` / `...` бледнее (макет П-4).
+      n === first || n === last ? 'cm-rz-properties-delimiter' : '',
+    ]
       .filter(Boolean)
       .join(' ');
     out.push(sourceLine(cls).range(state.doc.line(n).from));
@@ -271,7 +205,7 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
   const view: PropertiesView = {
     from: span.from,
     to: span.to,
-    expanded: expandedAt(state, span),
+    expanded: expandedAt(state, span, old?.expanded === true),
     tags: old && sameTags(old.tags, tags) ? old.tags : tags,
   };
   if (previous && old && old.from === view.from && old.to === view.to && old.expanded === view.expanded && old.tags === view.tags) {
@@ -344,11 +278,70 @@ function expandAt(editor: EditorView, view: PropertiesView): void {
   editor.focus();
 }
 
+/**
+ * Начало текста при свёрнутом блоке. Ввод и вставка только в позицию 0
+ * (`input.*`, кроме составления — его узел уже в окне) переносятся в начало
+ * текста под блоком: одна правка вместо исходной, отмена — одна. Курсор,
+ * поставленный в позицию 0, переходит туда же.
+ */
+const guardStart = EditorState.transactionFilter.of((tr): Transaction | readonly (Transaction | TransactionSpec)[] | TransactionSpec => {
+  const before = propertiesView(tr.startState);
+  if (before?.expanded) return tr;
+  if (before && tr.docChanged && tr.isUserEvent('input') && !tr.isUserEvent('input.type.compose')) {
+    let atStart = true;
+    let inserted = '';
+    tr.changes.iterChanges((fromA, toA, _fromB, _toB, text) => {
+      if (fromA !== 0 || toA !== 0) atStart = false;
+      inserted += text.toString();
+    });
+    if (atStart) {
+      const start = textStart(tr.startState.doc);
+      const offset = Math.min(tr.newSelection.main.head, inserted.length);
+      return {
+        changes: { from: start, insert: inserted },
+        selection: EditorSelection.cursor(start + offset),
+        scrollIntoView: true,
+        userEvent: tr.annotation(Transaction.userEvent) ?? 'input',
+      };
+    }
+  }
+  if (!tr.selection && !tr.docChanged) return tr;
+  const { main } = tr.newSelection;
+  if (tr.newSelection.ranges.length !== 1 || !main.empty || main.head !== 0) return tr;
+  const after = propertiesView(tr.state);
+  if (!after || after.expanded || after.from !== 0) return tr;
+  return [tr, { selection: EditorSelection.cursor(textStart(tr.state.doc)), sequential: true }];
+});
+
+/**
+ * Курсор уже в начале текста, когда расширение подключается (переключение
+ * из исходного текста, редактор без заданного выделения): после создания —
+ * в начало текста под свёрнутым блоком. Правкой это сделать нельзя: фильтр
+ * правок не видит переключения режима.
+ */
+const startOnAttach = ViewPlugin.define((view) => {
+  let alive = true;
+  queueMicrotask(() => {
+    if (!alive || view.composing) return;
+    const { main } = view.state.selection;
+    const shown = collapsedView(view.state);
+    if (!shown || view.state.selection.ranges.length !== 1 || !main.empty || main.head !== shown.from) return;
+    view.dispatch({ selection: EditorSelection.cursor(textStart(view.state.doc)) });
+  });
+  return {
+    destroy() {
+      alive = false;
+    },
+  };
+});
+
 /** Расширение живого предпросмотра: строка «Свойства» вместо блока свойств. */
 export function frontmatterPreview(lookup: PropertiesLookup): Extension {
   const field = (current ??= propertiesField(lookup));
   return [
     field,
+    guardStart,
+    startOnAttach,
     Prec.high(
       keymap.of([
         { key: 'ArrowUp', run: up(false), shift: up(true) },

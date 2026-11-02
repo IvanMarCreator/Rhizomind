@@ -87,6 +87,8 @@ describe('блок свойств в живом предпросмотре', () 
     expect(editor.state.selection.main.head).toBe(NOTE.indexOf('\ntitle'));
     expect(editor.state.doc.toString()).toBe(NOTE);
     expect(editor.contentDOM.querySelectorAll('.cm-rz-properties-source')).toHaveLength(4);
+    // Ограничители `---` — бледнее (макет П-4).
+    expect([...editor.contentDOM.querySelectorAll('.cm-rz-properties-delimiter')].map((el) => el.textContent)).toEqual(['---', '---']);
   });
 
   it('щелчок по тегу в строке «Свойства» открывает вид «Теги», блок остаётся свёрнутым', () => {
@@ -113,11 +115,11 @@ describe('блок свойств в живом предпросмотре', () 
     key(editor, { key: 'ArrowUp' });
     expect(editor.state.selection.main.head).toBe(BLOCK_END);
     expect(row(editor)).toBeNull();
-    // Курсор перед свёрнутой строкой (начало текста): ↓ — на первую строку под блоком, мимо скрытых строк.
-    editor.dispatch({ selection: { anchor: 0 } });
-    expect(row(editor)).not.toBeNull();
-    key(editor, { key: 'ArrowDown' });
+    // Курсор в начало текста при свёрнутом блоке (Ctrl+Home) — в начало текста под блоком: не перед `---`.
+    editor.dispatch({ selection: { anchor: BODY + 4 } });
+    key(editor, { key: 'Home', ctrlKey: true });
     expect(editor.state.selection.main.head).toBe(BODY);
+    expect(row(editor)).not.toBeNull();
     // ← с начала строки под блоком — в конец блока (раскрыт), → — обратно.
     key(editor, { key: 'ArrowLeft' });
     expect(editor.state.selection.main.head).toBe(BLOCK_END);
@@ -129,7 +131,10 @@ describe('блок свойств в живом предпросмотре', () 
   });
 
   it('выделение через блок', () => {
-    const editor = open(NOTE, 0);
+    // Редактор без заданного выделения: курсор в начале текста, перед строкой «Свойства».
+    const editor = new EditorView({ parent: document.body, state: createEditorState(NOTE, { mode: 'live_preview' }) });
+    view = editor;
+    expect(editor.state.selection.main.head).toBe(0);
     // Shift+↓ из начала текста выделяет весь блок как одну строку; блок свёрнут.
     key(editor, { key: 'ArrowDown', shiftKey: true });
     expect(editor.state.selection.main.anchor).toBe(0);

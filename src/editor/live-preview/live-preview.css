@@ -421,6 +421,11 @@
   border-radius: 6px;
 }
 
+/* Строки-ограничители `---` / `...` бледнее текста свойств (макет П-4). */
+.cm-editor .cm-content .cm-line.cm-rz-properties-delimiter {
+  color: var(--text-secondary);
+}
+
 /* ---- Горизонтальная линия ---- */
 
 .cm-editor .cm-rz-rule {
