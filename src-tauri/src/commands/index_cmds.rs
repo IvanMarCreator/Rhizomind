@@ -274,6 +274,8 @@ struct Signal {
     changed: bool,
     /// Окно отвязано: потоки индекса выходят.
     stopped: bool,
+    /// Поток событий сейчас отправляет события (флаги уже сняты).
+    sending: bool,
 }
 
 impl std::fmt::Debug for WindowIndex {
@@ -460,6 +462,30 @@ impl WindowIndex {
         }
     }
 
+    /// Ждёт, пока индекс готов и событий индекса не ждёт отправки и не
+    /// отправляется (тесты). Слушатель событий на стороне Rust в Tauri
+    /// регистрируется через `try_lock` и теряется, если в этот момент
+    /// другой поток отправляет событие (tauri 2.12, `event/listener.rs`):
+    /// тесты регистрируют слушателей окна только после этого.
+    #[cfg(test)]
+    pub fn wait_settled(&self) {
+        let start = Instant::now();
+        loop {
+            let ready = self.status().state == IndexState::Ready;
+            let signal = self.signal();
+            if ready && !signal.status && !signal.changed && !signal.sending {
+                return;
+            }
+            drop(signal);
+            assert!(
+                start.elapsed() < Duration::from_secs(120),
+                "индекс не успокоился: {:?}",
+                self.status()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// Заметки, ссылающиеся на `note` (тесты).
     #[cfg(test)]
     pub fn backlinks_of(&self, list: &NoteList, note: &VaultPath) -> Vec<VaultPath> {
@@ -611,6 +637,7 @@ fn events_loop(open: &OpenVault, emit: &dyn Emit) {
         signal.status &= !send_status;
         signal.changed &= !send_changed;
         if send_status || send_changed {
+            signal.sending = true;
             drop(signal);
             if send_status {
                 send(emit, event::INDEX_STATUS, &index.status());
@@ -618,6 +645,7 @@ fn events_loop(open: &OpenVault, emit: &dyn Emit) {
             if send_changed {
                 send(emit, event::INDEX_CHANGED, &IndexChangedPayload {});
             }
+            index.signal().sending = false;
             continue;
         }
         let wait = [
@@ -815,16 +843,22 @@ fn backlinks_reply(open: &OpenVault, path: &VaultPath) -> IndexReply<Backlinks> 
         )
     });
 
-    let notes_total = u32::try_from(sources.len()).unwrap_or(u32::MAX);
-    let mut truncated = sources.len() > limits::MAX_BACKLINK_NOTES;
-    let mut budget = limits::MAX_BACKLINK_LINES_TOTAL;
+    // Пределы ответа — одна функция [`Backlinks::capped`]. Файлы читаются
+    // только для того, что может попасть в ответ: заметки после первой
+    // 1 000 — без чтения (только для числа и признака), строк у заметки —
+    // на одну больше предела, всего — на одну больше общего предела (так
+    // `capped` видит, что отброшено, и ставит `truncated`).
+    let mut lines_left = limits::MAX_BACKLINK_LINES_TOTAL + 1;
     let notes = sources
         .into_iter()
-        .take(limits::MAX_BACKLINK_NOTES)
-        .map(|(name, source)| {
+        .enumerate()
+        .map(|(i, (name, source))| {
             let total = source.sites.len();
-            let want = total.min(limits::MAX_BACKLINK_LINES).min(budget);
-            truncated |= want < total;
+            let want = if i < limits::MAX_BACKLINK_NOTES {
+                total.min(limits::MAX_BACKLINK_LINES + 1).min(lines_left)
+            } else {
+                0
+            };
             let links = if want == 0 {
                 Vec::new()
             } else {
@@ -838,7 +872,8 @@ fn backlinks_reply(open: &OpenVault, path: &VaultPath) -> IndexReply<Backlinks> 
                 lines.truncate(want);
                 lines
             };
-            budget -= links.len();
+            // В ответе у заметки останется не больше предела строк.
+            lines_left -= links.len().min(limits::MAX_BACKLINK_LINES);
             BacklinkNote {
                 from: source.from,
                 name,
@@ -847,11 +882,7 @@ fn backlinks_reply(open: &OpenVault, path: &VaultPath) -> IndexReply<Backlinks> 
             }
         })
         .collect();
-    IndexReply::Ready(Backlinks {
-        notes_total,
-        truncated,
-        notes,
-    })
+    IndexReply::Ready(Backlinks::capped(notes))
 }
 
 /// Ответ `tags_list`.

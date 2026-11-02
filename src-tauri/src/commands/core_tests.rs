@@ -159,18 +159,23 @@ fn open_vault(
     trash: crate::vault::TrashBackend,
 ) -> Arc<OpenVault> {
     let core = app.state::<Core>();
-    core.open_vault_with(
-        label,
-        VaultSummary {
-            id: VaultId(id.into()),
-            name: id.into(),
-            path: root.display().to_string(),
-        },
-        root,
-        Arc::new(WindowEmitter::new(app.handle().clone(), label)),
-        Some(trash),
-    )
-    .expect("хранилище открыто")
+    let open = core
+        .open_vault_with(
+            label,
+            VaultSummary {
+                id: VaultId(id.into()),
+                name: id.into(),
+                path: root.display().to_string(),
+            },
+            root,
+            Arc::new(WindowEmitter::new(app.handle().clone(), label)),
+            Some(trash),
+        )
+        .expect("хранилище открыто");
+    // Индекс готов и его события отправлены: слушатели `record_events`,
+    // зарегистрированные после, не теряются (`WindowIndex::wait_settled`).
+    open.index.wait_settled();
+    open
 }
 
 /// События окна, полученные слушателем на стороне Rust.
@@ -1740,6 +1745,71 @@ fn note_write_updates_backlinks() {
         wait_for(&seen, |events| !events.is_empty()),
         "index:changed"
     );
+}
+
+/// Пределы ответа на настоящем ядре: 1 000 заметок, 100 строк на заметку,
+/// 5 000 строк всего, признак `truncated`.
+#[test]
+fn backlinks_list_limits_real_core() {
+    let app = app();
+    let w = window(&app, "limits");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    put(&root, "Узел.md", b"");
+    let many = "[[Узел]]\n".repeat(120);
+    for i in 0..1_001 {
+        // Первые 60 заметок по порядку имён — по 120 ссылок (7 200 строк).
+        let text = if i < 60 {
+            many.as_str()
+        } else {
+            "[[Узел]]"
+        };
+        put(&root, &format!("Ссылки/з{i:04}.md"), text.as_bytes());
+    }
+    open_vault(
+        &app,
+        "limits",
+        "limits",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    wait_index_ready(&w);
+    let got = backlinks(&w, &["Узел.md"]);
+    assert_eq!(got.notes_total, 1_001);
+    assert!(got.truncated);
+    assert_eq!(got.notes.len(), limits::MAX_BACKLINK_NOTES);
+    assert_eq!(got.notes[0].name, "з0000");
+    assert_eq!(got.notes[0].links_total, 120);
+    assert_eq!(got.notes[0].links.len(), limits::MAX_BACKLINK_LINES);
+    let shown: usize = got.notes.iter().map(|n| n.links.len()).sum();
+    assert_eq!(shown, limits::MAX_BACKLINK_LINES_TOTAL);
+    // 50 заметок по 100 строк исчерпали общий предел: дальше — имена без строк.
+    assert!(got.notes[50..].iter().all(|n| n.links.is_empty()));
+    assert!(got.notes.iter().all(|n| n.links_total >= 1));
+
+    // Ответ без превышения пределов — без признака.
+    let small = backlinks(&w, &["Ссылки", "з0000.md"]);
+    assert!(!small.truncated);
+}
+
+/// Заметку изменили снаружи — настоящий наблюдатель, `index:changed` не
+/// позже 2 с (С2-3.2), обратная ссылка видна.
+#[test]
+fn external_change_gives_index_changed_within_2s() {
+    let app = app();
+    let (w, _dir, root) =
+        indexed_vault(&app, "external", &[("Узел.md", ""), ("А.md", "без ссылок")]);
+    let seen = record_events(&w, &[event::INDEX_CHANGED]);
+    let start = std::time::Instant::now();
+    std::fs::write(root.join("А.md"), "снаружи [[Узел]]").expect("запись снаружи");
+    assert!(
+        wait_for(&seen, |events| !events.is_empty()),
+        "index:changed не пришло"
+    );
+    let took = start.elapsed();
+    eprintln!("внешнее изменение → index:changed: {took:?}");
+    assert!(took <= Duration::from_secs(2), "{took:?}");
+    assert_eq!(backlinks(&w, &["Узел.md"]).notes_total, 1);
 }
 
 // ---- Замеры на хранилище генератора (справочно) ------------------------------

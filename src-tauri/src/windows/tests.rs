@@ -79,8 +79,26 @@ fn vault(app: &App<MockRuntime>, parent: &Path, name: &str) -> VaultId {
         .id
 }
 
+/// Открывает хранилище в окне и ждёт, пока индекс готов и его события
+/// отправлены: слушатели окна, зарегистрированные после, не теряются
+/// (`WindowIndex::wait_settled`).
 fn open(window: &WebviewWindow<MockRuntime>, id: &VaultId) -> Value {
-    call(window, "vault_open", json!({ "request": { "id": id.0 } })).expect("vault_open")
+    let outcome =
+        call(window, "vault_open", json!({ "request": { "id": id.0 } })).expect("vault_open");
+    settle_index(window.app_handle(), id);
+    outcome
+}
+
+/// Ждёт готовности индекса хранилища `id` (в каком бы окне оно ни
+/// открылось) и отправки его событий.
+fn settle_index(app: &tauri::AppHandle<MockRuntime>, id: &VaultId) {
+    let core = app.state::<Core>();
+    if let Some(open) = core
+        .window_of_vault(id)
+        .and_then(|label| core.window_vault(&label))
+    {
+        open.index.wait_settled();
+    }
 }
 
 fn window_count(app: &App<MockRuntime>) -> usize {

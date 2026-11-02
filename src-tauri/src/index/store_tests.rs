@@ -213,6 +213,27 @@ fn tampered_entries_rebuild() {
         RebuildReason::Broken,
         "признак встраивания — 0 или 1"
     );
+    // Теги — только такие, какие дал бы разбор (ревью безопасности 0.2-1.4).
+    assert_eq!(
+        tamper(&|n| n["t"][0][0] = json!("т".repeat(201))),
+        RebuildReason::Broken,
+        "тег длиннее 200 кодовых точек"
+    );
+    assert_eq!(
+        tamper(&|n| n["t"][0][0] = json!("два слова")),
+        RebuildReason::Broken,
+        "пробел в теге"
+    );
+    assert_eq!(
+        tamper(&|n| n["t"][0][0] = json!("2026")),
+        RebuildReason::Broken
+    );
+    assert_eq!(tamper(&|n| n["t"][0][0] = json!("")), RebuildReason::Broken);
+    // 200 кодовых точек — допустимый тег: файл загружается.
+    let mut file = good.clone();
+    file["notes"][0]["t"][0][0] = json!("т".repeat(200));
+    std::fs::write(t.index_file(), serde_json::to_vec(&file).expect("JSON")).expect("запись");
+    assert!(matches!(load(&t.vault), Load::Loaded(_)));
 }
 
 #[test]
