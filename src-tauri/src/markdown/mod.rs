@@ -15,8 +15,23 @@
 //! результат разбора, [`crate::relink`] находит по нему ссылки заново перед
 //! переписыванием.
 //!
-//! Задача 0.2-0.1 — только типы и сигнатуры (заглушка [`parse`] возвращает
-//! пустой результат); разбор — задача 0.2-1.1.
+//! Как устроен проход (задача 0.2-1.1): блок свойств в начале
+//! ([`frontmatter`]), затем строки текста по порядку: каждая строка
+//! относится к блоку кода (с оградой или с отступом) или к абзацу
+//! ([`code::Blocks`]); строка абзаца может быть заголовком ATX
+//! ([`headings`]). Когда абзац закончился, в нём ищутся код в строке
+//! ([`code::code_spans`]), вики-ссылки ([`wikilinks`]) и теги вне кода, ссылок
+//! и адресов ссылок Markdown ([`tags`]). Каждый поиск — линейный по длине
+//! абзаца, без возвратов: время разбора растёт с размером текста линейно.
+//! Классы символов Unicode для тегов (Р17 п.3–4) — свои таблицы
+//! ([`unicode_tables`]), общие с редактором.
+
+mod code;
+mod frontmatter;
+mod headings;
+mod tags;
+mod unicode_tables;
+mod wikilinks;
 
 use std::ops::Range;
 
@@ -96,11 +111,172 @@ pub struct WikiLink {
 
 /// Разбирает текст заметки. Не паникует ни на каком входе; текст больше
 /// [`FRONTMATTER_MAX_NOTE_BYTES`] — без блока свойств.
-///
-/// Заглушка 0.2-0.1: пустой результат (разбор — задача 0.2-1.1).
 pub fn parse(text: &str) -> ParsedNote {
-    let _ = text;
-    ParsedNote::default()
+    scan(text).into_parsed()
+}
+
+#[cfg(test)]
+mod tests;
+
+/// Тег с положением в тексте. Положения (`span` здесь и ниже) сверяются с
+/// образцами и нужны переписыванию ссылок (`relink::rewrite`, задача 0.2-4.4);
+/// индексу ([`parse`]) — нет.
+#[derive(Debug, Clone)]
+pub(crate) struct SpannedTag {
+    pub tag: Tag,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub span: Range<usize>,
+}
+
+/// Заголовок с положением текста заголовка.
+#[derive(Debug, Clone)]
+pub(crate) struct SpannedHeading {
+    pub heading: Heading,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub span: Range<usize>,
+}
+
+/// Ссылка с положениями заголовка и псевдонима.
+#[derive(Debug, Clone)]
+pub(crate) struct SpannedLink {
+    pub link: WikiLink,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub heading_span: Option<Range<usize>>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub alias_span: Option<Range<usize>>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Scanned {
+    pub frontmatter: Option<Range<usize>>,
+    pub headings: Vec<SpannedHeading>,
+    pub tags: Vec<SpannedTag>,
+    pub links: Vec<SpannedLink>,
+}
+
+impl Scanned {
+    fn into_parsed(self) -> ParsedNote {
+        ParsedNote {
+            headings: self.headings.into_iter().map(|h| h.heading).collect(),
+            tags: self.tags.into_iter().map(|t| t.tag).collect(),
+            links: self.links.into_iter().map(|l| l.link).collect(),
+        }
+    }
+}
+
+/// Разбор с положениями (заголовков, тегов, частей ссылок) — для образцов и
+/// для [`parse`].
+pub(crate) fn scan(text: &str) -> Scanned {
+    let mut out = Scanned::default();
+    let mut body = Some((0, 1));
+    if text.len() <= FRONTMATTER_MAX_NOTE_BYTES
+        && let Some(block) = frontmatter::parse(text, &mut out.tags)
+    {
+        out.frontmatter = Some(block.span);
+        body = block.body;
+    }
+    let Some((from, number)) = body else {
+        return out;
+    };
+    let mut blocks = code::Blocks::default();
+    let mut paragraph: Vec<Line> = Vec::new();
+    for line in Lines::new(text, from, number) {
+        match blocks.classify(&text[line.range()]) {
+            code::Kind::Text => {
+                if let Some((level, span)) = headings::parse_line(text, line.range()) {
+                    let heading = Heading {
+                        level,
+                        text: text[span.clone()].to_owned(),
+                        line: line.number,
+                    };
+                    out.headings.push(SpannedHeading { heading, span });
+                }
+                paragraph.push(line);
+            }
+            code::Kind::Blank | code::Kind::Code => {
+                inline(text, &paragraph, &mut out);
+                paragraph.clear();
+            }
+        }
+    }
+    inline(text, &paragraph, &mut out);
+    out
+}
+
+/// Строки абзаца: код в строке, вики-ссылки, теги.
+fn inline(text: &str, paragraph: &[Line], out: &mut Scanned) {
+    let (Some(first), Some(last)) = (paragraph.first(), paragraph.last()) else {
+        return;
+    };
+    let range = first.start..last.end;
+    let code = code::code_spans(text, range.clone());
+    let first_link = out.links.len();
+    wikilinks::find(text, range, &code, paragraph, &mut out.links);
+    let links: Vec<Range<usize>> = out.links[first_link..]
+        .iter()
+        .map(|l| l.link.span.clone())
+        .collect();
+    tags::find_in_paragraph(text, paragraph, &code, &links, &mut out.tags);
+}
+
+/// Строка текста: `start..end` без перевода строки, номер с 1.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Line {
+    pub start: usize,
+    pub end: usize,
+    pub number: u32,
+}
+
+impl Line {
+    pub fn range(&self) -> Range<usize> {
+        self.start..self.end
+    }
+}
+
+/// Строки с позиции `from`: переводы строки `\r\n`, `\r` и `\n` (как
+/// `splitLines` в `src/core/wikilinks` и CodeMirror). После последнего
+/// перевода строки — ещё одна (возможно, пустая) строка.
+pub(crate) struct Lines<'a> {
+    bytes: &'a [u8],
+    next: Option<usize>,
+    number: u32,
+}
+
+impl<'a> Lines<'a> {
+    pub fn new(text: &'a str, from: usize, number: u32) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            next: Some(from),
+            number,
+        }
+    }
+}
+
+impl Iterator for Lines<'_> {
+    type Item = Line;
+
+    fn next(&mut self) -> Option<Line> {
+        let start = self.next?;
+        let rest = self.bytes.get(start..)?;
+        let number = self.number;
+        self.number = self.number.saturating_add(1);
+        match rest.iter().position(|&b| b == b'\n' || b == b'\r') {
+            Some(at) => {
+                let end = start + at;
+                let crlf = self.bytes[end] == b'\r' && self.bytes.get(end + 1) == Some(&b'\n');
+                self.next = Some(end + if crlf { 2 } else { 1 });
+                Some(Line { start, end, number })
+            }
+            None => {
+                self.next = None;
+                Some(Line {
+                    start,
+                    end: self.bytes.len(),
+                    number,
+                })
+            }
+        }
+    }
 }
 
 /// Ключ тега: как ключ имени заметки (NFC → приведение регистра → NFC,
@@ -110,7 +286,7 @@ pub fn tag_key(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod key_tests {
     use super::*;
 
     #[test]
