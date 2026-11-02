@@ -397,7 +397,21 @@ fn bind_vault<R: Runtime>(app: &AppHandle<R>, label: &str, vault: VaultSummary) 
     let core = app.state::<Core>();
     let emit = Arc::new(WindowEmitter::new(app.clone(), label.to_owned()));
     let root = PathBuf::from(&vault.path);
-    core.open_vault(label, vault.clone(), &root, emit)?;
+    let open = core.open_vault(label, vault.clone(), &root, emit)?;
+    // Индекс пишется и при закрытии окна — после записи заметок, если
+    // успевает (задачи 0.2-1.3, 0.2-1.4). Окно держит хранилище, запись —
+    // нет: закрытое хранилище записи не ждёт.
+    if let Some(closing) = app.try_state::<closing::Closing>() {
+        let open = Arc::downgrade(&open);
+        closing.set_index_writer(
+            label,
+            Arc::new(move || {
+                if let Some(open) = open.upgrade() {
+                    open.write_index_now();
+                }
+            }),
+        );
+    }
     // «Последнее открытое» не важно для открытия: ошибка списка хранилищ не
     // отменяет уже открытое хранилище.
     let _ = core.registry().mark_opened(&vault.id);

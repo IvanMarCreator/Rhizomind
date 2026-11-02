@@ -135,6 +135,8 @@ pub struct OpenVault {
     /// (чтение — команда, запись — наблюдатель): порядок «команда ↔
     /// наблюдатель» один и тот же.
     shown: Mutex<Option<VaultPath>>,
+    /// Индекс хранилища: обратные ссылки и теги (задача 0.2-1.4).
+    pub index: WindowIndex,
 }
 
 impl OpenVault {
@@ -146,6 +148,7 @@ impl OpenVault {
             vault,
             notes: RwLock::new(notes),
             shown: Mutex::new(None),
+            index: WindowIndex::new(),
         })
     }
 
@@ -163,12 +166,26 @@ impl OpenVault {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Учитывает в списке заметок изменения своей команды окна сразу, не
-    /// дожидаясь наблюдателя (повтор тем же событием наблюдателя безвреден).
+    /// Учитывает изменения своей команды окна сразу, не дожидаясь
+    /// наблюдателя (повтор тем же событием наблюдателя безвреден): список
+    /// заметок и индекс (задача 0.2-1.4; `Modified` — своя запись заметки).
+    /// Заметки для индекса читаются после замка списка заметок.
     pub fn apply_own(&self, changes: &[TreeChange]) {
         let vault = &self.vault;
-        self.write_notes()
-            .apply(changes, &|path| vault.note_created_ms(path));
+        let mut update = IndexUpdate::default();
+        self.write_notes().apply_observed(
+            changes,
+            &|path| vault.note_created_ms(path),
+            &mut |list, change| update.before(list, change),
+        );
+        self.index.update(vault, update);
+    }
+
+    /// Пишет `index.json` сразу — при закрытии окна после записи заметок
+    /// (`windows::closing`, решение 67). Индекс строится или не менялся —
+    /// не пишет; ошибка записи — молча.
+    pub fn write_index_now(&self) {
+        self.index.write_now(&self.vault);
     }
 }
 
@@ -177,6 +194,13 @@ impl OpenVault {
 struct WindowVault {
     open: Arc<OpenVault>,
     _watcher: Option<VaultWatcher>,
+}
+
+impl Drop for WindowVault {
+    /// Окно отвязано от хранилища: потоки индекса выходят.
+    fn drop(&mut self) {
+        self.open.index.stop();
+    }
 }
 
 /// Состояние ядра для команд (`Builder::manage`): список хранилищ и
@@ -384,12 +408,13 @@ impl Core {
             vault,
             notes: RwLock::default(),
             shown: Mutex::default(),
+            index: WindowIndex::new(),
         });
         let mut index = open.write_notes();
         let watcher = match VaultWatcher::start_with(
             open.vault.root(),
             own_writes,
-            VaultEvents::new(Arc::clone(&open), emit).into_sink(),
+            VaultEvents::new(Arc::clone(&open), Arc::clone(&emit)).into_sink(),
         ) {
             Ok(watcher) => watcher,
             Err(error) => {
@@ -404,6 +429,8 @@ impl Core {
         // может ждать этот замок.
         drop(index);
         indexed?;
+        // Индекс — в фоне: дерево файлов не ждёт его (С2-3.7).
+        start_index(&open, emit);
         Ok(WindowVault {
             open,
             _watcher: Some(watcher),

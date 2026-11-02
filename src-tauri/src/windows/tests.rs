@@ -1178,3 +1178,59 @@ fn index_not_written_without_answer() {
     });
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+/// Запись индекса при закрытии упала (паника в потоке записи) — окно всё
+/// равно закрывается, без ожидания предела.
+#[test]
+fn index_write_failure_still_closes_window() {
+    let (app, temp) = app_with(Closing::new(Duration::from_secs(60)));
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    app.state::<Closing>().set_index_writer(
+        first.label(),
+        Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            panic!("запись индекса упала");
+        }),
+    );
+    assert!(on_close_requested(&first.as_ref().window()));
+    let started = Instant::now();
+    call(&first, "window_close_ready", json!({})).expect("window_close_ready");
+    wait_for("уничтожение окна", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "не ждали предела"
+    );
+}
+
+/// Окно, открывшее хранилище, регистрирует запись индекса: при закрытии
+/// `.rhizomind/index.json` пишется настоящим индексом окна.
+#[test]
+fn vault_open_registers_index_writer() {
+    let (app, temp) = app();
+    let a = vault(&app, temp.path(), "А");
+    let first = window(&app);
+    open(&first, &a);
+    let open_vault = app
+        .state::<Core>()
+        .window_vault(first.label())
+        .expect("хранилище окна");
+    wait_for("индекс готов", || {
+        open_vault.index.status().state == crate::commands::IndexState::Ready
+    });
+    drop(open_vault);
+    let index_file = temp.path().join("А").join(".rhizomind").join("index.json");
+    assert!(!index_file.exists(), "до закрытия — не раньше срока");
+    assert!(on_close_requested(&first.as_ref().window()));
+    call(&first, "window_close_ready", json!({})).expect("window_close_ready");
+    wait_for("уничтожение окна", || {
+        phase(&app, &first) == Some(Phase::Destroying)
+    });
+    assert!(index_file.is_file(), "индекс окна записан при закрытии");
+}
