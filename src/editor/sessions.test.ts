@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoreError, FileVersion, NoteReadResponse, NoteWriteRequest, NoteWriteResponse, VaultPath } from '../api/index.ts';
 import { CoreCallError } from '../api/index.ts';
 import type { NoteStore, SaveStatus } from './session.ts';
-import { CLOSE_FLUSH_DEADLINE_MS, EditorSessions, MISSING_GRACE_MS, SaveTooSlow, type EditorPane } from './sessions.ts';
+import {
+  CLOSE_FLUSH_DEADLINE_MS,
+  EditorSessions,
+  LINKS_FLUSH_DEADLINE_MS,
+  MISSING_GRACE_MS,
+  SaveTooSlow,
+  type EditorPane,
+} from './sessions.ts';
 
 const A = ['А.md'];
 const B = ['Папка', 'Б.md'];
@@ -790,5 +797,136 @@ describe('внешнее изменение (задача 2.9, С3.6)', () => {
     expect(await unsaved).toEqual([]);
     expect(store.files.get(key(A))).toBe('моё');
     expect(store.files.get('А (внешняя версия).md')).toBe('снаружи');
+  });
+});
+
+describe('обновление ссылок (0.2-5.1, С2-3.5, Р7): flushForLinks', () => {
+  type Open = Extract<EditorPane, { kind: 'open' }>;
+  const COPY = 'А (внешняя версия).md';
+
+  /** Ядро переписало ссылку в файле (свежий текст с диска) — следующее поколение файла. */
+  function coreRewrite(store: FakeStore, path: VaultPath): FileVersion {
+    const name = key(path);
+    store.files.set(name, (store.files.get(name) ?? '').replaceAll('[[Встреча]]', '[[Планёрка]]'));
+    const generation = (store.generations.get(name) ?? 1) + 1;
+    store.generations.set(name, generation);
+    return versionOf(generation);
+  }
+
+  async function opened() {
+    const store = new FakeStore();
+    store.files.set(key(A), 'см. [[Встреча]]');
+    const context = setup(store);
+    context.sessions.show(A);
+    await vi.advanceTimersByTimeAsync(0);
+    return { ...context, session: (context.pane() as Open).session };
+  }
+
+  it('записывает ввод всех заметок окна и не закрывает их: та же сессия, текст в редакторе', async () => {
+    const { sessions, store, pane, session } = await opened();
+    session.edit('см. [[Встреча]] — А');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+    sessions.show(B);
+    await vi.advanceTimersByTimeAsync(0);
+    store.failWrites = null;
+    const b = (pane() as Open).session;
+    b.edit('Б, ввод');
+
+    expect(await sessions.flushForLinks()).toEqual([]);
+
+    expect(store.files.get(key(A))).toBe('см. [[Встреча]] — А');
+    expect(store.files.get(key(B))).toBe('Б, ввод');
+    expect((pane() as Open).session).toBe(b);
+    expect(b.text).toBe('Б, ввод');
+  });
+
+  it('запись не удалась — заметка в ответе, ввод остаётся в памяти', async () => {
+    const { sessions, store, session } = await opened();
+    session.edit('мой ввод');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+
+    const unsaved = await sessions.flushForLinks();
+
+    expect(unsaved.map((note) => note.path)).toEqual([A]);
+    expect(session.text).toBe('мой ввод');
+  });
+
+  it('ввод во время переписывания — обе версии (С3.6): ввод до flush', async () => {
+    const { sessions, store, session } = await opened();
+    session.edit('см. [[Встреча]] и мой ввод');
+
+    expect(await sessions.flushForLinks()).toEqual([]);
+    sessions.changed(A, coreRewrite(store, A));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Ядро переписало свежий текст с вводом: ввод в файле, ссылка новая.
+    expect(store.files.get(key(A))).toBe('см. [[Планёрка]] и мой ввод');
+    expect(session.text).toBe('см. [[Планёрка]] и мой ввод');
+    expect(store.files.has(COPY)).toBe(false);
+  });
+
+  it('ввод во время переписывания — обе версии (С3.6): ввод между flush и записью ядра', async () => {
+    const { sessions, store, session, notices } = await opened();
+    session.edit('см. [[Встреча]] и мой ввод');
+    expect(await sessions.flushForLinks()).toEqual([]);
+
+    session.edit('см. [[Встреча]] и мой ввод, и ещё');
+    const rewritten = coreRewrite(store, A);
+    sessions.changed(A, rewritten);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Ввод — в заметке, версия ядра — копией рядом: ничего не потеряно.
+    expect(store.files.get(key(A))).toBe('см. [[Встреча]] и мой ввод, и ещё');
+    expect(store.files.get(COPY)).toBe('см. [[Планёрка]] и мой ввод');
+    expect(session.text).toBe('см. [[Встреча]] и мой ввод, и ещё');
+    expect(notices.some((text) => text.includes('Сохранены обе версии'))).toBe(true);
+  });
+
+  it('ввод во время переписывания — обе версии (С3.6): ввод между flush и записью ядра, автосохранение успело раньше ядра', async () => {
+    const { sessions, store, session } = await opened();
+    expect(await sessions.flushForLinks()).toEqual([]);
+
+    session.edit('см. [[Встреча]] и мой ввод');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(store.files.get(key(A))).toBe('см. [[Встреча]] и мой ввод');
+    // Ядро читает свежий текст перед записью (С2-5.4, шаг 4) — ввод в нём.
+    sessions.changed(A, coreRewrite(store, A));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.files.get(key(A))).toBe('см. [[Планёрка]] и мой ввод');
+    expect(session.text).toBe('см. [[Планёрка]] и мой ввод');
+  });
+
+  it('ввод во время переписывания — обе версии (С3.6): ввод после note:changed', async () => {
+    const { sessions, store, session } = await opened();
+    expect(await sessions.flushForLinks()).toEqual([]);
+    sessions.changed(A, coreRewrite(store, A));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(session.text).toBe('см. [[Планёрка]]');
+
+    session.edit('см. [[Планёрка]] и мой ввод');
+    await sessions.flushAll();
+
+    expect(store.files.get(key(A))).toBe('см. [[Планёрка]] и мой ввод');
+    expect(store.files.has(COPY)).toBe(false);
+  });
+
+  it('ввод во время переписывания — обе версии (С3.6): заметка, с которой ушли, ввод не записался до flush', async () => {
+    const { sessions, store, session } = await opened();
+    session.edit('см. [[Встреча]] и мой ввод');
+    store.failWrites = { code: 'io_failed', message_key: 'errors.io_failed' };
+    sessions.show(B);
+    await vi.advanceTimersByTimeAsync(0);
+    store.failWrites = null;
+
+    expect(await sessions.flushForLinks()).toEqual([]);
+    sessions.changed(A, coreRewrite(store, A));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(store.files.get(key(A))).toBe('см. [[Планёрка]] и мой ввод');
+  });
+
+  it('крайний срок — тот же, что при закрытии окна: с запасом до предела ядра (10 с)', () => {
+    expect(LINKS_FLUSH_DEADLINE_MS).toBe(CLOSE_FLUSH_DEADLINE_MS);
   });
 });

@@ -40,6 +40,8 @@
   import StartupError from './StartupError.svelte';
   import { ExternalChanges } from '../sync/external.ts';
   import { WindowClosing, coreClosing } from './closing.ts';
+  import { LinksFlush, coreFlushDone } from '../relink/flush.ts';
+  import { RelinkNotices } from '../relink/notices.ts';
   import { ShownNote } from './shownNote.ts';
   import { textMenuItems, textTargetOf, type TextTarget } from './textMenu.ts';
   import { WindowModel } from './window.svelte.ts';
@@ -150,6 +152,24 @@
     notify: (text) => model.notify(text),
   });
 
+  /**
+   * Обновление ссылок (0.2-5.1, С2-5.4): перед переписыванием — ввод всех
+   * заметок записывается, заметки остаются открытыми; итог — уведомление
+   * только по `links:updated` (правило контракта).
+   */
+  const linksFlush = new LinksFlush({
+    flush: () => editor?.flushForLinks() ?? Promise.resolve([]),
+    done: coreFlushDone,
+    notify: (text) => model.notify(text),
+  });
+  const relinkNotices = new RelinkNotices({
+    retry: (token) => core.relinkAnswer({ token, apply: true }),
+    notify: (text) => model.notify(text),
+    get limitBytes() {
+      return model.settings.max_edit_size_bytes;
+    },
+  });
+
   /** Окно быстрого перехода (задача 2.7) открыто. */
   let switcherOpen = $state(false);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
@@ -247,6 +267,11 @@
   onMount(() => {
     // Подписка — первой: окно могут закрыть, пока оно загружается.
     const unsubscribe = onCoreEvent('window:close-requested', (payload) => void closing.closeRequested(payload));
+    const relinkEvents = [
+      onCoreEvent('links:flush-requested', (payload) => void linksFlush.requested(payload)),
+      onCoreEvent('links:updated', (payload) => relinkNotices.updated(payload)),
+      onCoreEvent('links:progress', (payload) => relinkNotices.progress(payload)),
+    ];
     const stopExternal = external.start();
     void model.start();
     // Не <svelte:window>: Svelte передаёт тогда объект window значением, и
@@ -261,6 +286,7 @@
       window.removeEventListener('keydown', onKeydownCapture, true);
       window.removeEventListener('keydown', onKeydownBubble);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
+      for (const stop of relinkEvents) void stop.then((off) => off()).catch(() => undefined);
       stopExternal();
     };
   });
@@ -424,7 +450,12 @@
   <ContextMenu x={textMenu.x} y={textMenu.y} items={textMenu.items} label={t('textMenu.label')} onClose={closeTextMenu} />
 {/if}
 
-<Notifications notices={model.notices} onDismiss={(id) => model.dismiss(id)} />
+<Notifications
+  notices={model.notices}
+  onDismiss={(id) => model.dismiss(id)}
+  relink={relinkNotices}
+  onOpenNote={(path) => model.open(path)}
+/>
 
 <style>
   .shell {

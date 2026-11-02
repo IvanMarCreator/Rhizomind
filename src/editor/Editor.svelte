@@ -122,6 +122,11 @@
     return sessions.flushForClose();
   }
 
+  /** Перед переписыванием ссылок (0.2-5.1): то же, что при закрытии, заметки остаются открытыми. */
+  export function flushForLinks(): Promise<UnsavedNote[]> {
+    return sessions.flushForLinks();
+  }
+
   /**
    * Вид «Обратные ссылки» (0.2-2.2): открыть заметку и поставить курсор на
    * ссылку (`at`) или в начало (`null`), фокус в текст — как переход по
