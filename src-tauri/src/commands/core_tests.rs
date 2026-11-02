@@ -1276,6 +1276,11 @@ fn settings_new_note_folder_must_be_a_vault_path() {
 
 /// Ждёт готовности индекса окна (`index_status`).
 fn wait_index_ready(w: &WebviewWindow<MockRuntime>) {
+    wait_index_ready_within(w, WAIT);
+}
+
+/// [`wait_index_ready`] с пределом `limit` (большое хранилище).
+fn wait_index_ready_within(w: &WebviewWindow<MockRuntime>, limit: Duration) {
     let start = std::time::Instant::now();
     loop {
         let status: IndexStatus = typed(
@@ -1285,7 +1290,7 @@ fn wait_index_ready(w: &WebviewWindow<MockRuntime>) {
         if status.state == IndexState::Ready {
             return;
         }
-        assert!(start.elapsed() < WAIT, "индекс не готов: {status:?}");
+        assert!(start.elapsed() < limit, "индекс не готов: {status:?}");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -1758,7 +1763,10 @@ fn index_queries_on_generated_10k() {
         &root,
         trash_into(dir.path().join("bin"), true),
     );
-    wait_index_ready(&w);
+    // Сборка 10 000 заметок рядом с другими замерами на машине CI (Windows,
+    // антивирус) — дольше обычного предела ожидания; время сборки здесь не
+    // проверяется (это `index::tests::index_build_10k`).
+    wait_index_ready_within(&w, Duration::from_secs(120));
     let hub = manifest.hub.as_ref().expect("узел");
     let hub_path: Vec<&str> = hub.path.split('/').collect();
 
