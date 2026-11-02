@@ -39,9 +39,13 @@ describe('обратные ссылки', () => {
     const b = session.browser;
     await b.$('button.panel-toggle').click();
     await b.$('[role="tab"][aria-label="Обратные ссылки"]').click();
-    const name = b.$('.backlinks .groups .note .name');
-    await name.waitForDisplayed({ timeout: 15_000 });
-    expect(await name.getText()).toBe('Дневник');
+    // Текст — через textContent (как в других сценариях): getText в WebKitWebDriver
+    // отдаёт пустую строку для элементов внутри кнопки.
+    const nameText = () => b.execute(() => document.querySelector('.backlinks .groups .note .name')?.textContent ?? '');
+    await b.waitUntil(async () => (await nameText()) === 'Дневник', {
+      timeout: 15_000,
+      timeoutMsg: 'нет ссылающейся заметки в панели',
+    });
     const line = await b.execute(() => {
       const button = document.querySelector('.backlinks .lines .line');
       return {
