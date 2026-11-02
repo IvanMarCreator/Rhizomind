@@ -1,6 +1,8 @@
 <!--
   Строка над заметкой (К2, решение 2Б): назад/вперёд в общей рамке, путь и имя,
-  переключатель режима «книга/карандаш» (решение 72, состояния — Э13). Логика
+  переключатель режима «книга/карандаш» (решение 72, состояния — Э13), последней —
+  кнопка правой боковой панели (С2-3.1, макет П-А: нажата, пока панель открыта;
+  без заметки строка остаётся с назад/вперёд и этой кнопкой). Логика
   режимов — в редакторе (src/editor/live-preview, задача 2.5); здесь только
   выбор кнопки. Переключатель — одна остановка Tab, ← и → выбирают режим;
   подсказка с сочетанием — через ~0,5 с наведения или сразу при фокусе с
@@ -25,6 +27,8 @@
     forwardShortcut = null,
     onBack,
     onForward,
+    panelOpen = false,
+    onTogglePanel,
     status,
   }: {
     path: VaultPath | null;
@@ -41,6 +45,10 @@
     forwardShortcut?: string | null;
     onBack: () => void;
     onForward: () => void;
+    /** Правая боковая панель открыта: кнопка нажата. */
+    panelOpen?: boolean;
+    /** Кнопка правой панели; без обработчика кнопки нет. */
+    onTogglePanel?: () => void;
     /** Индикатор сохранения (редактор, src/editor/SaveIndicator.svelte). */
     status?: Snippet;
   } = $props();
@@ -173,6 +181,20 @@
       {/if}
     </div>
   {/if}
+
+  {#if onTogglePanel}
+    <button
+      type="button"
+      class="panel-toggle"
+      class:pressed={panelOpen}
+      aria-pressed={panelOpen}
+      aria-label={t('note.header.rightPanel')}
+      title={t('note.header.rightPanel')}
+      onclick={onTogglePanel}
+    >
+      <Icon name="panel-right" size={15} />
+    </button>
+  {/if}
 </header>
 
 <style>
@@ -281,6 +303,38 @@
   }
 
   .segment:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  /* Кнопка правой панели (П-А, 66-298): 26 × 26, скругление 6, нажатая — `bg/active`.
+     Последней в строке: вплотную к переключателю режима (4 px), без заметки — справа. */
+  .panel-toggle {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: var(--note-header-button);
+    height: var(--note-header-button);
+    margin-left: auto;
+    border-radius: 6px;
+    color: var(--icon-default);
+  }
+
+  .mode + .panel-toggle {
+    margin-left: -12px;
+  }
+
+  .panel-toggle:hover:not(.pressed) {
+    background: var(--bg-hover);
+    cursor: pointer;
+  }
+
+  .panel-toggle.pressed {
+    background: var(--bg-active);
+    color: var(--text-primary);
+  }
+
+  .panel-toggle:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
   }

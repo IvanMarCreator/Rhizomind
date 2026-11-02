@@ -36,10 +36,28 @@ export interface Split {
 
 export type LayoutNode = Pane | Split;
 
+/** Вид правой боковой панели (С2-3.1, решение 108); в 0.4 виды станут обычными панелями. */
+export type RightPanelView = 'backlinks' | 'tags';
+/** Порядок списка тегов: по имени или по числу заметок (С2-3.3). */
+export type TagOrder = 'name' | 'count';
+
+/** Правая боковая панель: открыта ли, какой вид выбран, ширина в px, порядок тегов. */
+export interface RightPanel {
+  open: boolean;
+  view: RightPanelView;
+  width: number;
+  tagOrder: TagOrder;
+}
+
+/** Пределы ширины правой панели (tokens.md, «0.2»: 300 по умолчанию). */
+export const RIGHT_PANEL_WIDTH = { min: 220, max: 560, initial: 300 } as const;
+
 export interface Layout {
   version: typeof LAYOUT_VERSION;
   root: LayoutNode;
   activePane: string;
+  /** Поле 0.2; в файле — `side_panel`. В раскладке 0.1 его нет — тогда по умолчанию. */
+  rightPanel: RightPanel;
 }
 
 /** Результат чтения: `recovered` — сохранённая раскладка испорчена и заменена. */
@@ -59,8 +77,28 @@ export class LayoutTooLarge extends Error {
   }
 }
 
+export function defaultRightPanel(): RightPanel {
+  return { open: false, view: 'backlinks', width: RIGHT_PANEL_WIDTH.initial, tagOrder: 'name' };
+}
+
 export function defaultLayout(): Layout {
-  return { version: LAYOUT_VERSION, root: { type: 'pane', id: 'pane-1', tabs: [], active: -1 }, activePane: 'pane-1' };
+  return {
+    version: LAYOUT_VERSION,
+    root: { type: 'pane', id: 'pane-1', tabs: [], active: -1 },
+    activePane: 'pane-1',
+    rightPanel: defaultRightPanel(),
+  };
+}
+
+/** Ширина правой панели в пределах `RIGHT_PANEL_WIDTH`, целым числом px. */
+export function clampRightPanelWidth(width: number): number {
+  if (!Number.isFinite(width)) return RIGHT_PANEL_WIDTH.initial;
+  return Math.round(Math.min(RIGHT_PANEL_WIDTH.max, Math.max(RIGHT_PANEL_WIDTH.min, width)));
+}
+
+/** Раскладка с новым состоянием правой панели (ширина приводится к пределам). */
+export function withRightPanel(layout: Layout, panel: RightPanel): Layout {
+  return { ...layout, rightPanel: { ...panel, width: clampRightPanelWidth(panel.width) } };
 }
 
 function findPane(node: LayoutNode, id: string): Pane | null {
@@ -103,6 +141,12 @@ export function serializeLayout(layout: Layout): Workspace {
     version: layout.version,
     root: layout.root,
     active_pane: layout.activePane,
+    side_panel: {
+      open: layout.rightPanel.open,
+      view: layout.rightPanel.view,
+      width: layout.rightPanel.width,
+      tag_order: layout.rightPanel.tagOrder,
+    },
   };
   const bytes = new TextEncoder().encode(JSON.stringify(workspace)).length;
   if (bytes > LIMITS.max_workspace_bytes) throw new LayoutTooLarge(bytes);
@@ -167,6 +211,25 @@ function node(value: unknown, depth: number, ids: Set<string>): LayoutNode {
 }
 
 /**
+ * Поле правой панели. Нет поля (раскладка 0.1) или оно испорчено — панель по
+ * умолчанию, без пометки о сбое: панель — удобство, заметки важнее.
+ */
+function rightPanel(value: unknown): RightPanel {
+  if (value === undefined) return defaultRightPanel();
+  try {
+    const raw = record(value);
+    if (typeof raw.open !== 'boolean') fail();
+    if (raw.view !== 'backlinks' && raw.view !== 'tags') fail();
+    if (typeof raw.width !== 'number' || !Number.isFinite(raw.width)) fail();
+    if (raw.tag_order !== 'name' && raw.tag_order !== 'count') fail();
+    return { open: raw.open, view: raw.view, width: clampRightPanelWidth(raw.width), tagOrder: raw.tag_order };
+  } catch (error) {
+    if (error instanceof Invalid) return defaultRightPanel();
+    throw error;
+  }
+}
+
+/**
  * Раскладка из `workspace_read`. `null` (раскладки ещё нет) — по умолчанию.
  * Испорченная, чужого формата или другой версии — тоже по умолчанию, с
  * пометкой `recovered`: окно должно открыться в любом случае.
@@ -179,7 +242,8 @@ export function parseLayout(saved: unknown): ParsedLayout {
     const root = node(raw.root, 0, new Set());
     const active = text(raw.active_pane);
     if (!findPane(root, active)) fail();
-    return { layout: { version: LAYOUT_VERSION, root, activePane: active }, recovered: false };
+    const layout: Layout = { version: LAYOUT_VERSION, root, activePane: active, rightPanel: rightPanel(raw.side_panel) };
+    return { layout, recovered: false };
   } catch (error) {
     if (error instanceof Invalid) return { layout: defaultLayout(), recovered: true };
     throw error;
