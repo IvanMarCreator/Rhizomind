@@ -88,7 +88,24 @@ impl Links {
     /// Заметка переезжает со своей датой создания. Переименование того,
     /// чего нет в списке, ничего не меняет.
     pub fn after_renames(&self, renames: &[PathRename]) -> NotesView<'_> {
+        self.after_replacing(&[], renames)
+    }
+
+    /// Как [`Links::after_renames`], но заметки `replaced` (пути списка
+    /// «до») затёрты переименованиями пачки — перенос с заменой: их нет в
+    /// списке «после», и переименования их не переносят.
+    pub fn after_replacing(&self, replaced: &[VaultPath], renames: &[PathRename]) -> NotesView<'_> {
+        let gone: HashSet<usize> = replaced
+            .iter()
+            .filter_map(|path| match self.view().find(path) {
+                Some(Id::Base(i)) => Some(i),
+                _ => None,
+            })
+            .collect();
         let mut targets: HashMap<usize, VaultPath> = HashMap::new();
+        for &i in &gone {
+            targets.insert(i, VaultPath::root());
+        }
         for rename in renames {
             let from = rename.from.components();
             if from.is_empty() {
@@ -109,9 +126,13 @@ impl Links {
                 }
             }
         }
-        let mut moved: Vec<(usize, VaultPath)> = targets.into_iter().collect();
+        let mut moved: Vec<(usize, VaultPath)> = targets
+            .into_iter()
+            .filter(|(i, _)| !gone.contains(i))
+            .collect();
         moved.sort_by_key(|(i, _)| *i);
         let mut view = self.view();
+        view.removed.extend(gone);
         for (i, to) in moved {
             let note = &self.entries[i].note;
             view.removed.insert(i);
@@ -122,6 +143,103 @@ impl Links {
             view.moves.push((note.path.clone(), to));
         }
         view
+    }
+}
+
+impl Links {
+    /// Есть ли в списке заметка или папка (папка — есть заметка внутри) с
+    /// ровно этим путём. Корень — нет.
+    pub fn has_path(&self, path: &VaultPath) -> bool {
+        let want = path.components();
+        !want.is_empty()
+            && (self.view().find(path).is_some()
+                || self.entries.iter().any(|entry| {
+                    let have = entry.note.path.components();
+                    have.len() > want.len() && have.starts_with(want)
+                }))
+    }
+
+    /// Занят ли путь `path` (заметка или папка) в списке — по ключам
+    /// компонентов, как в Windows (`Бета/встреча.md` занят заметкой
+    /// `Бета/Встреча.md`), не считая заметок в `freed` и внутри них (точные
+    /// пути списка: то, что уходит или затирается той же пачкой).
+    pub fn occupied(&self, path: &VaultPath, freed: &[VaultPath]) -> bool {
+        let want = path.components();
+        let folder: Vec<NameKey> = want.iter().map(|c| names::key(c)).collect();
+        let note: Option<Vec<NameKey>> = crate::switcher::link_path(path)
+            .map(|parts| parts.iter().map(|c| names::key(c)).collect());
+        self.entries.iter().any(|entry| {
+            let have = entry.note.path.components();
+            let keys = entry.note.keys();
+            let hit = (have.len() == want.len() && note.as_deref() == Some(keys))
+                || (have.len() > want.len() && keys[..want.len()] == folder[..]);
+            hit && !freed.iter().any(|f| {
+                let f = f.components();
+                have == f || (have.len() > f.len() && have.starts_with(f))
+            })
+        })
+    }
+
+    /// Заметки списка в `path` (заметка) или внутри него (папка): точно
+    /// по написанию и по ключам компонентов (второй список включает первый).
+    pub fn notes_at(&self, path: &VaultPath) -> (Vec<VaultPath>, Vec<VaultPath>) {
+        let want = path.components();
+        let (mut exact, mut keyed) = (Vec::new(), Vec::new());
+        if want.is_empty() {
+            return (exact, keyed);
+        }
+        let folder: Vec<NameKey> = want.iter().map(|c| names::key(c)).collect();
+        let note: Option<Vec<NameKey>> = crate::switcher::link_path(path)
+            .map(|parts| parts.iter().map(|c| names::key(c)).collect());
+        for entry in &self.entries {
+            let have = entry.note.path.components();
+            let keys = entry.note.keys();
+            if (have.len() == want.len() && note.as_deref() == Some(keys))
+                || (have.len() > want.len() && keys[..want.len()] == folder[..])
+            {
+                if have == want || (have.len() > want.len() && have.starts_with(want)) {
+                    exact.push(entry.note.path.clone());
+                }
+                keyed.push(entry.note.path.clone());
+            }
+        }
+        (exact, keyed)
+    }
+
+    /// Путь `path` в написании списка: точное совпадение (заметка или
+    /// папка), иначе единственная заметка или папка с теми же ключами
+    /// компонентов. Несколько написаний с одним ключом (Linux: `А.md` и
+    /// `а.md` рядом) или ничего — `None`. Пути из событий ОС могут
+    /// отличаться от списка регистром или формой Unicode (NFC/NFD), а
+    /// [`Links::after_renames`] сравнивает точно.
+    pub fn spelled(&self, path: &VaultPath) -> Option<VaultPath> {
+        if self.has_path(path) {
+            return Some(path.clone());
+        }
+        let want = path.components();
+        if want.is_empty() {
+            return None;
+        }
+        let folder: Vec<NameKey> = want.iter().map(|c| names::key(c)).collect();
+        let note: Option<Vec<NameKey>> = crate::switcher::link_path(path)
+            .map(|parts| parts.iter().map(|c| names::key(c)).collect());
+        let mut found: Option<VaultPath> = None;
+        for entry in &self.entries {
+            let have = entry.note.path.components();
+            let keys = entry.note.keys();
+            let hit = if have.len() == want.len() && note.as_deref() == Some(keys) {
+                entry.note.path.clone()
+            } else if have.len() > want.len() && keys[..want.len()] == folder[..] {
+                VaultPath::from_components(have[..want.len()].iter().cloned())
+            } else {
+                continue;
+            };
+            match &found {
+                Some(seen) if *seen != hit => return None,
+                _ => found = Some(hit),
+            }
+        }
+        found
     }
 }
 

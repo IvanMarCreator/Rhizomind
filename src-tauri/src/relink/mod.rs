@@ -14,15 +14,14 @@
 //! знак плана (`commands::RelinkToken`) и может лишь подтвердить или
 //! отклонить его (С2-6 «Граница»).
 //!
-//! Задача 0.2-0.1 — типы и сигнатуры: план пока пустой; переписывание
-//! текста — [`rewrite`] (0.2-4.4).
+//! План — [`plan()`] (0.2-4.3), переписывание текста — [`rewrite`] (0.2-4.4).
 
 use crate::commands::{PathRename, VaultPath};
-use crate::index::VaultIndex;
-use crate::links::Links;
 
+mod plan;
 mod rewrite;
 
+pub use plan::plan;
 pub use rewrite::rewrite;
 
 /// Одна ссылка плана: на какую цель переписать и куда она должна вести.
@@ -52,12 +51,18 @@ pub struct NotePlan {
 pub struct RelinkPlan {
     /// Заметки плана; заметка без ссылок для переписывания сюда не попадает.
     pub notes: Vec<NotePlan>,
+    /// Переименования, которые не удалось сопоставить со списком заметок
+    /// «до» (нечего переименовывать, «куда» занято без пометки о замене,
+    /// повтор уже выполненного): по ним ничего не переписано, вызывающий
+    /// сообщает о сбое, а не молчит (план 0.2, «Дополнительно» к 0.2-4.3).
+    pub unmatched: Vec<PathRename>,
 }
 
 impl RelinkPlan {
-    /// Переписывать нечего.
+    /// Переписывать нечего и все переименования сопоставлены. План без
+    /// заметок, но с несопоставленными переименованиями, — не пустой.
     pub fn is_empty(&self) -> bool {
-        self.notes.is_empty()
+        self.notes.is_empty() && self.unmatched.is_empty()
     }
 
     /// Сколько заметок будет переписано.
@@ -71,24 +76,15 @@ impl RelinkPlan {
     }
 }
 
-/// План для переименований `renames` (заметок и папок): ссылки на
-/// переименованное, ссылки на другие заметки, которые «перескочили» бы, и
-/// ставшие неоднозначными (С2-3.5, С2-3.6). `before` — список заметок до
-/// изменения; список «после» модуль строит сам. Диск не читается.
-///
-/// Заглушка 0.2-0.1: пустой план (0.2-4.3).
-pub fn plan(index: &VaultIndex, before: &Links, renames: &[PathRename]) -> RelinkPlan {
-    let _ = (index, before, renames);
-    RelinkPlan::default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::VaultIndex;
+    use crate::links::Links;
 
     #[test]
     fn empty_plan_counts_nothing() {
-        let plan = plan(&VaultIndex::new(), &Links::default(), &[]);
+        let plan = plan(&VaultIndex::new(), &Links::default(), &[], &[]);
         assert!(plan.is_empty());
         assert_eq!((plan.note_count(), plan.link_count()), (0, 0));
     }
