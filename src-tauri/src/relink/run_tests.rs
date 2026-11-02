@@ -609,11 +609,9 @@ fn forged_journal_is_untrusted() {
 
 /// Дата создания сохраняется (ADR 0006, уточнение 25.10.2026): на Windows —
 /// `ReplaceFileW`. На Linux дату создания не задать — тест только для
-/// Windows (CI `windows-latest`).
-#[cfg_attr(
-    not(windows),
-    ignore = "дату создания на Linux не задать (ADR 0006); проверяется в CI на Windows"
-)]
+/// Windows (CI `windows-latest`), не `ignore`: шаг CI с `--ignored` на
+/// Linux его бы запустил.
+#[cfg(windows)]
 #[test]
 fn creation_date_preserved() {
     let fx = meeting(&[]);
