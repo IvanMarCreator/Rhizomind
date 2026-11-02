@@ -791,16 +791,26 @@ impl Vault {
         }
         let target = parent.join(new_name);
         let case_only = crate::names::key(old_name) == crate::names::key(new_name);
-        if case_only {
+        // Журнал своих переименований — до действия: событие наблюдателя
+        // может прийти раньше ответа команды (задача 0.2-4.2).
+        self.own_writes.record_rename(path, &new_path);
+        let done = if case_only {
             // NTFS умеет сменить регистр одним переименованием; двухшаговый
             // путь через скрытое имя — запасной (другие ФС, сетевые папки).
             let crash = fsops::take_crash_after_first_step();
             if crash || fsops::rename_noreplace(&abs, &target).is_err() {
-                self.rename_in_two_steps(path, &new_path, &abs, &target, crash)?;
+                self.rename_in_two_steps(path, &new_path, &abs, &target, crash)
+            } else {
+                Ok(())
             }
         } else {
-            fsops::rename_noreplace(&abs, &target).map_err(io_error)?;
+            fsops::rename_noreplace(&abs, &target).map_err(io_error)
+        };
+        if let Err(error) = done {
+            self.own_writes.forget_rename(path, &new_path);
+            return Err(error);
         }
+        disk_renamed_hook();
         Ok(new_path)
     }
 
@@ -869,8 +879,15 @@ impl Vault {
         if self.sibling_taken(&dir_abs, name, None)? {
             return Err(CoreError::new(ErrorCode::AlreadyExists));
         }
-        fsops::rename_noreplace(&abs, &dir_abs.join(name)).map_err(io_error)?;
-        Ok(child(new_dir, name))
+        let new_path = child(new_dir, name);
+        // Журнал своих переносов — до действия (задача 0.2-4.2).
+        self.own_writes.record_rename(path, &new_path);
+        if let Err(error) = fsops::rename_noreplace(&abs, &dir_abs.join(name)) {
+            self.own_writes.forget_rename(path, &new_path);
+            return Err(io_error(error));
+        }
+        disk_renamed_hook();
+        Ok(new_path)
     }
 
     /// Удаляет в корзину ОС (в отдельном потоке). На томе без корзины
@@ -1205,6 +1222,28 @@ fn is_inside_service_dir(path: &Path) -> bool {
 
 fn unavailable() -> CoreError {
     CoreError::new(ErrorCode::VaultUnavailable)
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_DISK_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Тестовый шов: `action` выполнится один раз в этом потоке сразу после
+/// переименования или переноса на диске, до ответа команды — так тесты
+/// задают порядок «событие наблюдателя раньше ответа» (задача 0.2-4.2).
+#[cfg(test)]
+pub(crate) fn after_disk_rename(action: impl FnOnce() + 'static) {
+    AFTER_DISK_RENAME.with(|cell| *cell.borrow_mut() = Some(Box::new(action)));
+}
+
+/// Точка шва [`after_disk_rename`]; вне тестов ничего не делает.
+fn disk_renamed_hook() {
+    #[cfg(test)]
+    if let Some(action) = AFTER_DISK_RENAME.with(|cell| cell.borrow_mut().take()) {
+        action();
+    }
 }
 
 #[cfg(test)]
