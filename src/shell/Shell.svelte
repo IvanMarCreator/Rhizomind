@@ -401,6 +401,7 @@
           onStatus={(status) => (saveStatus = status)}
           onOpenSettings={() => openSettings('files')}
           onOpenNote={(path) => model.open(path)}
+          onOpenTag={(tag) => tagsView.reveal(tag)}
         />
       </div>
     </main>

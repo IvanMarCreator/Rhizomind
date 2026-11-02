@@ -28,6 +28,7 @@
     showTitle = true,
     focusOnOpen = false,
     onOpenNote,
+    onOpenTag,
   }: {
     path: VaultPath | null;
     /** Живой предпросмотр или исходный текст (решение 72). */
@@ -48,6 +49,8 @@
     focusOnOpen?: boolean;
     /** Переход по вики-ссылке: открыть заметку в окне (история переходов). */
     onOpenNote?: (path: VaultPath) => void;
+    /** Щелчок по тегу в тексте: открыть вид «Теги» с раскрытым тегом (0.2-3.1). */
+    onOpenTag?: (tag: string) => void;
   } = $props();
 
   let pane = $state.raw<EditorPane>({ kind: 'empty' });
@@ -182,7 +185,7 @@
         <ReadOnlyNotice reason={session.readOnly} size={session.size} {onOpenSettings} />
       {/if}
       {#key session}
-        <NoteText {session} {mode} onOpenLink={openLink} {wiki} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
+        <NoteText {session} {mode} onOpenLink={openLink} {wiki} onOpenTag={(tag) => onOpenTag?.(tag)} focus={focusOnOpen} locked={saveStatus?.kind === 'deleted'} />
       {/key}
     {:else if pane.kind === 'loading'}
       {#if showTitle}<h1 class="title">{noteName(pane.path)}</h1>{/if}
