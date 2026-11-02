@@ -14,15 +14,14 @@
 //! знак плана (`commands::RelinkToken`) и может лишь подтвердить или
 //! отклонить его (С2-6 «Граница»).
 //!
-//! Задача 0.2-0.1 — типы и сигнатуры: план пока пустой; переписывание
-//! текста — [`rewrite`] (0.2-4.4).
+//! План — [`plan()`] (0.2-4.3), переписывание текста — [`rewrite`] (0.2-4.4).
 
-use crate::commands::{PathRename, VaultPath};
-use crate::index::VaultIndex;
-use crate::links::Links;
+use crate::commands::VaultPath;
 
+mod plan;
 mod rewrite;
 
+pub use plan::plan;
 pub use rewrite::rewrite;
 
 /// Одна ссылка плана: на какую цель переписать и куда она должна вести.
@@ -71,20 +70,11 @@ impl RelinkPlan {
     }
 }
 
-/// План для переименований `renames` (заметок и папок): ссылки на
-/// переименованное, ссылки на другие заметки, которые «перескочили» бы, и
-/// ставшие неоднозначными (С2-3.5, С2-3.6). `before` — список заметок до
-/// изменения; список «после» модуль строит сам. Диск не читается.
-///
-/// Заглушка 0.2-0.1: пустой план (0.2-4.3).
-pub fn plan(index: &VaultIndex, before: &Links, renames: &[PathRename]) -> RelinkPlan {
-    let _ = (index, before, renames);
-    RelinkPlan::default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::VaultIndex;
+    use crate::links::Links;
 
     #[test]
     fn empty_plan_counts_nothing() {

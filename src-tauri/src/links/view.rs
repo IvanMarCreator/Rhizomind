@@ -125,6 +125,56 @@ impl Links {
     }
 }
 
+impl Links {
+    /// Есть ли в списке заметка или папка (папка — есть заметка внутри) с
+    /// ровно этим путём. Корень — нет.
+    pub fn has_path(&self, path: &VaultPath) -> bool {
+        let want = path.components();
+        !want.is_empty()
+            && (self.view().find(path).is_some()
+                || self.entries.iter().any(|entry| {
+                    let have = entry.note.path.components();
+                    have.len() > want.len() && have.starts_with(want)
+                }))
+    }
+
+    /// Путь `path` в написании списка: точное совпадение (заметка или
+    /// папка), иначе единственная заметка или папка с теми же ключами
+    /// компонентов. Несколько написаний с одним ключом (Linux: `А.md` и
+    /// `а.md` рядом) или ничего — `None`. Пути из событий ОС могут
+    /// отличаться от списка регистром или формой Unicode (NFC/NFD), а
+    /// [`Links::after_renames`] сравнивает точно.
+    pub fn spelled(&self, path: &VaultPath) -> Option<VaultPath> {
+        if self.has_path(path) {
+            return Some(path.clone());
+        }
+        let want = path.components();
+        if want.is_empty() {
+            return None;
+        }
+        let folder: Vec<NameKey> = want.iter().map(|c| names::key(c)).collect();
+        let note: Option<Vec<NameKey>> = crate::switcher::link_path(path)
+            .map(|parts| parts.iter().map(|c| names::key(c)).collect());
+        let mut found: Option<VaultPath> = None;
+        for entry in &self.entries {
+            let have = entry.note.path.components();
+            let keys = entry.note.keys();
+            let hit = if have.len() == want.len() && note.as_deref() == Some(keys) {
+                entry.note.path.clone()
+            } else if have.len() > want.len() && keys[..want.len()] == folder[..] {
+                VaultPath::from_components(have[..want.len()].iter().cloned())
+            } else {
+                continue;
+            };
+            match &found {
+                Some(seen) if *seen != hit => return None,
+                _ => found = Some(hit),
+            }
+        }
+        found
+    }
+}
+
 impl NotesView<'_> {
     fn add(&mut self, note: NoteRef) {
         let Some(note) = Note::new(note) else { return };
