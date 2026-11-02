@@ -318,6 +318,25 @@
   cursor: pointer;
 }
 
+/* ---- Теги (0.2-3.1, макеты П-2 и П-4, tokens.md «Плашка тега в тексте») ----
+   Плашка: шрифт текста заметки, «#» внутри, отступы 0 / 5, скругление 4.
+   Плашка, разрезанная другим оформлением (`**#тег**` в выделении), рисует
+   скругление и отступы у каждого куска (`box-decoration-break`). */
+
+.cm-editor .cm-rz-tag {
+  padding: 0 5px;
+  border-radius: 4px;
+  background-color: var(--tag-bg);
+  color: var(--tag-text);
+  cursor: pointer;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.cm-editor .cm-rz-tag:hover {
+  background-color: var(--tag-bg-hover);
+}
+
 /* ---- Горизонтальная линия ---- */
 
 .cm-editor .cm-rz-rule {
