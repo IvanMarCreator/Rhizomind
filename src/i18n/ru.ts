@@ -298,6 +298,21 @@ export const ru = {
   'rightPanel.resize': 'Ширина правой панели',
   'note.header.rightPanel': 'Правая панель',
 
+  // 0.2-2.3 Вид «Теги» (С2-3.3 «Список тегов», макет П-2)
+  'tags.order': 'Порядок тегов',
+  'tags.order.name': 'По имени',
+  'tags.order.count': 'По числу заметок',
+  'tags.list': 'Теги хранилища',
+  'tags.tag': '#{tag}, заметок: {count}',
+  'tags.notes': '#{tag}',
+  'tags.empty': 'Тегов нет',
+  'tags.notesEmpty': 'Заметок с этим тегом нет',
+  'tags.notesLoading': 'Загрузка…',
+  'tags.notesMore': 'И ещё заметок: {count}',
+  'tags.indexBuilding': 'Индекс строится… {percent} %',
+  'tags.indexBuildingUnknown': 'Индекс строится…',
+  'tags.loading': 'Загрузка тегов…',
+
   // Ошибки команд ядра: errors.<code>
   'errors.not_implemented': 'Эта функция ещё не готова.',
   'errors.invalid_argument': 'Ядро отклонило неверные данные запроса.',
