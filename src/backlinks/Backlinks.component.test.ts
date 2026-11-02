@@ -10,7 +10,7 @@ import { emitCoreEvent, indexMocks, mockCore, type IndexFake, type RecordedCall 
 import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
 import { testPanelHost } from '../sidebar-right/testing.svelte.ts';
 import Backlinks from './Backlinks.svelte';
-import type { LinkPosition } from './backlinks.svelte.ts';
+import type { LinkPosition } from './view.svelte.ts';
 
 const TARGET: VaultPath = ['Проекты', 'Альфа', 'Встреча по запуску.md'];
 const LINK = '[[Встреча по запуску]]';

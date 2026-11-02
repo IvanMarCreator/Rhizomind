@@ -22,7 +22,7 @@
     splitLine,
     type BacklinksSource,
     type LinkPosition,
-  } from './backlinks.svelte.ts';
+  } from './view.svelte.ts';
   import { nameKey } from '../core/names/index.ts';
 
   let {

@@ -15,7 +15,7 @@
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
   import Backlinks from '../backlinks/Backlinks.svelte';
-  import type { LinkPosition } from '../backlinks/backlinks.svelte.ts';
+  import type { LinkPosition } from '../backlinks/view.svelte.ts';
   import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
   import RightPanel from '../sidebar-right/RightPanel.svelte';
   import { applyTheme } from '../theme/theme.ts';
