@@ -85,7 +85,11 @@ describe('оболочка окна', () => {
       await browser.execute((name) => {
         document.documentElement.dataset.theme = name;
       }, theme);
-      expect(await panel.$('h2').getText()).toMatch(/^ОБРАТНЫЕ ССЫЛКИ/);
+      // textContent, не getText: WebKitGTK отдаёт в getText заголовка только число.
+      const heading = await browser.execute(
+        () => document.querySelector('aside[aria-label="Правая панель"] h2')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      );
+      expect(heading).toMatch(/^Обратные ссылки/);
       const body = panel.$('[role="tabpanel"]');
       await browser.waitUntil(async () => /Индекс строится|Нет обратных ссылок/.test(await body.getText()), {
         timeout: 10_000,
