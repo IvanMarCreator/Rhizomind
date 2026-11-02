@@ -74,8 +74,8 @@ describe('оболочка окна', () => {
   });
 
   // 0.2-2.2 (по QA 0.2-2.1): правая панель открыта, вид «Обратные ссылки».
-  // Индекса в ядре ещё нет (задачи 0.2-1.2–1.4): ядро отвечает «индекс
-  // строится», и вид показывает «Индекс строится…» — это ожидаемо.
+  // Заметка не открыта — «Нет обратных ссылок», число 0; индекса в ядре ещё
+  // нет (0.2-1.2–1.4), с открытой заметкой было бы «Индекс строится…».
   it.each(['light', 'dark'] as const)('правая панель открыта, тема %s: снимок экрана', async (theme) => {
     const { browser } = session;
     try {
@@ -90,8 +90,9 @@ describe('оболочка окна', () => {
         () => document.querySelector('aside[aria-label="Правая панель"] h2')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
       );
       expect(heading).toMatch(/^Обратные ссылки/);
-      const body = panel.$('[role="tabpanel"]');
-      await browser.waitUntil(async () => /Индекс строится|Нет обратных ссылок/.test(await body.getText()), {
+      const bodyText = () =>
+        browser.execute(() => document.querySelector('aside[aria-label="Правая панель"] [role="tabpanel"]')?.textContent ?? '');
+      await browser.waitUntil(async () => /Индекс строится|Нет обратных ссылок/.test(await bodyText()), {
         timeout: 10_000,
       });
     } finally {
