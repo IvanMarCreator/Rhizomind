@@ -5,16 +5,18 @@
 // `#работа/отчёт` — один самостоятельный тег.
 //
 // Проход как у ядра: блок свойств в начале пропускается (его теги разбирает
-// src/editor/live-preview/frontmatter.ts, задача 0.2-3.2), строки текста
+// src/core/tags/frontmatter.ts, задача 0.2-3.2), строки текста
 // делятся на код (ограда, отступ) и абзацы, в каждом абзаце ищутся теги вне
 // кода в строке, вики-ссылок и адресов ссылок Markdown.
 import { nameKey } from '../names/index.ts';
 import { LineClassifier, type LineSpan } from './blocks.ts';
+import { FRONTMATTER_CLOSE, FRONTMATTER_OPEN, linesFrom } from './frontmatter.ts';
 import { tagsInParagraph, type TextTag } from './inline.ts';
 
 export { LineClassifier, indentColumns, type LineKind, type LineSpan } from './blocks.ts';
 export { tagsInParagraph, type TextTag } from './inline.ts';
 export { isTagName, MAX_TAG_CHARS } from './rules.ts';
+export { frontmatterTags, parseFrontmatter, type Frontmatter } from './frontmatter.ts';
 
 /** Заметка больше этого (в байтах UTF-8) — блок свойств не распознаётся (решение 77, как у ядра). */
 export const FRONTMATTER_MAX_NOTE_BYTES = 10 * 1024 * 1024;
@@ -25,19 +27,6 @@ export const FRONTMATTER_MAX_NOTE_BYTES = 10 * 1024 * 1024;
  */
 export function tagKey(name: string): string {
   return nameKey(name.startsWith('#') ? name.slice(1) : name);
-}
-
-/** Строки с позиции `from`: переводы `\r\n`, `\r`, `\n`; после последнего — ещё одна строка. */
-function* linesFrom(text: string, from: number): Generator<LineSpan> {
-  let start = from;
-  for (let i = from; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch !== 0x0a && ch !== 0x0d) continue;
-    yield { from: start, to: i };
-    if (ch === 0x0d && text.charCodeAt(i + 1) === 0x0a) i++;
-    start = i + 1;
-  }
-  yield { from: start, to: text.length };
 }
 
 function utf8Length(text: string): number {
@@ -60,9 +49,6 @@ function tooLargeForFrontmatter(text: string): boolean {
   return utf8Length(text) > FRONTMATTER_MAX_NOTE_BYTES;
 }
 
-const OPEN = /^---[ \t]*$/;
-const CLOSE = /^(?:---|\.\.\.)[ \t]*$/;
-
 /**
  * Где начинается текст после блока свойств: `0` — блока нет, `null` — после
  * закрывающей строки текста нет. Блок — от строки `---` в самом начале до
@@ -72,9 +58,9 @@ export function bodyStart(text: string): number | null {
   if (tooLargeForFrontmatter(text)) return 0;
   const lines = linesFrom(text, 0);
   const first = lines.next();
-  if (first.done || !OPEN.test(text.slice(first.value.from, first.value.to))) return 0;
+  if (first.done || !FRONTMATTER_OPEN.test(text.slice(first.value.from, first.value.to))) return 0;
   for (const line of lines) {
-    if (!CLOSE.test(text.slice(line.from, line.to))) continue;
+    if (!FRONTMATTER_CLOSE.test(text.slice(line.from, line.to))) continue;
     if (line.to >= text.length) return null;
     return line.to + (text.startsWith('\r\n', line.to) ? 2 : 1);
   }

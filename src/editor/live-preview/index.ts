@@ -56,6 +56,7 @@ import {
   type Span,
   type WidgetKind,
 } from './markdown.ts';
+import { frontmatterPreview } from './frontmatter.ts';
 import { sourceTags, tagPreview } from './tags.ts';
 
 // ---- Блоки кода и блок свойств ----------------------------------------------
@@ -257,6 +258,11 @@ export function codeBlocks(state: EditorState): Blocks {
   });
   if (blocks.unclosed !== null) code.push({ from: blocks.unclosed, to: state.doc.length, closeLine: null });
   return { code, properties: blocks.properties };
+}
+
+/** Блок свойств по разбору блоков (для строки «Свойства», frontmatter.ts). */
+function propertiesSpan(state: EditorState): Span | null {
+  return state.field(blocksField, false)?.properties ?? null;
 }
 
 /** Блок кода, в котором лежит строка с началом `pos`. */
@@ -828,6 +834,7 @@ export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension 
     previewPlugin,
     resolverPlugin,
     tagPreview(inBlock),
+    frontmatterPreview(propertiesSpan),
     EditorView.domEventHandlers({
       mousedown(event, view) {
         if (event.button !== 0 || !(event.target instanceof Element)) return false;

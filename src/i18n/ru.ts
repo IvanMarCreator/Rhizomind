@@ -326,6 +326,10 @@ export const ru = {
   'tags.indexBuildingUnknown': 'Индекс строится…',
   'tags.loading': 'Загрузка тегов…',
 
+  // 0.2-3.2 Блок свойств в живом предпросмотре (С2-3.4, решение 112, макет П-4)
+  'editor.properties': 'Свойства',
+  'editor.properties.expand': 'Показать свойства',
+
   // 0.2-5.1 Запись ввода перед переписыванием и уведомления о результате (С2-3.5, С2-5.4, макеты У-1, У-3)
   'relink.notesIn.one': '{count} заметке',
   'relink.notesIn.many': '{count} заметках',
