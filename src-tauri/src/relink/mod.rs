@@ -14,15 +14,20 @@
 //! знак плана (`commands::RelinkToken`) и может лишь подтвердить или
 //! отклонить его (С2-6 «Граница»).
 //!
-//! План — [`plan()`] (0.2-4.3), переписывание текста — [`rewrite`] (0.2-4.4).
+//! План — [`plan()`] (0.2-4.3), переписывание текста — [`rewrite`] (0.2-4.4),
+//! выполнение плана — [`run()`], доделка при открытии хранилища —
+//! [`resume_on_open`] (0.2-4.5).
 
 use crate::commands::{PathRename, VaultPath};
 
+mod journal;
 mod plan;
 mod rewrite;
+mod run;
 
 pub use plan::plan;
 pub use rewrite::rewrite;
+pub use run::{RunReport, resume_on_open, run};
 
 /// Одна ссылка плана: на какую цель переписать и куда она должна вести.
 #[derive(Debug, Clone, PartialEq, Eq)]
