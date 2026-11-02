@@ -56,6 +56,7 @@ import {
   type Span,
   type WidgetKind,
 } from './markdown.ts';
+import { sourceTags, tagPreview } from './tags.ts';
 
 // ---- Блоки кода и блок свойств ----------------------------------------------
 
@@ -826,6 +827,7 @@ export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension 
     resolutionField,
     previewPlugin,
     resolverPlugin,
+    tagPreview(inBlock),
     EditorView.domEventHandlers({
       mousedown(event, view) {
         if (event.button !== 0 || !(event.target instanceof Element)) return false;
@@ -857,7 +859,7 @@ export function livePreview({ onOpenLink }: LivePreviewOptions = {}): Extension 
  * Ctrl+щелчком (С3.4, решение 76); обычный щелчок ставит курсор.
  */
 export function sourceLinks({ onOpenLink }: LivePreviewOptions = {}): Extension {
-  return EditorView.domEventHandlers({
+  return [sourceTags(inBlock), EditorView.domEventHandlers({
     mousedown(event, view) {
       if (event.button !== 0 || (!event.ctrlKey && !event.metaKey)) return false;
       const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
@@ -867,5 +869,5 @@ export function sourceLinks({ onOpenLink }: LivePreviewOptions = {}): Extension 
       event.preventDefault();
       return true;
     },
-  });
+  })];
 }

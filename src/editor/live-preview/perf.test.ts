@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { createEditorState } from '../codemirror.ts';
 import { codeBlocks, previewDecorations } from './index.ts';
 import { MAX_BLOCK_TEXT } from './markdown.ts';
+import { tagDecorations } from './tags.ts';
 
 const LIMIT_MS = 15;
 /** Рост времени при вчетверо более длинной строке: линейно ≈ ×4, квадратично ≈ ×16. */
@@ -47,12 +48,17 @@ function best(fn: () => void, runs = 15): number {
   return time;
 }
 
-/** Правка и оформление видимой части (~60 строк от места правки) — то, что делает окно на нажатие. */
+/**
+ * Правка и оформление видимой части (~60 строк от места правки) — то, что
+ * делает окно на нажатие: разметка и плашки тегов (0.2-3.1).
+ */
 function keystroke(state: EditorState, from: number, to: number, insert: string): () => void {
   return () => {
     const next = state.update({ changes: { from, to, insert } }).state;
     const line = next.doc.lineAt(from);
-    previewDecorations(next, [{ from: line.from, to: next.doc.line(Math.min(next.doc.lines, line.number + 60)).to }]);
+    const visible = [{ from: line.from, to: next.doc.line(Math.min(next.doc.lines, line.number + 60)).to }];
+    previewDecorations(next, visible);
+    tagDecorations(next, visible);
   };
 }
 
@@ -78,6 +84,24 @@ describe('ввод в заметке почти 10 МБ (блоки кода р�
     const line = text.indexOf('```js\n', text.length / 2);
     expect(best(keystroke(state, line, line, '```\n'))).toBeLessThan(LIMIT_MS);
     expect(best(keystroke(state, line, line + 1, ''))).toBeLessThan(LIMIT_MS);
+  });
+});
+
+describe('ввод рядом с тегами (0.2-3.1): плашки — по видимой части, не по всему тексту', { timeout: 60_000 }, () => {
+  // Теги в каждом абзаце, в коде и в длинном абзаце-списке на 300 строк.
+  const tagged = (size: number) => {
+    const list = Array.from({ length: 300 }, (_v, i) => `- пункт #пункт${i} и \`#код\``).join('\n');
+    return `${list}\n\n${dense(size, '```').replace(/Текст с/g, 'Текст #тег #работа/отчёт с')}`;
+  };
+  const text = tagged(MAX_BLOCK_TEXT - 64 * 1024);
+  const state = createEditorState(text, { mode: 'live_preview' });
+
+  it('в длинном списке в начале, посередине и в конце заметки', () => {
+    expect(best(keystroke(state, 5, 5, 'x'))).toBeLessThan(LIMIT_MS);
+    const middle = text.indexOf('Текст #тег', text.length / 2);
+    expect(best(keystroke(state, middle + 7, middle + 7, 'я'))).toBeLessThan(LIMIT_MS);
+    const end = text.lastIndexOf('Текст #тег');
+    expect(best(keystroke(state, end + 9, end + 9, 'ы'))).toBeLessThan(LIMIT_MS);
   });
 });
 
@@ -109,6 +133,7 @@ describe('заметка больше 10 МБ (решение 77)', { timeout: 1
     const read = charsRead(() => {
       const state = createEditorState(text, { mode: 'live_preview' });
       previewDecorations(state, [{ from: 0, to: state.doc.line(60).to }]);
+      tagDecorations(state, [{ from: 0, to: state.doc.line(60).to }]);
     });
     expect(read).toBeGreaterThan(0);
     expect(read).toBeLessThan(text.length / 100);
@@ -194,6 +219,33 @@ describe('неудобная строка ~10 000 символов: оформл
     expect(time, note).toBeLessThan(SLOW_LIMIT_MS);
   });
 });
+
+describe('неудобная строка ~10 000 символов: плашки тегов линейно (0.2-3.1)', () => {
+  const fill = (piece: string) => (n: number) => piece.repeat(Math.floor(n / piece.length));
+  const cases: [string, (n: number) => string][] = [
+    ['#a ', fill('#a ')],
+    ['[#a](', fill('[#a](')],
+    ['[#a]', fill('[#a]')],
+    ['`#a', fill('`#a')],
+    ['[[#a', fill('[[#a')],
+    ['a#b ', fill('a#b ')],
+  ];
+  it.each(cases)('%s', (_name, make) => {
+    const { time, ratio } = bestVersus(tagsOfNote(make(9_990)), tagsOfNote(make(9_990 / 4)), 25);
+    const note = `${time.toFixed(2)} мс, рост ×${ratio.toFixed(1)} к строке вчетверо короче`;
+    expect(ratio, note).toBeLessThan(MAX_GROWTH);
+    expect(time, note).toBeLessThan(SLOW_LIMIT_MS);
+  });
+});
+
+/** Правка в строке и плашки тегов всей заметки (строка видна целиком). */
+function tagsOfNote(line: string): () => void {
+  const state = createEditorState(`курсор\n${line}\n`, { mode: 'live_preview' });
+  return () => {
+    const next = state.update({ changes: { from: 0, insert: 'x' } }).state;
+    tagDecorations(next, [{ from: 0, to: next.doc.length }]);
+  };
+}
 
 /** Движение курсора между первой и второй строкой и оформление всей заметки. */
 function cursorMoves(line: string): () => void {

@@ -21,6 +21,7 @@ import { bracketPairs } from './bracket-pairs.ts';
 import { hugeLines } from './huge-lines.ts';
 import { listContinuation } from './list-continuation.ts';
 import { blockTracking, livePreview, sourceLinks } from './live-preview/index.ts';
+import { tagOpener } from './live-preview/tags.ts';
 import { wikilinkCompletion } from './wikilinks/autocomplete.ts';
 import { wikiHost, type WikiHost } from './wikilinks/host.ts';
 import { revealPlugin } from './wikilinks/reveal.ts';
@@ -103,11 +104,14 @@ export interface EditorOptions {
   wiki?: WikiHost;
   /** Документ изменился правкой пользователя. */
   onChange?: (text: string) => void;
+  /** Щелчок по тегу (Ctrl+щелчок в исходном тексте): открыть вид «Теги» с раскрытым тегом. */
+  onOpenTag?: (tag: string) => void;
 }
 
-export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink, wiki, onChange }: EditorOptions = {}): Extension[] {
+export function editorExtensions({ readOnly = false, mode = 'source', onOpenLink, wiki, onChange, onOpenTag }: EditorOptions = {}): Extension[] {
   return [
     wiki ? wikiHost.of(wiki) : [],
+    onOpenTag ? tagOpener.of(onOpenTag) : [],
     // Блоки кода — в обоих режимах: автодополнение вики-ссылок не открывается в коде (2.6а).
     blockTracking(),
     revealPlugin,

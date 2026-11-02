@@ -44,6 +44,11 @@
   --accent-indigo-text: #3f49b5;
   --accent-indigo-subtle: #e8eafb;
 
+  /* Плашка тега (tokens.md, раздел «0.2»). */
+  --tag-bg: #ebedfa;
+  --tag-bg-hover: #dde1f7;
+  --tag-text: #3f49b5;
+
   --control-knob: #ffffff;
 
   --accent: var(--accent-indigo-base);
@@ -110,6 +115,10 @@
   --accent-indigo-base: #8e97f0;
   --accent-indigo-text: #a3abf5;
   --accent-indigo-subtle: #2a2e52;
+
+  --tag-bg: #2b2f4d;
+  --tag-bg-hover: #363b60;
+  --tag-text: #aeb5f7;
 
   --control-knob: #e4e6e9;
 }
