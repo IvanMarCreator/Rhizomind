@@ -15,6 +15,7 @@
   import ReadOnlyNotice from './ReadOnlyNotice.svelte';
   import { coreNoteStore, type NoteStore, type SaveStatus } from './session.ts';
   import { EditorSessions, noteName, type EditorPane, type UnsavedNote } from './sessions.ts';
+  import type { LinkPosition } from './wikilinks/host.ts';
   import { WindowWikiHost } from './wikilinks/window-host.ts';
 
   let {
@@ -50,6 +51,7 @@
   } = $props();
 
   let pane = $state.raw<EditorPane>({ kind: 'empty' });
+  let article: HTMLElement | undefined = $state();
   let saveStatus = $state.raw<SaveStatus | null>(null);
 
   const sessions = new EditorSessions(
@@ -120,6 +122,25 @@
     return sessions.flushForClose();
   }
 
+  /** Перед переписыванием ссылок (0.2-5.1): то же, что при закрытии, заметки остаются открытыми. */
+  export function flushForLinks(): Promise<UnsavedNote[]> {
+    return sessions.flushForLinks();
+  }
+
+  /**
+   * Вид «Обратные ссылки» (0.2-2.2): открыть заметку и поставить курсор на
+   * ссылку (`at`) или в начало (`null`), фокус в текст — как переход по
+   * вики-ссылке (решение 86).
+   */
+  export function reveal(target: VaultPath, at: LinkPosition | null): void {
+    wiki.reveal(target, at);
+  }
+
+  /** Фокус в текст открытой заметки (закрыли правую панель командой); нет текста — ничего. */
+  export function focus(): void {
+    article?.querySelector<HTMLElement>('.cm-content')?.focus();
+  }
+
   onMount(() => {
     // Запасной путь закрытия окна (основной — сигнал ядра, flushForClose):
     // запросы записи уходят синхронно, до выгрузки страницы.
@@ -153,7 +174,7 @@
 </script>
 
 {#if pane.kind !== 'empty'}
-  <article class="column" class:untitled={!showTitle}>
+  <article class="column" class:untitled={!showTitle} bind:this={article}>
     {#if pane.kind === 'open'}
       {@const session = pane.session}
       {#if showTitle}<h1 class="title">{noteName(session.path)}</h1>{/if}

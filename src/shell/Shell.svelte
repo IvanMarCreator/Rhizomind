@@ -6,14 +6,21 @@
   какая заметка показана (ShownNote, задача 2.12, решение 82).
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { core, onCoreEvent } from '../api/index.ts';
+  import { onMount, tick } from 'svelte';
+  import { core, onCoreEvent, type VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
+  import Backlinks from '../backlinks/Backlinks.svelte';
+  import type { LinkPosition } from '../backlinks/view.svelte.ts';
+  import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
+  import RightPanel from '../sidebar-right/RightPanel.svelte';
+  import { TagsModel } from '../tags/model.svelte.ts';
+  import TagOrderSwitch from '../tags/TagOrderSwitch.svelte';
+  import Tags from '../tags/Tags.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import Editor from '../editor/Editor.svelte';
   import SaveIndicator from '../editor/SaveIndicator.svelte';
@@ -23,6 +30,7 @@
   import VaultManager from '../vaults/VaultManager.svelte';
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from './menu.ts';
+  import type { RightPanelView } from '../core/layout/layout.ts';
   import EmptyState from './EmptyState.svelte';
   import { isEngineShortcut } from './engineShortcuts.ts';
   import NoteHeader from './NoteHeader.svelte';
@@ -32,6 +40,8 @@
   import StartupError from './StartupError.svelte';
   import { ExternalChanges } from '../sync/external.ts';
   import { WindowClosing, coreClosing } from './closing.ts';
+  import { LinksFlush, coreFlushDone } from '../relink/flush.ts';
+  import { RelinkNotices } from '../relink/notices.ts';
   import { ShownNote } from './shownNote.ts';
   import { textMenuItems, textTargetOf, type TextTarget } from './textMenu.ts';
   import { WindowModel } from './window.svelte.ts';
@@ -74,6 +84,42 @@
   }
 
   /**
+   * Правая боковая панель (0.2-2.1, С2-3.1): её состояние — в раскладке окна,
+   * запись — через окно (`WindowModel.setRightPanel`, очередь записей раскладки).
+   */
+  const rightPanel = createRightPanel();
+  /** Вид «Теги» (0.2-2.3): модель живёт в окне дольше вида (вызов из редактора). */
+  const tagsView = new TagsModel(rightPanel);
+
+  function createRightPanel(): RightPanelModel {
+    const owner = model;
+    return new RightPanelModel({
+      get state() {
+        return owner.layout.rightPanel;
+      },
+      update: (next, persist) => void owner.setRightPanel(next, persist),
+    });
+  }
+
+  /**
+   * Команда реестра «Обратные ссылки» / «Теги». Закрыла панель — фокус, если
+   * он был в панели и пропал вместе с ней, возвращается в текст заметки.
+   */
+  async function showPanelView(view: RightPanelView): Promise<void> {
+    rightPanel.showView(view);
+    if (rightPanel.open) return;
+    await tick();
+    const active = document.activeElement;
+    if (active === null || active === document.body) editor?.focus();
+  }
+
+  /** Вид «Обратные ссылки»: заметка с курсором на ссылке (`at`) или сверху (`null`). */
+  function openBacklink(path: VaultPath, at: LinkPosition | null): void {
+    if (editor) editor.reveal(path, at);
+    else model.open(path);
+  }
+
+  /**
    * Изменения файлов снаружи (задача 2.9, С3.6): события ядра `note:*` и
    * полная сверка — в редактор, историю и раскладку окна. Сначала редактор:
    * смена пути после этого — не уход с заметки.
@@ -104,6 +150,24 @@
     flush: () => editor?.flushForClose() ?? Promise.resolve([]),
     ...coreClosing,
     notify: (text) => model.notify(text),
+  });
+
+  /**
+   * Обновление ссылок (0.2-5.1, С2-5.4): перед переписыванием — ввод всех
+   * заметок записывается, заметки остаются открытыми; итог — уведомление
+   * только по `links:updated` (правило контракта).
+   */
+  const linksFlush = new LinksFlush({
+    flush: () => editor?.flushForLinks() ?? Promise.resolve([]),
+    done: coreFlushDone,
+    notify: (text) => model.notify(text),
+  });
+  const relinkNotices = new RelinkNotices({
+    retry: (token) => core.relinkAnswer({ token, apply: true }),
+    notify: (text) => model.notify(text),
+    get limitBytes() {
+      return model.settings.max_edit_size_bytes;
+    },
   });
 
   /** Окно быстрого перехода (задача 2.7) открыто. */
@@ -187,6 +251,12 @@
       case 'history.forward':
         model.forward();
         return;
+      case 'panel.backlinks':
+        void showPanelView('backlinks');
+        return;
+      case 'panel.tags':
+        void showPanelView('tags');
+        return;
       case 'tree.rename':
       case 'tree.delete':
         // Команды дерева: их обрабатывает дерево файлов (FileTree.svelte).
@@ -197,6 +267,11 @@
   onMount(() => {
     // Подписка — первой: окно могут закрыть, пока оно загружается.
     const unsubscribe = onCoreEvent('window:close-requested', (payload) => void closing.closeRequested(payload));
+    const relinkEvents = [
+      onCoreEvent('links:flush-requested', (payload) => void linksFlush.requested(payload)),
+      onCoreEvent('links:updated', (payload) => relinkNotices.updated(payload)),
+      onCoreEvent('links:progress', (payload) => relinkNotices.progress(payload)),
+    ];
     const stopExternal = external.start();
     void model.start();
     // Не <svelte:window>: Svelte передаёт тогда объект window значением, и
@@ -211,6 +286,7 @@
       window.removeEventListener('keydown', onKeydownCapture, true);
       window.removeEventListener('keydown', onKeydownBubble);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
+      for (const stop of relinkEvents) void stop.then((off) => off()).catch(() => undefined);
       stopExternal();
     };
   });
@@ -300,6 +376,8 @@
         readOnly={saveStatus?.kind === 'read_only' || saveStatus?.kind === 'deleted'}
         onBack={() => model.back()}
         onForward={() => model.forward()}
+        panelOpen={rightPanel.open}
+        onTogglePanel={() => rightPanel.toggle()}
       >
         {#snippet status()}
           <SaveIndicator status={saveStatus} />
@@ -326,6 +404,23 @@
         />
       </div>
     </main>
+    {#if rightPanel.open}
+      <!-- Виды подключаются сниппетами `backlinks` / `tags` (задачи 0.2-2.2, 0.2-2.3). -->
+      <RightPanel
+        panel={rightPanel}
+        shortcuts={{ backlinks: shortcutOf('panel.backlinks'), tags: shortcutOf('panel.tags') }}
+      >
+        {#snippet backlinks()}
+          <Backlinks path={model.currentPath} panel={rightPanel} onOpen={openBacklink} />
+        {/snippet}
+        {#snippet tags()}
+          <Tags model={tagsView} current={model.currentPath} onOpen={(path) => model.open(path)} />
+        {/snippet}
+        {#snippet headerActions(view: RightPanelView)}
+          {#if view === 'tags'}<TagOrderSwitch model={tagsView} />{/if}
+        {/snippet}
+      </RightPanel>
+    {/if}
   </div>
   {#if switcherOpen}
     <QuickSwitcher
@@ -355,7 +450,12 @@
   <ContextMenu x={textMenu.x} y={textMenu.y} items={textMenu.items} label={t('textMenu.label')} onClose={closeTextMenu} />
 {/if}
 
-<Notifications notices={model.notices} onDismiss={(id) => model.dismiss(id)} />
+<Notifications
+  notices={model.notices}
+  onDismiss={(id) => model.dismiss(id)}
+  relink={relinkNotices}
+  onOpenNote={(path) => model.open(path)}
+/>
 
 <style>
   .shell {

@@ -359,7 +359,12 @@ describe('оболочка окна', () => {
 
     await waitFor(() => {
       const writes = calls.filter(([command]) => command === 'workspace_write');
-      expect(writes.at(-1)?.[1]).toEqual({ request: { workspace: savedLayout(['Папка', 'Б.md']) } });
+      // Раскладка 0.2 пишется с полем правой панели (0.2-2.1).
+      const workspace = {
+        ...savedLayout(['Папка', 'Б.md']),
+        side_panel: { open: false, view: 'backlinks', width: 300, tag_order: 'name' },
+      };
+      expect(writes.at(-1)?.[1]).toEqual({ request: { workspace } });
     });
   });
 });

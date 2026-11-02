@@ -29,7 +29,13 @@
     | 'plus'
     | 'rotate-ccw'
     | 'search'
-    | 'chevron-down';
+    | 'chevron-down'
+    | 'link'
+    | 'hash'
+    | 'panel-right'
+    | 'arrow-down-a-z'
+    | 'arrow-down-wide-narrow'
+    | 'loader-circle';
 </script>
 
 <script lang="ts">
@@ -160,6 +166,31 @@
     <path d="m21 21-4.34-4.34" />
   {:else if name === 'chevron-down'}
     <path d="m6 9 6 6 6-6" />
+  {:else if name === 'link'}
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  {:else if name === 'hash'}
+    <line x1="4" x2="20" y1="9" y2="9" />
+    <line x1="4" x2="20" y1="15" y2="15" />
+    <line x1="10" x2="8" y1="3" y2="21" />
+    <line x1="16" x2="14" y1="3" y2="21" />
+  {:else if name === 'panel-right'}
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M15 3v18" />
+  {:else if name === 'arrow-down-a-z'}
+    <path d="m3 16 4 4 4-4" />
+    <path d="M7 20V4" />
+    <path d="M20 8h-5" />
+    <path d="M15 10V6.5a2.5 2.5 0 0 1 5 0V10" />
+    <path d="M15 14h5l-5 6h5" />
+  {:else if name === 'arrow-down-wide-narrow'}
+    <path d="m3 16 4 4 4-4" />
+    <path d="M7 20V4" />
+    <path d="M11 4h10" />
+    <path d="M11 8h7" />
+    <path d="M11 12h4" />
+  {:else if name === 'loader-circle'}
+    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
   {/if}
 </svg>
 

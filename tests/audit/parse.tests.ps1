@@ -58,6 +58,24 @@ Check 'файлы: словарь Hunspell во временной папке д
 Check 'реестр: EdgeWebView — учтено (решение 61)' ((Find-Key $r.RegOut "HKCU\Software\Microsoft\EdgeWebView\StabilityMetrics`tдвижок WebView2, решение 61").Count -eq 1) ($r.RegOut.Keys -join ' | ')
 Check 'реестр: неизвестный ключ — «не учтено»' ((Find-Key $r.RegOut "HKCU\Software\Rhizomind\Unknown`t**не учтено**").Count -eq 1)
 
+# Записи из повторного аудита владельца (решение 117): сама папка хранилища
+# не «не учтено»; записи Windows и движка — учтены с номером решения; файл
+# OneAuth\accounts — решение 118, прочие файлы OneAuth — «не учтено».
+$r117 = Invoke-ProcmonAnalysis -CsvPath (Join-Path $PSScriptRoot 'fixtures\procmon-records-117.csv') `
+  -OwnPids @(1000) -VaultRoots @('C:\Аудит') -AppDataDir 'C:\nonexistent'
+$f117 = @($r117.FileOut.Keys)
+Check '117: папка хранилища C:\Аудит (создана «Создать хранилище») — не в таблице' (@($f117 | Where-Object { $_ -like "C:\Аудит`t*" }).Count -eq 0) ($f117 -join ' | ')
+Check '117: заметка в хранилище — не в таблице' (@($f117 | Where-Object { $_ -like 'C:\Аудит\*' }).Count -eq 0)
+Check '117: соседняя папка C:\Аудитор (общий префикс без «\») — «не учтено»' ((Find-Key $r117.FileOut "C:\Аудитор\чужое.md`t**не учтено**").Count -eq 1)
+Check '117: D3DSCache — учтено, решение 117' ((Find-Key $r117.FileOut "*\D3DSCache\*`t*решение 117").Count -eq 1)
+Check '117: Intel\ShaderCache — учтено, решение 117' ((Find-Key $r117.FileOut "*\LocalLow\Intel\ShaderCache\*`t*решение 117").Count -eq 1)
+Check '118: OneAuth\accounts\<хэш> — учтено, решение 118' ((Find-Key $r117.FileOut "*\OneAuth\accounts\9b3d1639131d5483`tOneAuth движка WebView2, решение 118").Count -eq 1) ($f117 -join ' | ')
+Check '118: другой файл в OneAuth — «не учтено»' ((Find-Key $r117.FileOut "*\OneAuth\settings.json`t**не учтено**").Count -eq 1)
+$g117 = @($r117.RegOut.Keys)
+Check '117: реестр — 9 строк учтены с решением 117' (@($g117 | Where-Object { $_ -like "*`t*решение 117" }).Count -eq 9) ($g117 -join ' | ')
+Check '117: подключ учётной записи OneDrive — «не учтено»' ((Find-Key $r117.RegOut "HKCU\SOFTWARE\Microsoft\OneDrive\Accounts\Personal`t**не учтено**").Count -eq 1)
+Check '117: «не учтено» в реестре — только этот подключ' (@($g117 | Where-Object { $_ -like "*`t**не учтено**" }).Count -eq 1)
+
 # Журнал без событий Rhizomind (старый фильтр Process Monitor) — разбор должен
 # это видеть, иначе итог «обращений не найдено» был бы ложным.
 Check 'разбор: событий корневого процесса Rhizomind в образце — есть' ($r.RootRows -gt 0) "root=$($r.RootRows)"

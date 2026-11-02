@@ -29,6 +29,21 @@
 //! внешнее изменение. Весь журнал ограничен
 //! [`MAX_TOTAL`] версиями — лишние, самые старые, забываются. Удаление и
 //! переименование пути забывают его версии.
+//!
+//! **Свои переименования и переносы** (задача 0.2-4.2, спецификация 0.2,
+//! С2-5.1, Р10). Хранилище **до** переименования или переноса на диске
+//! записывает пару «откуда → куда» ([`OwnWrites::record_rename`]), а при
+//! ошибке действия убирает её ([`OwnWrites::forget_rename`]). Наблюдатель и
+//! обработка внешних переименований спрашивают
+//! [`OwnWrites::is_own_rename`]: событие наблюдателя о своём переименовании
+//! узнаётся как своё, даже если пришло раньше ответа команды. Ключ — те же
+//! ключи имён компонентов (регистр и нормализация Unicode не важны).
+//! Переименование папки покрывает вложенные пути: «Папка → Архив» делает
+//! своим и «Папка/a.md → Архив/a.md». Запись живёт [`RENAME_TTL`] и не
+//! удаляется ни вопросом, ни [`OwnWrites::forget`] (папка может прийти
+//! несколькими событиями). Записей не больше [`MAX_RENAMES`], а ключей в
+//! них не больше [`MAX_RENAME_BYTES`] байт — лишние, самые старые,
+//! забываются. Журнал только в памяти, на диск не пишется.
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
@@ -47,6 +62,40 @@ pub(crate) const VERSION_TTL: Duration = Duration::from_secs(120);
 
 /// Общий предел версий в журнале.
 pub(crate) const MAX_TOTAL: usize = 4096;
+
+/// Сколько живёт запись о своём переименовании или переносе.
+pub(crate) const RENAME_TTL: Duration = Duration::from_secs(120);
+
+/// Общий предел записей о своих переименованиях.
+pub(crate) const MAX_RENAMES: usize = 1024;
+
+/// Общий предел байт ключей в записях о своих переименованиях.
+pub(crate) const MAX_RENAME_BYTES: usize = 1024 * 1024;
+
+/// Своё переименование или перенос «откуда → куда».
+#[derive(Debug)]
+struct Rename {
+    from: PathKey,
+    to: PathKey,
+    /// Когда записано.
+    at: Instant,
+    /// Байт в ключах обоих путей — для общего предела.
+    bytes: usize,
+}
+
+impl Rename {
+    /// Переименование `from → to` — это запись или путь под ней, уехавший
+    /// с тем же остатком пути.
+    fn covers(&self, from: &[String], to: &[String]) -> bool {
+        from.starts_with(&self.from)
+            && to.starts_with(&self.to)
+            && from[self.from.len()..] == to[self.to.len()..]
+    }
+}
+
+fn key_bytes(key: &PathKey) -> usize {
+    key.iter().map(String::len).sum()
+}
 
 /// Своя версия файла.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,9 +122,19 @@ fn path_key(path: &VaultPath) -> PathKey {
 struct Journal {
     by_path: HashMap<PathKey, VecDeque<Version>>,
     total: usize,
+    /// Свои переименования в порядке записи.
+    renames: VecDeque<Rename>,
+    /// Байт ключей во всех записях `renames`.
+    rename_bytes: usize,
 }
 
 impl Journal {
+    fn expire_renames(&mut self, now: Instant) {
+        self.renames
+            .retain(|r| now.saturating_duration_since(r.at) < RENAME_TTL);
+        self.rename_bytes = self.renames.iter().map(|r| r.bytes).sum();
+    }
+
     fn expire(&mut self, now: Instant) {
         let mut total = 0;
         self.by_path.retain(|_, versions| {
@@ -110,6 +169,9 @@ impl Journal {
 #[derive(Clone, Default)]
 pub struct OwnWrites {
     journal: Arc<Mutex<Journal>>,
+    /// Подставные часы — только в тестах (детерминированные сроки и гонки).
+    #[cfg(test)]
+    clock: Arc<Mutex<Option<Instant>>>,
     /// Наблюдатель записей — только в тестах («записано до замены файла»).
     #[cfg(test)]
     observer: Arc<Mutex<Option<Observer>>>,
@@ -133,7 +195,7 @@ impl OwnWrites {
     /// Запоминает свою запись **до** замены файла: путь, хэш `blake3` нового
     /// содержимого (как в `FileVersion::hash`) и его размер.
     pub fn record(&self, path: &VaultPath, hash: &str, size: u64) {
-        self.record_at(path, hash, size, Instant::now());
+        self.record_at(path, hash, size, self.now());
     }
 
     pub(crate) fn record_at(&self, path: &VaultPath, hash: &str, size: u64, at: Instant) {
@@ -148,8 +210,9 @@ impl OwnWrites {
         }
         // Ключ — вне замка: приведение регистра не должно держать журнал.
         let key = path_key(path);
+        let now = self.now();
         let mut journal = self.lock();
-        journal.expire(Instant::now());
+        journal.expire(now);
         let versions = journal.by_path.entry(key).or_default();
         versions.push_back(Version {
             hash: hash.to_ascii_lowercase(),
@@ -159,7 +222,7 @@ impl OwnWrites {
         let dropped = versions.len().saturating_sub(VERSIONS_PER_PATH);
         versions.drain(..dropped);
         journal.total = journal.total + 1 - dropped;
-        journal.expire(Instant::now());
+        journal.expire(now);
         while journal.total > MAX_TOTAL {
             journal.evict_oldest();
         }
@@ -174,8 +237,9 @@ impl OwnWrites {
     pub(crate) fn is_own(&self, path: &VaultPath, file: &Path) -> bool {
         let key = path_key(path);
         let candidates: Vec<(u64, String)> = {
+            let now = self.now();
             let mut journal = self.lock();
-            journal.expire(Instant::now());
+            journal.expire(now);
             journal
                 .by_path
                 .get(&key)
@@ -216,11 +280,62 @@ impl OwnWrites {
         journal.total = journal.by_path.values().map(VecDeque::len).sum();
     }
 
+    /// Запоминает своё переименование или перенос `from → to` **до**
+    /// действия на диске: событие наблюдателя может прийти раньше, чем
+    /// команда вернёт ответ.
+    pub fn record_rename(&self, from: &VaultPath, to: &VaultPath) {
+        let (from, to) = (path_key(from), path_key(to));
+        let bytes = key_bytes(&from) + key_bytes(&to);
+        let now = self.now();
+        let mut journal = self.lock();
+        journal.expire_renames(now);
+        journal.renames.push_back(Rename {
+            from,
+            to,
+            at: now,
+            bytes,
+        });
+        journal.rename_bytes += bytes;
+        while journal.renames.len() > MAX_RENAMES
+            || (journal.rename_bytes > MAX_RENAME_BYTES && journal.renames.len() > 1)
+        {
+            if let Some(oldest) = journal.renames.pop_front() {
+                journal.rename_bytes -= oldest.bytes;
+            }
+        }
+    }
+
+    /// Убирает последнюю запись `from → to` — действие на диске не удалось.
+    pub fn forget_rename(&self, from: &VaultPath, to: &VaultPath) {
+        let (from, to) = (path_key(from), path_key(to));
+        let mut journal = self.lock();
+        if let Some(i) = journal
+            .renames
+            .iter()
+            .rposition(|r| r.from == from && r.to == to)
+            && let Some(removed) = journal.renames.remove(i)
+        {
+            journal.rename_bytes -= removed.bytes;
+        }
+    }
+
+    /// Переименование или перенос `from → to` (о котором сообщил
+    /// наблюдатель) — своё: записано за последние [`RENAME_TTL`] само или
+    /// как часть переименования папки над ним.
+    pub fn is_own_rename(&self, from: &VaultPath, to: &VaultPath) -> bool {
+        let (from, to) = (path_key(from), path_key(to));
+        let now = self.now();
+        let mut journal = self.lock();
+        journal.expire_renames(now);
+        journal.renames.iter().any(|r| r.covers(&from, &to))
+    }
+
     /// Записана ли своя версия с таким хэшем и размером (без чтения
     /// файла) — для тестов хранилища.
     pub fn contains(&self, path: &VaultPath, hash: &str, size: u64) -> bool {
+        let now = self.now();
         let mut journal = self.lock();
-        journal.expire(Instant::now());
+        journal.expire(now);
         journal
             .by_path
             .get(&path_key(path))
@@ -229,6 +344,30 @@ impl OwnWrites {
                     .iter()
                     .any(|v| v.size == size && v.hash.eq_ignore_ascii_case(hash))
             })
+    }
+
+    /// Подставляет часы журнала: дальше «сейчас» — это `now`.
+    #[cfg(test)]
+    pub(crate) fn set_now(&self, now: Instant) {
+        *self
+            .clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(now);
+    }
+
+    /// Число записей о своих переименованиях — для тестов.
+    #[cfg(test)]
+    pub(crate) fn renames(&self) -> usize {
+        let now = self.now();
+        let mut journal = self.lock();
+        journal.expire_renames(now);
+        journal.renames.len()
+    }
+
+    /// Байт ключей в записях о своих переименованиях — для тестов.
+    #[cfg(test)]
+    pub(crate) fn rename_bytes(&self) -> usize {
+        self.lock().rename_bytes
     }
 
     /// Тестовый шов: `observer` вызывается при каждой записи, до неё.
@@ -243,8 +382,9 @@ impl OwnWrites {
     /// Число версий по пути — для тестов.
     #[cfg(test)]
     pub(crate) fn versions(&self, path: &VaultPath) -> usize {
+        let now = self.now();
         let mut journal = self.lock();
-        journal.expire(Instant::now());
+        journal.expire(now);
         journal
             .by_path
             .get(&path_key(path))
@@ -255,6 +395,19 @@ impl OwnWrites {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.lock().total
+    }
+
+    /// «Сейчас» для сроков журнала; в тестах часы можно подставить.
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        if let Some(now) = *self
+            .clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return now;
+        }
+        Instant::now()
     }
 
     fn lock(&self) -> MutexGuard<'_, Journal> {
@@ -390,5 +543,176 @@ mod tests {
             1,
             "новые остаются"
         );
+    }
+
+    // --- Журнал своих переименований (задача 0.2-4.2) ---
+
+    #[test]
+    fn own_rename_recognized_before_command_returns() {
+        // Гонка «событие наблюдателя пришло раньше ответа команды»
+        // воспроизводится детерминированно: часы журнала подставлены, а
+        // «событие» обрабатывается в шве хранилища сразу после переименования
+        // на диске — команда ещё не вернула ответ.
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let dir = tempfile::tempdir().expect("временная папка");
+        std::fs::create_dir(dir.path().join("Папка")).expect("папка");
+        std::fs::write(dir.path().join("Папка/заметка.md"), "x").expect("запись");
+        let own = OwnWrites::new();
+        let t0 = Instant::now();
+        own.set_now(t0);
+        let vault = crate::vault::Vault::open_with(
+            dir.path(),
+            crate::vault::OpenOptions {
+                own_writes: own.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("хранилище");
+
+        let log: Rc<RefCell<Vec<String>>> = Rc::default();
+        let (journal, steps, root) = (own.clone(), log.clone(), dir.path().to_path_buf());
+        crate::vault::after_disk_rename(move || {
+            assert!(
+                root.join("Проекты/заметка.md").exists(),
+                "на диске уже новое имя"
+            );
+            // Событие наблюдателя задержалось почти до конца срока.
+            journal.set_now(t0 + Duration::from_secs(119));
+            let own_folder = journal.is_own_rename(&vp("Папка"), &vp("Проекты"));
+            let own_child =
+                journal.is_own_rename(&vp("Папка/заметка.md"), &vp("Проекты/заметка.md"));
+            steps
+                .borrow_mut()
+                .push(format!("событие: своё={own_folder}, вложенное={own_child}"));
+        });
+        let new_path = vault
+            .rename(&vp("Папка"), "Проекты")
+            .expect("переименование");
+        log.borrow_mut().push("ответ команды".to_owned());
+
+        assert_eq!(new_path, vp("Проекты"));
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                "событие: своё=true, вложенное=true".to_owned(),
+                "ответ команды".to_owned()
+            ]
+        );
+
+        // Перенос — так же: запись до действия.
+        let journal = own.clone();
+        let seen: Rc<RefCell<Option<bool>>> = Rc::default();
+        let flag = seen.clone();
+        crate::vault::after_disk_rename(move || {
+            *flag.borrow_mut() =
+                Some(journal.is_own_rename(&vp("Проекты/заметка.md"), &vp("заметка.md")));
+        });
+        vault
+            .move_entry(&vp("Проекты/заметка.md"), &VaultPath::root())
+            .expect("перенос");
+        assert_eq!(*seen.borrow(), Some(true), "перенос узнан до ответа");
+    }
+
+    #[test]
+    fn failed_rename_leaves_no_entry() {
+        let dir = tempfile::tempdir().expect("временная папка");
+        std::fs::write(dir.path().join("a.md"), "a").expect("запись");
+        std::fs::write(dir.path().join("b.md"), "b").expect("запись");
+        let own = OwnWrites::new();
+        let vault = crate::vault::Vault::open_with(
+            dir.path(),
+            crate::vault::OpenOptions {
+                own_writes: own.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("хранилище");
+        assert!(vault.rename(&vp("a.md"), "b.md").is_err(), "имя занято");
+        assert!(!own.is_own_rename(&vp("a.md"), &vp("b.md")));
+        assert_eq!(own.renames(), 0);
+    }
+
+    #[test]
+    fn own_folder_rename_covers_children() {
+        let own = OwnWrites::new();
+        own.record_rename(&vp("Папка"), &vp("Архив/Папка 2"));
+        assert!(own.is_own_rename(&vp("Папка"), &vp("Архив/Папка 2")));
+        assert!(own.is_own_rename(&vp("Папка/a.md"), &vp("Архив/Папка 2/a.md")));
+        assert!(own.is_own_rename(&vp("Папка/x/y/b.md"), &vp("Архив/Папка 2/x/y/b.md")));
+        // Вложенный путь уехал не туда же — не своё.
+        assert!(!own.is_own_rename(&vp("Папка/a.md"), &vp("Архив/Папка 2/b.md")));
+        assert!(!own.is_own_rename(&vp("Папка/a.md"), &vp("Архив/a.md")));
+        // Похожее имя — не вложенный путь.
+        assert!(!own.is_own_rename(&vp("Папка1/a.md"), &vp("Архив/Папка 21/a.md")));
+        // Обратное направление и чужая пара — не своё.
+        assert!(!own.is_own_rename(&vp("Архив/Папка 2"), &vp("Папка")));
+        assert!(!own.is_own_rename(&vp("Другая"), &vp("Архив/Папка 2")));
+    }
+
+    #[test]
+    fn rename_entry_expires_after_120s() {
+        let own = OwnWrites::new();
+        let t0 = Instant::now();
+        own.set_now(t0);
+        own.record_rename(&vp("a.md"), &vp("b.md"));
+        own.set_now(t0 + Duration::from_millis(119_999));
+        assert!(own.is_own_rename(&vp("a.md"), &vp("b.md")));
+        own.set_now(t0 + Duration::from_secs(120));
+        assert!(
+            !own.is_own_rename(&vp("a.md"), &vp("b.md")),
+            "запись старше 120 с забыта"
+        );
+        assert_eq!(own.renames(), 0);
+    }
+
+    #[test]
+    fn case_and_nfc_insensitive() {
+        let own = OwnWrites::new();
+        // Интерфейс пишет «Мой.md» в NFC, диск отдаёт другой регистр и NFD.
+        own.record_rename(&vp("Проекты/Мой.md"), &vp("Архив/Встреча.md"));
+        assert!(own.is_own_rename(&vp("проекты/Мои\u{306}.md"), &vp("АРХИВ/встреча.md")));
+        // Смена только регистра — тоже своя.
+        own.record_rename(&vp("заметка.md"), &vp("Заметка.md"));
+        assert!(own.is_own_rename(&vp("заметка.md"), &vp("Заметка.md")));
+        // Удаление своих версий записи переименования не трогает.
+        own.forget(&vp("Проекты"));
+        assert!(own.is_own_rename(&vp("Проекты/Мой.md"), &vp("Архив/Встреча.md")));
+    }
+
+    #[test]
+    fn bounded_total() {
+        let own = OwnWrites::new();
+        for n in 0..(MAX_RENAMES + 50) {
+            own.record_rename(&vp(&format!("{n}.md")), &vp(&format!("{n} новая.md")));
+        }
+        assert!(own.renames() <= MAX_RENAMES);
+        assert!(
+            !own.is_own_rename(&vp("0.md"), &vp("0 новая.md")),
+            "старые забыты"
+        );
+        let last = MAX_RENAMES + 49;
+        assert!(
+            own.is_own_rename(&vp(&format!("{last}.md")), &vp(&format!("{last} новая.md"))),
+            "новые остаются"
+        );
+
+        // Предел и по объёму: длинные пути вытесняют старые записи раньше.
+        let own = OwnWrites::new();
+        let long = "д".repeat(250);
+        let deep = (0..40).map(|_| long.as_str()).collect::<Vec<_>>().join("/");
+        // Запись — около 40 КБ ключей: 40 записей больше предела в 1 МБ.
+        for n in 0..40 {
+            own.record_rename(
+                &vp(&format!("{deep}/{n}.md")),
+                &vp(&format!("{deep}/{n}н.md")),
+            );
+        }
+        assert!(own.rename_bytes() <= MAX_RENAME_BYTES);
+        assert!(own.renames() < 40, "старые длинные записи вытеснены");
+        assert!(own.is_own_rename(
+            &vp(&format!("{deep}/39.md")),
+            &vp(&format!("{deep}/39н.md"))
+        ));
     }
 }

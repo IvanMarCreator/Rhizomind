@@ -24,7 +24,9 @@ export type CommandId =
   | 'history.back'
   | 'history.forward'
   | 'tree.rename'
-  | 'tree.delete';
+  | 'tree.delete'
+  | 'panel.backlinks'
+  | 'panel.tags';
 
 export interface HotkeyCommand {
   id: CommandId;
@@ -48,6 +50,9 @@ export const COMMANDS: readonly HotkeyCommand[] = [
   },
   { id: 'history.back', scope: 'window', label: 'hotkeys.command.back', defaults: ['Alt+ArrowLeft'] },
   { id: 'history.forward', scope: 'window', label: 'hotkeys.command.forward', defaults: ['Alt+ArrowRight'] },
+  // Правая боковая панель (С2-3.1): открыть вид или закрыть панель; сочетаний по умолчанию нет.
+  { id: 'panel.backlinks', scope: 'window', label: 'hotkeys.command.backlinks', defaults: [] },
+  { id: 'panel.tags', scope: 'window', label: 'hotkeys.command.tags', defaults: [] },
   { id: 'tree.rename', scope: 'tree', label: 'hotkeys.command.rename', defaults: ['F2'] },
   { id: 'tree.delete', scope: 'tree', label: 'hotkeys.command.delete', defaults: ['Delete'] },
 ];

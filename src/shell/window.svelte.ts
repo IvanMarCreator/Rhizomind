@@ -12,7 +12,9 @@ import {
   openNote,
   parseLayout,
   serializeLayout,
+  withRightPanel,
   type Layout,
+  type RightPanel,
 } from '../core/layout/layout.ts';
 import { NavigationHistory, type HistoryAction } from '../core/history/history.ts';
 import { userMessage } from '../i18n/errors.ts';
@@ -61,6 +63,15 @@ export class WindowModel implements TreeHost {
   #patchSeq = 0;
   /** Не реактивно: служебный учёт очереди, на экран не выводится. */
   #latestPatch: Partial<Record<keyof Settings, number>> = {};
+
+  /**
+   * Записи раскладки (`workspace_write`) идут по одной: пока запись идёт,
+   * новые изменения только отмечаются, а следующая запись берёт последний
+   * снимок раскладки. Старый снимок не записывается после нового.
+   */
+  #layoutWrite: Promise<void> | null = null;
+  /** Раскладка изменилась после начала текущей записи — нужна ещё одна. */
+  #layoutDirty = false;
 
   /** Режим заметки выбран в этом окне (кнопкой или Ctrl+E): чтение настроек его не перебивает. */
   #modeChosen = false;
@@ -148,6 +159,16 @@ export class WindowModel implements TreeHost {
 
   toggleEditorMode(): void {
     this.setEditorMode(this.editorMode === 'live_preview' ? 'source' : 'live_preview');
+  }
+
+  /**
+   * Правая боковая панель (0.2-2.1, С2-3.1): её состояние — в раскладке окна
+   * (поле `side_panel` в `.rhizomind/workspace.json`); `persist` — записать
+   * раскладку (во время перетаскивания границы — нет). Промис — конец записи.
+   */
+  setRightPanel(next: RightPanel, persist: boolean): Promise<void> {
+    this.layout = withRightPanel(this.layout, next);
+    return persist ? this.#saveLayout() : Promise.resolve();
   }
 
   toggleSidebar(): void {
@@ -252,12 +273,29 @@ export class WindowModel implements TreeHost {
     this.canGoForward = this.#history.canGoForward;
   }
 
-  async #saveLayout(): Promise<void> {
-    if (!this.vault) return;
+  /** Записать раскладку: в очередь записей (см. `#layoutWrite`); промис — когда записан последний снимок. */
+  #saveLayout(): Promise<void> {
+    if (!this.vault) return Promise.resolve();
+    this.#layoutDirty = true;
+    this.#layoutWrite ??= this.#drainLayout();
+    return this.#layoutWrite;
+  }
+
+  async #drainLayout(): Promise<void> {
+    // Сначала — ожидание: цикл не завершается синхронно (сериализация может
+    // бросить), и `#layoutWrite` назначен раньше, чем `finally` его сбросит.
+    await Promise.resolve();
     try {
-      await core.workspaceWrite({ workspace: serializeLayout(this.layout) });
-    } catch (error) {
-      this.notify(userMessage(error));
+      while (this.#layoutDirty) {
+        this.#layoutDirty = false;
+        try {
+          await core.workspaceWrite({ workspace: serializeLayout(this.layout) });
+        } catch (error) {
+          this.notify(userMessage(error));
+        }
+      }
+    } finally {
+      this.#layoutWrite = null;
     }
   }
 }

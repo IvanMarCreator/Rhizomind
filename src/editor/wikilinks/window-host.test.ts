@@ -61,3 +61,27 @@ describe('ждущий переход по ссылке', () => {
     expect(await show(MEETING)).toEqual([]);
   });
 });
+
+describe('переход из обратных ссылок (0.2-2.2)', () => {
+  it('к другой заметке: открыть её и, когда редактор готов, поставить курсор на ссылку', async () => {
+    const { host, opened, show } = setup();
+    host.reveal(MEETING, { line: 3, column: 4 });
+    expect(opened).toEqual([MEETING]);
+    expect(await show(MEETING)).toEqual([{ kind: 'arrive', heading: null, at: { line: 3, column: 4 } }]);
+  });
+
+  it('по имени — заметка сверху', async () => {
+    const { host, show } = setup();
+    host.reveal(MEETING, null);
+    expect(await show(MEETING)).toEqual([{ kind: 'arrive', heading: null }]);
+  });
+
+  it('к открытой заметке — сразу, без открытия', () => {
+    const { host, opened } = setup();
+    const events: WikiEvent[] = [];
+    host.subscribe((event) => events.push(event));
+    host.reveal(HOME, { line: 1, column: 0 });
+    expect(opened).toEqual([]);
+    expect(events).toEqual([{ kind: 'arrive', heading: null, at: { line: 1, column: 0 } }]);
+  });
+});

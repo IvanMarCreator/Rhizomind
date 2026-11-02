@@ -116,6 +116,46 @@ describe('checkRegistryChanges', () => {
     }
   });
 
+  describe('записи компонентов Windows по повторному аудиту (решение 117)', () => {
+    const cv = `${HKCU}\\Software\\Microsoft\\Windows\\CurrentVersion`;
+    const keys = [
+      `${explorer}\\BitBucket\\Volume\\{1caf217a-f062-45c3-be6a-63bdc783d216}`,
+      `${cv}\\Internet Settings\\5.0\\Cache\\Content`,
+      `${cv}\\Internet Settings\\5.0\\Cache\\Cookies`,
+      `${cv}\\Internet Settings\\5.0\\Cache\\History`,
+      `${cv}\\Internet Settings\\ZoneMap`,
+      `${HKCU}\\Software\\Microsoft\\OneDrive\\Accounts`,
+    ];
+
+    it('без меток — учтены с номером решения', () => {
+      for (const key of keys) {
+        const r = check(key, '"NukeOnDelete"', 'dword:00000000');
+        expect(r.violations, key).toEqual([]);
+        expect(r.known.map((k) => k.why).join(), key).toContain('решение 117');
+      }
+    });
+
+    it('упоминание приложения в них — нарушение (учёт не снимает проверку метки приложения)', () => {
+      for (const key of keys) expect(check(key, '"Path"', '"D:\\\\Rhizomind\\\\x"').violations, key).toHaveLength(1);
+    });
+
+    it('метка данных в них — нарушение', () => {
+      for (const key of keys) expect(check(key, '"x"', '"trace-vault-ab12"').violations, key).toHaveLength(1);
+    });
+
+    it('подключи (адреса в ZoneMap\\Domains, учётная запись OneDrive) не учтены — фон ОС, а не «учтено»', () => {
+      for (const key of [
+        `${cv}\\Internet Settings\\ZoneMap\\Domains\\example.com`,
+        `${HKCU}\\Software\\Microsoft\\OneDrive\\Accounts\\Personal`,
+        `${cv}\\Internet Settings\\5.0\\Cache\\Extensible Cache`,
+      ]) {
+        const r = check(key, '"x"', '"1"');
+        expect(r.known, key).toEqual([]);
+        expect(r.background, key).toHaveLength(1);
+      }
+    });
+  });
+
   it('прочие изменения без упоминания приложения — фон ОС, не нарушение', () => {
     const r = check(`${HKCU}\\Software\\Mozilla\\Firefox`, '"x"', '"1"');
     expect(r.violations).toEqual([]);
