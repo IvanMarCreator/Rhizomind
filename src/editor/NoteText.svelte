@@ -16,6 +16,7 @@
     mode,
     onOpenLink,
     wiki,
+    onOpenTag,
     focus = false,
     locked = false,
   }: {
@@ -25,6 +26,8 @@
     onOpenLink: (url: string) => void;
     /** Вики-ссылки: переход, разрешение, подсказки (src/editor/wikilinks). */
     wiki?: WikiHost;
+    /** Щелчок по тегу: вид «Теги» с раскрытым тегом (0.2-3.1). */
+    onOpenTag?: (tag: string) => void;
     focus?: boolean;
     /** Заметку удалили: правка запрещена (ввод уже отброшен). */
     locked?: boolean;
@@ -52,6 +55,7 @@
         mode: shownMode,
         onOpenLink: (url) => onOpenLink(url),
         ...(wiki ? { wiki } : {}),
+        onOpenTag: (tag) => onOpenTag?.(tag),
         onChange: (text) => session.edit(text),
       }),
     });
