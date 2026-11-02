@@ -14,6 +14,10 @@
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
+  import { serializeLayout, withRightPanel } from '../core/layout/layout.ts';
+  import { userMessage } from '../i18n/errors.ts';
+  import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
+  import RightPanel from '../sidebar-right/RightPanel.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import Editor from '../editor/Editor.svelte';
   import SaveIndicator from '../editor/SaveIndicator.svelte';
@@ -71,6 +75,35 @@
       notify: (text) => owner.notify(text),
     };
     return new FileTreeState(host);
+  }
+
+  /**
+   * Правая боковая панель (0.2-2.1, С2-3.1): её состояние — в раскладке окна
+   * (поле `side_panel` в `.rhizomind/workspace.json`), запись — целиком, как
+   * у раскладки при переходе между заметками.
+   */
+  const rightPanel = createRightPanel();
+
+  function createRightPanel(): RightPanelModel {
+    const owner = model;
+    return new RightPanelModel({
+      get state() {
+        return owner.layout.rightPanel;
+      },
+      update: (next, persist) => {
+        owner.layout = withRightPanel(owner.layout, next);
+        if (persist) void saveLayout(owner);
+      },
+    });
+  }
+
+  async function saveLayout(owner: WindowModel): Promise<void> {
+    if (!owner.vault) return;
+    try {
+      await core.workspaceWrite({ workspace: serializeLayout(owner.layout) });
+    } catch (error) {
+      owner.notify(userMessage(error));
+    }
   }
 
   /**
@@ -187,6 +220,12 @@
       case 'history.forward':
         model.forward();
         return;
+      case 'panel.backlinks':
+        rightPanel.showView('backlinks');
+        return;
+      case 'panel.tags':
+        rightPanel.showView('tags');
+        return;
       case 'tree.rename':
       case 'tree.delete':
         // Команды дерева: их обрабатывает дерево файлов (FileTree.svelte).
@@ -300,6 +339,8 @@
         readOnly={saveStatus?.kind === 'read_only' || saveStatus?.kind === 'deleted'}
         onBack={() => model.back()}
         onForward={() => model.forward()}
+        panelOpen={rightPanel.open}
+        onTogglePanel={() => rightPanel.toggle()}
       >
         {#snippet status()}
           <SaveIndicator status={saveStatus} />
@@ -326,6 +367,13 @@
         />
       </div>
     </main>
+    {#if rightPanel.open}
+      <!-- Виды подключаются сниппетами `backlinks` / `tags` (задачи 0.2-2.2, 0.2-2.3). -->
+      <RightPanel
+        panel={rightPanel}
+        shortcuts={{ backlinks: shortcutOf('panel.backlinks'), tags: shortcutOf('panel.tags') }}
+      />
+    {/if}
   </div>
   {#if switcherOpen}
     <QuickSwitcher

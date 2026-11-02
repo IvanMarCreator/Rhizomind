@@ -287,6 +287,17 @@ export const ru = {
   'hotkeys.system.clipboard': 'Копировать, вырезать, вставить',
   'hotkeys.system.closeWindow': 'Закрыть окно',
 
+  // 0.2-2.1 Правая боковая панель (С2-3.1, макет П-А)
+  'hotkeys.command.backlinks': 'Обратные ссылки',
+  'hotkeys.command.tags': 'Теги',
+  'rightPanel.label': 'Правая панель',
+  'rightPanel.views': 'Виды правой панели',
+  'rightPanel.view.backlinks': 'Обратные ссылки',
+  'rightPanel.view.tags': 'Теги',
+  'rightPanel.viewWith': '{view} ({shortcut})',
+  'rightPanel.resize': 'Ширина правой панели',
+  'note.header.rightPanel': 'Правая панель',
+
   // Ошибки команд ядра: errors.<code>
   'errors.not_implemented': 'Эта функция ещё не готова.',
   'errors.invalid_argument': 'Ядро отклонило неверные данные запроса.',

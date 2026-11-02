@@ -38,10 +38,32 @@ describe('реестр команд', () => {
       'history.forward': ['Alt+ArrowRight'],
       'tree.rename': ['F2'],
       'tree.delete': ['Delete'],
+      'panel.backlinks': [],
+      'panel.tags': [],
     });
     const all = COMMANDS.flatMap((c) => c.defaults);
     expect(new Set(all).size).toBe(all.length);
     for (const chord of all) expect(checkChord(chord)).toBeNull();
+  });
+});
+
+describe('команды правой панели (0.2-2.1, С2-3.1)', () => {
+  it('«Обратные ссылки» и «Теги» — команды окна без сочетаний по умолчанию (решение 94 не задевается)', () => {
+    const panel = COMMANDS.filter((c) => c.id === 'panel.backlinks' || c.id === 'panel.tags');
+
+    expect(panel.map((c) => [c.id, c.scope, c.label, c.defaults])).toEqual([
+      ['panel.backlinks', 'window', 'hotkeys.command.backlinks', []],
+      ['panel.tags', 'window', 'hotkeys.command.tags', []],
+    ]);
+    expect(bindingsOf({}, 'panel.tags')).toEqual([]);
+  });
+
+  it('назначенное сочетание находит команду', () => {
+    const overrides = assignChord({}, 'panel.backlinks', 'Ctrl+Shift+KeyB', null);
+
+    expect(matchCommand(overrides, key({ key: 'B', code: 'KeyB', ctrlKey: true, shiftKey: true }), 'window')).toBe(
+      'panel.backlinks',
+    );
   });
 });
 
