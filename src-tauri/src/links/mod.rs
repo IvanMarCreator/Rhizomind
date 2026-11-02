@@ -12,10 +12,16 @@
 
 use std::collections::HashMap;
 
-use crate::commands::{CoreError, CoreResult, ErrorCode, LinkSuggestion, VaultPath};
+use crate::commands::{CoreResult, LinkSuggestion, VaultPath};
 use crate::names::{self, KeyedPath, NameKey};
 use crate::switcher::{self, Haystack};
 use crate::vault::NoteRef;
+
+mod view;
+#[cfg(test)]
+mod view_tests;
+
+pub use view::NotesView;
 
 /// Цель вики-ссылки после разбора текста между `[[` и `]]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,21 +129,30 @@ pub fn parse_target(inner: &str) -> Result<LinkTarget, InvalidTarget> {
     })
 }
 
-/// Заметка в списке ссылок с заранее посчитанными ключами.
+/// Заметка с заранее посчитанными ключами — для разрешения и кратчайшего
+/// пути (общий список и вид «после», [`NotesView`]).
 #[derive(Debug)]
-struct Entry {
+struct Note {
     path: VaultPath,
     created_ms: i64,
     /// Папки и имя без `.md` — как пишется путь в ссылке.
     link_path: Vec<String>,
     /// Ключи `link_path`.
     keyed: KeyedPath,
-    /// Место в порядке путей ядра (при равной дате создания).
-    rank: u32,
-    haystack: Haystack,
 }
 
-impl Entry {
+impl Note {
+    /// `None` — не заметка (не `.md`).
+    fn new(note: NoteRef) -> Option<Self> {
+        let link_path = switcher::link_path(&note.path)?;
+        Some(Self {
+            keyed: KeyedPath::new(&link_path),
+            path: note.path,
+            created_ms: note.created_ms,
+            link_path,
+        })
+    }
+
     fn name(&self) -> &str {
         self.link_path.last().map_or("", String::as_str)
     }
@@ -145,6 +160,15 @@ impl Entry {
     fn keys(&self) -> &[NameKey] {
         self.keyed.keys()
     }
+}
+
+/// Заметка общего списка: ещё порядок путей и строка нечёткого поиска.
+#[derive(Debug)]
+struct Entry {
+    note: Note,
+    /// Место в порядке путей ядра (подсказки при равной оценке).
+    rank: u32,
+    haystack: Haystack,
 }
 
 /// Ссылки одного хранилища. Список заметок заменяется целиком при изменении
@@ -169,42 +193,37 @@ impl Links {
     /// Заменяет список заметок (после изменения дерева). Файлы не `.md` в
     /// списке пропускаются. Ключи и порядки считаются здесь, один раз.
     pub fn replace_notes(&mut self, notes: Vec<NoteRef>) {
-        let notes: Vec<(NoteRef, Vec<String>)> = notes
-            .into_iter()
-            .filter_map(|note| {
-                let link_path = switcher::link_path(&note.path)?;
-                Some((note, link_path))
-            })
-            .collect();
-        let keyed: Vec<KeyedPath> = notes
-            .iter()
-            .map(|(_, link_path)| KeyedPath::new(link_path))
-            .collect();
-        let ranks = switcher::natural_ranks(&keyed);
+        let notes: Vec<Note> = notes.into_iter().filter_map(Note::new).collect();
+        // Порядок путей ядра, как `switcher::natural_ranks` (сортировка
+        // устойчивая), — без копии ключей.
+        let mut order: Vec<usize> = (0..notes.len()).collect();
+        order.sort_by(|&a, &b| notes[a].keyed.cmp(&notes[b].keyed));
+        let mut ranks = vec![0; notes.len()];
+        for (rank, i) in order.into_iter().enumerate() {
+            ranks[i] = u32::try_from(rank).unwrap_or(u32::MAX);
+        }
         self.entries = notes
             .into_iter()
-            .zip(keyed.into_iter().zip(ranks))
-            .map(|((note, link_path), (keyed, rank))| Entry {
-                path: note.path,
-                created_ms: note.created_ms,
-                link_path,
-                haystack: Haystack::new(&keyed),
-                keyed,
+            .zip(ranks)
+            .map(|(note, rank)| Entry {
+                haystack: Haystack::new(&note.keyed),
+                note,
                 rank,
             })
             .collect();
         self.by_name.clear();
         for (i, entry) in self.entries.iter().enumerate() {
-            if let Some(name) = entry.keys().last() {
+            if let Some(name) = entry.note.keys().last() {
                 self.by_name.entry(name.clone()).or_default().push(i);
             }
         }
         let mut order: Vec<usize> = (0..self.entries.len()).collect();
         order.sort_by(|&a, &b| {
             let (a, b) = (&self.entries[a], &self.entries[b]);
-            a.keyed
+            a.note
+                .keyed
                 .name_sort_key()
-                .cmp(&b.keyed.name_sort_key())
+                .cmp(&b.note.keyed.name_sort_key())
                 .then(a.rank.cmp(&b.rank))
         });
         self.by_name_order = order;
@@ -226,39 +245,7 @@ impl Links {
     /// дате — первая в порядке путей ядра (`names::natural_cmp`). `from` в
     /// 0.1 на выбор не влияет.
     pub fn resolve(&self, _from: &VaultPath, target: &str) -> CoreResult<Option<VaultPath>> {
-        let Ok(target) = parse_target(target) else {
-            return Ok(None);
-        };
-        let want: Vec<NameKey> = target
-            .folders
-            .iter()
-            .chain(std::iter::once(&target.name))
-            .map(|c| names::key(c))
-            .collect();
-        let Some(group) = want.last().and_then(|name| self.by_name.get(name)) else {
-            return Ok(None);
-        };
-        let hits: Vec<usize> = group
-            .iter()
-            .copied()
-            .filter(|&i| {
-                let keys = self.entries[i].keys();
-                if target.from_root {
-                    keys == want.as_slice()
-                } else {
-                    keys.ends_with(&want)
-                }
-            })
-            .collect();
-        Ok(self.oldest(&hits).map(|i| self.entries[i].path.clone()))
-    }
-
-    /// Самая старая по дате создания, при равной дате — первая по пути.
-    fn oldest(&self, candidates: &[usize]) -> Option<usize> {
-        candidates.iter().copied().min_by_key(|&i| {
-            let e = &self.entries[i];
-            (e.created_ms, e.rank)
-        })
+        Ok(self.view().resolve(target))
     }
 
     /// Подсказки автодополнения по части имени или пути, не больше
@@ -288,11 +275,12 @@ impl Links {
                 .take(switcher::MAX_RESULTS)
                 .collect()
         });
+        let view = self.view();
         Ok(chosen
             .into_iter()
             .map(|i| {
-                let e = &self.entries[i];
-                let text = self.shortest_of(i);
+                let e = &self.entries[i].note;
+                let text = view.shortest_of(view::Id::Base(i));
                 let linkable = text
                     .strip_prefix('/')
                     .unwrap_or(&text)
@@ -319,39 +307,7 @@ impl Links {
     /// `.md` (`Итоги.md.md`), `.md` дописывается — иначе разбор ссылки его
     /// отбросит. Заметки нет в списке — `not_found`.
     pub fn shortest_unique_path(&self, note: &VaultPath) -> CoreResult<String> {
-        self.entries
-            .iter()
-            .position(|e| &e.path == note)
-            .map(|i| self.shortest_of(i))
-            .ok_or_else(|| CoreError::new(ErrorCode::NotFound))
-    }
-
-    fn shortest_of(&self, i: usize) -> String {
-        let me = &self.entries[i];
-        let keys = me.keys();
-        let others: Vec<&[NameKey]> = keys
-            .last()
-            .and_then(|name| self.by_name.get(name))
-            .into_iter()
-            .flatten()
-            .filter(|&&j| j != i)
-            .map(|&j| self.entries[j].keys())
-            .collect();
-        let n = keys.len();
-        if others.is_empty() {
-            link_text(&me.link_path[n - 1..])
-        } else if others.iter().any(|o| o.ends_with(keys)) {
-            // Мой путь — конец пути другой заметки: только путь от корня.
-            format!("/{}", link_text(&me.link_path))
-        } else if others.iter().any(|o| keys.ends_with(o)) {
-            // Путь другой заметки — конец моего: полный путь (С3.4).
-            link_text(&me.link_path)
-        } else {
-            let k = (2..=n)
-                .find(|&k| !others.iter().any(|o| o.ends_with(&keys[n - k..])))
-                .unwrap_or(n);
-            link_text(&me.link_path[n - k..])
-        }
+        self.view().shortest_unique_path(note)
     }
 }
 
