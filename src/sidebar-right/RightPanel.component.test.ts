@@ -1,6 +1,7 @@
 // Правая боковая панель (0.2-2.1, С2-3.1, макет П-А): переключение видов
 // значками, заголовок вида с числом, ширина перетаскиванием и с клавиатуры.
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
+import { createRawSnippet } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RIGHT_PANEL_WIDTH, type RightPanel as PanelState } from '../core/layout/layout.ts';
 import { RightPanelModel } from './panel.svelte.ts';
@@ -114,5 +115,18 @@ describe('правая панель', () => {
     await fireEvent.keyDown(handle, { key: 'End' });
     expect(panel.width).toBe(RIGHT_PANEL_WIDTH.max);
     expect(m.persisted.map((state) => state.width)).toEqual([RIGHT_PANEL_WIDTH.min, RIGHT_PANEL_WIDTH.max]);
+  });
+
+  it('действия заголовка — справа от названия вида, для текущего вида', async () => {
+    const { panel } = model({ view: 'tags' });
+    const headerActions = createRawSnippet((view: () => string) => ({
+      render: () => `<button type="button">действие ${view()}</button>`,
+    }));
+    render(RightPanel, { panel, headerActions });
+
+    const row = screen.getByRole('heading', { level: 2 }).parentElement as HTMLElement;
+    expect(within(row).getByRole('button', { name: 'действие tags' })).toBeTruthy();
+    // Название вида и число — без кнопок внутри заголовка.
+    expect(screen.getByRole('heading', { level: 2 }).textContent?.trim()).toBe('Теги');
   });
 });

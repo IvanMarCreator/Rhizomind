@@ -18,6 +18,7 @@
     shortcuts = { backlinks: null, tags: null },
     backlinks,
     tags,
+    headerActions,
   }: {
     panel: RightPanelModel;
     /** Сочетания команд видов для подсказок (`Ctrl+Shift+B`); `null` — не назначено. */
@@ -26,6 +27,8 @@
     backlinks?: Snippet;
     /** Вид «Теги» (0.2-2.3). */
     tags?: Snippet;
+    /** Действия заголовка текущего вида — справа от названия (порядок тегов, макет П-2). */
+    headerActions?: Snippet<[RightPanelView]>;
   } = $props();
 
   const VIEWS: { view: RightPanelView; label: MessageKey; icon: 'link' | 'hash' }[] = [
@@ -143,12 +146,15 @@
     {/each}
   </div>
 
-  <h2 class="heading">
-    <span class="name">{t(LABELS[panel.view])}</span>
-    {#if count !== null}
-      <span class="count">{count}</span>
-    {/if}
-  </h2>
+  <div class="heading-row">
+    <h2 class="heading">
+      <span class="name">{t(LABELS[panel.view])}</span>
+      {#if count !== null}
+        <span class="count">{count}</span>
+      {/if}
+    </h2>
+    {@render headerActions?.(panel.view)}
+  </div>
 
   <div
     class="body"
@@ -251,14 +257,24 @@
   }
 
   /* Название вида: 11 Semi Bold заглавными, разрядка 6 %, `text/muted`; число `text/faint`; высота 30, слева 14. */
-  .heading {
+  .heading-row {
     display: flex;
     flex: none;
     align-items: center;
     gap: 6px;
     height: 30px;
+    padding-right: 10px;
+  }
+
+  .heading {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 30px;
     margin: 0;
-    padding: 0 10px 0 14px;
+    padding: 0 0 0 14px;
     overflow: hidden;
     font-size: var(--font-size-heading);
     line-height: 14px;

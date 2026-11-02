@@ -18,6 +18,9 @@
   import type { LinkPosition } from '../backlinks/view.svelte.ts';
   import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
   import RightPanel from '../sidebar-right/RightPanel.svelte';
+  import { TagsModel } from '../tags/model.svelte.ts';
+  import TagOrderSwitch from '../tags/TagOrderSwitch.svelte';
+  import Tags from '../tags/Tags.svelte';
   import { applyTheme } from '../theme/theme.ts';
   import Editor from '../editor/Editor.svelte';
   import SaveIndicator from '../editor/SaveIndicator.svelte';
@@ -83,6 +86,8 @@
    * запись — через окно (`WindowModel.setRightPanel`, очередь записей раскладки).
    */
   const rightPanel = createRightPanel();
+  /** Вид «Теги» (0.2-2.3): модель живёт в окне дольше вида (вызов из редактора). */
+  const tagsView = new TagsModel(rightPanel);
 
   function createRightPanel(): RightPanelModel {
     const owner = model;
@@ -381,6 +386,12 @@
       >
         {#snippet backlinks()}
           <Backlinks path={model.currentPath} panel={rightPanel} onOpen={openBacklink} />
+        {/snippet}
+        {#snippet tags()}
+          <Tags model={tagsView} current={model.currentPath} onOpen={(path) => model.open(path)} />
+        {/snippet}
+        {#snippet headerActions(view: RightPanelView)}
+          {#if view === 'tags'}<TagOrderSwitch model={tagsView} />{/if}
         {/snippet}
       </RightPanel>
     {/if}

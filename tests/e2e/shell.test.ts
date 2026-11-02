@@ -99,5 +99,31 @@ describe('оболочка окна', () => {
       await saveScreenshot(browser, `right-panel-${theme}`);
     }
   });
+
+  // 0.2-2.3: вид «Теги» в панели; переключатель порядка — в заголовке справа
+  // (макет П-2). Индекса в ядре ещё нет — «Индекс строится…».
+  it.each(['light', 'dark'] as const)('вид «Теги» открыт, тема %s: снимок экрана', async (theme) => {
+    const { browser } = session;
+    try {
+      const panel = browser.$('aside[aria-label="Правая панель"]');
+      if (!(await panel.isExisting())) await browser.$('button[aria-label="Правая панель"]').click();
+      await panel.waitForDisplayed({ timeout: 10_000 });
+      await panel.$('button[role="tab"][aria-label="Теги"]').click();
+      await browser.execute((name) => {
+        document.documentElement.dataset.theme = name;
+      }, theme);
+      const look = await browser.execute(() => {
+        const aside = document.querySelector('aside[aria-label="Правая панель"]');
+        return {
+          heading: aside?.querySelector('h2')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+          order: aside?.querySelector('h2')?.parentElement?.querySelector('[role="group"]')?.getAttribute('aria-label') ?? '',
+        };
+      });
+      expect(look.heading).toMatch(/^Теги/);
+      expect(look.order).toBe('Порядок тегов');
+    } finally {
+      await saveScreenshot(browser, `right-panel-tags-${theme}`);
+    }
+  });
 });
 
