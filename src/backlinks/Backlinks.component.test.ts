@@ -5,7 +5,14 @@
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BacklinkLine, BacklinkNote, Backlinks as BacklinksData, IndexStatus, VaultPath } from '../api/index.ts';
+import type {
+  BacklinkLine,
+  BacklinkNote,
+  Backlinks as BacklinksData,
+  IndexReply,
+  IndexStatus,
+  VaultPath,
+} from '../api/index.ts';
 import { emitCoreEvent, indexMocks, mockCore, type IndexFake, type RecordedCall } from '../api/testing.ts';
 import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
 import { testPanelHost } from '../sidebar-right/testing.svelte.ts';
@@ -217,4 +224,22 @@ describe('вид «Обратные ссылки»', () => {
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(panel.counts.backlinks).toBeNull();
   });
+
+  it('index:status ready пришёл, пока первый ответ в пути, а ответ — «строится»: перезапрос, не вечное «строится»', async () => {
+    const replies: ((reply: IndexReply<BacklinksData>) => void)[] = [];
+    const source = (): Promise<IndexReply<BacklinksData>> => new Promise((resolve) => replies.push(resolve));
+    mockCore({});
+    const panel = new RightPanelModel(testPanelHost({ open: true }));
+    render(Backlinks, { path: TARGET, panel, onOpen: () => undefined, source });
+    await waitFor(() => expect(replies).toHaveLength(1));
+
+    await emitCoreEvent('index:status', { state: 'ready', done: 10, total: 10 });
+    replies[0]?.({ status: 'index_building', done: 9, total: 10 });
+
+    await waitFor(() => expect(replies).toHaveLength(2));
+    replies[1]?.({ status: 'ready', ...DATA });
+    await waitFor(() => expect(groups()).toHaveLength(3));
+    expect(screen.queryByText(/Индекс строится/)).toBeNull();
+  });
 });
+

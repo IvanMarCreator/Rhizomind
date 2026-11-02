@@ -81,11 +81,16 @@ export class BacklinksView {
     if (this.#path) void this.#fetch();
   }
 
-  /** `index:status`: ход сборки, пока вид ждёт индекс; готов — перезапрос. */
+  /**
+   * `index:status`: ход сборки, пока вид ждёт индекс; готов — перезапрос. Ждёт
+   * и первый ответ (`loading`): он мог уйти до готовности и вернуться с
+   * «строится» — тогда ответ на перезапрос его заменит.
+   */
   indexStatus(status: IndexStatus): void {
-    if (this.state.kind !== 'building') return;
+    const kind = this.state.kind;
+    if (kind !== 'building' && kind !== 'loading') return;
     if (status.state === 'ready') this.refresh();
-    else this.state = { kind: 'building', percent: buildPercent(status.done, status.total) };
+    else if (kind === 'building') this.state = { kind: 'building', percent: buildPercent(status.done, status.total) };
   }
 
   async #fetch(): Promise<void> {

@@ -282,6 +282,9 @@ export class WindowModel implements TreeHost {
   }
 
   async #drainLayout(): Promise<void> {
+    // Сначала — ожидание: цикл не завершается синхронно (сериализация может
+    // бросить), и `#layoutWrite` назначен раньше, чем `finally` его сбросит.
+    await Promise.resolve();
     try {
       while (this.#layoutDirty) {
         this.#layoutDirty = false;
