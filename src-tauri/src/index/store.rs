@@ -293,12 +293,82 @@ impl IndexStore {
 
 /// Заголовок файла: версии проверяются до разбора заметок, чтобы файл другой
 /// версии с другим составом записей давал «версия не та», а не «испорчен».
+/// Версии разбираются только как числа; любое другое значение (строка,
+/// массив, объект) пропускается без накопления в памяти и считается «версия
+/// не та» (ревью 0.2-1.3: подменённый массив на сотни МБ не строится).
 #[derive(Deserialize)]
 struct Header {
     #[serde(default)]
-    format_version: serde_json::Value,
+    format_version: Version,
     #[serde(default)]
-    rules_version: serde_json::Value,
+    rules_version: Version,
+}
+
+/// Номер версии из файла; не целое неотрицательное число — `None`.
+#[derive(Default)]
+struct Version(Option<u64>);
+
+impl Version {
+    fn is(&self, expected: u32) -> bool {
+        self.0 == Some(u64::from(expected))
+    }
+}
+
+impl<'de> Deserialize<'de> for Version {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(VersionVisitor)
+    }
+}
+
+struct VersionVisitor;
+
+impl<'de> serde::de::Visitor<'de> for VersionVisitor {
+    type Value = Version;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("номер версии")
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Version, E> {
+        Ok(Version(Some(v)))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Version, E> {
+        Ok(Version(u64::try_from(v).ok()))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Version, E> {
+        Ok(Version(None))
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Version, E> {
+        Ok(Version(None))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Version, E> {
+        Ok(Version(None))
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Version, E> {
+        Ok(Version(None))
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Version, E> {
+        Ok(Version(None))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Version, A::Error> {
+        while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+        Ok(Version(None))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Version, A::Error> {
+        while map
+            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+            .is_some()
+        {}
+        Ok(Version(None))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -403,9 +473,7 @@ fn note_repr(path: &VaultPath, entry: &NoteEntry) -> NoteRepr {
 /// Записи из байтов файла или причина пересборки.
 fn decode(bytes: &[u8]) -> Result<Vec<(VaultPath, NoteEntry)>, RebuildReason> {
     let header: Header = serde_json::from_slice(bytes).map_err(|_| RebuildReason::Broken)?;
-    if header.format_version != serde_json::json!(FORMAT_VERSION)
-        || header.rules_version != serde_json::json!(RULES_VERSION)
-    {
+    if !header.format_version.is(FORMAT_VERSION) || !header.rules_version.is(RULES_VERSION) {
         return Err(RebuildReason::WrongVersion);
     }
     let file: FileRepr = serde_json::from_slice(bytes).map_err(|_| RebuildReason::Broken)?;

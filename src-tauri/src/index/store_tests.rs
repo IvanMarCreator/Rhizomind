@@ -556,3 +556,36 @@ fn index_json_10k_size() {
     assert_eq!(back.entries().count(), notes);
     assert!(size <= 15 * 1024 * 1024, "{size}");
 }
+
+/// Подменённый файл с огромным массивом вместо версии: «версия не та», а
+/// заголовок не строит значение массива в памяти (ревью 0.2-1.3).
+#[test]
+fn huge_version_value_is_wrong_version() {
+    let t = TestVault::new();
+    let mut raw = b"{\"format_version\":[".to_vec();
+    let items = 4 * 1024 * 1024; // «0,» × 4 М ≈ 8 МБ
+    raw.reserve(items * 2 + 64);
+    for i in 0..items {
+        if i > 0 {
+            raw.push(b',');
+        }
+        raw.push(b'0');
+    }
+    raw.extend_from_slice(b"],\"rules_version\":1,\"notes\":[]}");
+    std::fs::write(t.index_file(), &raw).expect("файл");
+    assert_eq!(rebuild_reason(&t.vault), RebuildReason::WrongVersion);
+    // Та же подмена в rules_version и вложенный объект.
+    let raw = format!(
+        "{{\"format_version\":{FORMAT_VERSION},\"rules_version\":{{\"a\":[[1,2],{{\"b\":3}}]}},\"notes\":[]}}"
+    );
+    std::fs::write(t.index_file(), raw).expect("файл");
+    assert_eq!(rebuild_reason(&t.vault), RebuildReason::WrongVersion);
+    assert!(
+        !store_source().contains("serde_json::Value"),
+        "заголовок не разбирается в serde_json::Value"
+    );
+}
+
+fn store_source() -> &'static str {
+    include_str!("store.rs")
+}
