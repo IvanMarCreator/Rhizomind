@@ -518,7 +518,7 @@ fn building_index_not_written() {
 }
 
 /// Замер (задача 0.2-1.3): `index.json` на 10 000 заметок генератора — не
-/// больше 15 МБ. Запуск:
+/// больше 15 МБ (время записи и чтения — справочно). Запуск:
 /// `cargo test -p rhizomind --lib index::store::tests::index_json_10k_size -- --ignored --nocapture`.
 #[test]
 #[ignore = "замер: --ignored"]
@@ -527,8 +527,14 @@ fn index_json_10k_size() {
     let root = dir.path().join("v10k");
     gen_vault::generate(&root, &gen_vault::Config::new(10_000, 7)).expect("генератор");
     let vault = Vault::open(&root).expect("хранилище");
-    let index = RwLock::new(VaultIndex::new());
-    rebuild(&vault, &index, &|_| {}).expect("собран");
+    // В одном потоке, без `rebuild`: CI запускает замеры `--ignored`
+    // одновременно, а здесь важен размер, а не скорость сборки — не отнимать
+    // ядра у замеров времени (`markdown_parse_10k`, `index_build_10k`).
+    let notes = vault.notes().expect("заметки");
+    let index = RwLock::new(VaultIndex::from_entries(notes.iter().map(|note| {
+        let entry = crate::index::read_entry(&vault, note).expect("заметка");
+        (note.path.clone(), entry)
+    })));
     let start = Instant::now();
     assert_eq!(
         IndexStore::new().write_now(&vault, &index),
