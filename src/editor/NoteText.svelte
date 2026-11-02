@@ -8,6 +8,7 @@
   import { onMount, untrack } from 'svelte';
   import type { EditorMode } from '../api/index.ts';
   import { createEditorState, replaceDocument, setMode, setReadOnly } from './codemirror.ts';
+  import { textStart } from './live-preview/frontmatter.ts';
   import type { NoteSession } from './session.ts';
   import type { WikiHost } from './wikilinks/host.ts';
 
@@ -59,6 +60,9 @@
         onChange: (text) => session.edit(text),
       }),
     });
+    // Курсор — в начало текста под блоком свойств: ввод сразу после открытия не разрушает блок (0.2-3.2).
+    const start = textStart(created.state.doc);
+    if (start > 0) created.dispatch({ selection: { anchor: start } });
     if (focus && !session.readOnly) created.focus();
     view = created;
     // Заметку изменили снаружи, ввода не было: текст с диска, курсор на месте (задача 2.9).
