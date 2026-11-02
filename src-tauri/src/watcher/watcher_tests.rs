@@ -707,3 +707,93 @@ fn note_renamed_and_written_anew_is_a_removal_and_a_creation() {
         collector.payloads()
     );
 }
+
+/// Своё переименование (задача 0.2-4.2): событие наблюдателя приходит,
+/// пока команда хранилища ещё не вернула ответ, — и всё равно узнаётся по
+/// журналу своих переименований. Порядок задан, а не угадан: шов хранилища
+/// после переименования на диске ждёт события, и только потом команда
+/// возвращается. Чужое переименование журнал своим не считает.
+#[test]
+fn own_rename_not_reported_as_external() {
+    use std::sync::{Arc, Mutex};
+
+    use crate::vault::{OpenOptions, Vault};
+
+    let dir = tempfile::tempdir().expect("временная папка");
+    write(dir.path(), "Папка/заметка.md", "своя");
+    write(dir.path(), "чужая.md", "чужая");
+    let own = super::OwnWrites::new();
+    let vault = Vault::open_with(
+        dir.path(),
+        OpenOptions {
+            own_writes: own.clone(),
+            ..Default::default()
+        },
+    )
+    .expect("хранилище");
+    let collector = Collector::default();
+    let _watcher =
+        VaultWatcher::start_with(dir.path(), own.clone(), collector.sink()).expect("слежение");
+
+    let renamed = TreeChange::Renamed {
+        from: vp("Папка"),
+        to: vp("Проекты"),
+    };
+    let verdict: Arc<Mutex<Option<(bool, bool, bool)>>> = Arc::default();
+    {
+        let (collector, own, verdict, renamed) = (
+            collector.clone(),
+            own.clone(),
+            verdict.clone(),
+            renamed.clone(),
+        );
+        crate::vault::after_disk_rename(move || {
+            let arrived = collector.wait_for(WAIT, |_| collector.changes().contains(&renamed));
+            *verdict.lock().expect("итог") = Some((
+                arrived,
+                own.is_own_rename(&vp("Папка"), &vp("Проекты")),
+                own.is_own_rename(&vp("Папка/заметка.md"), &vp("Проекты/заметка.md")),
+            ));
+        });
+    }
+    vault
+        .rename(&vp("Папка"), "Проекты")
+        .expect("переименование");
+    assert_eq!(
+        *verdict.lock().expect("итог"),
+        Some((true, true, true)),
+        "событие до ответа команды узнано как своё: {:?}",
+        collector.payloads()
+    );
+
+    // Перенос в другую папку — тоже свой.
+    let moved = TreeChange::Renamed {
+        from: vp("Проекты/заметка.md"),
+        to: vp("заметка.md"),
+    };
+    vault
+        .move_entry(
+            &vp("Проекты/заметка.md"),
+            &crate::commands::VaultPath::root(),
+        )
+        .expect("перенос");
+    assert!(
+        collector.wait_for(WAIT, |_| collector.changes().contains(&moved)),
+        "нет события о переносе: {:?}",
+        collector.payloads()
+    );
+    assert!(own.is_own_rename(&vp("Проекты/заметка.md"), &vp("заметка.md")));
+
+    // Переименование снаружи — внешнее.
+    fs::rename(dir.path().join("чужая.md"), dir.path().join("другая.md")).expect("перенос");
+    let external = TreeChange::Renamed {
+        from: vp("чужая.md"),
+        to: vp("другая.md"),
+    };
+    assert!(
+        collector.wait_for(WAIT, |_| collector.changes().contains(&external)),
+        "нет события о внешнем переименовании: {:?}",
+        collector.payloads()
+    );
+    assert!(!own.is_own_rename(&vp("чужая.md"), &vp("другая.md")));
+}
