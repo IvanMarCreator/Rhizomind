@@ -228,9 +228,9 @@ function linkDestinations(text: string, line: LineSpan, excluded: Excluded): Lin
   let to = line.to;
   let i = line.from;
   for (;;) {
-    for (let top = stack.at(-1); top && i >= top.close; top = stack.at(-1)) {
+    for (let inner = stack.at(-1); inner && i >= inner.close; inner = stack.at(-1)) {
       stack.pop();
-      i = top.end;
+      i = inner.end;
       to = stack.at(-1)?.close ?? line.to;
     }
     if (i >= to) break;

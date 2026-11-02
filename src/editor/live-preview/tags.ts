@@ -141,7 +141,7 @@ function touches(state: EditorState, tag: TextTag): boolean {
 }
 
 /** Открыть вид «Теги» с раскрытым тегом; `false` — окно не задало, как открыть. */
-function open(view: EditorView, tag: TextTag): boolean {
+function openTag(view: EditorView, tag: TextTag): boolean {
   const opener = view.state.facet(tagOpener);
   if (!opener) return false;
   opener(tag.name);
@@ -200,7 +200,7 @@ export function tagPreview(inBlock: BlockLookup): Extension {
           if (!tag) return false;
           // Курсор в теге или у края — щелчок для правки; открыть — Ctrl+щелчок (как у ссылок, решения 76, 93).
           if (!event.ctrlKey && !event.metaKey && touches(view.state, tag)) return false;
-          if (!open(view, tag)) return false;
+          if (!openTag(view, tag)) return false;
           event.preventDefault();
           return true;
         },
@@ -219,7 +219,7 @@ export function sourceTags(inBlock: BlockLookup): Extension {
           if (event.button !== 0 || (!event.ctrlKey && !event.metaKey)) return false;
           const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
           const tag = pos === null ? null : tagAt(view.state, pos);
-          if (!tag || !open(view, tag)) return false;
+          if (!tag || !openTag(view, tag)) return false;
           event.preventDefault();
           return true;
         },
