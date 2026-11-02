@@ -2,7 +2,9 @@
 // заметки её ввод записывается сразу; заметка, чью запись не удалось
 // завершить, остаётся в памяти — при возврате показывается её текст, а не
 // файл с диска, и повтор записи продолжается. При закрытии окна —
-// `flushForClose()` (задача 0.7): ядро закрывает окно после ответа.
+// `flushForClose()` (задача 0.7): ядро закрывает окно после ответа. Перед
+// переписыванием ссылок ядром — `flushForLinks()` (0.2-5.1, Р7): тот же путь
+// записи, заметки остаются открытыми.
 import { CoreCallError, type FileVersion, type VaultPath } from '../api/index.ts';
 import { userMessage } from '../i18n/errors.ts';
 import { t } from '../i18n/index.ts';
@@ -31,6 +33,12 @@ const MISSING_POLL_MS = 100;
  * таймеры скрытого окна движок может замедлять.
  */
 export const CLOSE_FLUSH_DEADLINE_MS = 7000;
+
+/**
+ * Крайний срок записи перед переписыванием ссылок (`links:flush-requested`,
+ * С2-5.4 шаг 2): ядро ждёт `links_flush_done` те же 10 с, что при закрытии.
+ */
+export const LINKS_FLUSH_DEADLINE_MS = CLOSE_FLUSH_DEADLINE_MS;
 
 /** Запись не завершилась к крайнему сроку закрытия окна (диск не отвечает). */
 export class SaveTooSlow extends Error {
@@ -299,9 +307,25 @@ export class EditorSessions {
    * сохраняет ядро). Возвращает заметки, ввод которых записать не удалось;
    * их текст остаётся в памяти. Удалённые заметки (`removed()`) не пишутся.
    */
-  async flushForClose(): Promise<UnsavedNote[]> {
+  flushForClose(): Promise<UnsavedNote[]> {
+    return this.#flushPending(CLOSE_FLUSH_DEADLINE_MS);
+  }
+
+  /**
+   * Перед переписыванием ссылок ядром (`links:flush-requested`, 0.2-5.1, Р7):
+   * тот же путь записи, что `flushForClose()`, но окно не закрывается —
+   * заметки остаются открытыми, сессии и текст в редакторе те же. Ввод после
+   * ответа и правка ядра встречаются по обычному правилу С3.6 (`changed()`):
+   * без ввода — текст с диска одной правкой, с вводом — обе версии.
+   */
+  flushForLinks(): Promise<UnsavedNote[]> {
+    return this.#flushPending(LINKS_FLUSH_DEADLINE_MS);
+  }
+
+  /** Записать ввод всех заметок и дождаться ответов не дольше `limitMs`. */
+  async #flushPending(limitMs: number): Promise<UnsavedNote[]> {
     const started = performance.now();
-    const deadline = started + CLOSE_FLUSH_DEADLINE_MS;
+    const deadline = started + limitMs;
     const missingUntil = started + MISSING_GRACE_MS;
     // Одна попытка записи каждой заметки; дальше — только ожидание: запись
     // заметки без файла повторяется лишь после `renamed()` (`moveTo`).
