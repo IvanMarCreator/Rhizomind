@@ -6,16 +6,16 @@
   какая заметка показана (ShownNote, задача 2.12, решение 82).
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { core, onCoreEvent } from '../api/index.ts';
+  import { onMount, tick } from 'svelte';
+  import { core, onCoreEvent, type VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
-  import { serializeLayout, withRightPanel } from '../core/layout/layout.ts';
-  import { userMessage } from '../i18n/errors.ts';
+  import Backlinks from '../backlinks/Backlinks.svelte';
+  import type { LinkPosition } from '../backlinks/backlinks.svelte.ts';
   import { RightPanelModel } from '../sidebar-right/panel.svelte.ts';
   import RightPanel from '../sidebar-right/RightPanel.svelte';
   import { applyTheme } from '../theme/theme.ts';
@@ -27,6 +27,7 @@
   import VaultManager from '../vaults/VaultManager.svelte';
   import ContextMenu from './ContextMenu.svelte';
   import type { MenuItem } from './menu.ts';
+  import type { RightPanelView } from '../core/layout/layout.ts';
   import EmptyState from './EmptyState.svelte';
   import { isEngineShortcut } from './engineShortcuts.ts';
   import NoteHeader from './NoteHeader.svelte';
@@ -78,9 +79,8 @@
   }
 
   /**
-   * Правая боковая панель (0.2-2.1, С2-3.1): её состояние — в раскладке окна
-   * (поле `side_panel` в `.rhizomind/workspace.json`), запись — целиком, как
-   * у раскладки при переходе между заметками.
+   * Правая боковая панель (0.2-2.1, С2-3.1): её состояние — в раскладке окна,
+   * запись — через окно (`WindowModel.setRightPanel`, очередь записей раскладки).
    */
   const rightPanel = createRightPanel();
 
@@ -90,20 +90,26 @@
       get state() {
         return owner.layout.rightPanel;
       },
-      update: (next, persist) => {
-        owner.layout = withRightPanel(owner.layout, next);
-        if (persist) void saveLayout(owner);
-      },
+      update: (next, persist) => void owner.setRightPanel(next, persist),
     });
   }
 
-  async function saveLayout(owner: WindowModel): Promise<void> {
-    if (!owner.vault) return;
-    try {
-      await core.workspaceWrite({ workspace: serializeLayout(owner.layout) });
-    } catch (error) {
-      owner.notify(userMessage(error));
-    }
+  /**
+   * Команда реестра «Обратные ссылки» / «Теги». Закрыла панель — фокус, если
+   * он был в панели и пропал вместе с ней, возвращается в текст заметки.
+   */
+  async function showPanelView(view: RightPanelView): Promise<void> {
+    rightPanel.showView(view);
+    if (rightPanel.open) return;
+    await tick();
+    const active = document.activeElement;
+    if (active === null || active === document.body) editor?.focus();
+  }
+
+  /** Вид «Обратные ссылки»: заметка с курсором на ссылке (`at`) или сверху (`null`). */
+  function openBacklink(path: VaultPath, at: LinkPosition | null): void {
+    if (editor) editor.reveal(path, at);
+    else model.open(path);
   }
 
   /**
@@ -221,10 +227,10 @@
         model.forward();
         return;
       case 'panel.backlinks':
-        rightPanel.showView('backlinks');
+        void showPanelView('backlinks');
         return;
       case 'panel.tags':
-        rightPanel.showView('tags');
+        void showPanelView('tags');
         return;
       case 'tree.rename':
       case 'tree.delete':
@@ -372,7 +378,11 @@
       <RightPanel
         panel={rightPanel}
         shortcuts={{ backlinks: shortcutOf('panel.backlinks'), tags: shortcutOf('panel.tags') }}
-      />
+      >
+        {#snippet backlinks()}
+          <Backlinks path={model.currentPath} panel={rightPanel} onOpen={openBacklink} />
+        {/snippet}
+      </RightPanel>
     {/if}
   </div>
   {#if switcherOpen}

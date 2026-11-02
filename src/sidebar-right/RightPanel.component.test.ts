@@ -102,4 +102,17 @@ describe('правая панель', () => {
     await fireEvent.keyDown(handle, { key: 'ArrowRight' });
     expect(panel.width).toBe(290);
   });
+
+  it('ширина с клавиатуры: Home — самая узкая, End — самая широкая', async () => {
+    const m = model();
+    const { panel } = m;
+    render(RightPanel, { panel });
+    const handle = screen.getByRole('separator', { name: 'Ширина правой панели' });
+
+    await fireEvent.keyDown(handle, { key: 'Home' });
+    expect(panel.width).toBe(RIGHT_PANEL_WIDTH.min);
+    await fireEvent.keyDown(handle, { key: 'End' });
+    expect(panel.width).toBe(RIGHT_PANEL_WIDTH.max);
+    expect(m.persisted.map((state) => state.width)).toEqual([RIGHT_PANEL_WIDTH.min, RIGHT_PANEL_WIDTH.max]);
+  });
 });

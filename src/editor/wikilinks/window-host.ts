@@ -7,7 +7,7 @@ import { core, type VaultPath } from '../../api/index.ts';
 import { LIMITS } from '../../api/limits.ts';
 import { userMessage } from '../../i18n/errors.ts';
 import { t } from '../../i18n/index.ts';
-import type { WikiEvent, WikiHost } from './host.ts';
+import type { LinkPosition, WikiEvent, WikiHost } from './host.ts';
 import { followWikilink, type FollowDeps } from './open.ts';
 
 export interface WindowWikiOptions {
@@ -25,14 +25,18 @@ const coreDeps: FollowDeps = {
   noteCreate: async (dir, name) => (await core.noteCreate({ dir, name })).path,
 };
 
+function arrive(heading: string | null, at: LinkPosition | null): WikiEvent {
+  return at ? { kind: 'arrive', heading, at } : { kind: 'arrive', heading };
+}
+
 const samePath = (a: VaultPath, b: VaultPath) => a.length === b.length && a.every((part, i) => part === b[i]);
 
 export class WindowWikiHost implements WikiHost {
   readonly #options: WindowWikiOptions;
   readonly #deps: FollowDeps;
   readonly #listeners = new Set<(event: WikiEvent) => void>();
-  /** Переход (заголовок или начало), когда откроется заметка `path`. */
-  #pending: { path: VaultPath; heading: string | null } | null = null;
+  /** Переход (ссылка, заголовок или начало), когда откроется заметка `path`. */
+  #pending: { path: VaultPath; heading: string | null; at: LinkPosition | null } | null = null;
 
   constructor(options: WindowWikiOptions, deps: FollowDeps = coreDeps) {
     this.#options = options;
@@ -73,11 +77,26 @@ export class WindowWikiHost implements WikiHost {
         this.#emit({ kind: 'arrive', heading: result.heading });
         return;
       }
-      this.#pending = { path: result.path, heading: result.heading };
+      this.#pending = { path: result.path, heading: result.heading, at: null };
       this.#options.openNote(result.path);
     } catch (error) {
       this.#options.notify(t('editor.wikilink.openFailed', { message: userMessage(error) }));
     }
+  }
+
+  /**
+   * Переход из вида «Обратные ссылки» (0.2-2.2): открыть заметку `path` и
+   * поставить курсор на ссылку `at` (`null` — щелчок по имени: в начало),
+   * фокус в текст (решение 86). Открытая заметка — сразу, без нового шага истории.
+   */
+  reveal(path: VaultPath, at: LinkPosition | null): void {
+    const from = this.#options.from();
+    if (from && samePath(path, from)) {
+      this.#emit(arrive(null, at));
+      return;
+    }
+    this.#pending = { path, heading: null, at };
+    this.#options.openNote(path);
   }
 
   /**
@@ -105,7 +124,7 @@ export class WindowWikiHost implements WikiHost {
       // Ждущий переход — только для заметки из ссылки; открылась другая — сброс.
       this.#pending = null;
       if (!samePath(pending.path, from)) return;
-      this.#emit({ kind: 'arrive', heading: pending.heading });
+      this.#emit(arrive(pending.heading, pending.at));
     });
     return () => this.#listeners.delete(listener);
   }

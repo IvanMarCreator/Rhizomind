@@ -102,4 +102,74 @@ describe('правая панель в окне', () => {
     expect(screen.queryByRole('complementary', { name: 'Правая панель' })).toBeNull();
     expect(screen.queryByText(/Раскладка/)).toBeNull();
   });
+
+  it('записи раскладки идут по очереди: последним записывается последнее состояние', async () => {
+    const written: unknown[] = [];
+    let release: (() => void) | undefined;
+    mockCore({
+      ...mocks(V01),
+      workspace_write: ({ workspace }) => {
+        written.push((workspace as { side_panel?: unknown }).side_panel);
+        // Первая запись «висит», пока её не отпустят.
+        if (written.length === 1) return new Promise<null>((resolve) => (release = () => resolve(null)));
+        return null;
+      },
+    });
+    render(Shell, { model: new WindowModel() });
+    const button = await screen.findByRole('button', { name: 'Правая панель' });
+
+    await fireEvent.click(button); // открыта — запись 1 висит
+    await fireEvent.click(screen.getByRole('tab', { name: 'Теги' })); // ждёт
+    await fireEvent.click(button); // закрыта — ждёт
+    expect(written).toHaveLength(1);
+
+    release?.();
+    await waitFor(() => expect(written).toHaveLength(2));
+    // Промежуточный снимок не пишется: следующая запись берёт последнее состояние.
+    expect(written).toEqual([
+      { open: true, view: 'backlinks', width: 300, tag_order: 'name' },
+      { open: false, view: 'tags', width: 300, tag_order: 'name' },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(written).toHaveLength(2);
+  });
+
+  it('запись правой панели — через WindowModel: панель открыта методом окна', async () => {
+    const calls = mockCore(mocks(V01));
+    const model = new WindowModel();
+    render(Shell, { model });
+    await screen.findByRole('button', { name: 'Правая панель' });
+
+    await model.setRightPanel({ ...model.layout.rightPanel, open: true, view: 'tags' }, true);
+
+    expect(screen.getByRole('tab', { name: 'Теги' }).getAttribute('aria-selected')).toBe('true');
+    expect(lastSidePanel(calls)).toEqual({ open: true, view: 'tags', width: 300, tag_order: 'name' });
+  });
+
+  it('при закрытии панели командой фокус возвращается в текст заметки', async () => {
+    mockCore({
+      ...mocks(
+        {
+          ...V01,
+          root: { type: 'pane', id: 'pane-1', tabs: [{ type: 'note', path: ['А.md'] }], active: 0 },
+          side_panel: { open: true, view: 'backlinks', width: 300, tag_order: 'name' },
+        },
+        { 'panel.backlinks': ['Ctrl+Shift+KeyB'] },
+      ),
+      note_read: () => ({ text: 'текст', version: { hash: 'a'.repeat(64), size: 1, modified_ms: 1 }, read_only: null }),
+      links_resolve: ({ targets }) => ({ results: targets.map((target) => ({ target, path: null })) }),
+      backlinks_list: () => ({ status: 'ready', notes_total: 0, truncated: false, notes: [] }),
+    });
+    render(Shell, { model: new WindowModel() });
+    const text = await screen.findByRole('textbox', { name: 'Текст заметки' });
+    const tab = screen.getByRole('tab', { name: 'Обратные ссылки' });
+    tab.focus();
+    expect(document.activeElement).toBe(tab);
+
+    await fireEvent.keyDown(tab, { key: 'B', code: 'KeyB', ctrlKey: true, shiftKey: true });
+
+    expect(screen.queryByRole('complementary', { name: 'Правая панель' })).toBeNull();
+    await waitFor(() => expect(text.contains(document.activeElement)).toBe(true));
+  });
 });
+

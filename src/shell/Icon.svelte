@@ -32,7 +32,8 @@
     | 'chevron-down'
     | 'link'
     | 'hash'
-    | 'panel-right';
+    | 'panel-right'
+    | 'loader-circle';
 </script>
 
 <script lang="ts">
@@ -174,6 +175,8 @@
   {:else if name === 'panel-right'}
     <rect width="18" height="18" x="3" y="3" rx="2" />
     <path d="M15 3v18" />
+  {:else if name === 'loader-circle'}
+    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
   {/if}
 </svg>
 
