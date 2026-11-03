@@ -1379,46 +1379,55 @@ fn check_external_matches_plan(vault: &Vault, renames: &[PathRename]) -> Result<
     );
     // Ссылки по плану внешних переименований ведут туда же — всегда.
     check_same_notes_for(vault, &got, renames)?;
-    if got != expected {
-        // Расхождение допустимо только там, где ошибается сам `plan`: его
-        // сворачивание событий пачки (`collapse`) на цепочках «заметка или
-        // папка ушла и вернулась на своё место» даёт список «после», не
-        // совпадающий с диском, — план называет путь, которого после пачки
-        // нет (заметку плана или `points_to`), или новую цель не как
-        // автодополнение по настоящему списку «после» (найдено этой
-        // сверкой, примеры `external_plan_right_where_plan_collapse_wrong*`).
-        // План внешних переименований при этом верен по настоящему списку.
-        let real = Links::new(now.clone());
-        let exists = |path: &VaultPath| now.iter().any(|n| n.path == *path);
-        let names_missing = |plan: &RelinkPlan| {
-            plan.notes.iter().any(|note| {
-                !exists(&note.path)
-                    || note.links.iter().any(|link| {
-                        !exists(&link.points_to)
-                            || real.shortest_unique_path(&link.points_to).ok().as_deref()
-                                != Some(link.new_target.as_str())
-                    })
-            })
-        };
-        prop_assert!(
-            names_missing(&expected) && !names_missing(&got),
-            "планы разошлись не из-за ошибки `plan`: {:?} против {:?}; {:?}; заметки {:?}",
-            got,
-            expected,
-            renames,
-            notes
-        );
-    }
+    prop_assert_eq!(
+        &got,
+        &expected,
+        "планы разошлись: {:?}; заметки {:?}",
+        renames,
+        notes
+    );
     Ok(())
 }
 
-/// Пример, найденный сверкой `external_plan_matches_plan_events_10000`:
-/// `Альфа/Встреча.md` уходит и возвращается на своё место через папку `Х`,
-/// а `Х/Мой.md` оказывается в корне. План внешних переименований (итог
-/// по заметкам) ведёт `[[Х/Мой]]` в `Мой.md`; `plan` по событиям — в
-/// несуществующую `Альфа/Мой.md` (его ошибка в `collapse`, вне 0.2-6.1).
+/// План внешних переименований для пачки `renames` по списку и индексу
+/// после неё; ничего не выпало.
+fn external_plan_of(vault: &Vault, renames: &[PathRename]) -> (Vault, RelinkPlan) {
+    let after = vault.apply(renames, &RelinkPlan::default());
+    let now: Vec<NoteRef> = after
+        .notes
+        .iter()
+        .map(|(path, created, _)| NoteRef {
+            path: p(path),
+            created_ms: *created,
+        })
+        .collect();
+    let (got, _, dropped) = crate::relink::external::plan(&after.index(), &now, renames);
+    assert!(dropped.is_empty(), "{dropped:?}");
+    (after, got)
+}
+
+/// Заметки плана и `points_to` есть после пачки.
+fn assert_paths_exist(after: &Vault, plan: &RelinkPlan) {
+    let exists = |path: &VaultPath| after.notes.iter().any(|(n, ..)| p(n) == *path);
+    for note in &plan.notes {
+        assert!(exists(&note.path), "нет {:?} в {plan:?}", note.path);
+        for link in &note.links {
+            assert!(
+                exists(&link.points_to),
+                "нет {:?} в {plan:?}",
+                link.points_to
+            );
+        }
+    }
+}
+
+/// Найдено сверкой `external_plan_matches_plan_events_10000` (ошибка
+/// прежнего сворачивания событий): `Альфа/Встреча.md` уходит и
+/// возвращается на своё место через папку `Х`, а `Х/Мой.md` оказывается в
+/// корне. `[[Х/Мой]]` ведёт в `Мой.md`, а не в несуществующую
+/// `Альфа/Мой.md`.
 #[test]
-fn external_plan_right_where_plan_collapse_wrong() {
+fn note_returned_through_renamed_folder() {
     let vault = Vault {
         notes: vec![
             ("Альфа/Встреча.md".into(), 0, "[[Х/Мой]]".into()),
@@ -1426,72 +1435,51 @@ fn external_plan_right_where_plan_collapse_wrong() {
             ("Встреча.md".into(), 0, String::new()),
         ],
     };
-    let r = |from: &str, to: &str| PathRename {
-        from: p(from),
-        to: p(to),
-    };
     let renames = [
-        r("Альфа", "Альфа"),
-        r("Альфа/Встреча.md", "Мой.md"),
-        r("Мой.md", "Х/Встреча.md"),
-        r("Х", "Альфа"),
-        r("Альфа/Мой.md", "Мой.md"),
+        rename("Альфа", "Альфа"),
+        rename("Альфа/Встреча.md", "Мой.md"),
+        rename("Мой.md", "Х/Встреча.md"),
+        rename("Х", "Альфа"),
+        rename("Альфа/Мой.md", "Мой.md"),
     ];
-    let after = vault.apply(&renames, &RelinkPlan::default());
-    let now: Vec<NoteRef> = after
-        .notes
-        .iter()
-        .map(|(path, created, _)| NoteRef {
-            path: p(path),
-            created_ms: *created,
-        })
-        .collect();
-    let (got, _, dropped) = crate::relink::external::plan(&after.index(), &now, &renames);
-    assert!(dropped.is_empty());
-    assert_eq!(got.notes.len(), 1);
-    assert_eq!(got.notes[0].links[0].points_to, p("Мой.md"));
-    check_same_notes_for(&vault, &got, &renames).expect("ведёт туда же");
+    let plan = vault.plan(&renames);
+    assert!(plan.unmatched.is_empty(), "{plan:?}");
+    assert_eq!(
+        plan.notes,
+        vec![NotePlan {
+            path: p("Альфа/Встреча.md"),
+            links: vec![planned("Х/Мой", "Мой", "Мой.md")],
+        }]
+    );
+    let (after, got) = external_plan_of(&vault, &renames);
+    assert_paths_exist(&after, &plan);
+    assert_eq!(got, plan);
+    check_same_notes_for(&vault, &plan, &renames).expect("ведёт туда же");
 }
 
-/// Второй пример той же ошибки `plan`: `Бета/Встреча.md` уходит и
-/// возвращается, а `Х/Встреча.md` проходит через ту же папку `альфа` в
-/// корень. `plan` переписывает заметку по несуществующему пути
-/// `альфа/Встреча.md`; плану внешних переименований переписывать нечего.
+/// Второй найденный случай: `Бета/Встреча.md` уходит и возвращается, а
+/// `Х/Встреча.md` проходит через ту же папку `альфа` в корень. Переписывать
+/// нечего; прежде план называл несуществующую `альфа/Встреча.md`.
 #[test]
-fn external_plan_right_where_plan_collapse_wrong_2() {
+fn note_returned_while_other_passes_through_folder() {
     let vault = Vault {
         notes: vec![
             ("Бета/Встреча.md".into(), 0, String::new()),
             ("Х/Встреча.md".into(), 0, "[[Встреча]]".into()),
         ],
     };
-    let r = |from: &str, to: &str| PathRename {
-        from: p(from),
-        to: p(to),
-    };
     let renames = [
-        r("Бета", "альфа"),
-        r("альфа/Встреча.md", "Бета/Встреча.md"),
-        r("Х", "альфа"),
-        r("альфа/Встреча.md", "Встреча.md"),
+        rename("Бета", "альфа"),
+        rename("альфа/Встреча.md", "Бета/Встреча.md"),
+        rename("Х", "альфа"),
+        rename("альфа/Встреча.md", "Встреча.md"),
     ];
-    let after = vault.apply(&renames, &RelinkPlan::default());
-    let now: Vec<NoteRef> = after
-        .notes
-        .iter()
-        .map(|(path, created, _)| NoteRef {
-            path: p(path),
-            created_ms: *created,
-        })
-        .collect();
-    let (got, _, dropped) = crate::relink::external::plan(&after.index(), &now, &renames);
-    assert!(dropped.is_empty());
-    check_same_notes_for(&vault, &got, &renames).expect("ведёт туда же");
-    assert!(
-        got.notes
-            .iter()
-            .all(|note| after.notes.iter().any(|(n, ..)| p(n) == note.path))
-    );
+    let plan = vault.plan(&renames);
+    assert!(plan.unmatched.is_empty(), "{plan:?}");
+    let (after, got) = external_plan_of(&vault, &renames);
+    assert_paths_exist(&after, &plan);
+    assert_eq!(got, plan);
+    check_same_notes_for(&vault, &plan, &renames).expect("ведёт туда же");
 }
 
 /// Случайная пачка событий, выполнимых на модели диска.

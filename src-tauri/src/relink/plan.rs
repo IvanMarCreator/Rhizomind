@@ -33,8 +33,11 @@ use crate::names::{self, NameKey};
 /// изменения; список «после» строится наложением
 /// ([`Links::after_renames`]), без копии общего списка. Диск не читается.
 ///
-/// `renames` — события по порядку (как их видит наблюдатель): цепочки
-/// `А → Б`, `Б → В` сворачиваются в `А → В`, «туда и обратно» — в ничто.
+/// `renames` — события по порядку (как их видит наблюдатель). Они
+/// выполняются по одному на модели списка заметок (`accept`), и план
+/// считается, как в [`plan_moves`], по итоговым перемещениям заметок:
+/// цепочка `А → Б`, `Б → В` даёт `А → В`, «туда и обратно» — ничего,
+/// заметка, вернувшаяся на место после переименования папки, остаётся.
 /// `replaced` — заметки списка «до», которые пачка затёрла (перенос с
 /// заменой в Проводнике: тот же идентификатор у переносимого файла); их нет
 /// в списке «после», ссылки на них не переписываются (как при удалении).
@@ -74,8 +77,8 @@ pub fn plan(
         .iter()
         .filter_map(|path| before.spelled(path))
         .collect();
-    let (accepted, unmatched) = accept(before, renames, &replaced);
-    let after = before.after_replacing(&replaced, &collapse(&accepted));
+    let (moves, unmatched) = accept(before, renames, &replaced);
+    let after = before.after_replacing(&replaced, &moves);
     plan_after(index, before, &replaced, &after, unmatched)
 }
 
@@ -83,8 +86,8 @@ pub fn plan(
 /// заметок: `moves` — пары «путь заметки в списке `before` → путь после»,
 /// без цепочек и папок (внешние переименования, 0.2-6.1: их проверяет и
 /// сворачивает обратный ход по списку заметок). Проверка событий по
-/// порядку и сворачивание (`accept`, `collapse`) пропускаются — они
-/// квадратичны по числу событий, а здесь событий может быть десятки тысяч.
+/// порядку (`accept`) пропускается — она квадратична по числу событий, а
+/// здесь событий может быть десятки тысяч.
 pub fn plan_moves(index: &VaultIndex, before: &Links, moves: &[PathRename]) -> RelinkPlan {
     let after = before.after_renames(moves);
     plan_after(index, before, &[], &after, Vec::new())
@@ -193,10 +196,11 @@ impl Rules<'_> {
 /// заметкой, которую принесло прошлое событие пачки; не внутрь себя;
 /// «откуда» по ключу не совпадает с «куда» в точном написании (повтор уже
 /// выполненной смены регистра).
-/// Возвращает принятые события с «откуда» в написании состояния (для
-/// точного сворачивания цепочек) и непринятые как есть. Занятость
-/// проверяется до сворачивания, поэтому звено цепочки на занятую цель
-/// помечается, а обмен через временное имя проходит.
+/// Возвращает итоговые перемещения заметок после принятых событий
+/// («путь в списке до → путь после», вернувшиеся на место не входят) и
+/// непринятые события как есть. Занятость проверяется по состоянию после
+/// прошлых событий, поэтому звено цепочки на занятую цель помечается, а
+/// обмен через временное имя проходит.
 fn accept(
     before: &Links,
     renames: &[PathRename],
@@ -207,26 +211,27 @@ fn accept(
         gone: replaced.to_vec(),
         arrived: Vec::new(),
     };
-    let mut accepted = Vec::new();
     let mut unmatched = Vec::new();
     for event in renames {
-        match state.step(event) {
-            Some(from) => accepted.push(PathRename {
-                from,
-                to: event.to.clone(),
-            }),
-            None => unmatched.push(event.clone()),
+        if state.step(event).is_none() {
+            unmatched.push(event.clone());
         }
     }
-    (accepted, unmatched)
+    let moves = state
+        .arrived
+        .into_iter()
+        .filter(|(origin, now)| origin != now)
+        .map(|(from, to)| PathRename { from, to })
+        .collect();
+    (moves, unmatched)
 }
 
-/// Состояние пачки поверх списка «до»: ушедшие заметки списка и пути
-/// заметок, перенесённых принятыми событиями.
+/// Состояние пачки поверх списка «до»: ушедшие заметки списка и заметки,
+/// перенесённые принятыми событиями («путь в списке до», «путь сейчас»).
 struct Overlay<'a> {
     before: &'a Links,
     gone: Vec<VaultPath>,
-    arrived: Vec<VaultPath>,
+    arrived: Vec<(VaultPath, VaultPath)>,
 }
 
 fn keys(path: &[String]) -> Vec<NameKey> {
@@ -240,7 +245,7 @@ fn at_or_inside(path: &[String], at: &[String]) -> bool {
 
 impl Overlay<'_> {
     /// Выполняет событие; `None` — невыполнимо (состояние не меняется).
-    fn step(&mut self, event: &PathRename) -> Option<VaultPath> {
+    fn step(&mut self, event: &PathRename) -> Option<()> {
         let (from, to) = (event.from.components(), event.to.components());
         if from.is_empty() || to.is_empty() {
             return None;
@@ -259,10 +264,10 @@ impl Overlay<'_> {
         let exact_b: Vec<VaultPath> = exact.into_iter().filter(|p| present(p)).collect();
         let keyed_b: Vec<VaultPath> = keyed.into_iter().filter(|p| present(p)).collect();
         let exact_a: Vec<usize> = (0..self.arrived.len())
-            .filter(|&i| at_or_inside(self.arrived[i].components(), from))
+            .filter(|&i| at_or_inside(self.arrived[i].1.components(), from))
             .collect();
         let keyed_a: Vec<usize> = (0..self.arrived.len())
-            .filter(|&i| keys(self.arrived[i].components()).starts_with(&from_keys))
+            .filter(|&i| keys(self.arrived[i].1.components()).starts_with(&from_keys))
             .collect();
         let (moving_b, moving_a) = if exact_b.is_empty() && exact_a.is_empty() {
             (keyed_b, keyed_a)
@@ -274,7 +279,7 @@ impl Overlay<'_> {
         };
         let spellings: HashSet<VaultPath> = moving_b
             .iter()
-            .chain(moving_a.iter().map(|&i| &self.arrived[i]))
+            .chain(moving_a.iter().map(|&i| &self.arrived[i].1))
             .map(prefix)
             .collect();
         if spellings.len() != 1 {
@@ -290,7 +295,7 @@ impl Overlay<'_> {
         freed.extend(moving_b.iter().cloned());
         let busy_b = self.before.occupied(&event.to, &freed);
         let busy_a = (0..self.arrived.len()).any(|i| {
-            !moving_a.contains(&i) && keys(self.arrived[i].components()).starts_with(&to_keys)
+            !moving_a.contains(&i) && keys(self.arrived[i].1.components()).starts_with(&to_keys)
         });
         if busy_b || busy_a {
             return None;
@@ -298,18 +303,13 @@ impl Overlay<'_> {
         let moved = |path: &VaultPath| {
             VaultPath::from_components(to.iter().chain(&path.components()[from.len()..]).cloned())
         };
-        let mut arrived: Vec<VaultPath> = Vec::new();
-        for (i, path) in self.arrived.iter().enumerate() {
-            arrived.push(if moving_a.contains(&i) {
-                moved(path)
-            } else {
-                path.clone()
-            });
+        for &i in &moving_a {
+            self.arrived[i].1 = moved(&self.arrived[i].1);
         }
-        arrived.extend(moving_b.iter().map(moved));
-        self.arrived = arrived;
+        self.arrived
+            .extend(moving_b.iter().map(|path| (path.clone(), moved(path))));
         self.gone.extend(moving_b);
-        Some(canon)
+        Some(())
     }
 }
 
@@ -318,74 +318,6 @@ fn name_key(path: &VaultPath) -> Option<NameKey> {
     crate::switcher::link_path(path)?
         .last()
         .map(|name| names::key(name))
-}
-
-/// Есть ли `path` внутри папки `folder` (строго глубже).
-fn inside<'p>(path: &'p [String], folder: &[String]) -> Option<&'p [String]> {
-    (path.len() > folder.len() && path.starts_with(folder)).then(|| &path[folder.len()..])
-}
-
-/// Сворачивает события по порядку в итоговые «откуда → куда» для
-/// [`Links::after_renames`] (там первое переименование, задевающее
-/// заметку, главнее): переименование того, что уже переименовано, меняет
-/// «куда» прежнего; переименование заметки внутри переименованной папки —
-/// своё переименование от исходного пути, раньше папки; переименования,
-/// вернувшие всё на место, убираются — кроме тех, что держат заметку на
-/// месте против более позднего переименования её папки (`Х → Альфа`,
-/// `Альфа/План.md → Х/План.md`).
-fn collapse(renames: &[PathRename]) -> Vec<PathRename> {
-    let mut out: Vec<PathRename> = Vec::new();
-    for event in renames {
-        let from = event.from.components();
-        if from.is_empty() {
-            out.push(event.clone());
-            continue;
-        }
-        let mut renamed_itself = false;
-        let mut inner: Option<(usize, PathRename)> = None;
-        for (i, done) in out.iter_mut().enumerate() {
-            let current = done.to.components();
-            if current == from {
-                done.to = event.to.clone();
-                renamed_itself = true;
-            } else if let Some(rest) = inside(current, from) {
-                done.to = VaultPath::from_components(event.to.components().iter().chain(rest));
-            } else if let Some(rest) = inside(from, current) {
-                inner.get_or_insert_with(|| {
-                    let original = done.from.components().iter().chain(rest);
-                    (
-                        i,
-                        PathRename {
-                            from: VaultPath::from_components(original),
-                            to: event.to.clone(),
-                        },
-                    )
-                });
-            }
-        }
-        if renamed_itself {
-            continue;
-        }
-        match inner {
-            Some((i, rename)) => out.insert(i, rename),
-            None => out.push(event.clone()),
-        }
-    }
-    // «На месте» убирается, только если его не перекрыло бы более позднее
-    // (менее главное) переименование папки: иначе оно держит заметку на
-    // месте (папку переименовали, заметку вернули обратно).
-    let pinned: Vec<bool> = (0..out.len())
-        .map(|i| {
-            out[i].from == out[i].to
-                && out[i + 1..].iter().any(|later| {
-                    let (mine, theirs) = (out[i].from.components(), later.from.components());
-                    later.from != later.to && inside(mine, theirs).is_some()
-                })
-        })
-        .collect();
-    let mut keep = pinned.into_iter();
-    out.retain(|rename| keep.next().unwrap_or(false) || rename.from != rename.to);
-    out
 }
 
 #[cfg(test)]
