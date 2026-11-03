@@ -1422,22 +1422,29 @@ impl DuplicateShared {
             state.keying = !unkeyed.is_empty();
             unkeyed
         };
-        let keyed = (!unkeyed.is_empty()).then(|| unkeyed.keyed());
-        #[cfg(test)]
-        if let Some(hook) = self
-            .between
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        {
-            (hook.0)();
-        }
+        // Паника при подсчёте не оставляет `keying` поднятым (иначе ответ
+        // «Уточнить» ждал бы под замками списка и очереди): пути
+        // возвращаются в пачку без ключей.
+        let keyed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if let Some(hook) = self
+                .between
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                (hook.0)();
+            }
+            (!unkeyed.is_empty()).then(|| unkeyed.keyed())
+        }));
         let mut state = self.lock();
-        let returned = keyed.is_some();
-        if let Some(keyed) = keyed {
-            state.batch.put_keyed(keyed);
-            state.keying = false;
+        let returned = state.keying;
+        match keyed {
+            Ok(Some(keyed)) => state.batch.put_keyed(keyed),
+            Ok(None) => {}
+            Err(_) => state.batch.put_unkeyed(unkeyed),
         }
+        state.keying = false;
         let due = std::mem::take(&mut state.pending);
         if due {
             state.last = Some(Instant::now());
@@ -1494,10 +1501,14 @@ impl DuplicateShared {
         if state.keying {
             #[cfg(test)]
             self.waiting.fetch_add(1, Ordering::SeqCst);
+            // Предел ожидания: по его истечении пачка забирается без ключей,
+            // которые ещё считаются, — они лягут в следующую пачку с
+            // отметкой об изменении состава (`Batch::put_keyed`).
             state = self
                 .wake
-                .wait_while(state, |state| state.keying)
-                .unwrap_or_else(PoisonError::into_inner);
+                .wait_timeout_while(state, KEYING_WAIT, |state| state.keying)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
             #[cfg(test)]
             self.waiting.fetch_sub(1, Ordering::SeqCst);
         }
@@ -1508,6 +1519,9 @@ impl DuplicateShared {
         Some(std::mem::take(&mut state.batch))
     }
 }
+
+/// Сколько взятие пачки ждёт возврата ключей ([`DuplicateShared::take`]).
+const KEYING_WAIT: Duration = Duration::from_secs(5);
 
 /// Как часто поток повторов имён проверяет, не закрыт ли он.
 const DUPLICATE_POLL: Duration = Duration::from_millis(100);

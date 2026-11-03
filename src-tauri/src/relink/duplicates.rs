@@ -162,14 +162,25 @@ impl Batch {
         }
     }
 
-    /// Возвращает посчитанные ключи ([`Batch::take_unkeyed`]).
+    /// Возвращает посчитанные ключи ([`Batch::take_unkeyed`]). Ключи — это
+    /// изменение состава: если пачку тем временем забрали, ключи ложатся в
+    /// новую пачку с отметкой об изменении, а не теряются.
     pub fn put_keyed(&mut self, keyed: Keyed) {
+        self.touched |= !keyed.born.is_empty() || !keyed.left.is_empty();
         for k in keyed.born {
             // Создание по пути — что бы там ни числилось раньше, теперь там
             // новая заметка.
             self.origin.insert(k, Origin::Born);
         }
         self.left.extend(keyed.left);
+    }
+
+    /// Возвращает пути без ключей как есть (ключи посчитать не удалось):
+    /// их посчитает следующий [`Batch::settle`].
+    pub fn put_unkeyed(&mut self, unkeyed: Unkeyed) {
+        self.touched |= !unkeyed.is_empty();
+        self.fresh.extend(unkeyed.born);
+        self.fresh_left.extend(unkeyed.left);
     }
 
     /// Считает ключи всех путей пачки сразу (перед переименованием,
