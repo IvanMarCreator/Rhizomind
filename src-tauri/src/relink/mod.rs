@@ -29,7 +29,7 @@ mod rewrite;
 mod run;
 pub mod tokens;
 
-pub use plan::plan;
+pub use plan::{plan, plan_moves};
 pub use rewrite::rewrite;
 pub use run::{RunReport, resume_on_open, run};
 

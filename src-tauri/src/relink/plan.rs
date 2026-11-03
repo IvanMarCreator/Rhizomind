@@ -76,6 +76,29 @@ pub fn plan(
         .collect();
     let (accepted, unmatched) = accept(before, renames, &replaced);
     let after = before.after_replacing(&replaced, &collapse(&accepted));
+    plan_after(index, before, &replaced, &after, unmatched)
+}
+
+/// Как [`plan`], но для уже проверенных и свёрнутых перемещений отдельных
+/// заметок: `moves` — пары «путь заметки в списке `before` → путь после»,
+/// без цепочек и папок (внешние переименования, 0.2-6.1: их проверяет и
+/// сворачивает обратный ход по списку заметок). Проверка событий по
+/// порядку и сворачивание (`accept`, `collapse`) пропускаются — они
+/// квадратичны по числу событий, а здесь событий может быть десятки тысяч.
+pub fn plan_moves(index: &VaultIndex, before: &Links, moves: &[PathRename]) -> RelinkPlan {
+    let after = before.after_renames(moves);
+    plan_after(index, before, &[], &after, Vec::new())
+}
+
+/// Общая часть [`plan`] и [`plan_moves`]: решения по ссылкам при списке
+/// «после» `after`.
+fn plan_after(
+    index: &VaultIndex,
+    before: &Links,
+    replaced: &[VaultPath],
+    after: &NotesView<'_>,
+    unmatched: Vec<PathRename>,
+) -> RelinkPlan {
     let moves: HashMap<&VaultPath, &VaultPath> =
         after.moves().iter().map(|(from, to)| (from, to)).collect();
     let names: HashSet<NameKey> = moves
@@ -85,7 +108,7 @@ pub fn plan(
         .collect();
     let rules = Rules {
         before: before.view(),
-        after: &after,
+        after,
         moves: &moves,
     };
     let mut decided: HashMap<&str, Option<(VaultPath, String)>> = HashMap::new();

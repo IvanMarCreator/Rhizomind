@@ -177,9 +177,15 @@ impl VaultEvents {
             let mut index = self.open.write_notes();
             index.apply_observed(&payload.changes, &created_ms, &mut |index, change| {
                 update.before(index, change);
+                // Только переименования, после которых заметка осталась
+                // заметкой (`а.md` → `а.txt` — удаление, решение 90).
                 if let TreeChange::Renamed { from, to } = change
-                    && !index.notes_under(from).is_empty()
                     && external.iter().any(|r| r.from == *from && r.to == *to)
+                    && index.notes_under(from).iter().any(|note| {
+                        moved_under(from, to, note)
+                            .file_name()
+                            .is_some_and(crate::names::is_note)
+                    })
                 {
                     with_notes.push(PathRename {
                         from: from.clone(),
@@ -200,14 +206,8 @@ impl VaultEvents {
                         }
                     }
                     TreeChange::Renamed { from, to } => {
-                        let from_len = from.components().len();
                         for note in index.notes_under(from) {
-                            let moved = VaultPath::from_components(
-                                to.components()
-                                    .iter()
-                                    .chain(&note.components()[from_len..])
-                                    .cloned(),
-                            );
+                            let moved = moved_under(from, to, &note);
                             if moved.file_name().is_some_and(crate::names::is_note) {
                                 push(
                                     &mut notes,
@@ -262,6 +262,16 @@ impl VaultEvents {
         // замков; `index:changed` отправляет поток событий индекса.
         self.open.index.update(vault, update);
     }
+}
+
+/// Путь заметки `note` (под `from`) после переименования `from → to`.
+fn moved_under(from: &VaultPath, to: &VaultPath, note: &VaultPath) -> VaultPath {
+    VaultPath::from_components(
+        to.components()
+            .iter()
+            .chain(&note.components()[from.components().len()..])
+            .cloned(),
+    )
 }
 
 fn push<P: Serialize>(

@@ -292,18 +292,26 @@ fn own_rename_not_processed_twice() {
             .vault
             .rename(&vp("Встреча.md"), "Планёрка.md")
             .expect("переименование");
-        f.open.apply_own(&[TreeChange::Renamed {
+        let event = TreeChange::Renamed {
             from: vp("Встреча.md"),
-            to,
-        }]);
+            to: to.clone(),
+        };
+        // Отбор пачки по журналу своих переименований: своё — не внешнее.
+        assert_eq!(
+            crate::relink::external::confirmed(
+                std::slice::from_ref(&event),
+                f.open.vault.own_writes()
+            ),
+            Vec::new(),
+            "{mode:?}"
+        );
         // Событие наблюдателя о том же переименовании — два раза (повтор
-        // пачки после сверки).
+        // пачки) и раньше, чем команда учла его в списке заметок: по
+        // списку заметок оно ещё выглядит переименованием заметки.
         for _ in 0..2 {
-            f.events.handle(changed(vec![TreeChange::Renamed {
-                from: vp("Встреча.md"),
-                to: vp("Планёрка.md"),
-            }]));
+            f.events.handle(changed(vec![event.clone()]));
         }
+        f.open.apply_own(&[event]);
         f.window.quiet_for(Duration::from_millis(400));
         assert_eq!(f.read("Список.md"), LIST.1, "{mode:?}");
     }
@@ -565,11 +573,245 @@ fn pending_token_bound_to_window() {
         },
     );
     assert!(foreign.is_err());
-    assert!(
-        f.answer(&token, true).is_err(),
-        "знак сгорел и у своего окна"
+    assert_eq!(f.read("Список.md"), LIST.1);
+    // Знак сгорел, но вопрос не потерян: своё окно по сгоревшему знаку
+    // получает свежий вопрос, а не обновление без вопроса.
+    f.window.clear();
+    f.answer(&token, true).expect("ответ");
+    let fresh = f.window.wait(event::LINKS_PENDING);
+    assert_ne!(fresh["token"], json!(token));
+    assert_eq!(f.read("Список.md"), LIST.1);
+}
+
+fn token_of(payload: &Value, field: &str) -> String {
+    payload[field].as_str().expect("знак").to_owned()
+}
+
+/// QA: две неотвеченные пачки «Всегда спрашивать» — А→Б, затем Б→В.
+/// Вопрос один на всю цепочку: старый знак погашен, новый `links:pending`
+/// с обоими переименованиями; ответ обновляет `[[А]]` сразу в `[[В]]`.
+#[test]
+fn qa_chain_two_unanswered_batches() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Ask, true);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let first = token_of(&f.window.wait(event::LINKS_PENDING), "token");
+    f.window.clear();
+    f.rename_outside(&[("Планёрка.md", "Итоги.md")]);
+    let pending = f.window.wait(event::LINKS_PENDING);
+    let second = token_of(&pending, "token");
+    assert_ne!(first, second);
+    assert_eq!(pending["notes"], json!(1));
+    assert_eq!(pending["renames_total"], json!(2));
+    assert_eq!(
+        pending["renames"],
+        json!([
+            { "from": ["Встреча.md"], "to": ["Планёрка.md"] },
+            { "from": ["Планёрка.md"], "to": ["Итоги.md"] },
+        ])
+    );
+    f.window.clear();
+    f.answer(&second, true).expect("ответ");
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(updated["updated"], json!(1));
+    assert_eq!(updated["failed"], json!([]));
+    assert_eq!(
+        f.read("Список.md"),
+        "См. [[Итоги]] и [[Итоги#Итоги|итоги]].\r\n"
+    );
+    // Погашенный знак после ответа на цепочку — ничего не делает.
+    f.window.clear();
+    f.answer(&first, true).expect("погашенный знак");
+    f.window.quiet_for(Duration::from_millis(200));
+}
+
+/// Ответ по погашенному знаку, пока цепочка ещё без ответа, — не тишина и
+/// не обновление без вопроса: свежий `links:pending` на всю цепочку.
+#[test]
+fn superseded_token_reissues_pending() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Ask, true);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let first = token_of(&f.window.wait(event::LINKS_PENDING), "token");
+    f.window.clear();
+    f.rename_outside(&[("Планёрка.md", "Итоги.md")]);
+    let second = token_of(&f.window.wait(event::LINKS_PENDING), "token");
+    f.window.clear();
+    f.answer(&first, true).expect("ответ");
+    let fresh = f.window.wait(event::LINKS_PENDING);
+    assert_eq!(fresh["renames_total"], json!(2));
+    let third = token_of(&fresh, "token");
+    assert!(third != first && third != second);
+    assert_eq!(f.read("Список.md"), LIST.1);
+    f.window.clear();
+    f.answer(&third, true).expect("ответ");
+    f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(
+        f.read("Список.md"),
+        "См. [[Итоги]] и [[Итоги#Итоги|итоги]].\r\n"
+    );
+}
+
+/// QA: «Всегда обновлять», ввод не записан — `busy` и «Повторить»; снаружи
+/// ещё Б→В (ввод снова не записан — новый знак на всю цепочку); повтор
+/// считает план заново и обновляет `[[А]]` в `[[В]]`. Старый знак повтора
+/// — свежий вопрос, а не `{updated: 0, failed: []}`.
+#[test]
+fn qa_retry_after_second_rename() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Update, true);
+    f.window.flush.store(FLUSH_REFUSED, Ordering::SeqCst);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let first = token_of(&f.window.wait(event::LINKS_UPDATED), "retry_token");
+    f.window.clear();
+    f.rename_outside(&[("Планёрка.md", "Итоги.md")]);
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(
+        updated["failed"],
+        json!([{ "path": ["Список.md"], "reason": "busy" }])
+    );
+    assert_eq!(updated["renames_total"], json!(2));
+    let second = token_of(&updated, "retry_token");
+    assert_ne!(first, second);
+
+    f.window.flush.store(FLUSH_SAVED, Ordering::SeqCst);
+    f.window.clear();
+    f.answer(&first, true).expect("старый знак");
+    let fresh = f.window.wait(event::LINKS_PENDING);
+    assert_eq!(fresh["renames_total"], json!(2));
+    assert_eq!(f.read("Список.md"), LIST.1);
+
+    f.window.clear();
+    f.answer(&token_of(&fresh, "token"), true).expect("повтор");
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(updated["updated"], json!(1));
+    assert_eq!(
+        f.read("Список.md"),
+        "См. [[Итоги]] и [[Итоги#Итоги|итоги]].\r\n"
+    );
+}
+
+/// «Повторить» после нового переименования, когда ввод при нём записан:
+/// новая пачка присоединяет неотвеченную цепочку и обновляет всё сразу.
+#[test]
+fn retry_chain_merged_into_next_batch() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Update, true);
+    f.window.flush.store(FLUSH_REFUSED, Ordering::SeqCst);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let retry = token_of(&f.window.wait(event::LINKS_UPDATED), "retry_token");
+    f.window.flush.store(FLUSH_SAVED, Ordering::SeqCst);
+    f.window.clear();
+    f.rename_outside(&[("Планёрка.md", "Итоги.md")]);
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(updated["updated"], json!(1));
+    assert_eq!(updated["renames_total"], json!(2));
+    assert_eq!(
+        f.read("Список.md"),
+        "См. [[Итоги]] и [[Итоги#Итоги|итоги]].\r\n"
+    );
+    f.window.clear();
+    f.answer(&retry, true).expect("погашенный знак");
+    f.window.quiet_for(Duration::from_millis(200));
+}
+
+/// Знак вопроса просрочен: ядро считает план заново и шлёт свежий
+/// `links:pending`, ничего не переписывая без ответа.
+#[test]
+fn expired_token_reissues_pending() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Ask, true);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let token = token_of(&f.window.wait(event::LINKS_PENDING), "token");
+    f.open
+        .relink
+        .advance_tokens(crate::relink::tokens::TTL + Duration::from_secs(1));
+    f.window.clear();
+    f.answer(&token, true).expect("ответ");
+    let fresh = f.window.wait(event::LINKS_PENDING);
+    assert_ne!(token_of(&fresh, "token"), token);
+    assert_eq!(fresh["notes"], json!(1));
+    assert_eq!(f.read("Список.md"), LIST.1);
+}
+
+/// Знак просрочен, а переписывать по цепочке уже нечего — не тишина:
+/// `links:updated` со сбоем `conflict` («проверьте ссылки вручную»).
+#[test]
+fn expired_token_empty_plan_reports_conflict() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Ask, true);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let token = token_of(&f.window.wait(event::LINKS_PENDING), "token");
+    std::fs::remove_file(f.abs("Планёрка.md")).expect("удаление");
+    f.events.handle(changed(vec![TreeChange::Removed {
+        path: vp("Планёрка.md"),
+    }]));
+    f.open
+        .relink
+        .advance_tokens(crate::relink::tokens::TTL + Duration::from_secs(1));
+    f.window.clear();
+    f.answer(&token, true).expect("ответ");
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(updated["reason"], json!("external_rename"));
+    assert_eq!(
+        updated["failed"],
+        json!([{ "path": ["Планёрка.md"], "reason": "conflict" }])
+    );
+    assert_eq!(updated["retry_token"], Value::Null);
+}
+
+/// Переименованную заметку удалили до ответа: переименование выпало из
+/// плана — `conflict`, а не `Ok` без событий.
+#[test]
+fn answer_after_renamed_note_deleted_reports_conflict() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Ask, true);
+    f.rename_outside(&[("Встреча.md", "Планёрка.md")]);
+    let token = token_of(&f.window.wait(event::LINKS_PENDING), "token");
+    std::fs::remove_file(f.abs("Планёрка.md")).expect("удаление");
+    f.events.handle(changed(vec![TreeChange::Removed {
+        path: vp("Планёрка.md"),
+    }]));
+    f.window.clear();
+    f.answer(&token, true).expect("ответ");
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(
+        updated["failed"],
+        json!([{ "path": ["Планёрка.md"], "reason": "conflict" }])
     );
     assert_eq!(f.read("Список.md"), LIST.1);
+}
+
+/// Замер (ревью безопасности 0.2-6.1): план для 10 000 внешних
+/// переименований на 10 000 заметок, каждая ссылается на следующую.
+/// Отладочная сборка — справочно; выпускная (perf-core) — не дольше 1 с.
+#[test]
+#[ignore = "замер: --release --ignored perf_ (perf-core)"]
+fn perf_external_plan_10000_renames() {
+    const N: usize = 10_000;
+    let dir = tempfile::tempdir().expect("папка");
+    for i in 0..N {
+        let text = format!("[[н{}]]\n", (i + 1) % N);
+        std::fs::write(dir.path().join(format!("м{i}.md")), text).expect("заметка");
+    }
+    let vault = Vault::open(dir.path()).expect("хранилище");
+    let index = std::sync::RwLock::new(crate::index::VaultIndex::new());
+    crate::index::rebuild(&vault, &index, &|_| {}).expect("индекс");
+    let index = index.into_inner().expect("индекс");
+    let now = vault.notes().expect("заметки");
+    let renames: Vec<crate::commands::PathRename> = (0..N)
+        .map(|i| crate::commands::PathRename {
+            from: vp(&format!("н{i}.md")),
+            to: vp(&format!("м{i}.md")),
+        })
+        .collect();
+    let start = Instant::now();
+    let (plan, kept, dropped) = super::plan(&index, &now, &renames);
+    let took = start.elapsed();
+    println!(
+        "perf_external_plan_10000_renames: {} мс, заметок {}, ссылок {}",
+        took.as_millis(),
+        plan.note_count(),
+        plan.link_count()
+    );
+    assert_eq!((kept.len(), dropped.len()), (N, 0));
+    assert_eq!(plan.link_count(), N);
+    if !cfg!(debug_assertions) {
+        assert!(took <= Duration::from_secs(1), "{took:?}");
+    }
 }
 
 /// Переименование туда и обратно в одной пачке — переписывать нечего.
@@ -654,4 +896,34 @@ fn windows_checkout_like_replace_is_not_rename() {
     }
     w.f.window.quiet_for(Duration::from_millis(600));
     assert_eq!(w.f.read("Список.md"), LIST.1);
+}
+
+/// Обмен именами через временное имя (путь после одной заметки — путь до
+/// другой): индекс «до» строится заново, ссылки ведут туда же.
+#[test]
+fn swap_names_keeps_links_pointing_same() {
+    let f = fixture(
+        &[
+            ("А.md", "# А\n"),
+            ("Б.md", "# Б\n"),
+            ("Список.md", "[[А]] [[Б]]\n"),
+            ("Из А.md", "[[Б]]\n"),
+        ],
+        RenameLinks::Update,
+        true,
+    );
+    f.rename_outside(&[("А.md", "В.md"), ("Б.md", "А.md"), ("В.md", "Б.md")]);
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(updated["failed"], json!([]));
+    assert_eq!(f.read("Список.md"), "[[Б]] [[А]]\n");
+    assert_eq!(f.read("Из А.md"), "[[А]]\n");
+}
+
+/// Смена только регистра снаружи — ссылки и так ведут туда же (Р2).
+#[test]
+fn case_only_rename_rewrites_nothing() {
+    let f = fixture(&[MEETING, LIST], RenameLinks::Update, true);
+    f.rename_outside(&[("Встреча.md", "встреча.md")]);
+    f.window.quiet_for(Duration::from_millis(400));
+    assert_eq!(f.read("Список.md"), LIST.1);
 }
