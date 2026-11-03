@@ -382,6 +382,68 @@ fn new_question_replaces_old() {
     assert_eq!(f.read("Другие/00.md"), "[[Альфа/План]]\n");
 }
 
+/// Ответ «Уточнить» пришёл ровно между взятием путей без ключей и
+/// возвратом ключей пачки (`DuplicateShared::settled`): уточняется сразу и
+/// новая заметка этой пачки, без ожидания следующего изменения состава.
+#[test]
+fn answer_between_unkeyed_and_keyed_clarifies_new_notes() {
+    let refs = referring(21);
+    let mut files: Vec<(&str, &str)> = refs.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    files.push(MEETING);
+    files.push(("Другие/00.md", "[[План]]\n"));
+    files.push(("Альфа/План.md", "# План\n"));
+    let f = fixture(&files, RenameLinks::Ask, true);
+
+    f.create_outside(&["Бета/Встреча.md"]);
+    let pending = f.window.wait(event::LINKS_PENDING);
+    f.window.clear();
+
+    let answer: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> = Arc::default();
+    let (open, window, slot) = (
+        Arc::clone(&f.open),
+        Arc::clone(&f.window),
+        Arc::clone(&answer),
+    );
+    let token = pending["token"].as_str().expect("знак").to_owned();
+    f.open
+        .relink
+        .duplicates()
+        .set_between(crate::commands::BetweenHook(Box::new(move || {
+            let shared = Arc::clone(&open);
+            let thread = std::thread::spawn(move || {
+                crate::commands::relink_answer_blocking(
+                    &open,
+                    &*window,
+                    LABEL,
+                    RelinkAnswerRequest {
+                        token: RelinkToken(token),
+                        apply: true,
+                    },
+                )
+                .expect("ответ");
+            });
+            // Ответ либо выполнен целиком, либо ждёт возврата ключей.
+            while !thread.is_finished() && shared.relink.duplicates().waiting() == 0 {
+                std::thread::yield_now();
+            }
+            *slot.lock().expect("ответ") = Some(thread);
+        })));
+    f.create_outside(&["Бета/План.md"]);
+    answer
+        .lock()
+        .expect("ответ")
+        .take()
+        .expect("шов сработал")
+        .join()
+        .expect("ответ");
+
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(updated["reason"], json!("duplicate"));
+    assert_eq!(updated["updated"], json!(22), "вместе с новой заметкой");
+    assert_eq!(f.read("Ссылки/00.md"), "[[Альфа/Встреча]]\n");
+    assert_eq!(f.read("Другие/00.md"), "[[Альфа/План]]\n");
+}
+
 /// Правка текста никогда не запускает уточнение — даже если в хранилище
 /// уже есть неоднозначная ссылка (повтор появился, пока приложение было
 /// закрыто) и правка добавляет ещё одну.

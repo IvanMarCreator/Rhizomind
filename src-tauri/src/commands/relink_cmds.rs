@@ -1308,6 +1308,24 @@ enum DuplicateAnswer {
 pub struct DuplicateShared {
     state: Mutex<DuplicateState>,
     wake: Condvar,
+    /// Шов тестов: вызывается в [`DuplicateShared::settled`] между взятием
+    /// путей без ключей и возвратом ключей.
+    #[cfg(test)]
+    between: Mutex<Option<BetweenHook>>,
+    /// Сколько взятий пачки сейчас ждут возврата ключей (тесты).
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+/// Шов тестов [`DuplicateShared::settled`].
+#[cfg(test)]
+pub struct BetweenHook(pub Box<dyn FnOnce() + Send>);
+
+#[cfg(test)]
+impl std::fmt::Debug for BetweenHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BetweenHook")
+    }
 }
 
 #[derive(Debug)]
@@ -1318,6 +1336,11 @@ struct DuplicateState {
     last: Option<Instant>,
     /// Изменение состава учтено, индекс по нему ещё обновляется.
     pending: bool,
+    /// Пути без ключей взяты из пачки и считаются вне замка
+    /// ([`DuplicateShared::settled`]): пачку не забирать, пока ключи не
+    /// вернулись, иначе новые заметки уйдут в следующую пачку без отметки
+    /// об изменении состава.
+    keying: bool,
     quiet: Duration,
 }
 
@@ -1327,6 +1350,7 @@ impl Default for DuplicateState {
             batch: Batch::default(),
             last: None,
             pending: false,
+            keying: false,
             quiet: duplicates::QUIET,
         }
     }
@@ -1389,20 +1413,52 @@ impl DuplicateShared {
     /// Пачка наблюдателя применена к списку и индексу: затишье — с этого
     /// момента.
     pub fn settled(&self) {
-        // Ключи появившихся и ушедших заметок — вне замков (поток повторов
-        // пачку не возьмёт: она ещё `pending`).
-        let unkeyed = self.lock().batch.take_unkeyed();
+        // Ключи появившихся и ушедших заметок — вне замков. Поток повторов
+        // пачку не возьмёт (она ещё `pending`), а ответ «Уточнить» ждёт
+        // возврата ключей (`keying`).
+        let unkeyed = {
+            let mut state = self.lock();
+            let unkeyed = state.batch.take_unkeyed();
+            state.keying = !unkeyed.is_empty();
+            unkeyed
+        };
         let keyed = (!unkeyed.is_empty()).then(|| unkeyed.keyed());
+        #[cfg(test)]
+        if let Some(hook) = self
+            .between
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            (hook.0)();
+        }
         let mut state = self.lock();
+        let returned = keyed.is_some();
         if let Some(keyed) = keyed {
             state.batch.put_keyed(keyed);
+            state.keying = false;
         }
-        if state.pending {
-            state.pending = false;
+        let due = std::mem::take(&mut state.pending);
+        if due {
             state.last = Some(Instant::now());
-            drop(state);
+        }
+        drop(state);
+        if due || returned {
             self.wake.notify_all();
         }
+    }
+
+    /// Шов тестов: `hook` выполнится в следующем [`Self::settled`] между
+    /// взятием путей без ключей и возвратом ключей.
+    #[cfg(test)]
+    pub fn set_between(&self, hook: BetweenHook) {
+        *self.between.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
+    }
+
+    /// Сколько взятий пачки ждут возврата ключей (тесты).
+    #[cfg(test)]
+    pub fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::SeqCst)
     }
 
     /// Ждёт затишья пачки. `false` — поток закрыт.
@@ -1430,9 +1486,21 @@ impl DuplicateShared {
         let _ = self.wake.wait_timeout(state, pause);
     }
 
-    /// Забирает пачку (`due` — только если затишье прошло).
+    /// Забирает пачку (`due` — только если затишье прошло). Пока ключи
+    /// новых заметок считаются вне замка ([`Self::settled`]), ждёт их
+    /// возврата: пачка забирается целиком.
     fn take(&self, due: bool) -> Option<Batch> {
         let mut state = self.lock();
+        if state.keying {
+            #[cfg(test)]
+            self.waiting.fetch_add(1, Ordering::SeqCst);
+            state = self
+                .wake
+                .wait_while(state, |state| state.keying)
+                .unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
+        }
         if due && state.remaining(Instant::now()) != Some(Duration::ZERO) {
             return None;
         }
