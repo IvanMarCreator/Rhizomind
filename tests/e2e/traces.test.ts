@@ -1,8 +1,15 @@
 // Тест следов и флагов на ВЫПУСКНОЙ сборке (Windows; план 0.1, задача 0.3,
 // ADR 0007). Без WebDriver: msedgedriver подменил бы папку данных.
 //
-// Сценарий (задача 0.6б): приложение открывает тестовое хранилище из
-// vaults.json, в заметку вводится текст, окно закрывается. Снимки
+// Сценарий (задача 0.6б; с 0.2 — задача 0.2-8.1, С2-4, С2-6, С2-9 п. 8):
+// приложение открывает тестовое хранилище без индекса из vaults.json, в
+// заметку вводится текст; после сборки индекса (`.rhizomind/index.json`)
+// заметка с обратными ссылками переименовывается в дереве с ответом «Обновить
+// ссылки» и галочкой «Больше не спрашивать» (настройка становится «Всегда
+// обновлять ссылки»); другая заметка переименовывается снаружи (`rename`, как
+// `mv`) — ссылки обновляются без вопроса; окно закрывается. Внутри хранилища
+// `index.json` и `link-update.json` (во время плана) появляются только в
+// `.rhizomind/`, после выхода `.rhizomind/tmp/` пуста и журнала нет. Снимки
 // %LOCALAPPDATA%, %APPDATA%, %TEMP% до запуска, во время работы и после
 // выхода; экспорт реестра HKCU до запуска и после выхода (tools/traces/registry.ts).
 // Вне хранилища меняются только временная папка WebView2
@@ -13,7 +20,20 @@
 // запущен с защищёнными флагами.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+} from 'node:fs';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -162,6 +182,115 @@ $ws.SendKeys('^{END}'); $ws.SendKeys(' ${text}'); Start-Sleep -Milliseconds 3000
   return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' }).trim();
 }
 
+// Переименование в дереве выпускной сборки (как в relink-app.test.ts, но без
+// WebDriver): строку `old` находит UI Automation (у строки дерева имя — её
+// aria-label), щелчок мышью по её середине выбирает строку и ставит фокус в
+// дерево, F2 — поле «Новое имя», новое имя — SendKeys (только латиница, цифры,
+// дефис). В окне вопроса — галочка «Больше не спрашивать» (TogglePattern) и
+// «Обновить ссылки» (InvokePattern). Кириллица подписей и имён передаётся в
+// PowerShell base64, а не строкой команды.
+function renameInTree(pid: number, oldName: string, newName: string): string {
+  const args = Buffer.from(
+    JSON.stringify({ old: oldName, name: newName, field: 'Новое имя', dontAsk: 'Больше не спрашивать', update: 'Обновить ссылки' }),
+    'utf8',
+  ).toString('base64');
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+Add-Type -Name Mouse -Namespace RhzTrace -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+[DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, System.UIntPtr extra);
+'@
+[RhzTrace.Mouse]::SetProcessDPIAware() | Out-Null
+$a = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${args}')) | ConvertFrom-Json
+$ws = New-Object -ComObject WScript.Shell
+$AE = [System.Windows.Automation.AutomationElement]
+$CT = [System.Windows.Automation.ControlType]
+function Find-Named($type, $name) {
+  $p = Get-Process -Id ${pid}
+  if ($p.MainWindowHandle -eq 0) { return $null }
+  $root = $AE::FromHandle($p.MainWindowHandle)
+  $cond = New-Object System.Windows.Automation.AndCondition(
+    (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $type)),
+    (New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $name)))
+  return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+}
+function Wait-Named($type, $name, $seconds) {
+  for ($i = 0; $i -lt ($seconds * 4); $i++) {
+    $e = Find-Named $type $name
+    if ($e -and $e.Current.IsEnabled) { return $e }
+    Start-Sleep -Milliseconds 250
+  }
+  return $null
+}
+for ($i = 0; $i -lt 40 -and -not $ws.AppActivate(${pid}); $i++) { Start-Sleep -Milliseconds 250 }
+Start-Sleep -Milliseconds 500
+$ws.SendKeys('{ESC}'); Start-Sleep -Milliseconds 300
+$field = $null
+for ($attempt = 1; $attempt -le 3 -and -not $field; $attempt++) {
+  $row = Wait-Named $CT::TreeItem $a.old 10
+  if (-not $row) { continue }
+  $r = $row.Current.BoundingRectangle
+  [RhzTrace.Mouse]::SetCursorPos([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) | Out-Null
+  [RhzTrace.Mouse]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); [RhzTrace.Mouse]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds (700 * $attempt)
+  $ws.SendKeys('{F2}')
+  $field = Wait-Named $CT::Edit $a.field 5
+}
+if (-not $field) { 'no-rename-field'; exit 0 }
+$field.SetFocus(); Start-Sleep -Milliseconds 300
+$ws.SendKeys('^a'); $ws.SendKeys($a.name); Start-Sleep -Milliseconds 300
+$ws.SendKeys('{ENTER}')
+# Пока индекс строится, галочка недоступна (решение 114): ждём её доступности.
+$check = Wait-Named $CT::CheckBox $a.dontAsk 60
+if (-not $check) { 'no-question'; exit 0 }
+$toggle = $check.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+if ($toggle.Current.ToggleState -ne 'On') { $toggle.Toggle() }
+Start-Sleep -Milliseconds 300
+if ($toggle.Current.ToggleState -ne 'On') { 'dont-ask-not-checked'; exit 0 }
+$button = Wait-Named $CT::Button $a.update 10
+if (-not $button) { 'no-update-button'; exit 0 }
+$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+'renamed-ok'
+`;
+  return execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' }).trim();
+}
+
+// --- метки данных в файлах --------------------------------------------------
+
+/** Метки данных в путях и содержимом файлов (UTF-8 и UTF-16): «путь: метка». */
+function markersInFiles(paths: string[], markers: string[]): { hits: string[]; unreadable: string[] } {
+  const hits: string[] = [];
+  const unreadable: string[] = [];
+  const needles = markers.map((m) => ({ m, utf8: Buffer.from(m, 'utf8'), utf16: Buffer.from(m, 'utf16le') }));
+  for (const p of paths) {
+    for (const m of markers) if (p.toLowerCase().includes(m.toLowerCase())) hits.push(`${p}: ${m} (в пути)`);
+    if (p.endsWith(path.sep)) continue;
+    let bytes: Buffer;
+    try {
+      if (statSync(p).size > 64 * 1024 * 1024) {
+        unreadable.push(`${p} (больше 64 МБ)`);
+        continue;
+      }
+      bytes = readFileSync(p);
+    } catch {
+      unreadable.push(p); // заблокирован или исчез
+      continue;
+    }
+    for (const { m, utf8, utf16 } of needles) if (bytes.includes(utf8) || bytes.includes(utf16)) hits.push(`${p}: ${m}`);
+  }
+  return { hits, unreadable };
+}
+
+/** Все файлы папки (относительные пути), с вложенными. */
+function filesIn(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((e) => !e.isDirectory())
+    .map((e) => path.relative(dir, path.join(e.parentPath, e.name)));
+}
+
 // --- процессы --------------------------------------------------------------
 
 interface ProcessInfo {
@@ -293,6 +422,25 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   const typedText = `trace-text-${hex()}`;
   const vaultDir = path.join(REG_DIR, vaultName);
   const noteFile = path.join(vaultDir, `${noteName}.md`);
+  // Сценарий 0.2: «узел» с тегом и заголовком (метки), на него ссылаются две
+  // заметки; его переименовывают в дереве. Вторую цель переименовывают снаружи.
+  // Новые имена — латиница: их вводит SendKeys.
+  const hubName = `узел-${hex()}`;
+  const hubNewName = `hub-renamed-${hex()}`;
+  const tag = `tag${hex()}`;
+  const heading = `Раздел ${hex()}`;
+  const extName = `ext-${hex()}`;
+  const extNewName = `ext-moved-${hex()}`;
+  const referrers = ['Ссылки/Первая.md', 'Вторая.md'];
+  const referrerText = (hub: string, ext: string, i: number) => `Заметка ${i}: [[${hub}]], [[${hub}#${heading}|раздел]] и [[${ext}]].\n`;
+  const hubText = `# ${heading}\n\nТекст узла #${tag}.\n`;
+  // Метки данных: не должны встретиться вне хранилища нигде (файлы, реестр).
+  const dataMarkers = [noteName, typedText, hubName, hubNewName, tag, heading, extName, extNewName];
+  const serviceDir = path.join(vaultDir, '.rhizomind');
+  // События файлов в хранилище (fs.watch): где появлялись index.json и link-update.json.
+  const vaultEvents = new Set<string>();
+  let vaultWatcher: FSWatcher | undefined;
+  let renaming = '';
   // Подмена vaults.json — только при явной переменной (в CI выставлена):
   // на машине владельца тест не трогает его список хранилищ без спроса.
   // Прежний файл сохраняется на диск рядом и восстанавливается в конце или,
@@ -321,6 +469,8 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   let registryBefore: RegExport;
   let during: Snapshot;
   let dataDir = '';
+  /** Полный путь временной папки движка (как в снимках): после выхода её нет и realpath не сработает. */
+  let dataDirReal = '';
   let browser: ProcessInfo | undefined;
   let engine: ProcessInfo[] = [];
 
@@ -334,8 +484,12 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     restoreVaults(); // остаток прерванного прошлого запуска
     if (vaultScenario) {
       // Хранилище и список хранилищ: приложение откроет его при запуске (последнее открытое).
-      mkdirSync(vaultDir, { recursive: true });
+      // Хранилище без индекса: `.rhizomind/` создаст приложение.
+      mkdirSync(path.join(vaultDir, 'Ссылки'), { recursive: true });
       writeFileSync(noteFile, 'Заметка теста следов.\n');
+      writeFileSync(path.join(vaultDir, `${hubName}.md`), hubText);
+      writeFileSync(path.join(vaultDir, `${extName}.md`), `Внешняя цель.\n`);
+      referrers.forEach((name, i) => writeFileSync(path.join(vaultDir, name), referrerText(hubName, extName, i)));
       const existed = existsSync(vaultsFile);
       const profileExisted = existsSync(profileDir);
       mkdirSync(profileDir, { recursive: true });
@@ -371,12 +525,18 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     });
     exitCode = new Promise((resolve) => app.once('exit', (code) => resolve(code)));
     const pid = app.pid ?? 0;
+    if (vaultScenario) {
+      vaultWatcher = watch(vaultDir, { recursive: true }, (_event, name) => {
+        if (name) vaultEvents.add(String(name));
+      });
+    }
 
     dataDir = await waitFor('временная папка движка', 30_000, () =>
       readdirSync(temp)
         .filter((n) => n.startsWith(`rhizomind-webview-${pid}-`))
         .map((n) => path.join(temp, n))[0],
     );
+    dataDirReal = real(dataDir);
     browser = await waitFor('процесс браузера WebView2', 30_000, () =>
       processes().find((p) => p.ParentProcessId === pid && p.Name.toLowerCase() === 'msedgewebview2.exe'),
     );
@@ -385,12 +545,42 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     if (vaultScenario) {
       typing = typeIntoNote(pid, noteKey, typedText);
       console.log(`ввод в заметку: ${typing}`);
+      // Индекс собран и записан: первая запись — не раньше 30 с после открытия.
+      const indexFile = path.join(serviceDir, 'index.json');
+      await waitFor('сборка индекса (.rhizomind/index.json)', 90_000, () => (existsSync(indexFile) ? true : undefined));
+      console.log(`индекс: ${statSync(indexFile).size} байт в .rhizomind/index.json`);
+
+      // Переименование в приложении: «Обновить ссылки» + «Больше не спрашивать».
+      renaming = renameInTree(pid, hubName, hubNewName);
+      console.log(`переименование в дереве: ${renaming}`);
+      await waitFor('ссылки обновлены после переименования в дереве', 30_000, () =>
+        existsSync(path.join(vaultDir, `${hubNewName}.md`)) &&
+        referrers.every((name, i) => readFileSync(path.join(vaultDir, name), 'utf8') === referrerText(hubNewName, extName, i))
+          ? true
+          : undefined,
+      );
+      const settingsFile = path.join(serviceDir, 'settings.json');
+      await waitFor('настройка «Всегда обновлять ссылки»', 15_000, () =>
+        existsSync(settingsFile) && (JSON.parse(readFileSync(settingsFile, 'utf8')) as { rename_links?: string }).rename_links === 'update'
+          ? true
+          : undefined,
+      );
+
+      // Переименование снаружи (как `mv`) в режиме «Всегда обновлять».
+      renameSync(path.join(vaultDir, `${extName}.md`), path.join(vaultDir, `${extNewName}.md`));
+      await waitFor('ссылки обновлены после переименования снаружи', 45_000, () =>
+        referrers.every((name, i) => readFileSync(path.join(vaultDir, name), 'utf8') === referrerText(hubNewName, extNewName, i))
+          ? true
+          : undefined,
+      );
+      console.log('переименование снаружи: ссылки обновлены без вопроса');
     }
     engine = descendants(pid, processes());
     during = snapshot(roots);
-  }, 120_000);
+  }, 300_000);
 
   afterAll(() => {
+    vaultWatcher?.close();
     if (app && app.exitCode === null) app.kill();
     rmSync(leftover, { recursive: true, force: true });
     rmSync(evilUserData, { recursive: true, force: true });
@@ -453,14 +643,50 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     expect(code).toBe(0);
 
     expect(existsSync(dataDir), `осталась ${dataDir}`).toBe(false);
-    const alive = processes().filter((p) => engine.some((e) => e.ProcessId === p.ProcessId && e.Name === p.Name));
-    expect(alive.map((p) => `${p.ProcessId} ${p.Name}`)).toEqual([]);
+    // Процессы движка после выхода. Ядро завершает процесс браузера
+    // (TerminateProcess, решение 64), а его дочерние (renderer, gpu-process,
+    // utility) завершаются сами, заметив обрыв связи с браузером, — чуть позже
+    // выхода rhizomind.exe: после TerminateProcess `wait_tree_exit_handle`
+    // их не ждёт (браузер уже не жив — дочерние не перечисляются). Предел —
+    // норма ручного аудита (docs/security/network-audit.md): «процессы
+    // Rhizomind живы через 30 с — нарушение».
+    const exited = Date.now();
+    const engineAlive = () => processes().filter((p) => engine.some((e) => e.ProcessId === p.ProcessId && e.Name === p.Name));
+    const describeProcess = (p: ProcessInfo) => {
+      const type = /--type=([\w-]+)/.exec(engine.find((e) => e.ProcessId === p.ProcessId)?.CommandLine ?? '')?.[1] ?? 'browser';
+      return `${p.ProcessId} ${p.Name} (${type})`;
+    };
+    const lingering = engineAlive().map(describeProcess);
+    let alive = lingering;
+    while (alive.length > 0 && Date.now() - exited < 30_000) {
+      await new Promise((r) => setTimeout(r, 500));
+      alive = engineAlive().map(describeProcess);
+    }
+    const lingerMs = Date.now() - exited;
+    if (lingering.length > 0) {
+      console.log(
+        `::notice title=traces::после выхода rhizomind.exe процессы движка завершались ещё ${lingerMs} мс: ${lingering.join(', ')}`,
+      );
+    } else {
+      console.log('процессы движка: все завершены к выходу rhizomind.exe');
+    }
+    expect(alive, 'процессы движка живы через 30 с после выхода').toEqual([]);
+    expect(existsSync(dataDir), `осталась ${dataDir}`).toBe(false);
 
     const after = snapshot(roots);
     const { changed, removed } = diff(before, after);
     const known = changed.filter(isKnownTrace);
     if (known.length > 0) console.log(`учтённая запись после выхода (SECURITY.md, «Записи вне хранилища»): ${known.join(', ')}`);
-    expect(changed.filter(unexpected)).toEqual([]);
+    const newOutside = changed.filter(unexpected);
+    console.log(`::notice title=traces::новых записей вне хранилища: ${newOutside.length} (учтённых: ${known.length})`);
+    expect(newOutside).toEqual([]);
+    // Метки данных — ни в путях, ни в содержимом новых и изменённых файлов
+    // вне хранилища (во время работы — кроме временной папки движка, её уже нет).
+    const own = dataDirReal + path.sep;
+    const touched = [...new Set([...changed, ...diff(before, during).changed.filter((p) => !p.startsWith(own))])];
+    const { hits, unreadable } = markersInFiles(touched, dataMarkers);
+    console.log(`метки данных вне хранилища: проверено ${touched.length} путей, не прочитано ${unreadable.length}${unreadable.length > 0 ? `: ${unreadable.join(', ')}` : ''}`);
+    expect(hits).toEqual([]);
     // Удалены могут быть только остатки папок движка прошлых запусков —
     // подложенный тестом и оставшиеся от сценарных тестов WebDriver, чьи
     // процессы драйвер завершил без выхода (уборка остатков при запуске, ADR 0007).
@@ -478,13 +704,37 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     if (vaultScenario) {
       expect(typing).toBe('typed-ok');
       expect(readFileSync(noteFile, 'utf8')).toContain(typedText);
+      expect(renaming).toBe('renamed-ok');
     }
-  }, 60_000);
+  }, 90_000);
+
+  it.skipIf(!vaultScenario)('служебные файлы 0.2 — только в .rhizomind/; после выхода tmp/ пуста, журнала нет', () => {
+    vaultWatcher?.close();
+    const sep = path.sep;
+    const serviceOnly = ['index.json', 'link-update.json'];
+    // Пути из событий и с диска: index.json и link-update.json — только `.rhizomind/<имя>`.
+    const seen = [...vaultEvents].filter((p) => serviceOnly.includes(path.basename(p)));
+    const onDisk = filesIn(vaultDir).filter((p) => serviceOnly.includes(path.basename(p)));
+    console.log(`события хранилища: ${vaultEvents.size} путей; index.json/link-update.json: ${[...new Set([...seen, ...onDisk])].join(', ')}`);
+    expect([...seen, ...onDisk].filter((p) => !serviceOnly.some((n) => p === `.rhizomind${sep}${n}`))).toEqual([]);
+    // Журнал был во время плана и удалён по завершении (С2-4).
+    expect(seen).toContain(`.rhizomind${sep}link-update.json`);
+    expect(existsSync(path.join(serviceDir, 'link-update.json'))).toBe(false);
+    expect(existsSync(path.join(serviceDir, 'index.json'))).toBe(true);
+    expect(filesIn(path.join(serviceDir, 'tmp'))).toEqual([]);
+    // Индекс: имена, тег и заголовок в нём есть (он и есть индекс), но не текст заметки.
+    const index = readFileSync(path.join(serviceDir, 'index.json'), 'utf8');
+    expect(index).toContain(tag);
+    expect(index).not.toContain(typedText);
+    // Файлы хранилища после сценария.
+    expect(existsSync(path.join(vaultDir, `${hubNewName}.md`))).toBe(true);
+    expect(existsSync(path.join(vaultDir, `${extNewName}.md`))).toBe(true);
+  });
 
   it('реестр HKCU: нет путей и упоминаний приложения вне учтённых записей', () => {
     const registryAfter = registrySnapshot('after');
     const changes = diffRegistry(registryBefore, registryAfter);
-    const data = [vaultName, noteName, typedText];
+    const data = [vaultName, ...dataMarkers];
     const markers = { app: ['rhizomind', path.basename(dataDir), path.basename(evilUserData)], data };
     const { violations, known, background } = checkRegistryChanges(changes, markers);
     console.log(`реестр HKCU: ${changes.length} изменений; учтённые: ${known.length}; фон ОС: ${background.length}`);
