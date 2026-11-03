@@ -184,4 +184,26 @@ describe('окно и обновление ссылок', () => {
       expect(calls).toContainEqual(['relink_answer', { request: { token: 'd'.repeat(32), apply: true } }]),
     );
   });
+
+  it('0.2-6.3: links:pending — уведомление с кнопками; ответ — relink_answer со знаком из события', async () => {
+    const disk = new Disk();
+    disk.set(NOTE, 'текст');
+    const { calls } = await openWindow(disk);
+
+    await emitCoreEvent('links:pending', {
+      token: 'b'.repeat(32),
+      reason: 'external_rename',
+      notes: 4,
+      links: 5,
+      renames: [{ from: ['Встреча.md'], to: ['Планёрка.md'] }],
+      renames_total: 1,
+    });
+    const notice = (await screen.findByText('Заметка «Встреча» переименована на диске в «Планёрка», на неё ссылаются 4 заметки')).closest(
+      '.notice',
+    ) as HTMLElement;
+    await fireEvent.click(within(notice).getByRole('button', { name: 'Обновить ссылки' }));
+
+    await waitFor(() => expect(calls).toContainEqual(['relink_answer', { request: { token: 'b'.repeat(32), apply: true } }]));
+    await waitFor(() => expect(screen.queryByText(/переименована на диске/)).toBeNull());
+  });
 });

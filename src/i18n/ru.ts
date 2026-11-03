@@ -399,6 +399,30 @@ export const ru = {
   'relink.renameNotDone':
     'Переименование не выполнено: не удалось записать набранный текст или файл занят. Ничего не изменилось, текст остался в редакторе — попробуйте ещё раз.',
 
+  // 0.2-6.3 Уведомления «нужен ответ» (С2-3.5 «в Проводнике», С2-3.6; решения 110, 111; макеты У-1, У-2)
+  'relink.count.one': '{count} заметка',
+  'relink.count.few': '{count} заметки',
+  'relink.count.many': '{count} заметок',
+  'relink.refs.one': 'ссылается {count} заметка',
+  'relink.refs.few': 'ссылаются {count} заметки',
+  'relink.refs.many': 'ссылаются {count} заметок',
+  'relink.pending.batch': 'Переименованы на диске: {renamed}, на них {refs}',
+  'relink.pending.batchDetail': 'Пока нет ответа, ссылки ведут на старые имена.',
+  'relink.pending.one': 'Заметка «{from}» переименована на диске в «{to}», на неё {refs}',
+  'relink.pending.moved': 'Заметка «{name}» перенесена на диске в «{folder}», на неё {refs}',
+  'relink.pending.update': 'Обновить ссылки',
+  'relink.pending.keep': 'Не обновлять',
+  'relink.pending.duplicate': 'Появились повторы имён: уточнить ссылки в {notes}?',
+  'relink.pending.duplicateDetail': 'Без уточнения ссылки ведут на самую старую из заметок с этим именем.',
+  'relink.pending.clarify': 'Уточнить',
+  'relink.pending.skip': 'Не трогать',
+  'relink.pending.stale': 'Ответ не принят: на диске произошли новые изменения. Приложение покажет новое уведомление.',
+  'relink.pending.failed': 'Не удалось отправить ответ. {message}',
+  'relink.externalUpdated.one': 'Заметка «{name}» переименована на диске. Ссылки обновлены в {notes}',
+  'relink.externalUpdated.many': 'Переименованы на диске: {renamed}. Ссылки обновлены в {notes}',
+  // Ревью 0.2-5.2, М4: итог Ctrl+Z
+  'relink.undone': 'Переименование отменено, ссылки возвращены в {notes}',
+
   // Ошибки команд ядра: errors.<code>
   'errors.not_implemented': 'Эта функция ещё не готова.',
   'errors.invalid_argument': 'Ядро отклонило неверные данные запроса.',
