@@ -1840,10 +1840,17 @@ fn index_queries_on_generated_10k() {
     let hub = manifest.hub.as_ref().expect("узел");
     let hub_path: Vec<&str> = hub.path.split('/').collect();
 
+    // Первый вызов — холодный: 100 только что созданных генератором файлов
+    // читаются впервые (на Windows их при первом открытии проверяет
+    // антивирус — в CI до 1,5 с). Он печатается отдельно; предел — на
+    // повторных вызовах (файлы заметок пользователя не создаются за секунду
+    // до запроса).
+    let start = std::time::Instant::now();
+    let mut hub_count = backlinks(&w, &hub_path).notes_total;
+    let backlinks_cold = start.elapsed();
     let mut backlinks_worst = Duration::ZERO;
     let mut tags_worst = Duration::ZERO;
     let mut tags_count = 0;
-    let mut hub_count = 0;
     for _ in 0..5 {
         let start = std::time::Instant::now();
         hub_count = backlinks(&w, &hub_path).notes_total;
@@ -1859,7 +1866,8 @@ fn index_queries_on_generated_10k() {
         "выпускная сборка"
     };
     println!(
-        "backlinks_list «узла»: {hub_count} заметок, худший {backlinks_worst:?}; \
+        "backlinks_list «узла»: {hub_count} заметок, худший {backlinks_worst:?} \
+         (первый, холодный — {backlinks_cold:?}); \
          tags_list: {tags_count} тегов, худший {tags_worst:?} ({build})"
     );
     assert_eq!(hub_count, 100);
