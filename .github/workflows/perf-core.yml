@@ -1,0 +1,56 @@
+# Замеры ядра на 10 000 и 50 000 заметок (задача 0.2-7.1, С2-8.3) —
+# запуск вручную, перед контрольными точками. 10 000 идут и в CI при каждом
+# push (ci.yml, шаг «Замеры ядра»); здесь добавляется 50 000 (цифры и
+# превышения — в отчёт, без падения: окончательно проверяет 0.5).
+# Без секретов и сторонних сервисов; права только на чтение кода.
+# Все actions закреплены по SHA коммита (ADR 0009); версия — в комментарии.
+name: perf-core
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf-core:
+    name: perf-core (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Установить Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust из rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+
+      - name: Кэш Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> src-tauri/target
+
+      # Интерфейс встраивается в ядро при сборке (tauri.conf.json, frontendDist).
+      # Скрипты установки пакетов не запускаются (.npmrc: ignore-scripts=true).
+      - name: Интерфейс для сборки ядра
+        run: |
+          npm ci
+          npm run build:ui
+
+      - name: Замеры ядра (10 000 и 50 000 заметок)
+        shell: bash
+        env:
+          RHIZOMIND_PERF_50K: "1"
+        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --test-threads=1 perf_

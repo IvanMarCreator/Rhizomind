@@ -130,7 +130,19 @@ jobs:
       # именам не дольше 20 мс; в verify не входит — нужен выпускной профиль.
       - name: Производительность поиска ядра
         shell: bash
-        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --skip watcher::load_tests --skip dialogs::folder_windows
+        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --skip watcher::load_tests --skip dialogs::folder_windows --skip perf_
+
+      # Замеры ядра (задача 0.2-7.1, С2-8.3): индекс, запросы окна и
+      # NoteList::replace_notes на 10 000 заметок генератора, медиана 5
+      # повторов. Та же выпускная сборка тестов, что в шаге выше (без новой
+      # сборки, ~1–2 мин); по одному тесту — замеры времени и памяти не
+      # делят ядра с другими. Пределы проверяются на Windows, на Linux —
+      # справочно. Цифры — пометкой прогона (::notice). 50 000 — задание
+      # perf-core (.github/workflows/perf-core.yml, запуск вручную).
+      - name: Замеры ядра (10 000 заметок)
+        timeout-minutes: 20
+        shell: bash
+        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --test-threads=1 perf_
 
       # Слежение за папкой под нагрузкой (задача 1.4, ADR 0006): 10 000 файлов,
       # массовая замена как при git checkout, переименования, переполнение.

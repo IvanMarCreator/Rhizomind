@@ -18,6 +18,8 @@
 
 use crate::commands::{PathRename, VaultPath};
 
+#[cfg(test)]
+mod perf_tests;
 mod plan;
 mod rewrite;
 
