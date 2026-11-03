@@ -22,9 +22,10 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    # Обычно ~25 мин на Windows с кэшем; запас на холодный кэш. Зависание —
-    # ошибка, а не часы ожидания.
-    timeout-minutes: 45
+    # С тестами 0.2 на Windows ~45 мин с кэшем (03.11.2026: задание обрезано
+    # на 45-й минуте на шаге портативной сборки); запас на холодный кэш.
+    # Зависание — ошибка, а не часы ожидания.
+    timeout-minutes: 70
     steps:
       - name: Получить код
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
