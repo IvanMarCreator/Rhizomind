@@ -469,6 +469,8 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   let registryBefore: RegExport;
   let during: Snapshot;
   let dataDir = '';
+  /** Полный путь временной папки движка (как в снимках): после выхода её нет и realpath не сработает. */
+  let dataDirReal = '';
   let browser: ProcessInfo | undefined;
   let engine: ProcessInfo[] = [];
 
@@ -534,6 +536,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
         .filter((n) => n.startsWith(`rhizomind-webview-${pid}-`))
         .map((n) => path.join(temp, n))[0],
     );
+    dataDirReal = real(dataDir);
     browser = await waitFor('процесс браузера WebView2', 30_000, () =>
       processes().find((p) => p.ParentProcessId === pid && p.Name.toLowerCase() === 'msedgewebview2.exe'),
     );
@@ -679,7 +682,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     expect(newOutside).toEqual([]);
     // Метки данных — ни в путях, ни в содержимом новых и изменённых файлов
     // вне хранилища (во время работы — кроме временной папки движка, её уже нет).
-    const own = real(dataDir) + path.sep;
+    const own = dataDirReal + path.sep;
     const touched = [...new Set([...changed, ...diff(before, during).changed.filter((p) => !p.startsWith(own))])];
     const { hits, unreadable } = markersInFiles(touched, dataMarkers);
     console.log(`метки данных вне хранилища: проверено ${touched.length} путей, не прочитано ${unreadable.length}${unreadable.length > 0 ? `: ${unreadable.join(', ')}` : ''}`);
