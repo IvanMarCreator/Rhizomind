@@ -115,12 +115,104 @@ pub(crate) fn natural_ranks(paths: &[KeyedPath]) -> Vec<u32> {
     ranks
 }
 
+/// Список после [`splice_items`].
+pub(crate) struct Spliced<T> {
+    /// Новый список.
+    pub items: Vec<T>,
+    /// Новый номер каждого элемента старого списка; `usize::MAX` — убран.
+    pub remap: Vec<usize>,
+    /// Номера добавленных в новом списке, по возрастанию.
+    pub fresh: Vec<usize>,
+}
+
+/// Список `old` без элементов с номерами `removed` (по возрастанию) и с
+/// элементами `added` на их местах в новом списке (по возрастанию мест).
+/// Остальные элементы переносятся как есть, в прежнем порядке.
+pub(crate) fn splice_items<T>(
+    old: Vec<T>,
+    removed: &[usize],
+    added: Vec<(usize, T)>,
+) -> Spliced<T> {
+    let mut remap = vec![usize::MAX; old.len()];
+    let mut items = Vec::with_capacity((old.len() + added.len()).saturating_sub(removed.len()));
+    let mut fresh = Vec::with_capacity(added.len());
+    let mut removed = removed.iter().copied().peekable();
+    let mut added = added.into_iter().peekable();
+    for (i, item) in old.into_iter().enumerate() {
+        while let Some((_, new)) = added.next_if(|(at, _)| *at <= items.len()) {
+            fresh.push(items.len());
+            items.push(new);
+        }
+        if removed.next_if_eq(&i).is_some() {
+            continue;
+        }
+        remap[i] = items.len();
+        items.push(item);
+    }
+    for (_, new) in added {
+        fresh.push(items.len());
+        items.push(new);
+    }
+    Spliced {
+        items,
+        remap,
+        fresh,
+    }
+}
+
+/// Номера `order`, оставшиеся после [`splice_items`], — в новой нумерации,
+/// в прежнем порядке.
+pub(crate) fn kept(order: &[usize], remap: &[usize]) -> Vec<usize> {
+    order
+        .iter()
+        .map(|&i| remap[i])
+        .filter(|&i| i != usize::MAX)
+        .collect()
+}
+
+/// Вставляет номера `fresh` в упорядоченный по `cmp` список `sorted`
+/// (`cmp` — полный порядок): O(k log n) сравнений на k вставок.
+pub(crate) fn merge_sorted(
+    sorted: Vec<usize>,
+    mut fresh: Vec<usize>,
+    cmp: impl Fn(usize, usize) -> Ordering,
+) -> Vec<usize> {
+    if fresh.is_empty() {
+        return sorted;
+    }
+    fresh.sort_by(|&a, &b| cmp(a, b));
+    let mut out = Vec::with_capacity(sorted.len() + fresh.len());
+    let mut start = 0;
+    for f in fresh {
+        let at = start + sorted[start..].partition_point(|&s| cmp(s, f) == Ordering::Less);
+        out.extend_from_slice(&sorted[start..at]);
+        out.push(f);
+        start = at;
+    }
+    out.extend_from_slice(&sorted[start..]);
+    out
+}
+
 #[derive(Debug)]
 struct Item {
     path: VaultPath,
     name: String,
     haystack: Haystack,
     rank: u32,
+}
+
+impl Item {
+    /// Заметка без места в порядке путей; `None` — не `.md`.
+    fn new(path: VaultPath) -> Option<Self> {
+        let mut link_path = link_path(&path)?;
+        let haystack = Haystack::new(&KeyedPath::new(&link_path));
+        Some(Self {
+            path,
+            name: link_path.pop().unwrap_or_default(),
+            haystack,
+            rank: 0,
+        })
+    }
 }
 
 /// Поиск по заметкам одного хранилища. Список заменяется целиком при
@@ -161,6 +253,28 @@ impl Switcher {
                 rank,
             })
             .collect();
+    }
+
+    /// Меняет список по местам, без пересчёта ключей остальных заметок
+    /// (задача 0.2-7.3): убирает заметки с мест `removed` списка «до» (по
+    /// возрастанию) и ставит заметки `added` на их места в списке «после»
+    /// (по возрастанию мест; все — заметки `.md`). `ranks` — места заметок
+    /// списка «после» в порядке путей ядра, по порядку списка: у ссылок
+    /// (`Links::ranks`) тот же список, считать их второй раз незачем.
+    pub(crate) fn splice(
+        &mut self,
+        removed: &[usize],
+        added: Vec<(usize, VaultPath)>,
+        ranks: impl Iterator<Item = u32>,
+    ) {
+        let added = added
+            .into_iter()
+            .filter_map(|(at, path)| Some((at, Item::new(path)?)))
+            .collect();
+        self.items = splice_items(std::mem::take(&mut self.items), removed, added).items;
+        for (item, rank) in self.items.iter_mut().zip(ranks) {
+            item.rank = rank;
+        }
     }
 
     /// До [`MAX_RESULTS`] заметок, лучшие первыми; при равной оценке —

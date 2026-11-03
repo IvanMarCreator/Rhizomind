@@ -2938,6 +2938,7 @@ dependencies = [
  "dunce",
  "file-id",
  "gen-vault",
+ "getrandom 0.4.3",
  "gtk",
  "icu_casemap",
  "insta",

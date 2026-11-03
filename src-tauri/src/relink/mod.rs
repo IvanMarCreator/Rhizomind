@@ -16,18 +16,35 @@
 //!
 //! План — [`plan()`] (0.2-4.3), переписывание текста — [`rewrite`] (0.2-4.4),
 //! выполнение плана — [`run()`], доделка при открытии хранилища —
-//! [`resume_on_open`] (0.2-4.5).
+//! [`resume_on_open`] (0.2-4.5), знаки планов — [`tokens`] (0.2-4.6).
 
 use crate::commands::{PathRename, VaultPath};
 
 mod journal;
+#[cfg(test)]
+mod perf_tests;
 mod plan;
 mod rewrite;
 mod run;
+pub mod tokens;
 
 pub use plan::plan;
 pub use rewrite::rewrite;
 pub use run::{RunReport, resume_on_open, run};
+
+/// Тестовый шов падения посреди плана (сценарий доделки при открытии
+/// хранилища, `commands::core_tests`).
+#[cfg(test)]
+pub(crate) use run::crash_after;
+
+/// Есть ли на диске журнал прерванного обновления ссылок (дешёвая проверка
+/// перед доделкой: без журнала список заметок для неё не строится).
+pub fn journal_pending(vault: &crate::vault::Vault) -> bool {
+    !matches!(
+        journal::read(vault),
+        journal::Read::Missing | journal::Read::Refused
+    )
+}
 
 /// Одна ссылка плана: на какую цель переписать и куда она должна вести.
 #[derive(Debug, Clone, PartialEq, Eq)]

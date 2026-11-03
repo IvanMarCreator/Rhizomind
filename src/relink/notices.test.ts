@@ -4,7 +4,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LinksUpdatedPayload, RelinkFailure, RelinkToken } from '../api/index.ts';
 import { CoreCallError } from '../api/index.ts';
-import { RelinkNotices, failureRows, notesIn, type RelinkNoticesState } from './notices.ts';
+import {
+  RelinkNotices,
+  failureRows,
+  isRetriable,
+  notesIn,
+  onlyConflicts,
+  renamesText,
+  type RelinkNoticesState,
+} from './notices.ts';
 
 const RETRY: RelinkToken = 'c'.repeat(32);
 const MIB = 1024 * 1024;
@@ -15,7 +23,7 @@ const large: RelinkFailure = { path: ['Входящие', 'Архив 2019.md'],
 const utf8: RelinkFailure = { path: ['Входящие', 'Старые заметки.md'], reason: 'not_utf8' };
 
 function updated(patch: Partial<LinksUpdatedPayload> = {}): LinksUpdatedPayload {
-  return { reason: 'rename', updated: 0, failed: [], retry_token: null, ...patch };
+  return { reason: 'rename', updated: 0, failed: [], retry_token: null, renames: [], renames_total: 0, ...patch };
 }
 
 function model(retry: (token: RelinkToken) => Promise<unknown> = () => Promise.resolve(null)) {
@@ -257,5 +265,25 @@ describe('ход переписывания (links:progress)', () => {
     notices.progress({ token: null, done: 10, total: 10 });
 
     expect(state().notices).toEqual([]);
+  });
+});
+
+describe('0.2-4.6: conflict и имена «старое → новое»', () => {
+  it('conflict не повторяется: знак повтора есть, но повторять некого — кнопки нет', () => {
+    const notices = new RelinkNotices({ retry: () => Promise.resolve(), notify: () => undefined, limitBytes: 10 * MIB });
+    const conflict: RelinkFailure = { path: ['План.md'], reason: 'conflict' };
+    notices.updated(updated({ failed: [conflict], retry_token: RETRY }));
+    const notice = notices.state.notices[0];
+    expect(notice?.canRetry).toBe(false);
+    expect(isRetriable('conflict')).toBe(false);
+    expect(onlyConflicts([conflict])).toBe(true);
+    expect(onlyConflicts([conflict, large])).toBe(false);
+  });
+
+  it('renamesText: одно переименование и «и ещё N»', () => {
+    const rename = { from: ['Встреча.md'], to: ['Архив', 'Планёрка.md'] };
+    expect(renamesText([], 0)).toBeNull();
+    expect(renamesText([rename], 1)).toBe('«Встреча» → «Планёрка»');
+    expect(renamesText([rename, rename], 25)).toBe('«Встреча» → «Планёрка» и ещё 24');
   });
 });

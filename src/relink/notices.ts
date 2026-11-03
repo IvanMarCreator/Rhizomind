@@ -13,6 +13,7 @@ import type {
   LinksProgressPayload,
   LinksUpdateReason,
   LinksUpdatedPayload,
+  PathRename,
   RelinkFailure,
   RelinkFailureReason,
   RelinkToken,
@@ -46,6 +47,9 @@ export interface RelinkNotice {
   canRetry: boolean;
   reason: LinksUpdateReason | null;
   failed: readonly RelinkFailure[];
+  /** Переименования «старое → новое» из `links:updated` (заголовок списка сбоев). */
+  renames: readonly PathRename[];
+  renamesTotal: number;
 }
 
 export interface RelinkNoticesState {
@@ -61,7 +65,7 @@ export interface FailureRow {
   /** Папка заметки через « / » или «корень хранилища». */
   folder: string;
   label: string;
-  /** «будет повторено» — `busy`/`io`; «не повторяется» — `too_large`/`not_utf8`. */
+  /** «будет повторено» — `busy`/`io`; «не повторяется» — `too_large`/`not_utf8`/`conflict`. */
   retried: boolean;
 }
 
@@ -89,7 +93,27 @@ function failureLabel(reason: RelinkFailureReason, limitBytes: number): string {
       return t('relink.failure.busy');
     case 'io':
       return t('relink.failure.io');
+    case 'conflict':
+      return t('relink.failure.conflict');
   }
+}
+
+/**
+ * Почему повтор не поможет: все неповторяемые заметки — `conflict` (Р20) —
+ * «проверьте ссылки вручную»; иначе — заметки больше лимита или не в UTF-8.
+ */
+export function onlyConflicts(failed: readonly RelinkFailure[]): boolean {
+  const stuck = failed.filter((failure) => !isRetriable(failure.reason));
+  return stuck.length > 0 && stuck.every((failure) => failure.reason === 'conflict');
+}
+
+/** «„Встреча“ → „Планёрка“» (и «и ещё N»), или `null`, если имён нет. */
+export function renamesText(renames: readonly PathRename[], total: number): string | null {
+  const first = renames[0];
+  if (first === undefined) return null;
+  const names = { from: noteName(first.from), to: noteName(first.to) };
+  const more = Math.max(total, renames.length) - 1;
+  return more > 0 ? t('relink.failed.renamedMore', { ...names, count: more }) : t('relink.failed.renamed', names);
 }
 
 export function failureRows(failed: readonly RelinkFailure[], limitBytes: number): FailureRow[] {
@@ -138,7 +162,7 @@ export class RelinkNotices {
   }
 
   /** Событие `links:updated`. */
-  updated({ reason, updated, failed, retry_token }: LinksUpdatedPayload): void {
+  updated({ reason, updated, failed, retry_token, renames, renames_total }: LinksUpdatedPayload): void {
     const added: RelinkNotice[] = [];
     if (updated > 0) {
       added.push(this.#notice({ tone: 'success', text: successText(reason, updated), reason }));
@@ -146,7 +170,8 @@ export class RelinkNotices {
     if (failed.length > 0) {
       const canRetry = retry_token !== null && failed.some((failure) => isRetriable(failure.reason));
       const done = reason === 'duplicate' ? null : t('relink.failed.renameDone');
-      const detail = canRetry ? done : [done, t('relink.failed.noRetry')].filter(Boolean).join(' ');
+      const noRetry = onlyConflicts(failed) ? t('relink.failed.noRetryConflict') : t('relink.failed.noRetry');
+      const detail = canRetry ? done : [done, noRetry].filter(Boolean).join(' ');
       const notice = this.#notice({
         tone: 'warning',
         text: t('relink.failed', { notes: notesIn(failed.length) }),
@@ -155,6 +180,8 @@ export class RelinkNotices {
         canRetry,
         reason,
         failed,
+        renames,
+        renamesTotal: renames_total,
       });
       if (canRetry && retry_token !== null) this.#retryTokens.set(notice.id, retry_token);
       added.push(notice);
@@ -226,6 +253,8 @@ export class RelinkNotices {
       canRetry: false,
       reason: null,
       failed: [],
+      renames: [],
+      renamesTotal: 0,
       ...fields,
     };
   }

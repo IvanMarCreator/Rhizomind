@@ -10,6 +10,7 @@
 //! если файл изменится ещё раз, наблюдатель пришлёт новое событие.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use unicode_normalization::UnicodeNormalization;
 
@@ -19,13 +20,48 @@ use crate::links::{Links, parse_target};
 use crate::markdown::{WikiLink, tag_key};
 use crate::names::{self, NameKey};
 
+/// Номер заметки в индексе: производные карты хранят его вместо копий
+/// пути (замер 0.2-7.1: копии путей — около половины памяти индекса).
+/// Номер живёт, пока заметка в индексе; освободившийся номер достаётся
+/// следующей новой заметке.
+type NoteId = u32;
+
+/// Набор номеров заметок — упорядоченный вектор без повторов: на порядок
+/// меньше памяти, чем `HashSet`, а наборы малы (ссылки на одно имя, заметки
+/// одного тега). Новые заметки получают растущие номера, поэтому вставка
+/// почти всегда в конец.
+type NoteSet = Vec<NoteId>;
+
+fn set_insert(set: &mut NoteSet, id: NoteId) {
+    if let Err(at) = set.binary_search(&id) {
+        set.insert(at, id);
+    }
+}
+
+fn set_remove(set: &mut NoteSet, id: NoteId) {
+    if let Ok(at) = set.binary_search(&id) {
+        set.remove(at);
+    }
+}
+
+/// Заметка в индексе: путь (общий с картой путей) и запись.
+#[derive(Debug)]
+struct Slot {
+    path: Arc<VaultPath>,
+    entry: NoteEntry,
+}
+
 /// Индекс хранилища в памяти.
 #[derive(Debug, Default)]
 pub struct VaultIndex {
-    /// Записи по пути заметки.
-    entries: HashMap<VaultPath, NoteEntry>,
+    /// Путь заметки → номер.
+    ids: HashMap<Arc<VaultPath>, NoteId>,
+    /// Заметки по номеру; `None` — номер свободен.
+    slots: Vec<Option<Slot>>,
+    /// Свободные номера.
+    free: Vec<NoteId>,
     /// Ключ имени цели ссылки → заметки, в которых есть такие ссылки.
-    by_target: HashMap<NameKey, HashSet<VaultPath>>,
+    by_target: HashMap<NameKey, NoteSet>,
     /// Ключ тега → заметки и написания.
     tags: HashMap<String, TagStat>,
     state: State,
@@ -60,18 +96,18 @@ struct BuildState {
 }
 
 /// Тег: заметки с ним и написания.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 struct TagStat {
-    notes: HashSet<VaultPath>,
+    notes: NoteSet,
     /// Написание (NFC) → вхождения.
     spellings: HashMap<String, Spelling>,
 }
 
 /// Написание тега: вхождений во всём хранилище и в каких заметках.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 struct Spelling {
     count: u32,
-    notes: HashSet<VaultPath>,
+    notes: NoteSet,
 }
 
 /// Ключ имени цели ссылки; цель, которая не может быть путём, — `None`.
@@ -119,17 +155,22 @@ impl VaultIndex {
             index.put(path, entry);
         }
         index.state = State::Ready;
+        index.shrink();
         index
     }
 
     /// Записи всех заметок — снимок для файла индекса. Порядок не задан.
     pub fn entries(&self) -> impl Iterator<Item = (&VaultPath, &NoteEntry)> {
-        self.entries.iter()
+        self.slots
+            .iter()
+            .flatten()
+            .map(|slot| (&*slot.path, &slot.entry))
     }
 
     /// Запись заметки `path`, если есть (сверка с диском, задача 0.2-1.3).
     pub fn entry(&self, path: &VaultPath) -> Option<&NoteEntry> {
-        self.entries.get(path)
+        let id = *self.ids.get(path)?;
+        self.slot(id).map(|slot| &slot.entry)
     }
 
     /// Строится или готов и ход сборки (команда `index_status`, событие
@@ -142,7 +183,7 @@ impl VaultIndex {
                 total: build.total,
             },
             State::Ready => {
-                let n = count(self.entries.len());
+                let n = count(self.ids.len());
                 IndexStatus {
                     state: IndexState::Ready,
                     done: n,
@@ -221,10 +262,11 @@ impl VaultIndex {
             .get(&name)
             .into_iter()
             .flatten()
-            .filter_map(|from| self.entries.get_key_value(from))
-            .flat_map(move |(from, entry)| {
+            .filter_map(|&id| self.slot(id))
+            .flat_map(move |slot| {
                 let name = name.clone();
-                entry
+                let from = &*slot.path;
+                slot.entry
                     .parsed
                     .links
                     .iter()
@@ -255,18 +297,89 @@ impl VaultIndex {
         let mut notes: Vec<VaultPath> = self
             .tags
             .get(key)
-            .map(|stat| stat.notes.iter().cloned().collect())
+            .map(|stat| self.paths(&stat.notes).cloned().collect())
             .unwrap_or_default();
         sort_paths(&mut notes);
         notes
     }
 
     /// Одинаковое ли содержимое (записи и производные карты) — для тестов.
+    /// Номера заметок у двух индексов разные, поэтому карты сравниваются по
+    /// путям.
     #[cfg(test)]
     pub(super) fn same_content(&self, other: &Self) -> bool {
-        self.entries == other.entries
-            && self.by_target == other.by_target
-            && self.tags == other.tags
+        self.check_consistent();
+        other.check_consistent();
+        let entries = |index: &Self| -> HashMap<VaultPath, NoteEntry> {
+            index
+                .entries()
+                .map(|(path, entry)| (path.clone(), entry.clone()))
+                .collect()
+        };
+        let by_target = |index: &Self| -> HashMap<NameKey, HashSet<VaultPath>> {
+            index
+                .by_target
+                .iter()
+                .map(|(key, set)| (key.clone(), index.paths(set).cloned().collect()))
+                .collect()
+        };
+        type Spellings = HashMap<String, (u32, HashSet<VaultPath>)>;
+        let tags = |index: &Self| -> HashMap<String, (HashSet<VaultPath>, Spellings)> {
+            index
+                .tags
+                .iter()
+                .map(|(key, stat)| {
+                    let spellings = stat
+                        .spellings
+                        .iter()
+                        .map(|(name, s)| {
+                            (
+                                name.clone(),
+                                (s.count, index.paths(&s.notes).cloned().collect()),
+                            )
+                        })
+                        .collect();
+                    (
+                        key.clone(),
+                        (index.paths(&stat.notes).cloned().collect(), spellings),
+                    )
+                })
+                .collect()
+        };
+        entries(self) == entries(other)
+            && by_target(self) == by_target(other)
+            && tags(self) == tags(other)
+    }
+
+    /// Номера, пути и наборы согласованы (для тестов).
+    #[cfg(test)]
+    fn check_consistent(&self) {
+        let live = self.slots.iter().flatten().count();
+        assert_eq!(live, self.ids.len(), "заметок по номерам и по путям");
+        assert_eq!(
+            live + self.free.len(),
+            self.slots.len(),
+            "занятые и свободные номера"
+        );
+        for (path, &id) in &self.ids {
+            assert_eq!(self.slot(id).map(|s| &s.path), Some(path), "номер пути");
+        }
+        let sets = self
+            .by_target
+            .values()
+            .chain(self.tags.values().map(|t| &t.notes))
+            .chain(
+                self.tags
+                    .values()
+                    .flat_map(|t| t.spellings.values().map(|s| &s.notes)),
+            );
+        for set in sets {
+            assert!(set.windows(2).all(|w| w[0] < w[1]), "набор упорядочен");
+            assert!(
+                set.iter().all(|&id| self.slot(id).is_some()),
+                "живые номера"
+            );
+        }
     }
 
     // --- Сборка (модуль `build`) ----------------------------------------
@@ -327,19 +440,50 @@ impl VaultIndex {
         };
         let touched = std::mem::take(&mut build.touched);
         let gone: Vec<VaultPath> = self
-            .entries
+            .ids
             .keys()
-            .filter(|path| !listed.contains(*path) && !touched.contains(*path))
-            .cloned()
+            .filter(|path| !listed.contains(&***path) && !touched.contains(&***path))
+            .map(|path| VaultPath::clone(path))
             .collect();
         for path in &gone {
             self.take(path);
         }
         self.state = State::Ready;
+        self.shrink();
         true
     }
 
     // --- Пересчёт по одной заметке -------------------------------------
+
+    fn slot(&self, id: NoteId) -> Option<&Slot> {
+        self.slots.get(id as usize)?.as_ref()
+    }
+
+    /// Пути заметок набора.
+    fn paths<'a>(&'a self, set: &'a NoteSet) -> impl Iterator<Item = &'a VaultPath> + 'a {
+        set.iter()
+            .filter_map(|&id| self.slot(id))
+            .map(|slot| &*slot.path)
+    }
+
+    /// Отдаёт лишнюю ёмкость карт и наборов после загрузки или сборки.
+    fn shrink(&mut self) {
+        self.ids.shrink_to_fit();
+        self.slots.shrink_to_fit();
+        self.free.shrink_to_fit();
+        self.by_target.shrink_to_fit();
+        for set in self.by_target.values_mut() {
+            set.shrink_to_fit();
+        }
+        self.tags.shrink_to_fit();
+        for stat in self.tags.values_mut() {
+            stat.notes.shrink_to_fit();
+            stat.spellings.shrink_to_fit();
+            for spelling in stat.spellings.values_mut() {
+                spelling.notes.shrink_to_fit();
+            }
+        }
+    }
 
     fn touch(&mut self, path: &VaultPath) {
         if let State::Building(build) = &mut self.state {
@@ -348,42 +492,64 @@ impl VaultIndex {
     }
 
     /// Ставит запись: вклад старой вычитается, новой — прибавляется.
-    fn put(&mut self, path: VaultPath, entry: NoteEntry) {
-        if self.entries.get(&path) == Some(&entry) {
+    fn put(&mut self, path: VaultPath, mut entry: NoteEntry) {
+        if self.entry(&path) == Some(&entry) {
             return;
         }
         self.take(&path);
-        self.add_derived(&path, &entry);
-        self.entries.insert(path, entry);
+        let id = match self.free.pop() {
+            Some(id) => id,
+            None => {
+                // Номеров `u32` хватает с запасом: заметок в хранилище на
+                // порядки меньше.
+                let id = NoteId::try_from(self.slots.len()).unwrap_or(NoteId::MAX);
+                self.slots.push(None);
+                id
+            }
+        };
+        self.add_derived(id, &entry);
+        // Разбор растит векторы удвоением — лишняя ёмкость живёт, пока
+        // заметка в индексе.
+        let parsed = &mut entry.parsed;
+        parsed.headings.shrink_to_fit();
+        parsed.tags.shrink_to_fit();
+        parsed.links.shrink_to_fit();
+        let path = Arc::new(path);
+        self.ids.insert(Arc::clone(&path), id);
+        self.slots[id as usize] = Some(Slot { path, entry });
         self.revision += 1;
     }
 
     /// Убирает запись и её вклад.
     fn take(&mut self, path: &VaultPath) {
-        let Some(old) = self.entries.remove(path) else {
+        let Some(id) = self.ids.remove(path) else {
             return;
         };
-        self.remove_derived(path, &old);
+        let Some(old) = self.slots.get_mut(id as usize).and_then(Option::take) else {
+            return;
+        };
+        self.free.push(id);
+        self.remove_derived(id, &old.entry);
         self.revision += 1;
     }
 
-    fn add_derived(&mut self, path: &VaultPath, entry: &NoteEntry) {
+    fn add_derived(&mut self, id: NoteId, entry: &NoteEntry) {
         for name in entry.parsed.links.iter().filter_map(target_key) {
-            self.by_target.entry(name).or_default().insert(path.clone());
+            set_insert(self.by_target.entry(name).or_default(), id);
         }
         for tag in &entry.parsed.tags {
             let stat = self.tags.entry(tag_key(&tag.name)).or_default();
-            stat.notes.insert(path.clone());
+            set_insert(&mut stat.notes, id);
             let spelling = stat.spellings.entry(nfc(&tag.name)).or_default();
             spelling.count += 1;
-            spelling.notes.insert(path.clone());
+            set_insert(&mut spelling.notes, id);
         }
     }
 
-    fn remove_derived(&mut self, path: &VaultPath, entry: &NoteEntry) {
+    fn remove_derived(&mut self, id: NoteId, entry: &NoteEntry) {
         for name in entry.parsed.links.iter().filter_map(target_key) {
             if let Some(from) = self.by_target.get_mut(&name) {
-                from.remove(path);
+                set_remove(from, id);
                 if from.is_empty() {
                     self.by_target.remove(&name);
                 }
@@ -394,11 +560,11 @@ impl VaultIndex {
             let Some(stat) = self.tags.get_mut(&key) else {
                 continue;
             };
-            stat.notes.remove(path);
+            set_remove(&mut stat.notes, id);
             let written = nfc(&tag.name);
             if let Some(spelling) = stat.spellings.get_mut(&written) {
                 spelling.count = spelling.count.saturating_sub(1);
-                spelling.notes.remove(path);
+                set_remove(&mut spelling.notes, id);
                 if spelling.count == 0 {
                     stat.spellings.remove(&written);
                 }
@@ -424,11 +590,11 @@ impl VaultIndex {
         let oldest = tied
             .iter()
             .flat_map(|name| &stat.spellings[*name].notes)
-            .filter_map(|path| self.entries.get_key_value(path))
-            .min_by_key(|(path, entry)| (entry.created_ms, path_text(path)));
+            .filter_map(|&id| self.slot(id))
+            .min_by_key(|slot| (slot.entry.created_ms, path_text(&slot.path)));
         oldest
-            .and_then(|(_, entry)| {
-                entry
+            .and_then(|slot| {
+                slot.entry
                     .parsed
                     .tags
                     .iter()

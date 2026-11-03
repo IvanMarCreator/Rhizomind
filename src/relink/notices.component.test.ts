@@ -32,6 +32,8 @@ const failed: LinksUpdatedPayload = {
     { path: ['Входящие', 'Архив 2019.md'], reason: 'too_large' },
   ],
   retry_token: RETRY,
+  renames: [],
+  renames_total: 0,
 };
 
 afterEach(() => {
@@ -41,7 +43,7 @@ afterEach(() => {
 
 describe('зона уведомлений: итог обновления ссылок', () => {
   it('Ссылки обновлены в N заметках', () => {
-    setup({ reason: 'rename', updated: 5, failed: [], retry_token: null });
+    setup({ reason: 'rename', updated: 5, failed: [], retry_token: null, renames: [], renames_total: 0 });
 
     const notice = screen.getByText('Ссылки обновлены в 5 заметках').closest('.notice') as HTMLElement;
     expect(within(notice).getByRole('button', { name: 'Закрыть уведомление' })).toBeTruthy();
@@ -101,6 +103,8 @@ describe('зона уведомлений: итог обновления ссы�
         { path: ['Входящие', 'Старые заметки.md'], reason: 'not_utf8' },
       ],
       retry_token: null,
+      renames: [],
+      renames_total: 0,
     });
 
     expect(screen.queryByRole('button', { name: 'Повторить' })).toBeNull();
@@ -108,6 +112,30 @@ describe('зона уведомлений: итог обновления ссы�
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).queryByRole('button', { name: 'Повторить' })).toBeNull();
     expect(within(dialog).getByText('Уменьшите заметки или сохраните их в UTF-8 и обновите ссылки вручную.')).toBeTruthy();
+  });
+
+  it('conflict (Р20): «Изменилась, пока шло обновление — проверьте ссылки вручную», без «Повторить»; в списке — «старое → новое»', async () => {
+    setup({
+      reason: 'rename',
+      updated: 3,
+      failed: [{ path: ['Проекты', 'План.md'], reason: 'conflict' }],
+      retry_token: null,
+      renames: [{ from: ['Встреча.md'], to: ['Архив', 'Планёрка.md'] }],
+      renames_total: 1,
+    });
+
+    const notice = screen.getByText('Не удалось обновить ссылки в 1 заметке').closest('.notice') as HTMLElement;
+    expect(within(notice).queryByRole('button', { name: 'Повторить' })).toBeNull();
+    expect(within(notice).getByText(/заметки изменились, пока шло обновление/)).toBeTruthy();
+    await fireEvent.click(within(notice).getByRole('button', { name: 'Показать' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('«Встреча» → «Планёрка»')).toBeTruthy();
+    const row = within(dialog).getByRole('button', { name: /^Открыть/ });
+    expect(row.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'План Проекты Изменилась, пока шло обновление — проверьте ссылки вручную не повторяется',
+    );
+    expect(within(dialog).queryByRole('button', { name: 'Повторить' })).toBeNull();
+    expect(within(dialog).getByText('Откройте эти заметки и проверьте ссылки вручную.')).toBeTruthy();
   });
 
   it('список: фокус на «Закрыть», Esc закрывает', async () => {

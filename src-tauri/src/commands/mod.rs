@@ -49,6 +49,8 @@ mod acl_tests;
 mod contract_tests;
 #[cfg(test)]
 mod core_tests;
+#[cfg(test)]
+mod note_list_perf;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -137,18 +139,23 @@ pub struct OpenVault {
     shown: Mutex<Option<VaultPath>>,
     /// Индекс хранилища: обратные ссылки и теги (задача 0.2-1.4).
     pub index: WindowIndex,
+    /// Обновление ссылок: знаки планов, запись ввода, очередь планов
+    /// (задача 0.2-4.6).
+    pub relink: Relinker,
 }
 
 impl OpenVault {
     /// Открытое хранилище со списком заметок с диска.
     pub fn new(summary: VaultSummary, vault: Vault) -> CoreResult<Self> {
         let notes = NoteList::new(vault.notes()?);
+        let relink = Relinker::for_root(vault.root());
         Ok(Self {
             summary,
             vault,
             notes: RwLock::new(notes),
             shown: Mutex::new(None),
             index: WindowIndex::new(),
+            relink,
         })
     }
 
@@ -300,6 +307,7 @@ impl Core {
 
     /// Связывает окно с уже открытым хранилищем без наблюдателя (тесты).
     pub fn bind_window(&self, window_label: &str, vault: OpenVault) {
+        vault.relink.bind_window(window_label);
         self.windows().insert(
             window_label.to_owned(),
             WindowVault {
@@ -388,7 +396,7 @@ impl Core {
     /// полному списку (повтор безвреден), а не затираются им.
     fn build_window_vault(
         &self,
-        _window_label: &str,
+        window_label: &str,
         summary: VaultSummary,
         root: &Path,
         emit: Arc<dyn Emit>,
@@ -403,13 +411,17 @@ impl Core {
                 trash,
             },
         )?;
+        // Очередь планов — общая для всех окон этого хранилища.
+        let relink = Relinker::for_root(vault.root());
         let open = Arc::new(OpenVault {
             summary,
             vault,
             notes: RwLock::default(),
             shown: Mutex::default(),
             index: WindowIndex::new(),
+            relink,
         });
+        open.relink.bind_window(window_label);
         let mut index = open.write_notes();
         let watcher = match VaultWatcher::start_with(
             open.vault.root(),

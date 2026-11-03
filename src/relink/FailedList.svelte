@@ -9,7 +9,7 @@
   import type { VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import Icon from '../shell/Icon.svelte';
-  import { failureRows, type RelinkNotice } from './notices.ts';
+  import { failureRows, onlyConflicts, renamesText, type RelinkNotice } from './notices.ts';
 
   let {
     notice,
@@ -27,6 +27,10 @@
 
   const titleId = `relink-failed-${Math.random().toString(36).slice(2)}`;
   const rows = $derived(failureRows(notice.failed, limitBytes));
+  const renamed = $derived(renamesText(notice.renames, notice.renamesTotal));
+  const noRetryHint = $derived(
+    onlyConflicts(notice.failed) ? t('relink.failed.noRetryHintConflict') : t('relink.failed.noRetryHint'),
+  );
   const body = $derived(
     notice.reason === 'duplicate' || notice.reason === null ? t('relink.failed.body') : t('relink.failed.bodyRename'),
   );
@@ -63,6 +67,9 @@
           <Icon name="x" size={16} />
         </button>
       </div>
+      {#if renamed}
+        <p class="renamed">{renamed}</p>
+      {/if}
       <p class="body">{body}</p>
       <ul class="list" aria-label={t('relink.failed.list')}>
         {#each rows as row (row.path.join('/'))}
@@ -88,7 +95,7 @@
       </ul>
     </div>
     <div class="actions">
-      <p class="hint">{notice.canRetry ? t('relink.failed.retryHint') : t('relink.failed.noRetryHint')}</p>
+      <p class="hint">{notice.canRetry ? t('relink.failed.retryHint') : noRetryHint}</p>
       {#if notice.canRetry}
         <button type="button" class="button" onclick={onRetry}>{t('relink.failed.retry')}</button>
       {/if}
@@ -175,6 +182,13 @@
 
   .close:hover {
     background: var(--bg-hover);
+  }
+
+  .renamed {
+    margin: 12px 0 0;
+    color: var(--text-primary);
+    line-height: 20px;
+    overflow-wrap: anywhere;
   }
 
   .body {

@@ -21,6 +21,7 @@
 //! HTML.
 
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{
     Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
@@ -254,10 +255,19 @@ fn event_interval() -> Duration {
 ///   хранилища; при закрытии окна индекс пишет `windows::closing`
 ///   ([`WindowIndex::write_now`]).
 ///
+/// - **Сверен** ([`WindowIndex::ready_for_relink`]) — загрузка или сборка
+///   закончена, загруженный файл сверен с диском и доделано прерванное
+///   обновление ссылок (0.2-4.6): только тогда ядро считает планы
+///   переписывания (решение 114). Пока индекс не сверен, план по нему
+///   пропустил бы ссылки, добавленные снаружи при закрытом приложении
+///   (ревью 0.2-1.4).
+///
 /// Порядок замков: список заметок → индекс; замок индекса никогда не ждёт
 /// список заметок. Чтение файлов — без замков.
 pub struct WindowIndex {
     index: RwLock<VaultIndex>,
+    /// Сверен с диском и доделка выполнена (ставится один раз).
+    reconciled: AtomicBool,
     store: Mutex<IndexStore>,
     /// Обновления по заметкам — по одному (чтение файла и вставка).
     updates: Mutex<()>,
@@ -297,6 +307,7 @@ impl WindowIndex {
     pub fn new() -> Self {
         Self {
             index: RwLock::new(VaultIndex::new()),
+            reconciled: AtomicBool::new(false),
             store: Mutex::new(IndexStore::new()),
             updates: Mutex::new(()),
             signal: Mutex::default(),
@@ -319,6 +330,31 @@ impl WindowIndex {
     /// Строится или готов и ход сборки.
     pub fn status(&self) -> IndexStatus {
         self.read().status()
+    }
+
+    /// Годен ли индекс для планов переписывания: готов, сверен с диском,
+    /// прерванное обновление ссылок доделано (решение 114, ревью 0.2-1.4).
+    pub fn ready_for_relink(&self) -> bool {
+        self.reconciled.load(Ordering::Acquire) && self.status().state == IndexState::Ready
+    }
+
+    /// Индекс сверен и доделка выполнена: окну ещё раз `index:status`, чтобы
+    /// окно, ждущее готовности для переименования, спросило снова.
+    fn mark_reconciled(&self) {
+        self.reconciled.store(true, Ordering::Release);
+        self.notify(true, false);
+    }
+
+    /// Чтение индекса в памяти под замком (план переписывания, 0.2-4.6).
+    /// Вызывающий держит замок списка заметок раньше (порядок замков).
+    pub fn with_index<T>(&self, read: impl FnOnce(&VaultIndex) -> T) -> T {
+        read(&self.read())
+    }
+
+    /// Индекс из файла без сверки с диском (тесты признака `reconciled`).
+    #[cfg(test)]
+    pub fn load_unreconciled(&self, index: VaultIndex) {
+        *self.write() = index;
     }
 
     /// Окно отвязано от хранилища: потоки индекса выходят (сборка — после
@@ -471,7 +507,7 @@ impl WindowIndex {
     pub fn wait_settled(&self) {
         let start = Instant::now();
         loop {
-            let ready = self.status().state == IndexState::Ready;
+            let ready = self.ready_for_relink();
             let signal = self.signal();
             if ready && !signal.status && !signal.changed && !signal.sending {
                 return;
@@ -593,9 +629,10 @@ fn is_note_path(path: &VaultPath) -> bool {
 /// этого хранилища). Оба потока выходят после [`WindowIndex::stop`].
 pub fn start_index(open: &Arc<OpenVault>, emit: Arc<dyn Emit>) {
     let preparing = Arc::clone(open);
+    let relink_emit = Arc::clone(&emit);
     let _ = std::thread::Builder::new()
         .name("rhizomind-index-build".into())
-        .spawn(move || prepare_loop(&preparing));
+        .spawn(move || prepare_loop(&preparing, &*relink_emit));
     let running = Arc::clone(open);
     let _ = std::thread::Builder::new()
         .name("rhizomind-index-events".into())
@@ -603,11 +640,15 @@ pub fn start_index(open: &Arc<OpenVault>, emit: Arc<dyn Emit>) {
 }
 
 /// Загрузка или сборка; хранилище недоступно — повтор через
-/// [`PREPARE_RETRY`], пока окно открыто.
-fn prepare_loop(open: &OpenVault) {
+/// [`PREPARE_RETRY`], пока окно открыто. После сверки — доделка прерванного
+/// обновления ссылок (до любого другого плана, ревью 0.2-4.5), затем
+/// признак `reconciled`.
+fn prepare_loop(open: &OpenVault, emit: &dyn Emit) {
     let index = &open.index;
     while !index.stopped() {
         if index.prepare(&open.vault).is_ok() {
+            super::relink_cmds::resume_after_reconcile(open, emit);
+            index.mark_reconciled();
             return;
         }
         let signal = index.signal();

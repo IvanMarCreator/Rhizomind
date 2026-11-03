@@ -1,0 +1,65 @@
+# Замеры ядра (задача 0.2-7.1, С2-8.3): индекс, запросы окна,
+# NoteList::replace_notes, план переписывания ссылок (каркас) — тесты Rust
+# `perf_` в выпускной сборке, медиана 5 повторов, по одному тесту.
+# - push в любую ветку — 10 000 заметок, пределы С2-8.3 проверяются (тест
+#   падает с понятным сообщением);
+# - запуск вручную (workflow_dispatch, перед контрольными точками) — ещё и
+#   50 000 (цифры и превышения — в отчёт, без падения: окончательно — 0.5).
+# Отдельное задание, а не шаг verify: нарушенный предел не останавливает
+# сборку, сценарные тесты и замеры окна. Цифры — пометками прогона
+# (::notice / ::error), их видно без входа в GitHub (API пометок проверки).
+# Только Windows: С2-8.3 проверяет пределы на windows-latest, Linux — справочно.
+# Без секретов и сторонних сервисов; права только на чтение кода.
+# Все actions закреплены по SHA коммита (ADR 0009); версия — в комментарии.
+name: perf-core
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf-core:
+    name: perf-core (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 120  # холодный кэш Rust ~25 мин; 50 000 — ещё ~20 мин
+    steps:
+      - name: Получить код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Установить Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust из rust-toolchain.toml
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+
+      - name: Кэш Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> src-tauri/target
+
+      # Интерфейс встраивается в ядро при сборке (tauri.conf.json, frontendDist).
+      # Скрипты установки пакетов не запускаются (.npmrc: ignore-scripts=true).
+      - name: Интерфейс для сборки ядра
+        run: |
+          npm ci
+          npm run build:ui
+
+      - name: Замеры ядра
+        shell: bash
+        env:
+          RHIZOMIND_PERF_50K: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: cargo test -p rhizomind --release --locked --lib -- --ignored --nocapture --test-threads=1 perf_
