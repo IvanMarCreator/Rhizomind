@@ -1,11 +1,12 @@
 <!--
-  Раздел «Файлы и ссылки» (Э12.3): где создавать новые заметки,
-  подтверждение удаления, лимит размера для редактирования. Обновление
-  ссылок при переименовании — с 0.2.
+  Раздел «Файлы и ссылки» (Э12.3): где создавать новые заметки, обновление
+  ссылок при переименовании (0.2-5.2, С2-3.5: «Всегда спрашивать» или
+  «Всегда обновлять ссылки»), подтверждение удаления, лимит размера для
+  редактирования.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { NewNoteLocation, Settings, VaultPath } from '../../api/index.ts';
+  import type { NewNoteLocation, RenameLinks, Settings, VaultPath } from '../../api/index.ts';
   import { LIMITS } from '../../api/limits.ts';
   import { t } from '../../i18n/index.ts';
   import Icon from '../../shell/Icon.svelte';
@@ -74,15 +75,13 @@
   id="settings-rename-links"
   title={t('settings.renameLinks.title')}
   hint={t('settings.renameLinks.hint')}
-  badge={t('settings.badge.release02')}
-  disabled
   singleLine
 >
   <Segmented
     compact
     labelledby="settings-rename-links"
-    value={null}
-    disabled
+    value={settings.rename_links}
+    onChange={(rename_links: RenameLinks) => onChange({ rename_links })}
     options={[
       { value: 'ask', label: t('settings.renameLinks.ask') },
       { value: 'update', label: t('settings.renameLinks.update') },

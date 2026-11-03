@@ -1,11 +1,19 @@
 // Состояние дерева файлов (С3.2): элементы хранилища, раскрытые папки, выбор,
-// поле переименования, ожидающее подтверждения удаление. Все операции с
-// файлами — командами ядра; оболочке окна дерево сообщает только итог
-// (открыть заметку, путь изменился, элемент удалён) через TreeHost.
+// поле переименования, ожидающее подтверждения удаление, окно вопроса об
+// обновлении ссылок (0.2-5.2). Все операции с файлами — командами ядра;
+// оболочке окна дерево сообщает только итог (открыть заметку, путь изменился,
+// элемент удалён) через TreeHost.
 import { CoreCallError, core, onCoreEvent } from '../api/index.ts';
 import type {
   EntryKind,
+  EntryMovedResponse,
   HotkeyOverrides,
+  IndexProgress,
+  IndexStatus,
+  LinksMode,
+  RelinkPreview,
+  RelinkPreviewRequest,
+  RenameLinks,
   TreeChange,
   TreeEntry,
   Unsubscribe,
@@ -41,6 +49,10 @@ export interface TreeHost {
   readonly confirmDelete: boolean;
   /** Назначения горячих клавиш хранилища (F2, Delete в дереве); нет — по умолчанию. */
   readonly hotkeys?: HotkeyOverrides;
+  /** Настройка хранилища «При переименовании заметки, на которую есть ссылки» (С2-3.5); нет — «Всегда спрашивать». */
+  readonly renameLinks?: RenameLinks;
+  /** Галочка «Больше не спрашивать» с ответом «Обновить ссылки» (решение 109): записать настройку. */
+  setRenameLinks?(mode: RenameLinks): void;
   open(path: VaultPath): void;
   /** Элемент переименован или перемещён в приложении: пути внутри меняются. */
   entryRenamed(from: VaultPath, to: VaultPath): void;
@@ -51,6 +63,85 @@ export interface TreeHost {
 
 /** Сколько раз подбирать свободное «Без названия», если ядро отвечает «занято». */
 const UNTITLED_ATTEMPTS = 20;
+
+/** Пока индекс строится, предпросмотр спрашивается снова не реже, чем раз в столько (кроме `index:status`). */
+const INDEX_POLL_MS = 1_000;
+
+/** Переименование или перемещение, для которого нужен ответ об обновлении ссылок. */
+export type RelinkOp =
+  | { kind: 'rename'; path: VaultPath; newName: string }
+  | { kind: 'move'; path: VaultPath; dir: VaultPath };
+
+/** Ответ в окне вопроса (решение 109). */
+export type RenameAnswer = 'update' | 'keep' | 'cancel';
+
+/**
+ * Окно вопроса при переименовании (макеты Д-А, Д-1). `waiting` — индекс
+ * строится (решение 114): в режиме «Всегда спрашивать» кнопки недоступны, в
+ * режиме «Всегда обновлять» — только «Отменить переименование».
+ */
+export interface RenameQuestion {
+  readonly state: 'waiting' | 'ask';
+  /** Режим на момент вопроса: в окне ожидания — какие кнопки показать. */
+  readonly mode: RenameLinks;
+  readonly op: 'rename' | 'move';
+  /** Что переименовывается (заметка или папка). */
+  readonly kind: EntryKind;
+  /** Имя для заголовка: заметка — без `.md`, папка — имя папки. */
+  readonly name: string;
+  /** «Было → станет» в плашке: имена у переименования заметки, пути — у папки и переноса. */
+  readonly from: string;
+  readonly to: string;
+  /** Сколько заметок ссылается (только `ask`). */
+  readonly notes: number;
+  /** Ход сборки индекса (только `waiting`); `total: 0` — неизвестно. */
+  readonly progress: IndexProgress | null;
+}
+
+/** Итог переименования с вопросом: путь и ответ — для Ctrl+Z (Р9); `null` — отменено. */
+type RelinkResult = { path: VaultPath; links: LinksMode } | null;
+
+const stem = (name: string) => name.replace(/\.md$/i, '');
+
+function changeText(kind: EntryKind, path: VaultPath, to: VaultPath, op: RelinkOp['kind']): { from: string; to: string } {
+  if (op === 'rename' && kind !== 'folder') return { from: stem(path.at(-1) ?? ''), to: stem(to.at(-1) ?? '') };
+  const show = (p: VaultPath) => (kind === 'folder' ? p : [...p.slice(0, -1), stem(p.at(-1) ?? '')]).join('/');
+  return { from: show(path), to: show(to) };
+}
+
+function targetOf(op: RelinkOp): VaultPath {
+  return op.kind === 'rename' ? [...parentOf(op.path), op.newName] : [...op.dir, op.path.at(-1) ?? ''];
+}
+
+function previewRequest(op: RelinkOp): RelinkPreviewRequest {
+  return op.kind === 'rename'
+    ? { op: 'rename', path: op.path, new_name: op.newName }
+    : { op: 'move', path: op.path, new_dir: op.dir };
+}
+
+/** Знак плана не принят (просрочен, окно ждало дольше 10 минут): спросить предпросмотр заново. */
+function isStaleToken(error: unknown): boolean {
+  return error instanceof CoreCallError && error.error.code === 'invalid_argument' && error.error.field === 'token';
+}
+
+/**
+ * Текст ошибки переименования. `io_failed` при обновлении ссылок: ввод не
+ * записан (или файл занят) — переименование не выполнено (ревью 0.2-4.6).
+ */
+function renameError(error: unknown, links: LinksMode): string {
+  if (links === 'update' && error instanceof CoreCallError && error.error.code === 'io_failed') {
+    return t('relink.renameNotDone');
+  }
+  return userMessage(error);
+}
+
+/** Отказ переименования с готовым текстом для показа (ошибка ядра — в `cause`). */
+class RelinkFailed extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'RelinkFailed';
+  }
+}
 
 function isDuplicate(error: unknown): boolean {
   if (!(error instanceof CoreCallError)) return false;
@@ -68,6 +159,8 @@ export class FileTreeState {
   renaming = $state.raw<VaultPath | null>(null);
   /** Удаление, ждущее подтверждения в окне. */
   pendingDelete = $state.raw<TreeEntry | null>(null);
+  /** Окно вопроса об обновлении ссылок (0.2-5.2); `null` — закрыто. */
+  question = $state.raw<RenameQuestion | null>(null);
   /** Первое чтение дерева закончилось (успешно или с ошибкой). */
   loaded = $state(false);
 
@@ -81,7 +174,9 @@ export class FileTreeState {
    * `gone` — элемент с тех пор удалили (в том числе снаружи): новый файл с тем
    * же именем — уже другой, его отмена не трогает (ревью 2.3, задача 2.9).
    */
-  #lastRename: { from: VaultPath; to: VaultPath; gone?: boolean } | null = null;
+  #lastRename: { from: VaultPath; to: VaultPath; links: LinksMode; gone?: boolean } | null = null;
+  /** Ответ окна вопроса ждёт переименование (или отмена во время ожидания индекса). */
+  #answer: ((answer: RenameAnswer, dontAsk: boolean) => void) | null = null;
   /** Элементы, удаление которых уже идёт: повторный Delete их не трогает. */
   readonly #deleting: VaultPath[] = [];
 
@@ -215,20 +310,24 @@ export class FileTreeState {
   }
 
   /**
-   * Переименование: `newName` — полное имя на диске. Успех — `null`; отказ —
-   * текст для показа под полем ввода. Ссылки в 0.1 не обновляются (С3.2).
+   * Переименование: `newName` — полное имя на диске. Успех или отмена в окне
+   * вопроса — `null`; отказ — текст для показа под полем ввода. Ссылки — по
+   * настройке и ответу (С2-3.5): переписывать нечего — сразу, «Всегда
+   * обновлять» — сразу с обновлением, «Всегда спрашивать» — окно до
+   * переименования; пока индекс строится — окно ожидания (решение 114).
    */
   async rename(path: VaultPath, newName: string): Promise<string | null> {
+    if (this.question) return null;
     try {
-      const { path: to } = await core.entryRename({ path, new_name: newName });
-      this.#relocated(path, to);
-      this.#lastRename = samePath(path, to) ? null : { from: path, to };
+      const done = await this.#relink({ kind: 'rename', path, newName }, true);
+      if (!done) return null;
+      this.#lastRename = samePath(path, done.path) ? null : { from: path, to: done.path, links: done.links };
       // Поле в дереве закрывается, только если оно было на этом элементе
       // (переименование из заголовка заметки не трогает поле на другом).
-      if (this.renaming && samePath(this.renaming, to)) this.renaming = null;
+      if (this.renaming && samePath(this.renaming, done.path)) this.renaming = null;
       return null;
     } catch (error) {
-      return userMessage(error);
+      return error instanceof RelinkFailed ? error.message : userMessage(error);
     }
   }
 
@@ -236,10 +335,11 @@ export class FileTreeState {
    * Ctrl+Z в дереве или в заголовке заметки: последнее переименование
    * отменяется, если элемент на месте и прежнее имя свободно (`name_check`);
    * иначе — уведомление, ничего не меняется. Отмена одна: повтор ничего не делает.
+   * Ссылки — по ответу, данному при переименовании, без второго окна (Р9).
    */
   async undoRename(): Promise<void> {
     const last = this.#lastRename;
-    if (!last) return;
+    if (!last || this.question) return;
     this.#lastRename = null;
     const oldName = last.from.at(-1) ?? '';
     if (last.gone || !this.entry(last.to)) {
@@ -257,23 +357,168 @@ export class FileTreeState {
         );
         return;
       }
-      const { path: to } = await core.entryRename({ path: last.to, new_name: oldName });
-      this.#relocated(last.to, to);
+      const op: RelinkOp = { kind: 'rename', path: last.to, newName: oldName };
+      if (last.links === 'update') await this.#relink(op, false);
+      else await this.#run(op, 'keep');
     } catch (error) {
-      if (error instanceof CoreCallError && error.error.code === 'not_found') this.host.notify(t('tree.undo.missing'));
-      else this.host.notify(t('tree.undo.failed', { reason: userMessage(error) }));
+      const cause = error instanceof RelinkFailed ? error.cause : error;
+      if (cause instanceof CoreCallError && cause.error.code === 'not_found') this.host.notify(t('tree.undo.missing'));
+      else this.host.notify(t('tree.undo.failed', { reason: error instanceof RelinkFailed ? error.message : userMessage(error) }));
     }
   }
 
-  /** Перемещение перетаскиванием в папку `dir` (`[]` — корень). */
+  /** Перемещение перетаскиванием в папку `dir` (`[]` — корень); ссылки — как у переименования. */
   async move(path: VaultPath, dir: VaultPath): Promise<void> {
-    if (!canMove(path, dir)) return;
+    if (!canMove(path, dir) || this.question) return;
     try {
-      const { path: to } = await core.entryMove({ path, new_dir: dir });
-      this.#relocated(path, to);
+      await this.#relink({ kind: 'move', path, dir }, true);
     } catch (error) {
-      this.host.notify(userMessage(error));
+      this.host.notify(error instanceof RelinkFailed ? error.message : userMessage(error));
     }
+  }
+
+  /** Ответ в окне вопроса; `dontAsk` — галочка «Больше не спрашивать» (только с «Обновить ссылки»). */
+  answerQuestion(answer: RenameAnswer, dontAsk = false): void {
+    const resolve = this.#answer;
+    if (!resolve) return;
+    // В окне ожидания доступна только отмена (решение 114).
+    if (this.question?.state === 'waiting' && answer !== 'cancel') return;
+    this.#answer = null;
+    resolve(answer, dontAsk);
+  }
+
+  // ---- Обновление ссылок (0.2-5.2, С2-3.5) ------------------------------------
+
+  /**
+   * Предпросмотр → (окно ожидания индекса) → (вопрос) → `entry_rename` /
+   * `entry_move` с `links` и знаком плана. `ask: false` — Ctrl+Z: ответ уже
+   * дан, окна вопроса нет. `null` — пользователь отменил.
+   */
+  async #relink(op: RelinkOp, ask: boolean): Promise<RelinkResult> {
+    try {
+      let preview = await this.#preview(op, ask);
+      if (!preview) return null;
+      let links: LinksMode = 'update';
+      if (preview.notes === 0) {
+        links = 'keep';
+      } else if (ask && (this.host.renameLinks ?? 'ask') === 'ask') {
+        const answer = await this.#ask(op, preview);
+        if (answer === 'cancel') return null;
+        links = answer;
+      }
+      this.question = null;
+      try {
+        const path = await this.#run(op, links, preview.token);
+        // Нечего было переписывать — Ctrl+Z тоже спросит предпросмотр (вдруг ссылки появились).
+        return { path, links: preview.notes === 0 ? 'update' : links };
+      } catch (error) {
+        if (links !== 'update' || !isStaleToken(error)) throw error;
+        // Знак просрочен — новый план и то же решение, без второго окна.
+        preview = await this.#preview(op, false);
+        if (!preview) return null;
+        const retry: LinksMode = preview.notes === 0 ? 'keep' : 'update';
+        return { path: await this.#run(op, retry, preview.token), links: 'update' };
+      }
+    } catch (error) {
+      // Ошибки команд переименования уже с текстом; здесь — предпросмотр.
+      if (error instanceof CoreCallError) throw new RelinkFailed(userMessage(error), error);
+      throw error;
+    } finally {
+      this.question = null;
+      this.#answer = null;
+    }
+  }
+
+  /** Команда ядра; при `update` — со знаком плана. Новый путь применяется к дереву и оболочке. */
+  async #run(op: RelinkOp, links: LinksMode, token?: string): Promise<VaultPath> {
+    const extra = links === 'update' && token !== undefined ? { links, token } : {};
+    let response: EntryMovedResponse;
+    try {
+      response =
+        op.kind === 'rename'
+          ? await core.entryRename({ path: op.path, new_name: op.newName, ...extra })
+          : await core.entryMove({ path: op.path, new_dir: op.dir, ...extra });
+    } catch (error) {
+      if (links === 'update' && isStaleToken(error)) throw error;
+      throw new RelinkFailed(renameError(error, links), error);
+    }
+    this.#relocated(op.path, response.path);
+    return response.path;
+  }
+
+  /**
+   * Предпросмотр. Пока индекс строится — окно ожидания: предпросмотр
+   * спрашивается снова по каждому `index:status` и раз в секунду (после
+   * `ready` индекс ещё сверяется с диском и может коротко отвечать
+   * `index_building`, ревью 0.2-4.6). `null` — отменено в окне ожидания.
+   */
+  async #preview(op: RelinkOp, ask: boolean): Promise<RelinkPreview | null> {
+    let stop: Unsubscribe | null = null;
+    let wake: (() => void) | null = null;
+    let cancelled = false;
+    try {
+      for (;;) {
+        const reply = await core.relinkPreview(previewRequest(op));
+        if (cancelled) return null;
+        if (reply.status === 'ready') return reply;
+        const progress = { done: reply.done, total: reply.total };
+        this.question = this.#question(op, 'waiting', { mode: ask ? (this.host.renameLinks ?? 'ask') : 'update', progress });
+        this.#answer = () => {
+          cancelled = true;
+          wake?.();
+        };
+        stop ??= await onCoreEvent('index:status', (status: IndexStatus) => {
+          if (status.state === 'building' && this.question?.state === 'waiting') {
+            this.question = { ...this.question, progress: { done: status.done, total: status.total } };
+          } else {
+            wake?.();
+          }
+        });
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => done(), INDEX_POLL_MS);
+          const done = () => {
+            clearTimeout(timer);
+            wake = null;
+            resolve();
+          };
+          wake = done;
+          if (cancelled) done();
+        });
+        if (cancelled) return null;
+      }
+    } finally {
+      stop?.();
+    }
+  }
+
+  /** Вопрос «Обновить ссылки?» (решение 109); окно ожидания, если было, становится вопросом. */
+  #ask(op: RelinkOp, preview: RelinkPreview): Promise<RenameAnswer> {
+    return new Promise((resolve) => {
+      this.question = this.#question(op, 'ask', { mode: 'ask', notes: preview.notes });
+      this.#answer = (answer, dontAsk) => {
+        if (answer === 'update' && dontAsk) this.host.setRenameLinks?.('update');
+        resolve(answer);
+      };
+    });
+  }
+
+  #question(
+    op: RelinkOp,
+    state: RenameQuestion['state'],
+    fields: { mode: RenameLinks; notes?: number; progress?: IndexProgress | null },
+  ): RenameQuestion {
+    const kind = this.entry(op.path)?.kind ?? 'note';
+    const name = kind === 'folder' ? (op.path.at(-1) ?? '') : stem(op.path.at(-1) ?? '');
+    return {
+      state,
+      op: op.kind,
+      kind,
+      name,
+      ...changeText(kind, op.path, targetOf(op), op.kind),
+      notes: fields.notes ?? 0,
+      progress: fields.progress ?? null,
+      mode: fields.mode,
+    };
   }
 
   #relocated(from: VaultPath, to: VaultPath): void {
@@ -347,8 +592,8 @@ export class FileTreeState {
         this.selected = [...change.to, ...this.selected.slice(change.from.length)];
       }
       if (this.#lastRename && isInside(this.#lastRename.to, change.from)) {
-        const { from, to } = this.#lastRename;
-        this.#lastRename = { from, to: [...change.to, ...to.slice(change.from.length)] };
+        const { from, to, links } = this.#lastRename;
+        this.#lastRename = { from, to: [...change.to, ...to.slice(change.from.length)], links };
       }
       if (this.renaming && isInside(this.renaming, change.from)) {
         this.renaming = [...change.to, ...this.renaming.slice(change.from.length)];
@@ -365,4 +610,3 @@ export class FileTreeState {
     if (this.renaming && !this.entry(this.renaming)) this.renaming = null;
   }
 }
-

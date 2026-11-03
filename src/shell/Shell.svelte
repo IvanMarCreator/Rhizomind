@@ -42,6 +42,7 @@
   import { WindowClosing, coreClosing } from './closing.ts';
   import { LinksFlush, coreFlushDone } from '../relink/flush.ts';
   import { RelinkNotices } from '../relink/notices.ts';
+  import RenameDialog from '../relink/RenameDialog.svelte';
   import { ShownNote } from './shownNote.ts';
   import { textMenuItems, textTargetOf, type TextTarget } from './textMenu.ts';
   import { WindowModel } from './window.svelte.ts';
@@ -67,6 +68,11 @@
       get hotkeys() {
         return owner.hotkeys;
       },
+      get renameLinks() {
+        return owner.settings.rename_links;
+      },
+      // «Больше не спрашивать» с «Обновить ссылки» (решение 109).
+      setRenameLinks: (rename_links) => void owner.updateSettings({ rename_links }),
       open: (path) => owner.open(path),
       entryRenamed: (from, to) => {
         // Сначала редактор: смена пути после этого — не уход с заметки.
@@ -177,9 +183,11 @@
 
   /**
    * Открыто модальное окно (быстрый переход, подтверждение удаления,
-   * настройки): горячие клавиши окна под ним не действуют.
+   * настройки, вопрос об обновлении ссылок): горячие клавиши окна под ним не действуют.
    */
-  const modalOpen = $derived(switcherOpen || settingsSection !== null || files.pendingDelete !== null);
+  const modalOpen = $derived(
+    switcherOpen || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
+  );
 
   /** Меню правки текста (решение 97); `null` — закрыто. */
   let textMenu = $state.raw<{ x: number; y: number; items: MenuItem[]; target: TextTarget } | null>(null);
@@ -423,6 +431,8 @@
       </RightPanel>
     {/if}
   </div>
+  <!-- Окно вопроса при переименовании (0.2-5.2): и для дерева, и для заголовка заметки. -->
+  <RenameDialog tree={files} />
   {#if switcherOpen}
     <QuickSwitcher
       currentPath={model.currentPath}
