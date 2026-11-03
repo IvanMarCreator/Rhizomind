@@ -16,6 +16,13 @@
 //! Ключ заметки — ключи имён компонентов пути (`names::key`): событие
 //! наблюдателя приходит в написании с диска, команда — в написании
 //! интерфейса.
+//!
+//! Ссылки и быстрый переход после пачки обновляются по изменениям
+//! (задача 0.2-7.3, С2-5.2): в них уходят только убранные и добавленные
+//! заметки с их местами в списке, ключи остальных не пересчитываются.
+//! Порядок в ссылках и быстром переходе — порядок этого списка, как при
+//! полной перестройке; совпадение с ней проверяет `proptest`
+//! `incremental_equals_rebuild`.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +34,12 @@ use crate::vault::NoteRef;
 
 /// Путь по ключам имён компонентов.
 type PathKey = Vec<String>;
+
+/// Заметка списка: путь и дата создания.
+type Note = (VaultPath, i64);
+
+/// Ключи, которые задела пачка, и их заметки до пачки (`None` — не было).
+type Touched = BTreeMap<PathKey, Option<Note>>;
 
 fn path_key(path: &VaultPath) -> PathKey {
     path.components()
@@ -40,7 +53,7 @@ fn path_key(path: &VaultPath) -> PathKey {
 pub struct NoteList {
     /// Ключ пути → путь (как на диске или как прислала команда) и дата
     /// создания.
-    notes: BTreeMap<PathKey, (VaultPath, i64)>,
+    notes: BTreeMap<PathKey, Note>,
     links: Links,
     switcher: Switcher,
 }
@@ -53,10 +66,12 @@ impl NoteList {
         list
     }
 
-    /// Заменяет список целиком (открытие, полная сверка).
+    /// Заменяет список целиком (открытие, полная сверка). Не заметки (не
+    /// `.md`) пропускаются, как в ссылках и быстром переходе.
     pub fn replace(&mut self, notes: Vec<NoteRef>) {
         self.notes = notes
             .into_iter()
+            .filter(|note| is_note_path(&note.path))
             .map(|note| (path_key(&note.path), (note.path, note.created_ms)))
             .collect();
         self.rebuild();
@@ -119,7 +134,8 @@ impl NoteList {
 
     /// [`NoteList::apply`], но перед каждым изменением `before` видит
     /// список заметок до него (так выводятся события `note:*`). Ссылки и
-    /// быстрый переход перестраиваются один раз в конце.
+    /// быстрый переход обновляются один раз в конце — по разнице между
+    /// списком до пачки и после.
     pub fn apply_observed(
         &mut self,
         changes: &[TreeChange],
@@ -127,12 +143,13 @@ impl NoteList {
         before: &mut dyn FnMut(&NoteList, &TreeChange),
     ) -> bool {
         let mut changed = false;
+        let mut touched = Touched::new();
         for change in changes {
             before(self, change);
-            changed |= self.apply_one(change, created_ms);
+            changed |= self.apply_one(change, created_ms, &mut touched);
         }
         if changed {
-            self.rebuild();
+            self.update(touched);
         }
         changed
     }
@@ -141,14 +158,17 @@ impl NoteList {
         &mut self,
         change: &TreeChange,
         created_ms: &dyn Fn(&VaultPath) -> Option<i64>,
+        touched: &mut Touched,
     ) -> bool {
         match change {
             TreeChange::Created { path, entry_kind } => {
-                *entry_kind == EntryKind::Note && self.insert(path, created_ms)
+                *entry_kind == EntryKind::Note
+                    && is_note_path(path)
+                    && self.insert(path, created_ms, touched)
             }
             TreeChange::Modified { .. } => false,
-            TreeChange::Removed { path } => self.remove_under(path).is_some(),
-            TreeChange::Renamed { from, to } => match self.remove_under(from) {
+            TreeChange::Removed { path } => self.remove_under(path, touched).is_some(),
+            TreeChange::Renamed { from, to } => match self.remove_under(from, touched) {
                 Some(moved) => {
                     let from_len = from.components().len();
                     for (old, created) in moved {
@@ -161,7 +181,9 @@ impl NoteList {
                         // Переименование в не-заметку (`a.md` → `a.txt`) —
                         // уход из заметок, как удаление (решение 90).
                         if is_note_path(&new) {
-                            self.notes.insert(path_key(&new), (new, created));
+                            let key = path_key(&new);
+                            let old = self.notes.insert(key.clone(), (new, created));
+                            touched.entry(key).or_insert(old);
                         }
                     }
                     true
@@ -169,13 +191,18 @@ impl NoteList {
                 // `from` неизвестен (изменение уже применено командой или
                 // пачка после сверки) — событие пропускается; заметка `to`,
                 // которой нет в списке, добавляется.
-                None => is_note_path(to) && self.insert(to, created_ms),
+                None => is_note_path(to) && self.insert(to, created_ms, touched),
             },
         }
     }
 
     /// Добавляет заметку, если её нет. `true` — добавлена.
-    fn insert(&mut self, path: &VaultPath, created_ms: &dyn Fn(&VaultPath) -> Option<i64>) -> bool {
+    fn insert(
+        &mut self,
+        path: &VaultPath,
+        created_ms: &dyn Fn(&VaultPath) -> Option<i64>,
+        touched: &mut Touched,
+    ) -> bool {
         let key = path_key(path);
         if self.notes.contains_key(&key) {
             return false;
@@ -183,12 +210,13 @@ impl NoteList {
         let Some(created) = created_ms(path) else {
             return false;
         };
-        self.notes.insert(key, (path.clone(), created));
+        self.notes.insert(key.clone(), (path.clone(), created));
+        touched.entry(key).or_insert(None);
         true
     }
 
     /// Убирает заметки по пути и под ним; `None` — таких не было.
-    fn remove_under(&mut self, path: &VaultPath) -> Option<Vec<(VaultPath, i64)>> {
+    fn remove_under(&mut self, path: &VaultPath, touched: &mut Touched) -> Option<Vec<Note>> {
         let prefix = path_key(path);
         let keys: Vec<PathKey> = self
             .notes
@@ -200,10 +228,91 @@ impl NoteList {
             return None;
         }
         Some(
-            keys.iter()
-                .filter_map(|key| self.notes.remove(key))
+            keys.into_iter()
+                .filter_map(|key| {
+                    let note = self.notes.remove(&key)?;
+                    touched.entry(key).or_insert_with(|| Some(note.clone()));
+                    Some(note)
+                })
                 .collect(),
         )
+    }
+
+    /// Переносит в ссылки и быстрый переход разницу пачки: заметки,
+    /// которых после пачки нет или которые изменились (написание пути,
+    /// дата создания), убираются с их мест в списке «до»; новые и
+    /// изменившиеся добавляются на свои места в списке «после».
+    fn update(&mut self, touched: Touched) {
+        let mut removed: Vec<PathKey> = Vec::new();
+        let mut added: Vec<PathKey> = Vec::new();
+        for (key, old) in touched {
+            let new = self.notes.get(&key);
+            if old.as_ref() == new {
+                continue;
+            }
+            if old.is_some() {
+                removed.push(key.clone());
+            }
+            if new.is_some() {
+                added.push(key);
+            }
+        }
+        if removed.is_empty() && added.is_empty() {
+            return;
+        }
+        // Один проход по списку «после» (ключи упорядочены): места
+        // добавленных и число ключей «после», меньших каждого убранного.
+        // Место убранного в списке «до» = меньших «после» − меньших
+        // добавленных + меньших убранных.
+        let mut added_at: Vec<usize> = Vec::with_capacity(added.len());
+        let mut after_less: Vec<usize> = Vec::with_capacity(removed.len());
+        let (mut a, mut r) = (0, 0);
+        for (pos, key) in self.notes.keys().enumerate() {
+            while r < removed.len() && removed[r] <= *key {
+                after_less.push(pos);
+                r += 1;
+            }
+            if a < added.len() && added[a] == *key {
+                added_at.push(pos);
+                a += 1;
+            }
+            if a == added.len() && r == removed.len() {
+                break;
+            }
+        }
+        after_less.resize(removed.len(), self.notes.len());
+        let mut added_less = 0;
+        let removed_at: Vec<usize> = removed
+            .iter()
+            .zip(after_less)
+            .enumerate()
+            .map(|(removed_less, (key, after_less))| {
+                while added_less < added.len() && added[added_less] < *key {
+                    added_less += 1;
+                }
+                after_less - added_less + removed_less
+            })
+            .collect();
+        let added: Vec<(usize, NoteRef)> = added
+            .iter()
+            .zip(added_at)
+            .filter_map(|(key, pos)| {
+                let (path, created_ms) = self.notes.get(key)?;
+                Some((
+                    pos,
+                    NoteRef {
+                        path: path.clone(),
+                        created_ms: *created_ms,
+                    },
+                ))
+            })
+            .collect();
+        let paths: Vec<(usize, VaultPath)> = added
+            .iter()
+            .map(|(pos, note)| (*pos, note.path.clone()))
+            .collect();
+        self.links.splice(&removed_at, added);
+        self.switcher.splice(&removed_at, paths, self.links.ranks());
     }
 
     fn rebuild(&mut self) {
@@ -367,5 +476,144 @@ mod tests {
             }],
             gone
         ));
+    }
+
+    mod props {
+        use super::*;
+        use crate::commands::PathRename;
+        use proptest::prelude::*;
+
+        /// Малый алфавит — чтобы чаще совпадали имена, ключи и концы путей.
+        const PARTS: [&str; 6] = ["А", "а", "Б", "Встреча", "ß", "ss"];
+
+        fn rel() -> impl Strategy<Value = String> {
+            prop::collection::vec(prop::sample::select(PARTS.to_vec()), 1..4)
+                .prop_map(|parts| parts.join("/"))
+        }
+
+        /// Заметка (в том числе `.MD`), папка или не заметка.
+        fn target() -> impl Strategy<Value = VaultPath> {
+            (
+                rel(),
+                prop::sample::select(vec![".md", ".md", ".MD", "", ".txt"]),
+            )
+                .prop_map(|(rel, ext)| vp(&format!("{rel}{ext}")))
+        }
+
+        fn change() -> impl Strategy<Value = TreeChange> {
+            prop_oneof![
+                3 => target().prop_map(|path| TreeChange::Created {
+                    entry_kind: if is_note_path(&path) {
+                        EntryKind::Note
+                    } else {
+                        EntryKind::Attachment
+                    },
+                    path,
+                }),
+                2 => target().prop_map(|path| TreeChange::Removed { path }),
+                4 => (target(), target()).prop_map(|(from, to)| TreeChange::Renamed { from, to }),
+                1 => target().prop_map(|path| TreeChange::Modified { path }),
+            ]
+        }
+
+        /// Дата создания по пути; у части путей файла «уже нет».
+        fn created(path: &VaultPath) -> Option<i64> {
+            let n: usize = path.components().iter().map(|c| c.chars().count()).sum();
+            (!n.is_multiple_of(7)).then_some((n % 3) as i64)
+        }
+
+        /// Все наблюдаемые запросы списка, ссылок и быстрого перехода.
+        fn observe(list: &NoteList, probes: &[VaultPath]) -> Vec<String> {
+            let mut out = vec![format!("{:?}", paths(list))];
+            let links = list.links();
+            let from = vp("Откуда.md");
+            for query in ["", "а", "встр", "б/в", "ss", "а а"] {
+                out.push(format!(
+                    "suggest {query:?}: {:?}",
+                    links.suggest(&from, query)
+                ));
+                out.push(format!(
+                    "search {query:?}: {:?}",
+                    list.switcher().search(query)
+                ));
+            }
+            let freed: Vec<VaultPath> = paths(list).into_iter().take(1).collect();
+            for probe in probes {
+                let text = probe.components().join("/");
+                for target in [text.clone(), format!("/{text}")] {
+                    out.push(format!(
+                        "{target}: {:?} {:?}",
+                        links.resolve(&from, &target),
+                        links.candidates(&target)
+                    ));
+                }
+                out.push(format!(
+                    "{text}: {} {:?} {:?} {:?} {} {} {:?} {:?}",
+                    list.contains(probe),
+                    list.note(probe),
+                    list.notes_under(probe),
+                    links.shortest_unique_path(probe),
+                    links.has_path(probe),
+                    links.occupied(probe, &freed),
+                    links.notes_at(probe),
+                    links.spelled(probe),
+                ));
+                let after = links.after_renames(&[PathRename {
+                    from: probe.clone(),
+                    to: vp("Новое/Встреча.md"),
+                }]);
+                out.push(format!(
+                    "{text} → Новое: {:?} {:?} {:?}",
+                    after.moves(),
+                    after.candidates("Встреча"),
+                    after.shortest_unique_path(&vp("Новое/Встреча.md"))
+                ));
+            }
+            out
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+
+            /// Задача 0.2-7.3: после пачек изменений (созданы, удалены,
+            /// переименованы и перенесены заметки и папки) список, ссылки и
+            /// быстрый переход отвечают так же, как собранные с нуля по тем
+            /// же заметкам. Заметки, которой уже нет, не видно нигде.
+            #[test]
+            fn incremental_equals_rebuild(
+                start in prop::collection::vec((target(), 0i64..3), 0..10),
+                batches in prop::collection::vec(prop::collection::vec(change(), 0..10), 1..4),
+            ) {
+                let mut list = NoteList::new(
+                    start.iter().map(|(path, at)| NoteRef { path: path.clone(), created_ms: *at }).collect(),
+                );
+                let mut probes: Vec<VaultPath> = start.iter().map(|(path, _)| path.clone()).collect();
+                for batch in &batches {
+                    for change in batch {
+                        match change {
+                            TreeChange::Created { path, .. }
+                            | TreeChange::Removed { path }
+                            | TreeChange::Modified { path } => probes.push(path.clone()),
+                            TreeChange::Renamed { from, to } => {
+                                probes.push(from.clone());
+                                probes.push(to.clone());
+                            }
+                        }
+                    }
+                    list.apply(batch, &created);
+                    let fresh = NoteList::new(
+                        list.notes
+                            .values()
+                            .map(|(path, created_ms)| NoteRef { path: path.clone(), created_ms: *created_ms })
+                            .collect(),
+                    );
+                    let (got, want) = (observe(&list, &probes), observe(&fresh, &probes));
+                    for (got, want) in got.iter().zip(&want) {
+                        prop_assert_eq!(got, want);
+                    }
+                    prop_assert_eq!(got.len(), want.len());
+                }
+            }
+        }
     }
 }

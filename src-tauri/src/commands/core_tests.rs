@@ -1872,13 +1872,11 @@ fn index_queries_on_generated_10k() {
     );
     assert_eq!(hub_count, 100);
     assert_eq!(tags_count, manifest.tags.len());
-    if !cfg!(debug_assertions) {
-        assert!(
-            backlinks_worst <= Duration::from_millis(200),
-            "{backlinks_worst:?}"
-        );
-        assert!(tags_worst <= Duration::from_millis(100), "{tags_worst:?}");
-    }
+    // Пределы С2-8.3 (200 мс / 100 мс) честно проверяет `perf-core`
+    // (`perf_backlinks_tags_on_real_core`: медиана, один поток). Здесь —
+    // только печать: шаг verify гоняет ignored-тесты параллельно, и худший
+    // вызов из пяти зависит от загрузки раннера (ревью 0.2-7.3).
+    let _ = (backlinks_worst, tags_worst);
 }
 
 // ---- 0.2-4.6: переименование и перенос с обновлением ссылок -----------------
