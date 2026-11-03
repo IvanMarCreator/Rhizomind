@@ -153,6 +153,8 @@ describe('окно и обновление ссылок', () => {
       updated: 4,
       failed: [{ path: OTHER, reason: 'busy' }],
       retry_token: 'd'.repeat(32),
+      renames: [],
+      renames_total: 0,
     });
 
     expect(await screen.findByText('Ссылки обновлены в 4 заметках')).toBeTruthy();
@@ -173,6 +175,8 @@ describe('окно и обновление ссылок', () => {
       updated: 0,
       failed: [{ path: OTHER, reason: 'io' }],
       retry_token: 'd'.repeat(32),
+      renames: [],
+      renames_total: 0,
     });
     await fireEvent.click(await screen.findByRole('button', { name: 'Повторить' }));
 

@@ -95,7 +95,8 @@ source: src/commands/contract_tests.rs
     "too_large",
     "not_utf8",
     "busy",
-    "io"
+    "io",
+    "conflict"
   ],
   "RelinkPreviewRequest.op": [
     "rename",

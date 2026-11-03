@@ -62,6 +62,18 @@ impl NoteList {
         self.rebuild();
     }
 
+    /// Заметки списка с датой создания — копия для отдельного списка
+    /// ссылок (выполнение плана переписывания без замка, 0.2-4.6).
+    pub fn note_refs(&self) -> Vec<NoteRef> {
+        self.notes
+            .values()
+            .map(|(path, created_ms)| NoteRef {
+                path: path.clone(),
+                created_ms: *created_ms,
+            })
+            .collect()
+    }
+
     /// Разрешение ссылок.
     pub fn links(&self) -> &Links {
         &self.links

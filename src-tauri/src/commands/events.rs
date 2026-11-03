@@ -299,7 +299,7 @@ pub enum LinksUpdateReason {
 }
 
 /// Почему заметка не переписана (С2-3.5 «Где ссылки не могут быть
-/// обновлены»). Повторить (`retry_token`) можно только `busy` и `io`.
+/// обновлены», Р20). Повторить (`retry_token`) можно только `busy` и `io`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelinkFailureReason {
@@ -312,6 +312,12 @@ pub enum RelinkFailureReason {
     Busy,
     /// Другая ошибка ввода-вывода (нет места, носитель недоступен).
     Io,
+    /// Изменилась, пока шло обновление, — повтор опасен (Р20): при доделке
+    /// после сбоя заметка на диске не совпала ни с прочитанной, ни с
+    /// записанной версией; или переименование не сопоставилось со списком
+    /// заметок (тогда путь — «куда»). «Проверьте ссылки вручную», без
+    /// «Повторить».
+    Conflict,
 }
 
 impl RelinkFailureReason {
@@ -340,7 +346,7 @@ pub struct RelinkFailure {
 /// `links:updated`**; поле `relink` в ответе переименования — для логики
 /// окна (Ctrl+Z, выбор открытой заметки и т.п.), не для показа: иначе одно
 /// обновление дало бы два уведомления.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelinkOutcome {
     /// Сколько заметок переписано.
@@ -368,16 +374,30 @@ pub struct LinksUpdatedPayload {
     pub failed: Vec<RelinkFailure>,
     /// Знак для «Повторить»; `null` — повторять нечего.
     pub retry_token: Option<RelinkToken>,
+    /// Переименования, после которых обновлялись ссылки, «старое → новое»
+    /// (0.2-4.6, ревью 0.2-5.1 М2): заголовок списка сбоев и уведомление
+    /// «Заметка „Встреча“ переименована на диске…» (С2-3.5). Не больше
+    /// [`limits::MAX_PENDING_RENAMES`](super::limits::MAX_PENDING_RENAMES);
+    /// у `duplicate` и `resumed` — пусто.
+    pub renames: Vec<PathRename>,
+    /// Сколько всего переименований (может быть больше `renames`).
+    pub renames_total: u32,
 }
 
 impl LinksUpdatedPayload {
-    /// Данные события по итогу плана.
-    pub fn new(reason: LinksUpdateReason, outcome: RelinkOutcome) -> Self {
+    /// Данные события по итогу плана после переименований `renames`.
+    pub fn new(reason: LinksUpdateReason, outcome: RelinkOutcome, renames: &[PathRename]) -> Self {
         Self {
             reason,
             updated: outcome.updated,
             failed: outcome.failed,
             retry_token: outcome.retry_token,
+            renames: renames
+                .iter()
+                .take(super::limits::MAX_PENDING_RENAMES)
+                .cloned()
+                .collect(),
+            renames_total: u32::try_from(renames.len()).unwrap_or(u32::MAX),
         }
     }
 }

@@ -1005,6 +1005,10 @@ fn event_links_updated() {
                 ],
                 retry_token: Some(token('2')),
             },
+            &[PathRename {
+                from: path(&["Встреча.md"]),
+                to: path(&["Архив", "Встреча.md"]),
+            }],
         ),
     );
 }
@@ -1379,7 +1383,7 @@ fn enums() {
             ""
         ),
         "RelinkFailureReason": tags(
-            &all_variants!(RelinkFailureReason: TooLarge, NotUtf8, Busy, Io),
+            &all_variants!(RelinkFailureReason: TooLarge, NotUtf8, Busy, Io, Conflict),
             ""
         ),
     });
@@ -1395,10 +1399,11 @@ fn limits() {
 /// Повторить можно только занятые и недоступные заметки (решение 115).
 #[test]
 fn only_busy_and_io_are_retryable() {
-    let retryable: Vec<_> = all_variants!(RelinkFailureReason: TooLarge, NotUtf8, Busy, Io)
-        .into_iter()
-        .filter(|reason| reason.is_retryable())
-        .collect();
+    let retryable: Vec<_> =
+        all_variants!(RelinkFailureReason: TooLarge, NotUtf8, Busy, Io, Conflict)
+            .into_iter()
+            .filter(|reason| reason.is_retryable())
+            .collect();
     assert_eq!(
         retryable,
         vec![RelinkFailureReason::Busy, RelinkFailureReason::Io]

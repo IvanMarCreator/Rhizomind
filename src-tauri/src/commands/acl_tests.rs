@@ -915,6 +915,57 @@ fn commands_of_0_2_reject_unknown_fields() {
     }
 }
 
+/// Интерфейс не может передать свой список файлов для переписывания (0.2-4.6,
+/// С2-6 «Граница»): в запросах обновления ссылок такого поля нет, и любое
+/// поле со списком заметок или планом отклоняется при разборе, до команды;
+/// файлы не тронуты.
+#[test]
+fn ui_cannot_pass_files_to_rewrite() {
+    let app = app();
+    let main = window(&app, MAIN);
+    let vault_dir = bind_stub_vault(&app, MAIN);
+    std::fs::write(vault_dir.path().join("a.md"), "[[b]]").expect("заметка");
+    let requests = [
+        (
+            "relink_preview",
+            json!({ "op": "rename", "path": ["a.md"], "new_name": "b.md" }),
+        ),
+        (
+            "entry_rename",
+            json!({ "path": ["a.md"], "new_name": "b.md", "links": "update", "token": FOREIGN_TOKEN }),
+        ),
+        (
+            "entry_move",
+            json!({ "path": ["a.md"], "new_dir": [], "links": "update", "token": FOREIGN_TOKEN }),
+        ),
+        (
+            "relink_answer",
+            json!({ "token": FOREIGN_TOKEN, "apply": true }),
+        ),
+        (
+            "links_flush_done",
+            json!({ "token": FOREIGN_TOKEN, "saved": true }),
+        ),
+    ];
+    for field in ["files", "paths", "plan", "targets"] {
+        for (command, request) in &requests {
+            let mut request = request.clone();
+            request[field] = json!([{ "path": ["a.md"], "old_target": "b", "new_target": "c" }]);
+            let error = invoke(&main, command, json!({ "request": request })).expect_err(command);
+            assert!(
+                error
+                    .as_str()
+                    .is_some_and(|text| text.contains("unknown field")),
+                "{command}.{field}: ожидался отказ разбора, получено {error}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(vault_dir.path().join("a.md")).expect("заметка"),
+        "[[b]]"
+    );
+}
+
 /// Знак, которого ядро не выдавало, не принимается ни одной командой, а
 /// переименование с ним не трогает файл: план переписывания может прийти
 /// только от ядра (С2-6 «Граница»).

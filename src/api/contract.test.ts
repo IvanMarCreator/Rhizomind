@@ -486,6 +486,8 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
         { path: ['Открыта в Word.md'], reason: 'busy' },
       ],
       retry_token: token('2'),
+      renames: [{ from: ['Встреча.md'], to: ['Архив', 'Встреча.md'] }],
+      renames_total: 1,
     },
   },
 };
@@ -607,7 +609,7 @@ const enums = {
     resumed: true,
     retry: true,
   } satisfies Record<LinksUpdateReason, true>,
-  RelinkFailureReason: { too_large: true, not_utf8: true, busy: true, io: true } satisfies Record<
+  RelinkFailureReason: { too_large: true, not_utf8: true, busy: true, io: true, conflict: true } satisfies Record<
     RelinkFailureReason,
     true
   >,

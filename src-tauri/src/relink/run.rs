@@ -30,8 +30,8 @@
 //! хранилища: те же шаги по заметкам журнала без отметки «готова». Для
 //! заметки с отметкой «начата» сначала сверяется хэш на диске: записанное
 //! содержимое — заметка готова; прочитанное — переписывается; ни то ни другое
-//! (заметку поправили снаружи после записи) — в `failed` с `io` **без
-//! повтора**: по тексту не отличить уже переписанную ссылку от
+//! (заметку поправили снаружи после записи) — в `failed` с `conflict` (Р20)
+//! **без повтора**: по тексту не отличить уже переписанную ссылку от
 //! непереписанной (после перестановки папок новая цель одной ссылки
 //! совпадает со старой целью другой), а переписывание вслепую увело бы
 //! ссылку не туда.
@@ -69,14 +69,14 @@ pub struct RunReport {
 
 impl RunReport {
     /// Ответ для `relink` и `links:updated`. Несопоставленное
-    /// переименование — в `failed` с причиной `io` и путём «куда» (ссылки на
-    /// него не обновлены). `retry_token` вызывающий выдаёт, только если
+    /// переименование — в `failed` с причиной `conflict` (Р20) и путём
+    /// «куда» (ссылки на него не обновлены, повтор не поможет). `retry_token` вызывающий выдаёт, только если
     /// [`Self::retry`] не пуст.
     pub fn outcome(&self, retry_token: Option<RelinkToken>) -> RelinkOutcome {
         let mut failed = self.failed.clone();
         failed.extend(self.unmatched.iter().map(|rename| RelinkFailure {
             path: rename.to.clone(),
-            reason: RelinkFailureReason::Io,
+            reason: RelinkFailureReason::Conflict,
         }));
         RelinkOutcome {
             updated: u32::try_from(self.updated.len()).unwrap_or(u32::MAX),
@@ -195,11 +195,12 @@ impl RunReport {
         }
     }
 
-    /// Сбой без повтора: заметку поправили снаружи после начатой записи.
+    /// Сбой без повтора (Р20, `conflict`): заметку поправили снаружи после
+    /// начатой записи.
     fn fail_unverified(&mut self, note: &NotePlan) {
         self.failed.push(RelinkFailure {
             path: note.path.clone(),
-            reason: RelinkFailureReason::Io,
+            reason: RelinkFailureReason::Conflict,
         });
     }
 }
@@ -313,7 +314,7 @@ thread_local! {
 /// Тестовый шов: выполнение «падает» (выходит, не удаляя журнал) после
 /// замены `n`-й записанной заметки в этом потоке, до отметки «готова».
 #[cfg(test)]
-pub(super) fn crash_after(n: usize) {
+pub(crate) fn crash_after(n: usize) {
     CRASH_AFTER.with(|cell| cell.set(Some(n)));
 }
 

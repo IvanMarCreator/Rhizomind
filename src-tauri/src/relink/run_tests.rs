@@ -736,7 +736,10 @@ fn user_edited_written_note_not_rewritten_on_resume() {
 
     assert_eq!(fx.text("X.md"), edited, "ссылка не переписана второй раз");
     assert_eq!(fx.text("Y.md"), done);
-    assert_eq!(report.failed, [failed("X.md", RelinkFailureReason::Io)]);
+    assert_eq!(
+        report.failed,
+        [failed("X.md", RelinkFailureReason::Conflict)]
+    );
     assert!(report.retry.notes.is_empty(), "вслепую не повторяется");
     assert!(!fx.journal().exists());
 }
