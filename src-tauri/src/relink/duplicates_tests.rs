@@ -472,6 +472,8 @@ fn panic_between_unkeyed_and_keyed_does_not_hang() {
         f.create_outside(&["Бета/План.md"]);
     }));
 
+    // Предел меньше `KEYING_WAIT` (5 с): иначе неснятый `keying` прятался бы
+    // за таймаутом ожидания ключей и тест проходил бы (ревью QA 0.2-6.2б).
     let in_time = |what: &'static str, job: Box<dyn FnOnce() + Send>| {
         let (done, wait) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -479,8 +481,8 @@ fn panic_between_unkeyed_and_keyed_does_not_hang() {
             let _ = done.send(());
         });
         assert!(
-            wait.recv_timeout(Duration::from_secs(15)).is_ok(),
-            "{what} завис"
+            wait.recv_timeout(Duration::from_secs(3)).is_ok(),
+            "{what} завис или ждал снятия keying"
         );
     };
     let token = pending["token"].as_str().expect("знак").to_owned();
