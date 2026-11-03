@@ -40,7 +40,7 @@
 //! попытка — при следующем изменении. Вне хранилища ничего не пишется, сети
 //! нет.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::{PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
@@ -126,7 +126,7 @@ pub fn load(file: &dyn IndexFile) -> Load {
         Ok(ServiceRead::Missing) => Load::Rebuild(RebuildReason::Missing),
         Ok(ServiceRead::TooLarge) => Load::Rebuild(RebuildReason::TooLarge),
         Ok(ServiceRead::Bytes(bytes)) => match decode(&bytes) {
-            Ok(entries) => Load::Loaded(Box::new(VaultIndex::from_entries(entries))),
+            Ok(index) => Load::Loaded(Box::new(index)),
             Err(reason) => Load::Rebuild(reason),
         },
     }
@@ -139,54 +139,58 @@ pub fn load(file: &dyn IndexFile) -> Load {
 /// своя запись), не перекрывается. Хранилище недоступно — ошибка.
 pub fn reconcile(vault: &Vault, index: &RwLock<VaultIndex>) -> CoreResult<()> {
     let disk = vault.note_stats()?;
-    // Снимок «путь → (размер, дата)» под замком на чтение.
-    let known: HashMap<VaultPath, (u64, i64, i64)> = index
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entries()
-        .map(|(path, e)| (path.clone(), (e.size, e.modified_ms, e.created_ms)))
-        .collect();
+    // Снимок под замком на чтение: «размер, дата изменения, дата создания»
+    // из индекса для каждой заметки с диска и заметки индекса, которых на
+    // диске нет. Пути не копируются, кроме исчезнувших: копии всех путей
+    // остались бы за процессом и после сверки (замер 0.2-7.1).
+    let (known, gone): (Vec<Option<Stamp>>, Vec<(VaultPath, Stamp)>) = {
+        let index = index.read().unwrap_or_else(PoisonError::into_inner);
+        let known = disk
+            .iter()
+            .map(|stat| index.entry(&stat.note.path).map(stamp))
+            .collect();
+        let on_disk: HashSet<&VaultPath> = disk.iter().map(|stat| &stat.note.path).collect();
+        let gone = index
+            .entries()
+            .filter(|(path, _)| !on_disk.contains(path))
+            .map(|(path, entry)| (path.clone(), stamp(entry)))
+            .collect();
+        (known, gone)
+    };
 
-    let mut on_disk = std::collections::HashSet::with_capacity(disk.len());
     let mut stale = Vec::new();
     let mut created = Vec::new();
-    for stat in &disk {
-        on_disk.insert(stat.note.path.clone());
-        match known.get(&stat.note.path) {
-            Some(&(size, modified, created_ms))
+    for (stat, &known) in disk.iter().zip(&known) {
+        match known {
+            Some((size, modified, created_ms))
                 if size == stat.size && modified == stat.modified_ms =>
             {
                 if created_ms != stat.note.created_ms {
-                    created.push(stat);
+                    created.push((stat, known));
                 }
             }
-            _ => stale.push(stat),
+            _ => stale.push((stat, known)),
         }
     }
-    let gone: Vec<&VaultPath> = known.keys().filter(|p| !on_disk.contains(*p)).collect();
 
     // Чтение и разбор — без замка.
-    let read: Vec<(&VaultPath, Option<NoteEntry>)> = stale
+    let read: Vec<(&VaultPath, Option<Stamp>, Option<NoteEntry>)> = stale
         .iter()
-        .map(|stat| (&stat.note.path, read_entry(vault, &stat.note).ok()))
+        .map(|&(stat, known)| (&stat.note.path, known, read_entry(vault, &stat.note).ok()))
         .collect();
 
     let mut index = index.write().unwrap_or_else(PoisonError::into_inner);
-    let current = |index: &VaultIndex, path: &VaultPath| {
-        index
-            .entry(path)
-            .map(|e| (e.size, e.modified_ms, e.created_ms))
-    };
     // Запись, которую сменили за время чтения, — главнее прочитанного здесь.
-    let untouched =
-        |index: &VaultIndex, path: &VaultPath| current(index, path) == known.get(path).copied();
-    for path in gone {
-        if untouched(&index, path) {
+    let untouched = |index: &VaultIndex, path: &VaultPath, known: Option<Stamp>| {
+        index.entry(path).map(stamp) == known
+    };
+    for (path, known) in &gone {
+        if untouched(&index, path, Some(*known)) {
             index.remove(path);
         }
     }
-    for (path, entry) in read {
-        if !untouched(&index, path) {
+    for (path, known, entry) in read {
+        if !untouched(&index, path, known) {
             continue;
         }
         match entry {
@@ -194,8 +198,8 @@ pub fn reconcile(vault: &Vault, index: &RwLock<VaultIndex>) -> CoreResult<()> {
             None => index.remove(path),
         }
     }
-    for stat in created {
-        if !untouched(&index, &stat.note.path) {
+    for (stat, known) in created {
+        if !untouched(&index, &stat.note.path, known) {
             continue;
         }
         if let Some(entry) = index.entry(&stat.note.path) {
@@ -207,6 +211,13 @@ pub fn reconcile(vault: &Vault, index: &RwLock<VaultIndex>) -> CoreResult<()> {
         }
     }
     Ok(())
+}
+
+/// Размер, дата изменения и дата создания записи — сверка с диском.
+type Stamp = (u64, i64, i64);
+
+fn stamp(entry: &NoteEntry) -> Stamp {
+    (entry.size, entry.modified_ms, entry.created_ms)
 }
 
 /// Когда и что писать: номер изменения индекса последней попытки и её время.
@@ -371,11 +382,61 @@ impl<'de> serde::de::Visitor<'de> for VersionVisitor {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct FileRepr {
     format_version: u32,
     rules_version: u32,
     notes: Vec<NoteRepr>,
+}
+
+/// Файл при чтении: заметки сразу идут в индекс, по одной, без
+/// промежуточного списка всех записей (замер 0.2-7.1: память, освобождённая
+/// после загрузки, остаётся за процессом).
+#[derive(Deserialize)]
+struct FileIn {
+    notes: NotesIn,
+}
+
+/// Индекс из массива `notes`; запись, которая не может быть настоящей, —
+/// ошибка разбора (файл испорчен).
+struct NotesIn(VaultIndex);
+
+impl<'de> Deserialize<'de> for NotesIn {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_seq(NotesVisitor)
+    }
+}
+
+struct NotesVisitor;
+
+impl<'de> serde::de::Visitor<'de> for NotesVisitor {
+    type Value = NotesIn;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("массив записей заметок")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<NotesIn, A::Error> {
+        let mut error = None;
+        let notes = std::iter::from_fn(|| match seq.next_element::<NoteRepr>() {
+            Ok(note) => note.and_then(|note| {
+                let entry = note_entry(note);
+                if entry.is_none() {
+                    error = Some(serde::de::Error::custom("запись не может быть настоящей"));
+                }
+                entry
+            }),
+            Err(e) => {
+                error = Some(e);
+                None
+            }
+        });
+        let index = VaultIndex::from_entries(notes);
+        match error {
+            Some(e) => Err(e),
+            None => Ok(NotesIn(index)),
+        }
+    }
 }
 
 /// Заголовок: уровень, текст, строка.
@@ -470,17 +531,14 @@ fn note_repr(path: &VaultPath, entry: &NoteEntry) -> NoteRepr {
     }
 }
 
-/// Записи из байтов файла или причина пересборки.
-fn decode(bytes: &[u8]) -> Result<Vec<(VaultPath, NoteEntry)>, RebuildReason> {
+/// Готовый индекс из байтов файла или причина пересборки.
+fn decode(bytes: &[u8]) -> Result<VaultIndex, RebuildReason> {
     let header: Header = serde_json::from_slice(bytes).map_err(|_| RebuildReason::Broken)?;
     if !header.format_version.is(FORMAT_VERSION) || !header.rules_version.is(RULES_VERSION) {
         return Err(RebuildReason::WrongVersion);
     }
-    let file: FileRepr = serde_json::from_slice(bytes).map_err(|_| RebuildReason::Broken)?;
-    file.notes
-        .into_iter()
-        .map(|note| note_entry(note).ok_or(RebuildReason::Broken))
-        .collect()
+    let file: FileIn = serde_json::from_slice(bytes).map_err(|_| RebuildReason::Broken)?;
+    Ok(file.notes.0)
 }
 
 /// Запись заметки из файла; путь или положения, которые не могут быть

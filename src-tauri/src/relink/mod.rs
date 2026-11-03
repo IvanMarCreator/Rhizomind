@@ -21,6 +21,8 @@
 use crate::commands::{PathRename, VaultPath};
 
 mod journal;
+#[cfg(test)]
+mod perf_tests;
 mod plan;
 mod rewrite;
 mod run;

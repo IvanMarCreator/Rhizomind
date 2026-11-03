@@ -42,6 +42,8 @@ use crate::markdown::ParsedNote;
 
 mod build;
 mod memory;
+#[cfg(test)]
+pub(crate) mod perf_tests;
 pub mod store;
 #[cfg(test)]
 mod tests;

@@ -49,6 +49,8 @@ mod acl_tests;
 mod contract_tests;
 #[cfg(test)]
 mod core_tests;
+#[cfg(test)]
+mod note_list_perf;
 
 use std::collections::HashMap;
 use std::path::Path;
