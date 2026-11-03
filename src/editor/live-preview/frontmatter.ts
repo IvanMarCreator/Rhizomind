@@ -32,7 +32,6 @@ import {
   EditorSelection,
   EditorState,
   Prec,
-  StateEffect,
   StateField,
   Transaction,
   type Extension,
@@ -69,11 +68,15 @@ interface FieldValue {
  * блок остаётся, каким был. Конец блока с текстом ниже — внутри блока.
  */
 function expandedAt(state: EditorState, span: Span, wasExpanded: boolean): boolean {
-  const atEnd = span.to >= state.doc.length;
+  // Под блоком нет текста (нет даже перевода строки): свёрнутый блок был бы
+  // всем текстом, строки для курсора в окне не было бы, и ввод не через
+  // нажатие (вставка, составление, экранная клавиатура, голос) пропадал бы
+  // (О-1). Такой блок всегда раскрыт. С переводом строки в конце пустая
+  // строка под блоком — видимая строка редактора, блок сворачивается.
+  if (span.to >= state.doc.length) return true;
   return state.selection.ranges.some((range) => {
     const { head } = range;
-    if (head > span.from && head < span.to) return true;
-    if (head === span.to) return !atEnd || wasExpanded;
+    if (head > span.from && head <= span.to) return true;
     return head === span.from && wasExpanded;
   });
 }
@@ -218,17 +221,19 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
   const view: PropertiesView = {
     from: span.from,
     to: span.to,
-    expanded: expandedAt(state, span, old?.expanded === true || tr?.effects.some((effect) => effect.is(expandEffect)) === true),
+    expanded: expandedAt(state, span, old?.expanded === true),
     tags: old && sameTags(old.tags, tags) ? old.tags : tags,
   };
-  if (previous && old && old.from === view.from && old.to === view.to && old.expanded === view.expanded && old.tags === view.tags) {
+  // Сдвинуть прежнее оформление можно, только если правка не задела блок и его
+  // конец: вставка ровно в конец блока при сдвиге вошла бы в скрытый участок
+  // (конец замены включительный) — набранное под блоком пропало бы с экрана
+  // (О-1). Иначе — заново: виджет с теми же тегами не перерисовывается.
+  const untouched = !tr || tr.changes.touchesRange(0, old?.to ?? 0) === false;
+  if (previous && old && untouched && old.from === view.from && old.to === view.to && old.expanded === view.expanded && old.tags === view.tags) {
     return { view, decorations: previous.decorations.map(tr?.changes ?? state.changes()) };
   }
   return { view, decorations: decorate(state, view) };
 }
-
-/** Раскрыть блок при курсоре на его краю (конец блока без текста под ним): Backspace там. */
-const expandEffect = StateEffect.define<null>();
 
 function propertiesField(lookup: PropertiesLookup) {
   return StateField.define<FieldValue>({
@@ -286,38 +291,33 @@ function down(extend: boolean): Command {
 }
 
 /**
- * Backspace в начале строки под свёрнутым блоком склеил бы её с `---`, а в
- * конце свёрнутого блока без текста под ним стёр бы `-` из невидимой
- * `---`: вместо этого блок раскрывается, курсор — в конце `---`, ничего не
- * удаляется.
+ * Backspace в начале строки под свёрнутым блоком склеил бы её с `---` и
+ * разрушил блок: вместо этого блок раскрывается, курсор — в конце `---`,
+ * ничего не удаляется.
  */
 const backspace: Command = (editor) => {
   const { state } = editor;
   const view = collapsedView(state);
   const { main } = state.selection;
-  if (!view || state.selection.ranges.length !== 1 || !main.empty) return false;
-  if (main.head !== view.to + 1 && !(main.head === view.to && view.to >= state.doc.length)) return false;
-  editor.dispatch({
-    selection: EditorSelection.cursor(view.to),
-    effects: expandEffect.of(null),
-    scrollIntoView: true,
-    userEvent: 'select',
-  });
+  if (!view || state.selection.ranges.length !== 1 || !main.empty || main.head !== view.to + 1) return false;
+  editor.dispatch({ selection: EditorSelection.cursor(view.to), scrollIntoView: true, userEvent: 'select' });
   return true;
 };
 
 /**
- * Составление (IME) в конце свёрнутого блока без текста под ним дописало бы
- * текст к `---`, а переносить правки составления нельзя — их узел уже в окне.
- * Поэтому до появления узла составления отдельной правкой вставляется
- * перевод строки, и составление идёт на новой строке под блоком.
+ * Заметка только из блока свойств (под ним нет текста, блок раскрыт) и
+ * курсор в конце закрывающей строки — там он стоит после открытия заметки.
+ * Составление (IME) дописало бы текст к `---`, а переносить правки
+ * составления нельзя — их узел уже в окне. Поэтому до появления узла
+ * составления отдельной правкой вставляется перевод строки, и составление
+ * идёт на новой строке. Остальной ввод переносит `guardStart`.
  */
 function newLineBeforeComposition(editor: EditorView): void {
   const { state } = editor;
-  const view = collapsedView(state);
+  const view = propertiesView(state);
   const { main } = state.selection;
-  if (!view || view.to < state.doc.length || state.selection.ranges.length !== 1 || !main.empty) return;
-  if (main.head !== view.to && main.head !== view.from) return;
+  if (!view || view.to < state.doc.length || state.readOnly) return;
+  if (state.selection.ranges.length !== 1 || !main.empty || main.head !== view.to) return;
   editor.dispatch({
     changes: { from: view.to, insert: '\n' },
     selection: EditorSelection.cursor(view.to + 1),
@@ -359,20 +359,24 @@ function expandAt(editor: EditorView, view: PropertiesView): void {
  */
 const guardStart = EditorState.transactionFilter.of((tr): Transaction | readonly (Transaction | TransactionSpec)[] | TransactionSpec => {
   const before = propertiesView(tr.startState);
-  if (before?.expanded) return tr;
+  const length = tr.startState.doc.length;
+  // Под блоком нет текста: блок раскрыт (`expandedAt`), но ввод ровно в конец
+  // закрывающей строки — это ввод сразу после открытия заметки (курсор там,
+  // `textStart`): он начинается с новой строки, `---` остаётся ограничителем.
+  const noBody = before !== null && before.to >= length;
+  if (before?.expanded && !noBody) return tr;
   if (before && tr.docChanged && tr.isUserEvent('input') && !tr.isUserEvent('input.type.compose')) {
-    const length = tr.startState.doc.length;
-    // Под блоком нет текста: конец блока — тоже край свёрнутой строки.
-    const noBody = before.to >= length;
     let at: number | null = null;
     let single = true;
     let inserted = '';
     tr.changes.iterChanges((fromA, toA, _fromB, _toB, text) => {
-      if (fromA !== toA || (fromA !== before.from && !(noBody && fromA === before.to)) || (at !== null && at !== fromA)) single = false;
+      const edge = noBody ? fromA === before.to : fromA === before.from;
+      if (fromA !== toA || !edge || (at !== null && at !== fromA)) single = false;
       at = fromA;
       inserted += text.toString();
     });
-    if (single && at !== null) {
+    // Перевод строки (Enter) в конце блока без текста под ним — и так новая строка.
+    if (single && at !== null && !(noBody && inserted.startsWith('\n'))) {
       // Без текста под блоком набранное начинается с новой строки: `---` остаётся закрывающей строкой.
       const start = noBody ? length : textStart(tr.startState.doc);
       const prefix = noBody ? '\n' : '';

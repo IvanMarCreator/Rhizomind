@@ -168,6 +168,25 @@ describe('окно «Настройки хранилища»', () => {
     expect(root().style.getPropertyValue('--note-font-size')).toBe('20px');
   });
 
+  it('0.2-5.2: «При переименовании заметки, на которую есть ссылки» включена, без метки «с 0.2»; выбор записывается', async () => {
+    const { calls } = setup();
+    const dialog = await openSettings('Файлы и ссылки');
+    const group = within(dialog).getByRole('radiogroup', { name: 'При переименовании заметки, на которую есть ссылки' });
+    expect(group.getAttribute('aria-disabled')).toBeNull();
+    expect(within(dialog).queryByText('с 0.2')).toBeNull();
+    const ask = within(group).getByRole('radio', { name: 'Всегда спрашивать' }) as HTMLButtonElement;
+    const update = within(group).getByRole('radio', { name: 'Всегда обновлять ссылки' }) as HTMLButtonElement;
+    // По умолчанию — «Всегда спрашивать» (решение 109).
+    expect(ask.getAttribute('aria-checked')).toBe('true');
+    expect(update.disabled).toBe(false);
+
+    await fireEvent.click(update);
+    await waitFor(() => expect(lastWrite(calls)?.rename_links).toBe('update'));
+    expect(update.getAttribute('aria-checked')).toBe('true');
+    await fireEvent.click(ask);
+    await waitFor(() => expect(lastWrite(calls)?.rename_links).toBe('ask'));
+  });
+
   it('где создавать новые заметки: «В папке текущей заметки» — Ctrl+N (русская раскладка) создаёт там', async () => {
     const { calls, model } = setup();
     const dialog = await openSettings('Файлы и ссылки');

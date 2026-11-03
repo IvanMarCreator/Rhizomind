@@ -124,7 +124,10 @@ describe('links:flush-requested → links_flush_done', () => {
     expect(answers.map(({ saved }) => saved)).toEqual([false]);
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain('«А»');
-    expect(notices[0]).toContain('Ссылки не обновлены');
+    // Ревью 0.2-4.6: не выполнено и переименование — текст не начинается с «Ссылки не обновлены».
+    expect(notices[0]).toBe(
+      'Не удалось записать ввод в «А» — приложение ничего не переименовало и не переписало ссылки. Текст остался в редакторе.',
+    );
   });
 
   it('запись бросила исключение — всё равно ответ ядру: saved: false', async () => {
