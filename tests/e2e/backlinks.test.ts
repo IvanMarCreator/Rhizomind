@@ -97,9 +97,10 @@ describe('обратные ссылки', () => {
     await b.waitUntil(async () => (await backlinkGroups(b)).length === 3, { timeout: 10_000, timeoutMsg: 'нет списка' });
     await b.$('.backlinks button.note[aria-label="Открыть «Проект»"]').click();
     await b.waitUntil(async () => (await headerPath(b)) === 'Проект', { timeout: 5_000, timeoutMsg: 'не открылся «Проект»' });
-    const where = await caret(b);
-    expect(where.focused).toBe(true);
-    expect(where.after).toBe('План связан с [[Узел]].');
+    // Фокус в текст приходит после отрисовки заметки — ждём его.
+    await b.waitUntil(async () => (await caret(b)).focused, { timeout: 5_000, timeoutMsg: 'фокус не в тексте' });
+    // Курсор в начале первой строки; курсор не на ссылке — она показана без скобок.
+    expect(await caret(b)).toEqual({ focused: true, line: 'План связан с Узел.', after: 'План связан с Узел.' });
     await shot(b, 'name-click-top');
   });
 

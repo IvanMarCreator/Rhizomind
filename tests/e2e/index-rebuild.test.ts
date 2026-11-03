@@ -24,7 +24,7 @@ const shot = themeShots('index');
 const SHELL = '[data-testid="shell"]';
 const OPEN_FOLDER = 'button[aria-label="Открыть папку как хранилище"]';
 /** Заметок генератора: на Linux сборка быстрее — хранилище больше (предел требований — 50 000). */
-const NOTES = Number(process.env.RHIZOMIND_E2E_KT1_NOTES ?? (process.platform === 'linux' ? 30_000 : 10_000));
+const NOTES = Number(process.env.RHIZOMIND_E2E_KT1_NOTES ?? (process.platform === 'linux' ? 50_000 : 10_000));
 const TARGET = 'КТ1 Узел';
 const SOURCE = 'КТ1 Ссылка';
 const OWN_TAG = '#кт1-проверка, заметок: 1';
@@ -40,6 +40,8 @@ function notice(message: string): void {
 interface Observed {
   /** Тексты панели «строится», по порядку, без повторов. */
   building: string[];
+  /** Все тексты панели до списка, по порядку, без повторов (для отчёта). */
+  states: string[];
   /** Через сколько мс после «Открыть папку…» появилось окно хранилища и список. */
   shellMs: number;
   listMs: number;
@@ -54,7 +56,7 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
   await browser.$(OPEN_FOLDER).waitForDisplayed({ timeout: 30_000 });
   const started = Date.now();
   await browser.$(OPEN_FOLDER).click();
-  const observed: Observed = { building: [], shellMs: -1, listMs: -1 };
+  const observed: Observed = { building: [], states: [], shellMs: -1, listMs: -1 };
   const deadline = started + 120_000;
   // Окно хранилища.
   while (observed.shellMs < 0) {
@@ -75,6 +77,7 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
   for (;;) {
     if (Date.now() > deadline) throw new Error(`список не появился; панель: «${await panelBody(browser)}»`);
     const body = await panelBody(browser).catch(() => '');
+    if (observed.states.at(-1) !== body) observed.states.push(body);
     if (body.startsWith('Индекс строится')) {
       if (observed.building.at(-1) !== body) observed.building.push(body);
       if (!captured) {
@@ -89,7 +92,7 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
   }
   notice(
     `${step}: ${NOTES} заметок генератора; окно хранилища через ${observed.shellMs} мс, список через ${observed.listMs} мс; ` +
-      `«строится» видно: ${observed.building.length > 0 ? observed.building.join(' → ') : 'нет (сборка закончилась раньше первого опроса)'}`,
+      `«строится» видно: ${observed.building.length > 0 ? observed.building.join(' → ') : 'нет (сборка закончилась раньше первого опроса)'}; панель до списка: ${observed.states.map((t) => `«${t.slice(0, 60)}»`).join(' → ')}`,
   );
   return observed;
 }
@@ -156,7 +159,7 @@ describe('индекс: первое открытие и пересборка б
     const seen = await openFromManager(b, 'first-open');
     for (const text of seen.building) expect(text).toMatch(/^Индекс строится…( \d{1,3} %)?$/);
     // Дерево показано, не дожидаясь индекса (С2-3.7).
-    expect(await b.$('[role="treeitem"]').isExisting()).toBe(true);
+    expect(await b.execute(() => document.querySelectorAll('[role="treeitem"]').length)).toBeGreaterThan(0);
     expect((await backlinkGroups(b)).map((g) => g.name)).toEqual([SOURCE]);
     first = await snapshot(b, 'first-open');
     expect(first.tags).toContain(OWN_TAG);
