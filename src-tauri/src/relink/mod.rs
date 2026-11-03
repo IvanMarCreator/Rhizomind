@@ -20,6 +20,7 @@
 
 use crate::commands::{PathRename, VaultPath};
 
+pub mod external;
 mod journal;
 #[cfg(test)]
 mod perf_tests;

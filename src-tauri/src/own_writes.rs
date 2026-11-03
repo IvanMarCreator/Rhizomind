@@ -41,7 +41,9 @@
 //! Переименование папки покрывает вложенные пути: «Папка → Архив» делает
 //! своим и «Папка/a.md → Архив/a.md». Запись живёт [`RENAME_TTL`] и не
 //! удаляется ни вопросом, ни [`OwnWrites::forget`] (папка может прийти
-//! несколькими событиями). Записей не больше [`MAX_RENAMES`], а ключей в
+//! несколькими событиями). Подтверждённое внешнее переименование, которое
+//! уводит «куда» записи, её забывает ([`OwnWrites::forget_rename_by_external`],
+//! задача 0.2-6.1). Записей не больше [`MAX_RENAMES`], а ключей в
 //! них не больше [`MAX_RENAME_BYTES`] байт — лишние, самые старые,
 //! забываются. Журнал только в памяти, на диск не пишется.
 
@@ -317,6 +319,20 @@ impl OwnWrites {
         {
             journal.rename_bytes -= removed.bytes;
         }
+    }
+
+    /// Подтверждённое **внешнее** переименование увело `from` (задача
+    /// 0.2-6.1, «Дополнительно»): записи своих переименований, у которых
+    /// «куда» — `from` или лежит под ним, забываются. Иначе возврат снаружи
+    /// «туда и обратно» в течение [`RENAME_TTL`] (`Б → А`, затем снова
+    /// `А → Б`) был бы принят за своё и ссылки не обновились бы. Запись
+    /// папки, из которой снаружи унесли один вложенный путь, остаётся: её
+    /// события ещё могут идти.
+    pub fn forget_rename_by_external(&self, from: &VaultPath) {
+        let from = path_key(from);
+        let mut journal = self.lock();
+        journal.renames.retain(|r| !r.to.starts_with(&from));
+        journal.rename_bytes = journal.renames.iter().map(|r| r.bytes).sum();
     }
 
     /// Переименование или перенос `from → to` (о котором сообщил
@@ -678,6 +694,103 @@ mod tests {
         // Удаление своих версий записи переименования не трогает.
         own.forget(&vp("Проекты"));
         assert!(own.is_own_rename(&vp("Проекты/Мой.md"), &vp("Архив/Встреча.md")));
+    }
+
+    // --- Дополнительно к 0.2-6.1 (по QA 0.2-4.2) ---
+
+    /// Вопрос запись не «забирает»: своё переименование папки приходит
+    /// несколькими событиями (папка и вложенные, повтор после сверки) — все
+    /// свои.
+    #[test]
+    fn repeated_events_of_own_folder_all_own() {
+        let own = OwnWrites::new();
+        own.record_rename(&vp("Папка"), &vp("Архив"));
+        for _ in 0..3 {
+            assert!(own.is_own_rename(&vp("Папка"), &vp("Архив")));
+            assert!(own.is_own_rename(&vp("Папка/a.md"), &vp("Архив/a.md")));
+            assert!(own.is_own_rename(&vp("Папка/x/b.md"), &vp("Архив/x/b.md")));
+        }
+        assert_eq!(own.renames(), 1);
+    }
+
+    /// Смена только регистра — своя и в два шага (через скрытое имя):
+    /// событие о ней узнаётся до ответа команды.
+    #[test]
+    fn two_step_case_change_is_own() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let dir = tempfile::tempdir().expect("временная папка");
+        std::fs::write(dir.path().join("заметка.md"), "x").expect("запись");
+        let own = OwnWrites::new();
+        let vault = crate::vault::Vault::open_with(
+            dir.path(),
+            crate::vault::OpenOptions {
+                own_writes: own.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("хранилище");
+        let seen: Rc<Cell<Option<bool>>> = Rc::default();
+        let (flag, journal) = (seen.clone(), own.clone());
+        crate::vault::after_disk_rename(move || {
+            flag.set(Some(
+                journal.is_own_rename(&vp("заметка.md"), &vp("Заметка.md")),
+            ));
+        });
+        vault
+            .rename(&vp("заметка.md"), "Заметка.md")
+            .expect("смена регистра");
+        assert_eq!(seen.get(), Some(true));
+        assert!(own.is_own_rename(&vp("заметка.md"), &vp("Заметка.md")));
+    }
+
+    /// Двухшаговая смена регистра сорвалась после первого шага — записи о
+    /// своём переименовании нет: следующее такое же переименование снаружи
+    /// — внешнее.
+    #[test]
+    fn two_step_case_change_failure_leaves_no_entry() {
+        let dir = tempfile::tempdir().expect("временная папка");
+        std::fs::write(dir.path().join("заметка.md"), "x").expect("запись");
+        let own = OwnWrites::new();
+        let vault = crate::vault::Vault::open_with(
+            dir.path(),
+            crate::vault::OpenOptions {
+                own_writes: own.clone(),
+                ..Default::default()
+            },
+        )
+        .expect("хранилище");
+        crate::vault::fsops::crash_after_first_rename_step();
+        assert!(vault.rename(&vp("заметка.md"), "Заметка.md").is_err());
+        assert_eq!(own.renames(), 0);
+        assert!(!own.is_own_rename(&vp("заметка.md"), &vp("Заметка.md")));
+    }
+
+    /// Подтверждённое внешнее переименование, которое уводит «куда» своей
+    /// записи, забывает её: иначе возврат снаружи «туда и обратно» в
+    /// течение срока записи был бы принят за своё.
+    #[test]
+    fn external_rename_from_own_target_forgets_entry() {
+        let own = OwnWrites::new();
+        own.record_rename(&vp("А.md"), &vp("Б.md"));
+        own.record_rename(&vp("Папка/x.md"), &vp("Папка/y.md"));
+        own.record_rename(&vp("Д.md"), &vp("Е.md"));
+        // Снаружи: Б → А, затем перенос папки, где лежит «куда» другой записи.
+        own.forget_rename_by_external(&vp("б.md"));
+        own.forget_rename_by_external(&vp("Папка"));
+        assert!(!own.is_own_rename(&vp("А.md"), &vp("Б.md")));
+        assert!(!own.is_own_rename(&vp("Папка/x.md"), &vp("Папка/y.md")));
+        assert!(
+            own.is_own_rename(&vp("Д.md"), &vp("Е.md")),
+            "чужая не тронута"
+        );
+        assert_eq!(own.renames(), 1);
+        // Внешний перенос заметки из своей переименованной папки запись
+        // папки не забывает: её события ещё могут идти.
+        own.record_rename(&vp("Старая"), &vp("Новая"));
+        own.forget_rename_by_external(&vp("Новая/a.md"));
+        assert!(own.is_own_rename(&vp("Старая/b.md"), &vp("Новая/b.md")));
+        assert!(own.rename_bytes() > 0);
     }
 
     #[test]

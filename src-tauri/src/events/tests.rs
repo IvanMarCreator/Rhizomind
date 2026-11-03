@@ -688,3 +688,30 @@ fn own_write_updates_index_without_duplicate() {
     assert_eq!(timed.times(name).len(), before + 1);
     assert_eq!(backlinks_of(&f, "Узел.md"), ["А.md"]);
 }
+
+/// Внешнее переименование заметки (задача 0.2-6.1): события дерева и
+/// `note:renamed` уходят сразу, пока индекс ещё строится, — обновление
+/// ссылок ждёт его в своём потоке и поток наблюдателя не держит.
+#[test]
+fn external_rename_events_not_delayed_by_relink() {
+    let f = fixture(&["Встреча.md", "Список.md"]);
+    std::fs::write(f.dir.path().join("Список.md"), "[[Встреча]]").expect("запись");
+    std::fs::rename(
+        f.dir.path().join("Встреча.md"),
+        f.dir.path().join("Планёрка.md"),
+    )
+    .expect("переименование");
+    let started = std::time::Instant::now();
+    f.events.handle(changed(vec![TreeChange::Renamed {
+        from: vp("Встреча.md"),
+        to: vp("Планёрка.md"),
+    }]));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    let names: Vec<String> = f.recorder.take().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, vec!["vault:changed", "note:renamed"]);
+    assert!(!f.open.index.ready_for_relink());
+    assert_eq!(
+        std::fs::read_to_string(f.dir.path().join("Список.md")).expect("заметка"),
+        "[[Встреча]]"
+    );
+}
