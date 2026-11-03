@@ -221,7 +221,12 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
     expanded: expandedAt(state, span, old?.expanded === true || tr?.effects.some((effect) => effect.is(expandEffect)) === true),
     tags: old && sameTags(old.tags, tags) ? old.tags : tags,
   };
-  if (previous && old && old.from === view.from && old.to === view.to && old.expanded === view.expanded && old.tags === view.tags) {
+  // Сдвинуть прежнее оформление можно, только если правка не задела блок и его
+  // конец: вставка ровно в конец блока при сдвиге вошла бы в скрытый участок
+  // (конец замены включительный) — набранное под блоком пропало бы с экрана
+  // (О-1). Иначе — заново: виджет с теми же тегами не перерисовывается.
+  const untouched = !tr || tr.changes.touchesRange(0, old?.to ?? 0) === false;
+  if (previous && old && untouched && old.from === view.from && old.to === view.to && old.expanded === view.expanded && old.tags === view.tags) {
     return { view, decorations: previous.decorations.map(tr?.changes ?? state.changes()) };
   }
   return { view, decorations: decorate(state, view) };
@@ -313,19 +318,40 @@ const backspace: Command = (editor) => {
  * перевод строки, и составление идёт на новой строке под блоком.
  */
 function newLineBeforeComposition(editor: EditorView): void {
+  insertBelowOnlyBlock(editor, '');
+}
+
+/**
+ * Свёрнутый блок — весь текст заметки (под ним нет даже перевода строки), а
+ * курсор у его края: строк для ввода в окне нет, и браузер набранное не
+ * вставляет — ввод пропадал (О-1, WebKitGTK и WebView2). Тогда редактор
+ * вставляет сам: перевод строки и `text` одной правкой (одна отмена), курсор
+ * — в конце. `false` — не тот случай.
+ */
+function insertBelowOnlyBlock(editor: EditorView, text: string): boolean {
   const { state } = editor;
   const view = collapsedView(state);
   const { main } = state.selection;
-  if (!view || view.to < state.doc.length || state.selection.ranges.length !== 1 || !main.empty) return;
-  if (main.head !== view.to && main.head !== view.from) return;
+  if (!view || view.to < state.doc.length || state.selection.ranges.length !== 1 || !main.empty) return false;
+  if (main.head !== view.to && main.head !== view.from) return false;
+  if (state.readOnly) return false;
+  const insert = `\n${text}`;
   editor.dispatch({
-    changes: { from: view.to, insert: '\n' },
-    selection: EditorSelection.cursor(view.to + 1),
+    changes: { from: view.to, insert },
+    selection: EditorSelection.cursor(view.to + insert.length),
     scrollIntoView: true,
     userEvent: 'input.type',
     // Мимо `guardStart`: перевод строки уже на своём месте, второй не нужен.
     filter: false,
   });
+  return true;
+}
+
+/** Нажатие вводит один символ (без Ctrl, Cmd; Alt — только как AltGr): `Dead`, `Process`, F5 — не ввод. */
+function typedChar(event: KeyboardEvent): string | null {
+  if (event.ctrlKey !== event.altKey || event.metaKey || event.isComposing) return null;
+  if (event.ctrlKey && !event.getModifierState('AltGraph')) return null;
+  return [...event.key].length === 1 ? event.key : null;
 }
 
 /**
@@ -440,6 +466,18 @@ export function frontmatterPreview(lookup: PropertiesLookup): Extension {
       compositionstart(_event, editor) {
         newLineBeforeComposition(editor);
         return false;
+      },
+      keydown(event, editor) {
+        const char = typedChar(event);
+        if (char === null || !insertBelowOnlyBlock(editor, char)) return false;
+        event.preventDefault();
+        return true;
+      },
+      beforeinput(event, editor) {
+        // Ввод без нажатия клавиши (экранная клавиатура, автозамена): то же.
+        if (event.inputType !== 'insertText' || !event.data || !insertBelowOnlyBlock(editor, event.data)) return false;
+        event.preventDefault();
+        return true;
       },
       mousedown(event, editor) {
         if (event.button !== 0 || !(event.target instanceof Element)) return false;
