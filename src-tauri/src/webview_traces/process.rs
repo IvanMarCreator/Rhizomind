@@ -1,5 +1,6 @@
 //! Жив ли процесс и ожидание завершения процесса браузера с дочерними.
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// Жив ли процесс с этим номером.
@@ -34,12 +35,24 @@ pub fn is_browser_image(path: &str) -> bool {
 pub struct BrowserProcess {
     pid: u32,
     handle: imp::Handle,
+    /// Дочерние процессы (renderer, gpu, utility), перечисленные в
+    /// `terminate` до `TerminateProcess`: после него браузер не жив, и
+    /// искать его дочерних по номеру уже нельзя.
+    children: Mutex<Vec<imp::Handle>>,
 }
 
 impl BrowserProcess {
     /// Открывает процесс `pid`, если он жив и это браузер WebView2.
     pub fn open(pid: u32) -> Option<Self> {
-        imp::open_browser(pid).map(|handle| Self { pid, handle })
+        imp::open_browser(pid).map(|handle| Self::from_handle(pid, handle))
+    }
+
+    fn from_handle(pid: u32, handle: imp::Handle) -> Self {
+        Self {
+            pid,
+            handle,
+            children: Mutex::new(Vec::new()),
+        }
     }
 
     /// Номер процесса.
@@ -53,15 +66,29 @@ impl BrowserProcess {
     }
 
     /// Завершает процесс (`TerminateProcess`) и ждёт его завершения не
-    /// дольше `timeout`. `false` — завершить не удалось.
+    /// дольше `timeout`. Перед этим запоминает дескрипторы его дочерних
+    /// процессов — их ждёт `wait_tree_exit`. `false` — завершить не удалось.
     pub fn terminate(&self, timeout: Duration) -> bool {
+        let children = imp::open_children(&self.handle, self.pid);
+        if let Ok(mut slot) = self.children.lock() {
+            slot.extend(children);
+        }
         imp::terminate_handle(&self.handle, timeout)
     }
 
-    /// Ждёт завершения процесса и его дочерних (по списку на момент вызова),
-    /// не дольше `timeout`.
+    /// Ждёт завершения процесса и его дочерних не дольше `timeout`: тех, что
+    /// запомнил `terminate`, и, если процесс ещё жив, — дочерних на момент
+    /// вызова.
     pub fn wait_tree_exit(&self, timeout: Duration) {
-        imp::wait_tree_exit_handle(&self.handle, self.pid, timeout);
+        let mut children = self
+            .children
+            .lock()
+            .map(|mut slot| std::mem::take(&mut *slot))
+            .unwrap_or_default();
+        if imp::handle_alive(&self.handle) {
+            children.extend(imp::open_children(&self.handle, self.pid));
+        }
+        imp::wait_handles_exit(&self.handle, &children, timeout);
     }
 }
 
@@ -74,15 +101,15 @@ pub fn wait_for_process_tree_exit(pid: u32, timeout: Duration) {
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, STILL_ACTIVE, WAIT_TIMEOUT};
+    use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, STILL_ACTIVE, WAIT_TIMEOUT};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
-        WaitForSingleObject,
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
     };
 
     #[derive(Debug)]
@@ -128,7 +155,7 @@ mod imp {
     }
 
     /// Номера процессов, чей родитель входит в дерево `root` (вместе с `root`).
-    fn process_tree(root: u32) -> Vec<u32> {
+    pub fn process_tree(root: u32) -> Vec<u32> {
         let mut pairs = Vec::new();
         // SAFETY: снимок процессов; структура инициализирована с dwSize.
         unsafe {
@@ -188,6 +215,12 @@ mod imp {
         if !exit_code_is_active(&handle) {
             return None;
         }
+        let path = image_path(&handle)?;
+        super::is_browser_image(&path).then_some(handle)
+    }
+
+    /// Полный путь образа процесса.
+    pub fn image_path(handle: &Handle) -> Option<String> {
         let mut buffer = vec![0u16; 32_768];
         let mut length = buffer.len() as u32;
         // SAFETY: буфер длиной `length` единиц UTF-16; дескриптор с правом
@@ -201,8 +234,7 @@ mod imp {
             )
         }
         .ok()?;
-        let path = String::from_utf16_lossy(&buffer[..length as usize]);
-        super::is_browser_image(&path).then_some(handle)
+        Some(String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
     pub fn terminate_handle(handle: &Handle, timeout: Duration) -> bool {
@@ -216,19 +248,43 @@ mod imp {
         true
     }
 
-    pub fn wait_tree_exit_handle(root: &Handle, pid: u32, timeout: Duration) {
+    /// Время создания процесса (единицы FILETIME); `None` — не узнать.
+    fn creation_time(handle: &Handle) -> Option<u64> {
+        let (mut created, mut exited, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        // SAFETY: дескриптор открыт с правом запроса сведений; структуры локальные.
+        unsafe { GetProcessTimes(handle.0, &mut created, &mut exited, &mut kernel, &mut user) }
+            .ok()?;
+        Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+
+    /// Дескрипторы дочерних процессов (всего дерева) живого процесса `root`
+    /// с номером `pid`. Пока дескриптор `root` открыт, его номер не может
+    /// достаться другому процессу; процесс, созданный раньше `root`, —
+    /// потомок прежнего владельца номера, он пропускается.
+    pub fn open_children(root: &Handle, pid: u32) -> Vec<Handle> {
+        if !exit_code_is_active(root) {
+            return Vec::new();
+        }
+        let root_created = creation_time(root);
+        process_tree(pid)
+            .into_iter()
+            .filter(|&child| child != pid)
+            .filter_map(open)
+            .filter(|child| match (root_created, creation_time(child)) {
+                (Some(root), Some(child)) => child >= root,
+                _ => true,
+            })
+            .collect()
+    }
+
+    /// Ждёт завершения `root` и `children` с общим пределом `timeout`.
+    pub fn wait_handles_exit(root: &Handle, children: &[Handle], timeout: Duration) {
         let deadline = Instant::now() + timeout;
-        // Дочерние — только пока сам браузер жив: иначе номер родителя мог
-        // достаться другому процессу и «дети» оказались бы чужими.
-        let children: Vec<Handle> = if exit_code_is_active(root) {
-            process_tree(pid)
-                .into_iter()
-                .filter(|&child| child != pid)
-                .filter_map(open)
-                .collect()
-        } else {
-            Vec::new()
-        };
         for handle in std::iter::once(root).chain(children.iter()) {
             let left = deadline.saturating_duration_since(Instant::now());
             let ms = u32::try_from(left.as_millis()).unwrap_or(u32::MAX);
@@ -237,6 +293,21 @@ mod imp {
                 return;
             }
         }
+    }
+
+    /// Любой процесс с правами, как у браузера, без проверки образа (тесты).
+    #[cfg(test)]
+    pub fn open_any(pid: u32) -> Option<Handle> {
+        // SAFETY: вызов WinAPI без указателей; ошибка — процесса нет или нет прав.
+        unsafe {
+            OpenProcess(
+                PROCESS_TERMINATE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                false,
+                pid,
+            )
+        }
+        .ok()
+        .map(Handle)
     }
 
     pub fn wait_for_process_tree_exit(pid: u32, timeout: Duration) {
@@ -279,7 +350,11 @@ mod imp {
         match *handle {}
     }
 
-    pub fn wait_tree_exit_handle(handle: &Handle, _pid: u32, _timeout: Duration) {
+    pub fn open_children(handle: &Handle, _pid: u32) -> Vec<Handle> {
+        match *handle {}
+    }
+
+    pub fn wait_handles_exit(handle: &Handle, _children: &[Handle], _timeout: Duration) {
         match *handle {}
     }
 
@@ -316,7 +391,11 @@ mod imp {
         match *handle {}
     }
 
-    pub fn wait_tree_exit_handle(handle: &Handle, _pid: u32, _timeout: Duration) {
+    pub fn open_children(handle: &Handle, _pid: u32) -> Vec<Handle> {
+        match *handle {}
+    }
+
+    pub fn wait_handles_exit(handle: &Handle, _children: &[Handle], _timeout: Duration) {
         match *handle {}
     }
 
@@ -347,5 +426,65 @@ mod tests {
     fn foreign_process_is_not_taken_as_browser() {
         assert!(BrowserProcess::open(std::process::id()).is_none());
         assert!(BrowserProcess::open(u32::MAX - 3).is_none());
+    }
+
+    /// Ошибка из теста следов 0.2-8.1: после `TerminateProcess` процесса
+    /// браузера его дочерние ещё живы, и ожидание при выходе должно их
+    /// охватить. Модель: `cmd` (браузер) с дочерним `powershell`, который
+    /// спит 3 с; завершение `cmd` дочерний не трогает.
+    #[cfg(windows)]
+    #[test]
+    fn wait_covers_children_alive_after_terminate() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut parent = std::process::Command::new("cmd")
+            .args([
+                "/c",
+                "powershell -NoProfile -NonInteractive -Command Start-Sleep -Seconds 3",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("cmd запущен");
+        let pid = parent.id();
+        let root = imp::open_any(pid).expect("дескриптор cmd");
+        let start = Instant::now();
+        // Среди дочерних cmd бывает conhost.exe: нужен именно powershell.
+        let (child_pid, child) = loop {
+            let found = imp::process_tree(pid)
+                .into_iter()
+                .filter(|&p| p != pid)
+                .filter_map(|p| imp::open_any(p).map(|h| (p, h)))
+                .find(|(_, h)| {
+                    imp::image_path(h)
+                        .is_some_and(|path| path.to_ascii_lowercase().ends_with("\\powershell.exe"))
+                });
+            if let Some(found) = found {
+                break found;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "дочерний не появился"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let browser = BrowserProcess::from_handle(pid, root);
+
+        assert!(browser.terminate(Duration::from_secs(2)));
+        let _ = parent.wait();
+        assert!(!browser.is_alive());
+        assert!(
+            imp::handle_alive(&child),
+            "дочерний жив после завершения родителя"
+        );
+
+        browser.wait_tree_exit(Duration::from_secs(15));
+        let alive = imp::handle_alive(&child);
+        if alive {
+            // Не оставлять процесс после упавшего теста.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &child_pid.to_string()])
+                .status();
+        }
+        assert!(!alive, "ожидание не охватило дочерний процесс");
     }
 }

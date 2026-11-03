@@ -643,11 +643,10 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
     expect(code).toBe(0);
 
     expect(existsSync(dataDir), `осталась ${dataDir}`).toBe(false);
-    // Процессы движка после выхода. Ядро завершает процесс браузера
-    // (TerminateProcess, решение 64), а его дочерние (renderer, gpu-process,
-    // utility) завершаются сами, заметив обрыв связи с браузером, — чуть позже
-    // выхода rhizomind.exe: после TerminateProcess `wait_tree_exit_handle`
-    // их не ждёт (браузер уже не жив — дочерние не перечисляются). Предел —
+    // Процессы движка после выхода. Ядро до TerminateProcess (решение 64)
+    // запоминает дерево процессов браузера (renderer, gpu-process, utility)
+    // и ждёт их выхода до 15 с (`webview_traces/process.rs`, `wait_tree_exit`),
+    // так что к выходу rhizomind.exe они уже завершены. Предел проверки —
     // норма ручного аудита (docs/security/network-audit.md): «процессы
     // Rhizomind живы через 30 с — нарушение».
     const exited = Date.now();
