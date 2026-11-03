@@ -799,11 +799,17 @@ fn perf_external_plan_10000_renames() {
         })
         .collect();
     let start = Instant::now();
-    let (plan, kept, dropped) = super::plan(&index, &now, &renames);
+    let prepared = super::prepare(&now, &renames);
+    let locked = Instant::now();
+    let snapshot = super::snapshot(&index, &prepared);
+    // Столько держится замок индекса при расчёте (снимок нужных записей).
+    let under_lock = locked.elapsed();
+    let (plan, kept, dropped) = prepared.finish(&snapshot);
     let took = start.elapsed();
     println!(
-        "perf_external_plan_10000_renames: {} мс, заметок {}, ссылок {}",
+        "perf_external_plan_10000_renames: {} мс (под замком индекса {} мс), заметок {}, ссылок {}",
         took.as_millis(),
+        under_lock.as_millis(),
         plan.note_count(),
         plan.link_count()
     );
@@ -811,6 +817,7 @@ fn perf_external_plan_10000_renames() {
     assert_eq!(plan.link_count(), N);
     if !cfg!(debug_assertions) {
         assert!(took <= Duration::from_secs(1), "{took:?}");
+        assert!(under_lock <= Duration::from_millis(100), "{under_lock:?}");
     }
 }
 
@@ -926,4 +933,37 @@ fn case_only_rename_rewrites_nothing() {
     f.rename_outside(&[("Встреча.md", "встреча.md")]);
     f.window.quiet_for(Duration::from_millis(400));
     assert_eq!(f.read("Список.md"), LIST.1);
+}
+
+/// Linux: `Встреча.md` и `встреча.md` — две разные заметки. Переименование
+/// одной из них снаружи не склеивается с двойником по ключу — нет ложного
+/// `conflict`.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_case_twin_rename_is_not_conflict() {
+    let f = fixture(
+        &[
+            ("Встреча.md", "# В\n"),
+            ("встреча.md", "# в\n"),
+            ("Список.md", "[[Встреча]]\n"),
+        ],
+        RenameLinks::Update,
+        true,
+    );
+    f.rename_outside(&[("встреча.md", "Планёрка.md")]);
+    std::thread::sleep(Duration::from_millis(400));
+    for (name, payload) in f.window.links_events() {
+        if name == event::LINKS_UPDATED {
+            assert_eq!(payload["failed"], json!([]), "{payload}");
+        }
+    }
+    let (_, _, dropped) = crate::relink::external::plan(
+        &crate::index::VaultIndex::new(),
+        &f.open.read_notes().note_refs(),
+        &[crate::commands::PathRename {
+            from: vp("встреча.md"),
+            to: vp("Планёрка.md"),
+        }],
+    );
+    assert_eq!(dropped, Vec::new());
 }

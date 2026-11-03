@@ -1004,14 +1004,18 @@ struct ExternalPlan {
     dropped: Vec<PathRename>,
 }
 
-/// План для внешних переименований `renames` по снимку списка заметок
-/// (замок списка отпускается до расчёта) и индексу (замок чтения — только
-/// на расчёт), без чтения диска.
+/// План для внешних переименований `renames` по снимку списка заметок и
+/// снимку нужной части индекса (замки отпускаются до расчёта плана), без
+/// чтения диска.
 fn external_plan(open: &OpenVault, renames: &[PathRename]) -> ExternalPlan {
     let now = open.read_notes().note_refs();
-    let (plan, _, dropped) = open
+    let prepared = relink::external::prepare(&now, renames);
+    // Под замком индекса — только копия записей заметок, ссылающихся на
+    // переименованные имена; план — без замков.
+    let index = open
         .index
-        .with_index(|index| relink::external::plan(index, &now, renames));
+        .with_index(|index| relink::external::snapshot(index, &prepared));
+    let (plan, _, dropped) = prepared.finish(&index);
     ExternalPlan { plan, dropped }
 }
 

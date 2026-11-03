@@ -26,6 +26,7 @@ use super::RelinkPlan;
 use crate::commands::{PathRename, TreeChange, VaultPath};
 use crate::index::VaultIndex;
 use crate::links::Links;
+use crate::names::NameKey;
 use crate::own_writes::OwnWrites;
 use crate::vault::NoteRef;
 
@@ -57,103 +58,129 @@ pub fn confirmed(changes: &[TreeChange], own: &OwnWrites) -> Vec<PathRename> {
 /// заметок `now` и индексу `index` **после** них. Возвращает план,
 /// переименования, по которым он посчитан, и выпавшие (см. описание
 /// модуля) — по ним вызывающий сообщает о сбое `conflict`, а не молчит.
-/// Диск не читается.
-///
-/// Стоимость — O(R·log N + перемещённые заметки) на обратный ход (поиск
-/// по ключу в упорядоченном списке путей) и сам [`plan()`](super::plan);
-/// индекс копируется, только если путь перемещённой заметки после пачки
-/// совпал с путём другой перемещённой заметки до пачки (обмен именами,
-/// цикл) — иначе план по текущему индексу тот же.
+/// Диск не читается. Три шага, чтобы замок индекса держался только на
+/// копию нужных записей: [`prepare`] (без индекса), [`snapshot`] (под
+/// замком), [`Prepared::finish`] (без замков).
 pub fn plan(
     index: &VaultIndex,
     now: &[NoteRef],
     renames: &[PathRename],
 ) -> (RelinkPlan, Vec<PathRename>, Vec<PathRename>) {
+    let prepared = prepare(now, renames);
+    let index = snapshot(index, &prepared);
+    prepared.finish(&index)
+}
+
+/// Обратный ход сделан, индекс ещё не нужен.
+pub struct Prepared {
+    before: Links,
+    /// Отыгранные переименования, по порядку пачки.
+    kept: Vec<PathRename>,
+    /// Выпавшие переименования, по порядку пачки.
+    dropped: Vec<PathRename>,
+    /// Итог пачки по каждой заметке «путь до → путь после» (проверен и
+    /// свёрнут обратным ходом).
+    moves: Vec<PathRename>,
+    /// Путь переименованной заметки сейчас → путь до пачки.
+    back: HashMap<VaultPath, VaultPath>,
+    /// Ключи имён переименованных заметок до и после: только ссылки с
+    /// таким именем цели могут попасть в план.
+    names: HashSet<NameKey>,
+}
+
+/// Обратный ход по списку заметок `now` — O(R·log N + перемещённые
+/// заметки): заметки ищутся в упорядоченном списке путей.
+pub fn prepare(now: &[NoteRef], renames: &[PathRename]) -> Prepared {
     let Reversed {
         before,
         kept,
         dropped,
         moved,
     } = reverse(now, renames);
-    if kept.is_empty() {
-        return (RelinkPlan::default(), kept, dropped);
-    }
-    let before_keys: HashSet<&Vec<String>> =
-        moved.values().map(|moved| &moved.before_key).collect();
-    // Смена только регистра совпадает по ключу сама с собой — это не обмен.
-    let collision = moved
-        .iter()
-        .any(|(current, moved)| *current != moved.before_key && before_keys.contains(current));
-    // Итог пачки по каждой заметке «путь до → путь после»: проверен и
-    // свёрнут обратным ходом.
     let mut moves: Vec<PathRename> = moved
-        .values()
-        .map(|moved| PathRename {
-            from: moved.before.clone(),
-            to: moved.current.clone(),
+        .iter()
+        .map(|(current, before)| PathRename {
+            from: before.clone(),
+            to: current.clone(),
         })
         .collect();
     moves.sort_by(|a, b| a.from.components().cmp(b.from.components()));
-    let before = Links::new(before);
-    let plan = if collision {
-        // Индекс «до»: записи переименованных заметок — под прежними путями.
-        let index_before = VaultIndex::from_entries(index.entries().map(|(path, entry)| {
-            let path = moved.get(&key(path)).map_or(path, |moved| &moved.before);
-            (path.clone(), entry.clone())
-        }));
-        super::plan_moves(&index_before, &before, &moves)
-    } else {
-        super::plan_moves(index, &before, &moves)
-    };
-    (plan, kept, dropped)
+    let names = moves
+        .iter()
+        .flat_map(|m| [name_key(&m.from), name_key(&m.to)])
+        .flatten()
+        .collect();
+    Prepared {
+        before: Links::new(before),
+        kept,
+        dropped,
+        moves,
+        back: moved,
+        names,
+    }
+}
+
+/// Индекс «до» для плана — только записи заметок, в которых есть ссылки
+/// на имена переименованных заметок (их и только их читает план), под
+/// путями до пачки. Копия — это записи этих заметок; остальной индекс не
+/// копируется.
+pub fn snapshot(index: &VaultIndex, prepared: &Prepared) -> VaultIndex {
+    let mut sources: HashSet<&VaultPath> = HashSet::new();
+    for name in &prepared.names {
+        sources.extend(index.links_named(name).map(|(from, _)| from));
+    }
+    VaultIndex::from_entries(sources.into_iter().filter_map(|path| {
+        let entry = index.entry(path)?.clone();
+        let path = prepared.back.get(path).unwrap_or(path).clone();
+        Some((path, entry))
+    }))
+}
+
+impl Prepared {
+    /// План по индексу «до» `index` ([`snapshot`]).
+    pub fn finish(self, index: &VaultIndex) -> (RelinkPlan, Vec<PathRename>, Vec<PathRename>) {
+        if self.kept.is_empty() {
+            return (RelinkPlan::default(), self.kept, self.dropped);
+        }
+        let plan = super::plan_moves(index, &self.before, &self.moves);
+        (plan, self.kept, self.dropped)
+    }
 }
 
 /// Список заметок «до» и что для этого отыграно назад.
 struct Reversed {
     before: Vec<NoteRef>,
-    /// Отыгранные переименования, по порядку пачки.
     kept: Vec<PathRename>,
-    /// Выпавшие переименования, по порядку пачки.
     dropped: Vec<PathRename>,
-    /// Ключ текущего пути переименованной заметки → где она была.
-    moved: HashMap<Vec<String>, Moved>,
+    /// Путь переименованной заметки сейчас → путь до пачки.
+    moved: HashMap<VaultPath, VaultPath>,
 }
 
-/// Переименованная заметка: путь до пачки (и его ключ) и путь сейчас.
-struct Moved {
-    before_key: Vec<String>,
-    before: VaultPath,
-    current: VaultPath,
-}
-
-/// Ключи путей, начинающиеся с `prefix` (сам путь и всё под ним): в
+/// Пути с ключом, начинающимся с `prefix` (сам путь и всё под ним): в
 /// упорядоченном списке они идут подряд, начиная с `prefix`.
 fn under<'a>(
-    by_key: &'a BTreeMap<Vec<String>, usize>,
+    by_key: &'a BTreeMap<Vec<String>, Vec<usize>>,
     prefix: &'a [String],
-) -> impl Iterator<Item = (&'a Vec<String>, &'a usize)> + 'a {
+) -> impl Iterator<Item = (&'a Vec<String>, &'a Vec<usize>)> + 'a {
     by_key
         .range::<[String], _>((Bound::Included(prefix), Bound::Unbounded))
         .take_while(move |(key, _)| key.starts_with(prefix))
 }
 
 /// Обратный ход: переименования отыгрываются назад от последнего к первому
-/// на копии списка заметок; заметки ищутся по ключу пути.
+/// на копии списка заметок; заметки ищутся по ключу пути ([`key`]).
 fn reverse(now: &[NoteRef], renames: &[PathRename]) -> Reversed {
     let mut notes: Vec<NoteRef> = now.to_vec();
-    let origin: Vec<Vec<String>> = notes.iter().map(|note| key(&note.path)).collect();
-    let mut by_key: BTreeMap<Vec<String>, usize> = origin
-        .iter()
-        .enumerate()
-        .map(|(i, key)| (key.clone(), i))
-        .collect();
-    let mut touched = vec![false; notes.len()];
+    let mut by_key: BTreeMap<Vec<String>, Vec<usize>> = BTreeMap::new();
+    for (i, note) in notes.iter().enumerate() {
+        by_key.entry(key(&note.path)).or_default().push(i);
+    }
     let mut kept = Vec::new();
     let mut dropped = Vec::new();
     for rename in renames.iter().rev() {
         let (from, to) = (key(&rename.from), key(&rename.to));
         let found: Vec<(Vec<String>, usize)> = under(&by_key, &to)
-            .map(|(key, &i)| (key.clone(), i))
+            .flat_map(|(key, ids)| ids.iter().map(|&i| (key.clone(), i)))
             .collect();
         // Переименованного больше нет; на старом месте уже другая заметка;
         // заметка пришла из не-заметки (`а.txt` → `а.md`).
@@ -176,28 +203,22 @@ fn reverse(now: &[NoteRef], renames: &[PathRename]) -> Reversed {
             continue;
         }
         for ((old_key, i), path) in found.into_iter().zip(back) {
-            by_key.remove(&old_key);
-            by_key.insert(key(&path), i);
+            if let Some(ids) = by_key.get_mut(&old_key) {
+                ids.retain(|&j| j != i);
+                if ids.is_empty() {
+                    by_key.remove(&old_key);
+                }
+            }
+            by_key.entry(key(&path)).or_default().push(i);
             notes[i].path = path;
-            touched[i] = true;
         }
         kept.push(rename.clone());
     }
     kept.reverse();
     dropped.reverse();
     let moved = (0..notes.len())
-        .filter(|&i| touched[i])
         .filter(|&i| notes[i].path != now[i].path)
-        .map(|i| {
-            (
-                origin[i].clone(),
-                Moved {
-                    before_key: key(&notes[i].path),
-                    before: notes[i].path.clone(),
-                    current: now[i].path.clone(),
-                },
-            )
-        })
+        .map(|i| (now[i].path.clone(), notes[i].path.clone()))
         .collect();
     Reversed {
         before: notes,
@@ -207,11 +228,29 @@ fn reverse(now: &[NoteRef], renames: &[PathRename]) -> Reversed {
     }
 }
 
-/// Путь по ключам имён компонентов (регистр и нормализация не важны).
+/// Ключ имени заметки без `.md`; не заметка — `None` (как в плане).
+fn name_key(path: &VaultPath) -> Option<NameKey> {
+    crate::switcher::link_path(path)?
+        .last()
+        .map(|name| crate::names::key(name))
+}
+
+/// Ключ пути для обратного хода. Windows и macOS: ключи имён компонентов
+/// (регистр и нормализация Unicode не важны — пути событий ОС и списка
+/// заметок могут различаться написанием, двойников нет). Linux: точное
+/// написание — `Встреча.md` и `встреча.md` там две разные заметки, и
+/// ключ имени склеил бы их (ложный `conflict`); пути событий наблюдателя
+/// и списка заметок там совпадают побайтно.
 fn key(path: &VaultPath) -> Vec<String> {
     path.components()
         .iter()
-        .map(|c| crate::names::key(c).as_str().to_owned())
+        .map(|c| {
+            if cfg!(target_os = "linux") {
+                c.clone()
+            } else {
+                crate::names::key(c).as_str().to_owned()
+            }
+        })
         .collect()
 }
 
