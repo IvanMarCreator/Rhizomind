@@ -7,13 +7,23 @@
 //   причиной, щелчок открывает заметку) и «Повторить» (только `busy`/`io`,
 //   по `retry_token`); висит до закрытия (решение 121);
 // - ход переписывания (`links:progress`) — одно уведомление без крестика.
+// Вопросы «нужен ответ» (0.2-6.3, `links:pending`; С2-3.5 «в Проводнике»,
+// С2-3.6 «Массовое копирование»; решения 110, 111; макеты У-1, У-2):
+// - без крестика, висят до ответа; ответ — `relink_answer` со знаком события;
+// - одно уведомление на пачку: новый `links:pending` той же причины заменяет
+//   прежний (ядро гасит старый знак и шлёт вопрос на всю цепочку, 0.2-6.1);
+// - знак не принят (`invalid_argument`) — уведомление не закрывается молча:
+//   текст ошибки и крестик; ядро пришлёт свежий вопрос или итог.
 // Состояние — хранилище Svelte (`subscribe`): зона уведомлений окна
 // (src/shell/Notifications.svelte) показывает его рядом с обычными.
+import { CoreCallError } from '../api/core.ts';
 import type {
+  LinksPendingPayload,
   LinksProgressPayload,
   LinksUpdateReason,
   LinksUpdatedPayload,
   PathRename,
+  PendingReason,
   RelinkFailure,
   RelinkFailureReason,
   RelinkToken,
@@ -26,6 +36,8 @@ import { noteName } from '../editor/sessions.ts';
 export interface RelinkNoticesHost {
   /** «Повторить»: `relink_answer` с `retry_token` и `apply: true`; итог — новым `links:updated`. */
   retry(token: RelinkToken): Promise<unknown>;
+  /** Ответ на вопрос `links:pending`: `relink_answer` со знаком вопроса. */
+  answer(token: RelinkToken, apply: boolean): Promise<unknown>;
   /** Обычное уведомление окна (ошибка повтора). */
   notify(text: string): void;
   /** Предел размера для редактирования (настройка хранилища) — причина `too_large`. */
@@ -52,8 +64,30 @@ export interface RelinkNotice {
   renamesTotal: number;
 }
 
+/** Уведомление «нужен ответ» (`links:pending`). Знак — не здесь, а в модели. */
+export interface PendingQuestion {
+  id: number;
+  reason: PendingReason;
+  text: string;
+  /** Вторая строка, приглушённая. */
+  detail: string | null;
+  /** Подписи кнопок: «Обновить ссылки» / «Не обновлять», «Уточнить» / «Не трогать». */
+  apply: string;
+  skip: string;
+  /** Ответ отправлен, ждём ядро: кнопки недоступны. */
+  busy: boolean;
+  /** Ответ не принят — текст ошибки. */
+  error: string | null;
+  /** Знак больше не действует: кнопок ответа нет. */
+  stale: boolean;
+  /** Крестик — только у вопроса, на который ответить уже нельзя. */
+  closable: boolean;
+}
+
 export interface RelinkNoticesState {
   notices: readonly RelinkNotice[];
+  /** Вопросы «нужен ответ», не больше одного на причину. */
+  questions: readonly PendingQuestion[];
   /** Уведомление, чей список «Не удалось обновить ссылки» открыт. */
   shown: RelinkNotice | null;
 }
@@ -120,25 +154,104 @@ export function failureRows(failed: readonly RelinkFailure[], limitBytes: number
   return failed.map(({ path, reason }) => ({
     path,
     name: noteName(path),
-    folder: path.length > 1 ? path.slice(0, -1).join(' / ') : t('relink.failed.vaultRoot'),
+    folder: folderOf(path),
     label: failureLabel(reason, limitBytes),
     retried: isRetriable(reason),
   }));
 }
 
-function successText(reason: LinksUpdateReason, updated: number): string {
+type Plural = 'one' | 'few' | 'many';
+
+/** Форма слова после числа: 1 заметка, 3 заметки, 12 заметок, 21 заметка. */
+export function pluralForm(count: number): Plural {
+  const ten = count % 10;
+  const hundred = count % 100;
+  if (ten === 1 && hundred !== 11) return 'one';
+  if (ten >= 2 && ten <= 4 && (hundred < 12 || hundred > 14)) return 'few';
+  return 'many';
+}
+
+/** «3 заметки». */
+function notesCount(count: number): string {
+  return t(`relink.count.${pluralForm(count)}`, { count });
+}
+
+/** «ссылаются 12 заметок». */
+function referrers(count: number): string {
+  return t(`relink.refs.${pluralForm(count)}`, { count });
+}
+
+/** Папка пути через « / » или «корень хранилища». */
+function folderOf(path: VaultPath): string {
+  return path.length > 1 ? path.slice(0, -1).join(' / ') : t('relink.failed.vaultRoot');
+}
+
+/** Одно переименование из пачки, если оно единственное. */
+function single(renames: readonly PathRename[], total: number): PathRename | null {
+  return Math.max(total, renames.length) === 1 ? (renames[0] ?? null) : null;
+}
+
+function pendingFields({ reason, notes, renames, renames_total }: LinksPendingPayload): Pick<PendingQuestion, 'text' | 'detail' | 'apply' | 'skip'> {
+  if (reason === 'duplicate') {
+    return {
+      text: t('relink.pending.duplicate', { notes: notesIn(notes) }),
+      detail: t('relink.pending.duplicateDetail'),
+      apply: t('relink.pending.clarify'),
+      skip: t('relink.pending.skip'),
+    };
+  }
+  const buttons = { apply: t('relink.pending.update'), skip: t('relink.pending.keep') };
+  const one = single(renames, renames_total);
+  if (one) {
+    const from = noteName(one.from);
+    const to = noteName(one.to);
+    const refs = referrers(notes);
+    const text =
+      from === to
+        ? t('relink.pending.moved', { name: from, folder: folderOf(one.to), refs })
+        : t('relink.pending.one', { from, to, refs });
+    return { text, detail: null, ...buttons };
+  }
+  return {
+    text: t('relink.pending.batch', { renamed: notesCount(Math.max(renames_total, renames.length)), refs: referrers(notes) }),
+    detail: t('relink.pending.batchDetail'),
+    ...buttons,
+  };
+}
+
+function successText({ reason, updated, renames, renames_total }: LinksUpdatedPayload, undo: boolean): string {
+  const notes = notesIn(updated);
   if (reason === 'resumed') return t('relink.resumed');
-  if (reason === 'duplicate') return t('relink.clarified', { notes: notesIn(updated) });
-  return t('relink.updated', { notes: notesIn(updated) });
+  if (reason === 'duplicate') return t('relink.clarified', { notes });
+  if (undo) return t('relink.undone', { notes });
+  if (reason === 'external_rename') {
+    const one = single(renames, renames_total);
+    if (one) return t('relink.externalUpdated.one', { name: noteName(one.from), notes });
+    if (renames.length > 0) return t('relink.externalUpdated.many', { renamed: notesCount(Math.max(renames_total, renames.length)), notes });
+  }
+  return t('relink.updated', { notes });
+}
+
+const samePath = (a: VaultPath, b: VaultPath) => a.length === b.length && a.every((part, i) => part === b[i]);
+const sameRename = (a: PathRename, b: PathRename) => samePath(a.from, b.from) && samePath(a.to, b.to);
+const reversed = ({ from, to }: PathRename): PathRename => ({ from: to, to: from });
+
+/** Знак не принят ядром: неизвестный, просроченный или погашенный новым вопросом. */
+function isRejectedToken(error: unknown): boolean {
+  return error instanceof CoreCallError && error.error.code === 'invalid_argument';
 }
 
 type Subscriber = (state: RelinkNoticesState) => void;
 
 export class RelinkNotices {
   readonly #host: RelinkNoticesHost;
-  #state: RelinkNoticesState = { notices: [], shown: null };
+  #state: RelinkNoticesState = { notices: [], questions: [], shown: null };
   /** Знаки повтора — только здесь, не в состоянии для показа; одноразовые. */
   readonly #retryTokens = new Map<number, RelinkToken>();
+  /** Знаки вопросов `links:pending` — тоже только здесь. */
+  readonly #questionTokens = new Map<number, RelinkToken>();
+  /** Ctrl+Z: переименование, итог которого — «Переименование отменено…» (ревью 0.2-5.2, М4). */
+  #undo: PathRename | null = null;
   readonly #subscribers = new Set<Subscriber>();
   #nextId = 1;
 
@@ -162,10 +275,20 @@ export class RelinkNotices {
   }
 
   /** Событие `links:updated`. */
-  updated({ reason, updated, failed, retry_token, renames, renames_total }: LinksUpdatedPayload): void {
+  updated(payload: LinksUpdatedPayload): void {
+    const { reason, updated, failed, retry_token, renames, renames_total } = payload;
+    const first = renames[0];
+    const undo = reason === 'rename' && this.#undo !== null && first !== undefined && sameRename(first, this.#undo);
+    if (reason === 'rename') this.#undo = null;
+    let kept = this.#withoutProgress();
+    if (undo && first) {
+      // Отмена заменяет итог исходного переименования: одно уведомление, а не два одинаковых.
+      const original = reversed(first);
+      kept = kept.filter((notice) => !(notice.tone === 'success' && notice.renames[0] && sameRename(notice.renames[0], original)));
+    }
     const added: RelinkNotice[] = [];
     if (updated > 0) {
-      added.push(this.#notice({ tone: 'success', text: successText(reason, updated), reason }));
+      added.push(this.#notice({ tone: 'success', text: successText(payload, undo), reason, renames, renamesTotal: renames_total }));
     }
     if (failed.length > 0) {
       const canRetry = retry_token !== null && failed.some((failure) => isRetriable(failure.reason));
@@ -186,8 +309,73 @@ export class RelinkNotices {
       if (canRetry && retry_token !== null) this.#retryTokens.set(notice.id, retry_token);
       added.push(notice);
     }
-    // Итог пришёл — ход переписывания больше не нужен.
-    this.#set({ ...this.#state, notices: [...this.#withoutProgress(), ...added] });
+    // Итог пришёл — ход переписывания больше не нужен; устаревший вопрос той же
+    // причины тоже: ядро ответило итогом вместо нового вопроса.
+    const questions = this.#state.questions.filter((question) => !(question.stale && question.reason === reason));
+    this.#set({ ...this.#state, notices: [...kept, ...added], questions });
+  }
+
+  /**
+   * Ctrl+Z переименования с обновлением ссылок: итог этого переименования
+   * (`links:updated`, `reason: rename`, первое «старое → новое» совпадает)
+   * подписывается «Переименование отменено, ссылки возвращены…».
+   */
+  undoing(rename: PathRename): void {
+    this.#undo = rename;
+  }
+
+  /** Событие `links:pending`: вопрос; прежний вопрос той же причины заменяется на месте. */
+  pending(payload: LinksPendingPayload): void {
+    const question: PendingQuestion = {
+      id: this.#nextId++,
+      reason: payload.reason,
+      ...pendingFields(payload),
+      busy: false,
+      error: null,
+      stale: false,
+      closable: false,
+    };
+    this.#questionTokens.set(question.id, payload.token);
+    const previous = this.#state.questions.find((item) => item.reason === payload.reason);
+    if (previous) this.#questionTokens.delete(previous.id);
+    const questions = previous
+      ? this.#state.questions.map((item) => (item === previous ? question : item))
+      : [...this.#state.questions, question];
+    this.#set({ ...this.#state, questions });
+  }
+
+  /**
+   * Ответ на вопрос: `relink_answer` со знаком вопроса. Принят — уведомление
+   * уходит (итог придёт `links:updated`); знак не принят — ошибка и крестик;
+   * другая ошибка — ошибка, кнопки остаются.
+   */
+  async answer(id: number, apply: boolean): Promise<void> {
+    const token = this.#questionTokens.get(id);
+    const question = this.#state.questions.find((item) => item.id === id);
+    if (token === undefined || !question || question.busy || question.stale) return;
+    this.#updateQuestion(id, { busy: true, error: null });
+    try {
+      await this.#host.answer(token, apply);
+    } catch (error) {
+      // Вопрос мог смениться, пока шёл ответ: тогда отвечать уже на новый.
+      if (!this.#questionTokens.has(id)) return;
+      if (isRejectedToken(error)) {
+        this.#questionTokens.delete(id);
+        this.#updateQuestion(id, { busy: false, stale: true, closable: true, error: t('relink.pending.stale') });
+      } else {
+        this.#updateQuestion(id, { busy: false, error: t('relink.pending.failed', { message: userMessage(error) }) });
+      }
+      return;
+    }
+    this.#questionTokens.delete(id);
+    this.#set({ ...this.#state, questions: this.#state.questions.filter((item) => item.id !== id) });
+  }
+
+  /** Крестик — только у вопроса, на который ответить уже нельзя. */
+  dismissQuestion(id: number): void {
+    const question = this.#state.questions.find((item) => item.id === id);
+    if (!question?.closable) return;
+    this.#set({ ...this.#state, questions: this.#state.questions.filter((item) => item !== question) });
   }
 
   /** Событие `links:progress`: одно уведомление о ходе, обновляется на месте. */
@@ -210,6 +398,7 @@ export class RelinkNotices {
   dismiss(id: number): void {
     this.#retryTokens.delete(id);
     this.#set({
+      ...this.#state,
       notices: this.#state.notices.filter((notice) => notice.id !== id),
       shown: this.#state.shown?.id === id ? null : this.#state.shown,
     });
@@ -238,6 +427,10 @@ export class RelinkNotices {
     } catch (error) {
       this.#host.notify(t('relink.retryFailed', { message: userMessage(error) }));
     }
+  }
+
+  #updateQuestion(id: number, patch: Partial<PendingQuestion>): void {
+    this.#set({ ...this.#state, questions: this.#state.questions.map((item) => (item.id === id ? { ...item, ...patch } : item)) });
   }
 
   #withoutProgress(): RelinkNotice[] {

@@ -85,6 +85,8 @@
         owner.entryRemoved(path);
       },
       notify: (text) => owner.notify(text),
+      // Ctrl+Z: свой текст итога (ревью 0.2-5.2, М4).
+      undoingRename: (rename) => relinkNotices.undoing(rename),
     };
     return new FileTreeState(host);
   }
@@ -170,6 +172,7 @@
   });
   const relinkNotices = new RelinkNotices({
     retry: (token) => core.relinkAnswer({ token, apply: true }),
+    answer: (token, apply) => core.relinkAnswer({ token, apply }),
     notify: (text) => model.notify(text),
     get limitBytes() {
       return model.settings.max_edit_size_bytes;
@@ -279,6 +282,7 @@
       onCoreEvent('links:flush-requested', (payload) => void linksFlush.requested(payload)),
       onCoreEvent('links:updated', (payload) => relinkNotices.updated(payload)),
       onCoreEvent('links:progress', (payload) => relinkNotices.progress(payload)),
+      onCoreEvent('links:pending', (payload) => relinkNotices.pending(payload)),
     ];
     const stopExternal = external.start();
     void model.start();

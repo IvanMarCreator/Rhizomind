@@ -16,6 +16,7 @@ function setup(payload: LinksUpdatedPayload) {
       retries.push(token);
       return Promise.resolve(null);
     },
+    answer: () => Promise.resolve(null),
     notify: () => undefined,
     limitBytes: 10 * 1024 * 1024,
   });
