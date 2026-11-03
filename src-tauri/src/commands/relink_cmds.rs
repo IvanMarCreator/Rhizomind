@@ -27,11 +27,15 @@
 //! не приходит от наблюдателя), ход — `links:progress` не чаще
 //! [`limits::MAX_EVENTS_PER_SEC`] раз в секунду.
 //!
+//! Внешние переименования (Проводник, задача 0.2-6.1) — [`ExternalRenames`]:
+//! свой поток, та же очередь планов, вопрос `links:pending` или сразу
+//! обновление; ответ — [`relink_answer`].
+//!
 //! Доделка после сбоя ([`resume_after_reconcile`]) — при открытии хранилища
 //! после сверки индекса и до того, как индекс станет годен для
 //! переименований с обновлением ссылок (признак `reconciled`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
@@ -41,13 +45,14 @@ use tauri::{Manager, Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult, ErrorCode};
 use super::events::{
-    LinksFlushRequestedPayload, LinksProgressPayload, LinksUpdateReason, LinksUpdatedPayload,
-    NoteChangedPayload, PathRename, RelinkFailure, RelinkFailureReason, RelinkOutcome, TreeChange,
-    event,
+    LinksFlushRequestedPayload, LinksPendingPayload, LinksProgressPayload, LinksUpdateReason,
+    LinksUpdatedPayload, NoteChangedPayload, PathRename, PendingReason, RelinkFailure,
+    RelinkFailureReason, RelinkOutcome, TreeChange, event,
 };
 use super::files::EntryMovedResponse;
 use super::index_cmds::{IndexProgress, IndexReply, Throttle};
 use super::limits;
+use super::settings::RenameLinks;
 use super::types::{RelinkToken, VaultPath};
 use super::{Core, OpenVault, blocking, check_entry_name, checked_path};
 use crate::events::{Emit, WindowEmitter, send};
@@ -214,6 +219,9 @@ pub struct Relinker {
     serial: Arc<Mutex<()>>,
     /// Предел ожидания записи ввода ([`FLUSH_TIMEOUT`]; в тестах короче).
     flush_timeout: Mutex<Duration>,
+    /// Неотвеченная цепочка внешних переименований и погашенные знаки
+    /// (задача 0.2-6.1).
+    external: Mutex<ExternalAsks>,
 }
 
 impl Default for Relinker {
@@ -225,8 +233,78 @@ impl Default for Relinker {
             flushed: Condvar::new(),
             serial: Arc::new(Mutex::new(())),
             flush_timeout: Mutex::new(FLUSH_TIMEOUT),
+            external: Mutex::default(),
         }
     }
+}
+
+/// Предел переименований в очереди внешних переименований и в неотвеченной
+/// цепочке. Лишние — сбой `conflict` в `links:updated`, не тихая потеря.
+pub const MAX_EXTERNAL_RENAMES: usize = 100_000;
+
+/// Сколько погашенных знаков внешних переименований помнится.
+const STALE_EXTERNAL_TOKENS: usize = 64;
+
+/// Неотвеченная цепочка внешних переименований окна: вопрос
+/// `links:pending` или «Повторить» после внешнего переименования. Одна на
+/// окно: каждая новая пачка присоединяет её к себе (старый знак гасится),
+/// поэтому ни одно переименование не остаётся без ответа молча.
+#[derive(Debug)]
+struct ExternalChain {
+    token: RelinkToken,
+    renames: Vec<PathRename>,
+    issued: Instant,
+}
+
+/// Внешние переименования окна, ждущие ответа. Хранятся отдельно от знаков
+/// [`Tokens`]: их не вытесняет предел знаков, а просроченный или погашенный
+/// знак не теряет цепочку — по нему ядро заново считает план и задаёт
+/// свежий вопрос.
+#[derive(Debug, Default)]
+struct ExternalAsks {
+    open: Option<ExternalChain>,
+    /// Погашенные знаки цепочек (присоединены к новой пачке, предъявлены
+    /// чужим окном) — не больше [`STALE_EXTERNAL_TOKENS`].
+    stale: VecDeque<RelinkToken>,
+    /// Сдвиг часов для тестов просрочки.
+    #[cfg(test)]
+    skew: Duration,
+}
+
+impl ExternalAsks {
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        {
+            Instant::now() + self.skew
+        }
+        #[cfg(not(test))]
+        {
+            Instant::now()
+        }
+    }
+
+    fn retire(&mut self, token: RelinkToken) {
+        self.stale.push_back(token);
+        while self.stale.len() > STALE_EXTERNAL_TOKENS {
+            self.stale.pop_front();
+        }
+    }
+}
+
+/// Что стоит за знаком, предъявленным в `relink_answer`, среди внешних
+/// переименований.
+enum ExternalAnswer {
+    /// Знак неотвеченной цепочки (цепочка взята).
+    Open {
+        renames: Vec<PathRename>,
+        expired: bool,
+    },
+    /// Погашенный знак.
+    Stale,
+    /// Знак внешних переименований, предъявленный чужим окном (погашен).
+    Foreign,
+    /// Не знак внешних переименований.
+    Unknown,
 }
 
 impl Relinker {
@@ -398,6 +476,70 @@ impl Relinker {
     #[cfg(test)]
     pub fn advance_tokens(&self, by: Duration) {
         self.grants.advance(by);
+        self.asks().skew += by;
+    }
+
+    fn asks(&self) -> MutexGuard<'_, ExternalAsks> {
+        self.external.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Неотвеченная цепочка внешних переименований с новым знаком;
+    /// прежний знак (если был) гасится. Генератор знаков недоступен —
+    /// `io_failed`.
+    fn open_chain(&self, renames: Vec<PathRename>) -> CoreResult<RelinkToken> {
+        let token = tokens::fresh()?;
+        let mut asks = self.asks();
+        let issued = asks.now();
+        if let Some(old) = asks.open.replace(ExternalChain {
+            token: token.clone(),
+            renames,
+            issued,
+        }) {
+            asks.retire(old.token);
+        }
+        Ok(token)
+    }
+
+    /// Забирает неотвеченную цепочку (её знак гасится): новая пачка
+    /// присоединяет её к себе.
+    fn take_chain(&self) -> Option<Vec<PathRename>> {
+        let mut asks = self.asks();
+        let chain = asks.open.take()?;
+        asks.retire(chain.token);
+        Some(chain.renames)
+    }
+
+    /// Знак `token`, предъявленный окном `window`, среди внешних
+    /// переименований. Знак открытой цепочки, предъявленный своим окном,
+    /// забирает её (одноразовый).
+    fn answer_external(&self, window: &str, token: &RelinkToken) -> ExternalAnswer {
+        let mut asks = self.asks();
+        let now = asks.now();
+        let is_open = asks.open.as_ref().is_some_and(|c| c.token == *token);
+        let stale_at = asks.stale.iter().position(|t| t == token);
+        if !is_open && stale_at.is_none() {
+            return ExternalAnswer::Unknown;
+        }
+        if window != self.window() {
+            if is_open && let Some(chain) = asks.open.as_mut() {
+                // Знак сгорает, цепочка остаётся: своё окно по сгоревшему
+                // знаку получит свежий вопрос.
+                let burnt = std::mem::replace(&mut chain.token, RelinkToken(String::new()));
+                asks.retire(burnt);
+            }
+            return ExternalAnswer::Foreign;
+        }
+        if let Some(at) = stale_at {
+            asks.stale.remove(at);
+            return ExternalAnswer::Stale;
+        }
+        match asks.open.take() {
+            Some(chain) => ExternalAnswer::Open {
+                expired: now.saturating_duration_since(chain.issued) >= tokens::TTL,
+                renames: chain.renames,
+            },
+            None => ExternalAnswer::Unknown,
+        }
     }
 }
 
@@ -500,6 +642,8 @@ fn publish(
     report: &RunReport,
     renames: &[PathRename],
     reason: LinksUpdateReason,
+    retry: &dyn Fn(&RelinkPlan) -> Option<RelinkToken>,
+    extra: Vec<RelinkFailure>,
 ) -> RelinkOutcome {
     let changes: Vec<TreeChange> = report
         .updated
@@ -520,14 +664,10 @@ fn publish(
     let retry_token = if report.retry.notes.is_empty() {
         None
     } else {
-        open.relink
-            .issue(Grant::Retry {
-                plan: report.retry.clone(),
-                renames: renames.to_vec(),
-            })
-            .ok()
+        retry(&report.retry)
     };
-    let outcome = report.outcome(retry_token);
+    let mut outcome = report.outcome(retry_token);
+    outcome.failed.extend(extra);
     send(
         emit,
         event::LINKS_UPDATED,
@@ -550,16 +690,35 @@ fn execute(
     if plan.is_empty() {
         return RelinkOutcome::default();
     }
+    let report = run_plan(open, emit, plan, renames, token);
+    let retry = |plan: &RelinkPlan| {
+        open.relink
+            .issue(Grant::Retry {
+                plan: plan.clone(),
+                renames: renames.to_vec(),
+            })
+            .ok()
+    };
+    publish(open, emit, &report, renames, reason, &retry, Vec::new())
+}
+
+/// Переписывание по плану с ходом `links:progress`.
+fn run_plan(
+    open: &OpenVault,
+    emit: &dyn Emit,
+    plan: &RelinkPlan,
+    renames: &[PathRename],
+    token: Option<RelinkToken>,
+) -> RunReport {
     let after = current_links(open);
     let mut progress = ProgressEvents::new(emit, token);
-    let report = relink::run(
+    relink::run(
         &open.vault,
         &after.view(),
         plan,
         renames,
         &mut |done, total| progress.on(done, total, Instant::now()),
-    );
-    publish(open, emit, &report, renames, reason)
+    )
 }
 
 /// Ошибка «ввод окна не записан» (`io_failed`): переименование не
@@ -615,18 +774,18 @@ pub fn rename_with_links(
     })
 }
 
-/// «Повторить», а ввод окна не записан: ни одна заметка не переписана, но
-/// знак не теряется молча — `links:updated` (`retry`) с заметками повтора
-/// как `busy` (их можно повторить) и новым знаком повтора на тот же план.
-fn retry_not_started(open: &OpenVault, emit: &dyn Emit, plan: RelinkPlan, renames: &[PathRename]) {
-    let failed: Vec<RelinkFailure> = plan
-        .notes
-        .iter()
-        .map(|note| RelinkFailure {
-            path: note.path.clone(),
-            reason: RelinkFailureReason::Busy,
-        })
-        .collect();
+/// Ввод окна не записан, а переименование уже на диске («Повторить» или
+/// внешнее переименование): ни одна заметка не переписана, но это не
+/// теряется молча — `links:updated` (`reason`) с заметками плана как `busy`
+/// (их можно повторить) и знаком повтора на этот план.
+fn not_started(
+    open: &OpenVault,
+    emit: &dyn Emit,
+    plan: RelinkPlan,
+    renames: &[PathRename],
+    reason: LinksUpdateReason,
+) {
+    let busy = busy_failures(&plan);
     let retry_token = open
         .relink
         .issue(Grant::Retry {
@@ -634,6 +793,28 @@ fn retry_not_started(open: &OpenVault, emit: &dyn Emit, plan: RelinkPlan, rename
             renames: renames.to_vec(),
         })
         .ok();
+    send_updated(emit, reason, busy, retry_token, renames);
+}
+
+/// Заметки плана как `busy` (ввод не записан, ничего не переписано).
+fn busy_failures(plan: &RelinkPlan) -> Vec<RelinkFailure> {
+    plan.notes
+        .iter()
+        .map(|note| RelinkFailure {
+            path: note.path.clone(),
+            reason: RelinkFailureReason::Busy,
+        })
+        .collect()
+}
+
+/// `links:updated` без переписанных заметок.
+fn send_updated(
+    emit: &dyn Emit,
+    reason: LinksUpdateReason,
+    failed: Vec<RelinkFailure>,
+    retry_token: Option<RelinkToken>,
+    renames: &[PathRename],
+) {
     let outcome = RelinkOutcome {
         updated: 0,
         failed,
@@ -642,7 +823,343 @@ fn retry_not_started(open: &OpenVault, emit: &dyn Emit, plan: RelinkPlan, rename
     send(
         emit,
         event::LINKS_UPDATED,
-        &LinksUpdatedPayload::new(LinksUpdateReason::Retry, outcome, renames),
+        &LinksUpdatedPayload::new(reason, outcome, renames),
+    );
+}
+
+/// Сколько поток внешних переименований ждёт между проверками готовности
+/// индекса.
+const READY_POLL: Duration = Duration::from_millis(50);
+
+/// Внешние переименования хранилища (задача 0.2-6.1; С2-3.5 «в
+/// Проводнике», Р10, решение 110): пачки наблюдателя — в свой поток, чтобы
+/// поток наблюдателя не ждал ни индекса, ни очереди планов, ни записи ввода
+/// окна.
+///
+/// Поток берёт пачки (подтверждённые внешние переименования заметок,
+/// [`relink::external::confirmed`]) и:
+/// 1. ждёт, пока индекс сверен ([`WindowIndex::ready_for_relink`](super::WindowIndex::ready_for_relink));
+///    пачки, пришедшие за это время, присоединяются (очередь — одна
+///    цепочка переименований не длиннее [`MAX_EXTERNAL_RENAMES`]; лишние —
+///    сбой `conflict`, не тихая потеря);
+/// 2. занимает общую очередь планов хранилища ([`Relinker::serial`]) — там
+///    же переименования приложения, повторы и доделка; забирает всё, что
+///    пришло, и присоединяет неотвеченную цепочку окна (вопрос или
+///    «Повторить» прошлых пачек — их знак гасится);
+/// 3. считает план по снимку списка заметок и индексу
+///    ([`relink::external::plan`]); переписывать нечего — ничего не делает,
+///    кроме сообщения о выпавших переименованиях (`conflict`);
+/// 4. «Всегда спрашивать» — один `links:pending {reason: external_rename}`
+///    на всю цепочку, ответ — `relink_answer`; «Всегда обновлять» — сразу
+///    [`apply_external`].
+///
+/// Пачка отправляется под замком списка заметок, в котором уже применена
+/// (`VaultEvents`): список, который видит поток, никогда не опережает его
+/// очередь. Поток выходит, когда закрыто окно (наблюдатель остановлен или
+/// хранилище окна освобождено).
+pub struct ExternalRenames {
+    shared: Arc<ExternalInbox>,
+}
+
+/// Очередь внешних переименований: одна цепочка по порядку пачек.
+#[derive(Default)]
+struct ExternalInbox {
+    queue: Mutex<Queued>,
+    wake: Condvar,
+}
+
+#[derive(Default)]
+struct Queued {
+    renames: Vec<PathRename>,
+    /// Не поместились в очередь: первые [`limits::MAX_PENDING_RENAMES`] и
+    /// сколько всего.
+    lost: Vec<PathRename>,
+    lost_total: usize,
+    closed: bool,
+}
+
+impl ExternalInbox {
+    fn lock(&self) -> MutexGuard<'_, Queued> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Забирает всё, что в очереди.
+    fn take(&self) -> Queued {
+        let mut queue = self.lock();
+        Queued {
+            renames: std::mem::take(&mut queue.renames),
+            lost: std::mem::take(&mut queue.lost),
+            lost_total: std::mem::take(&mut queue.lost_total),
+            closed: queue.closed,
+        }
+    }
+}
+
+impl ExternalRenames {
+    /// Поток внешних переименований хранилища `open`; события — окну `emit`.
+    pub fn start(open: Weak<OpenVault>, emit: Arc<dyn Emit>) -> Self {
+        let shared = Arc::new(ExternalInbox::default());
+        let inbox = Arc::clone(&shared);
+        let _ = std::thread::Builder::new()
+            .name("rhizomind-external-renames".into())
+            .spawn(move || external_loop(&inbox, &open, &*emit));
+        Self { shared }
+    }
+
+    /// Пачка внешних переименований (по порядку пачки наблюдателя).
+    pub fn submit(&self, renames: Vec<PathRename>) {
+        if renames.is_empty() {
+            return;
+        }
+        let mut queue = self.shared.lock();
+        let room = MAX_EXTERNAL_RENAMES.saturating_sub(queue.renames.len());
+        let mut renames = renames;
+        let lost = renames.split_off(room.min(renames.len()));
+        queue.renames.extend(renames);
+        queue.lost_total += lost.len();
+        let keep = limits::MAX_PENDING_RENAMES.saturating_sub(queue.lost.len());
+        queue.lost.extend(lost.into_iter().take(keep));
+        drop(queue);
+        self.shared.wake.notify_all();
+    }
+}
+
+impl Drop for ExternalRenames {
+    fn drop(&mut self) {
+        self.shared.lock().closed = true;
+        self.shared.wake.notify_all();
+    }
+}
+
+fn external_loop(inbox: &ExternalInbox, open: &Weak<OpenVault>, emit: &dyn Emit) {
+    loop {
+        {
+            let mut queue = inbox.lock();
+            while queue.renames.is_empty() && queue.lost_total == 0 && !queue.closed {
+                queue = inbox
+                    .wake
+                    .wait(queue)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            if queue.closed {
+                return;
+            }
+        }
+        let open = loop {
+            let Some(open) = open.upgrade() else {
+                return;
+            };
+            if open.index.ready_for_relink() {
+                break open;
+            }
+            drop(open);
+            let queue = inbox.lock();
+            if queue.closed {
+                return;
+            }
+            let _ = inbox.wake.wait_timeout(queue, READY_POLL);
+        };
+        on_external(&open, emit, inbox);
+    }
+}
+
+/// Пачки внешних переименований при готовом индексе: вопрос или сразу
+/// обновление — по настройке `rename_links`.
+fn on_external(open: &OpenVault, emit: &dyn Emit, inbox: &ExternalInbox) {
+    let _serial = open.relink.serial();
+    let queued = inbox.take();
+    if queued.closed {
+        return;
+    }
+    report_lost(emit, &queued.lost, queued.lost_total);
+    let mut renames = open.relink.take_chain().unwrap_or_default();
+    renames.extend(queued.renames);
+    if renames.len() > MAX_EXTERNAL_RENAMES {
+        let excess = renames.len() - MAX_EXTERNAL_RENAMES;
+        let lost: Vec<PathRename> = renames.drain(..excess).collect();
+        report_lost(emit, &lost, excess);
+    }
+    if renames.is_empty() {
+        return;
+    }
+    let external = external_plan(open, &renames);
+    if external.plan.notes.is_empty() {
+        report_conflicts(emit, &external.dropped, &renames);
+        return;
+    }
+    // Настройка не читается — спросить: без согласия ничего не переписать.
+    let mode = open
+        .vault
+        .read_settings()
+        .map_or(RenameLinks::Ask, |settings| settings.rename_links);
+    match mode {
+        RenameLinks::Update => apply_external(open, emit, renames, None),
+        RenameLinks::Ask => ask_external(open, emit, renames, &external.plan),
+    }
+}
+
+/// План внешних переименований и что из них выпало.
+struct ExternalPlan {
+    plan: RelinkPlan,
+    dropped: Vec<PathRename>,
+}
+
+/// План для внешних переименований `renames` по снимку списка заметок и
+/// снимку нужной части индекса (замки отпускаются до расчёта плана), без
+/// чтения диска.
+fn external_plan(open: &OpenVault, renames: &[PathRename]) -> ExternalPlan {
+    let now = open.read_notes().note_refs();
+    let prepared = relink::external::prepare(&now, renames);
+    // Под замком индекса — только копия записей заметок, ссылающихся на
+    // переименованные имена; план — без замков.
+    let index = open
+        .index
+        .with_index(|index| relink::external::snapshot(index, &prepared));
+    let (plan, _, dropped) = prepared.finish(&index);
+    ExternalPlan { plan, dropped }
+}
+
+/// Вопрос `links:pending` на цепочку `renames` с планом `plan`.
+fn ask_external(open: &OpenVault, emit: &dyn Emit, renames: Vec<PathRename>, plan: &RelinkPlan) {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let payload = LinksPendingPayload {
+        token: RelinkToken(String::new()),
+        reason: PendingReason::ExternalRename,
+        notes: count(plan.note_count()),
+        links: count(plan.link_count()),
+        renames: renames
+            .iter()
+            .take(limits::MAX_PENDING_RENAMES)
+            .cloned()
+            .collect(),
+        renames_total: count(renames.len()),
+    };
+    let Ok(token) = open.relink.open_chain(renames) else {
+        return;
+    };
+    send(
+        emit,
+        event::LINKS_PENDING,
+        &LinksPendingPayload { token, ..payload },
+    );
+}
+
+/// Знак цепочки просрочен или погашен: план заново и свежий вопрос; если
+/// переписывать уже нечего — `conflict` по всей цепочке («проверьте ссылки
+/// вручную»), а не тишина.
+fn reask_external(open: &OpenVault, emit: &dyn Emit, renames: Vec<PathRename>) {
+    let external = external_plan(open, &renames);
+    if external.plan.notes.is_empty() {
+        report_conflicts(emit, &renames, &renames);
+        return;
+    }
+    ask_external(open, emit, renames, &external.plan);
+}
+
+/// Сбой `conflict` по переименованиям `dropped` (путь «куда», Р20):
+/// переименование выпало из плана, ссылки на старое имя не обновлены.
+fn conflicts(dropped: &[PathRename]) -> Vec<RelinkFailure> {
+    let mut failed: Vec<RelinkFailure> = Vec::new();
+    for rename in dropped {
+        if !failed.iter().any(|f| f.path == rename.to) {
+            failed.push(RelinkFailure {
+                path: rename.to.clone(),
+                reason: RelinkFailureReason::Conflict,
+            });
+        }
+    }
+    failed
+}
+
+/// `links:updated` (`external_rename`) с `conflict` по `dropped`; пусто —
+/// ничего.
+fn report_conflicts(emit: &dyn Emit, dropped: &[PathRename], renames: &[PathRename]) {
+    if dropped.is_empty() {
+        return;
+    }
+    send_updated(
+        emit,
+        LinksUpdateReason::ExternalRename,
+        conflicts(dropped),
+        None,
+        renames,
+    );
+}
+
+/// Переименования, которые не поместились в предел очереди или цепочки:
+/// `conflict` по первым из них, `renames_total` — сколько всего.
+fn report_lost(emit: &dyn Emit, lost: &[PathRename], total: usize) {
+    if total == 0 {
+        return;
+    }
+    let shown = &lost[..lost.len().min(limits::MAX_PENDING_RENAMES)];
+    let mut payload = LinksUpdatedPayload::new(
+        LinksUpdateReason::ExternalRename,
+        RelinkOutcome {
+            updated: 0,
+            failed: conflicts(shown),
+            retry_token: None,
+        },
+        shown,
+    );
+    payload.renames_total = u32::try_from(total).unwrap_or(u32::MAX);
+    send(emit, event::LINKS_UPDATED, &payload);
+}
+
+/// Обновление ссылок после внешних переименований `renames` (очередь
+/// планов уже занята): запись ввода окна → план заново (записанный ввод
+/// мог добавить ссылки) → переписывание → `links:updated`
+/// (`external_rename`). Выпавшие из плана переименования — `conflict`.
+///
+/// «Повторить» (заметки `busy`/`io`) — знак неотвеченной цепочки: при
+/// повторе план считается заново по текущему состоянию, а следующая пачка
+/// присоединяет цепочку к себе.
+///
+/// Инвариант 4: ввод не записан (отказ или нет ответа за
+/// [`FLUSH_TIMEOUT`]) — ни один файл не переписан. Отменить
+/// переименование нельзя — оно уже на диске, — поэтому `links:updated` со
+/// сбоем `busy` у каждой заметки плана и знаком «Повторить».
+fn apply_external(
+    open: &OpenVault,
+    emit: &dyn Emit,
+    renames: Vec<PathRename>,
+    token: Option<RelinkToken>,
+) {
+    // Переписывать уже нечего (например, переименовали обратно) — и ввод
+    // записывать незачем.
+    let external = external_plan(open, &renames);
+    if external.plan.notes.is_empty() {
+        report_conflicts(emit, &external.dropped, &renames);
+        return;
+    }
+    if !open.relink.flush(emit) {
+        let mut failed = busy_failures(&external.plan);
+        failed.extend(conflicts(&external.dropped));
+        let retry_token = open.relink.open_chain(renames.clone()).ok();
+        send_updated(
+            emit,
+            LinksUpdateReason::ExternalRename,
+            failed,
+            retry_token,
+            &renames,
+        );
+        return;
+    }
+    let external = external_plan(open, &renames);
+    if external.plan.notes.is_empty() {
+        report_conflicts(emit, &external.dropped, &renames);
+        return;
+    }
+    let report = run_plan(open, emit, &external.plan, &renames, token);
+    let retry = |_: &RelinkPlan| open.relink.open_chain(renames.clone()).ok();
+    publish(
+        open,
+        emit,
+        &report,
+        &renames,
+        LinksUpdateReason::ExternalRename,
+        &retry,
+        conflicts(&external.dropped),
     );
 }
 
@@ -666,7 +1183,23 @@ pub fn resume_after_reconcile(open: &OpenVault, emit: &dyn Emit) {
     if report.updated.is_empty() && report.failed.is_empty() && report.unmatched.is_empty() {
         return;
     }
-    publish(open, emit, &report, &[], LinksUpdateReason::Resumed);
+    let retry = |plan: &RelinkPlan| {
+        open.relink
+            .issue(Grant::Retry {
+                plan: plan.clone(),
+                renames: Vec::new(),
+            })
+            .ok()
+    };
+    publish(
+        open,
+        emit,
+        &report,
+        &[],
+        LinksUpdateReason::Resumed,
+        &retry,
+        Vec::new(),
+    );
 }
 
 /// Отправитель событий окну вызова.
@@ -708,9 +1241,76 @@ pub async fn relink_preview<R: Runtime>(
     .await
 }
 
+/// `relink_answer` в потоке для блокирующих действий: знак окна `window`
+/// → «Не обновлять» (ничего) или очередь планов, запись ввода и
+/// переписывание. Знак предпросмотра — `invalid_argument`: он только для
+/// `entry_rename`/`entry_move`.
+///
+/// Знаки внешних переименований (вопрос и «Повторить»): просроченный или
+/// погашенный знак (цепочку присоединила следующая пачка, знак предъявило
+/// чужое окно) не теряет цепочку — ядро заново считает план и задаёт
+/// свежий вопрос; погашенный знак, когда цепочка уже без вопросов, —
+/// ничего не делает.
+pub fn relink_answer_blocking(
+    open: &OpenVault,
+    emit: &dyn Emit,
+    window: &str,
+    request: RelinkAnswerRequest,
+) -> CoreResult<()> {
+    limits::token(&request.token, "token")?;
+    let serial = open.relink.serial();
+    match open.relink.answer_external(window, &request.token) {
+        ExternalAnswer::Open { renames, expired } => {
+            if !request.apply {
+                return Ok(());
+            }
+            if expired {
+                reask_external(open, emit, renames);
+            } else {
+                apply_external(open, emit, renames, Some(request.token));
+            }
+            return Ok(());
+        }
+        ExternalAnswer::Stale => {
+            if request.apply
+                && let Some(renames) = open.relink.take_chain()
+            {
+                reask_external(open, emit, renames);
+            }
+            return Ok(());
+        }
+        ExternalAnswer::Foreign => return Err(CoreError::invalid_argument("token")),
+        ExternalAnswer::Unknown => {}
+    }
+    drop(serial);
+    let grant = open.relink.take(window, &request.token, "token")?;
+    let Grant::Retry { plan, renames } = grant else {
+        return Err(CoreError::invalid_argument("token"));
+    };
+    if !request.apply {
+        return Ok(());
+    }
+    let _serial = open.relink.serial();
+    if open.relink.flush(emit) {
+        execute(
+            open,
+            emit,
+            &plan,
+            &renames,
+            LinksUpdateReason::Retry,
+            Some(request.token),
+        );
+    } else {
+        not_started(open, emit, plan, &renames, LinksUpdateReason::Retry);
+    }
+    Ok(())
+}
+
 /// Ответ пользователя на `links:pending` или «Повторить». Итог приходит
-/// событием `links:updated`. Повтор — та же очередь и запись ввода, что у
-/// переименования; ссылки снова находятся и проверяются на свежем тексте.
+/// событием `links:updated`. Повтор и «Обновить ссылки» после внешних
+/// переименований — та же очередь и запись ввода, что у переименования;
+/// план внешних переименований считается заново, ссылки снова находятся и
+/// проверяются на свежем тексте.
 #[tauri::command]
 pub async fn relink_answer<R: Runtime>(
     window: Window<R>,
@@ -719,32 +1319,9 @@ pub async fn relink_answer<R: Runtime>(
 ) -> CoreResult<()> {
     limits::token(&request.token, "token")?;
     let open = core.require_vault(window.label())?;
-    let grant = open.relink.take(window.label(), &request.token, "token")?;
-    let Grant::Retry { plan, renames } = grant else {
-        // Знак предпросмотра — для `entry_rename`/`entry_move`, не для ответа.
-        return Err(CoreError::invalid_argument("token"));
-    };
-    if !request.apply {
-        return Ok(());
-    }
     let emit = emitter(&window);
-    blocking(move || {
-        let _serial = open.relink.serial();
-        if open.relink.flush(&emit) {
-            execute(
-                &open,
-                &emit,
-                &plan,
-                &renames,
-                LinksUpdateReason::Retry,
-                Some(request.token),
-            );
-        } else {
-            retry_not_started(&open, &emit, plan, &renames);
-        }
-        Ok(())
-    })
-    .await
+    let label = window.label().to_owned();
+    blocking(move || relink_answer_blocking(&open, &emit, &label, request)).await
 }
 
 /// Окно записало (или не смогло записать) несохранённый ввод перед

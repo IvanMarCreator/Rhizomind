@@ -18,7 +18,12 @@
 //! - после пачки — обновление индекса (задача 0.2-1.4,
 //!   `commands::WindowIndex::update`): изменённые заметки читаются вне
 //!   замков, `index:changed` — из потока событий индекса, не чаще 4 раз в
-//!   секунду; при полной сверке (`rescan`) индекс сверяется с диском.
+//!   секунду; при полной сверке (`rescan`) индекс сверяется с диском;
+//! - подтверждённые внешние переименования заметок и папок с заметками
+//!   (не свои — по журналу своих переименований) уходят в поток внешних
+//!   переименований (`commands::ExternalRenames`, задача 0.2-6.1): вопрос
+//!   `links:pending` или обновление ссылок — там, поток наблюдателя их не
+//!   ждёт.
 //!
 //! Сбой отправки окну не роняет поток наблюдателя; если упадёт сам
 //! получатель, наблюдатель сообщит `DeliveryFailed` и через пару секунд
@@ -33,8 +38,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, EventTarget, Manager, Runtime};
 
 use crate::commands::{
-    IndexUpdate, NoteChangedPayload, NoteDeletedPayload, NoteRenamedPayload, OpenVault, TreeChange,
-    VaultAvailabilityPayload, VaultChangedPayload, VaultPath, event,
+    ExternalRenames, IndexUpdate, NoteChangedPayload, NoteDeletedPayload, NoteRenamedPayload,
+    OpenVault, PathRename, TreeChange, VaultAvailabilityPayload, VaultChangedPayload, VaultPath,
+    event,
 };
 use crate::watcher::{ChangeSink, WatcherEvent};
 
@@ -95,12 +101,19 @@ pub fn send<P: Serialize>(emit: &dyn Emit, event: &str, payload: &P) {
 pub struct VaultEvents {
     open: Arc<OpenVault>,
     emit: Arc<dyn Emit>,
+    /// Поток внешних переименований (задача 0.2-6.1).
+    external: ExternalRenames,
 }
 
 impl VaultEvents {
     /// События хранилища `open` — в `emit`.
     pub fn new(open: Arc<OpenVault>, emit: Arc<dyn Emit>) -> Self {
-        Self { open, emit }
+        let external = ExternalRenames::start(Arc::downgrade(&open), Arc::clone(&emit));
+        Self {
+            open,
+            emit,
+            external,
+        }
     }
 
     /// Получатель для `VaultWatcher::start_with`.
@@ -156,10 +169,29 @@ impl VaultEvents {
         if payload.rescan {
             update.rescan();
         }
+        // Внешние подтверждённые переименования — до списка заметок: журнал
+        // своих переименований спрашивается по порядку пачки.
+        let external = crate::relink::external::confirmed(&payload.changes, vault.own_writes());
+        let mut with_notes: Vec<PathRename> = Vec::new();
         {
             let mut index = self.open.write_notes();
             index.apply_observed(&payload.changes, &created_ms, &mut |index, change| {
                 update.before(index, change);
+                // Только переименования, после которых заметка осталась
+                // заметкой (`а.md` → `а.txt` — удаление, решение 90).
+                if let TreeChange::Renamed { from, to } = change
+                    && external.iter().any(|r| r.from == *from && r.to == *to)
+                    && index.notes_under(from).iter().any(|note| {
+                        moved_under(from, to, note)
+                            .file_name()
+                            .is_some_and(crate::names::is_note)
+                    })
+                {
+                    with_notes.push(PathRename {
+                        from: from.clone(),
+                        to: to.clone(),
+                    });
+                }
                 match change {
                     TreeChange::Modified { path } if index.contains(path) => {
                         modified.push(path.clone());
@@ -174,14 +206,8 @@ impl VaultEvents {
                         }
                     }
                     TreeChange::Renamed { from, to } => {
-                        let from_len = from.components().len();
                         for note in index.notes_under(from) {
-                            let moved = VaultPath::from_components(
-                                to.components()
-                                    .iter()
-                                    .chain(&note.components()[from_len..])
-                                    .cloned(),
-                            );
+                            let moved = moved_under(from, to, &note);
                             if moved.file_name().is_some_and(crate::names::is_note) {
                                 push(
                                     &mut notes,
@@ -208,6 +234,9 @@ impl VaultEvents {
             if let Some(all) = all_notes {
                 index.replace(all);
             }
+            // Под замком списка заметок, где пачка уже применена: поток
+            // внешних переименований не увидит список раньше пачки.
+            self.external.submit(with_notes);
             // Заголовок окна — под тем же замком, что и проверка
             // `window_shown_note`: команда и наблюдатель не обгоняют друг друга.
             self.open
@@ -233,6 +262,16 @@ impl VaultEvents {
         // замков; `index:changed` отправляет поток событий индекса.
         self.open.index.update(vault, update);
     }
+}
+
+/// Путь заметки `note` (под `from`) после переименования `from → to`.
+fn moved_under(from: &VaultPath, to: &VaultPath, note: &VaultPath) -> VaultPath {
+    VaultPath::from_components(
+        to.components()
+            .iter()
+            .chain(&note.components()[from.components().len()..])
+            .cloned(),
+    )
 }
 
 fn push<P: Serialize>(
