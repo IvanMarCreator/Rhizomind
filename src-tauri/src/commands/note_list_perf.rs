@@ -9,6 +9,9 @@
 //!   изменений дерева перестраивает ссылки и быстрый переход целиком
 //!   (`Links::replace_notes`, `Switcher::replace_notes`). Условие задачи
 //!   0.2-7.3: пачка 1 000 изменений на 50 000 заметок дольше 200 мс.
+//! - [`perf_relink_rename_move_via_commands`] — переименование «узла» и
+//!   перенос папки на 1 000 заметок с обновлением ссылок, от ответа до
+//!   `links:updated` (второй прогон 0.2-7.1, перед КТ2).
 //!
 //! Запуск: `cargo test -p rhizomind --release --lib -- --ignored --nocapture --test-threads=1 perf_`.
 
@@ -20,11 +23,11 @@ use serde_json::{Value, json};
 use tauri::ipc::{CallbackFn, CapabilityBuilder, InvokeBody};
 use tauri::test::{INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder};
 use tauri::webview::InvokeRequest;
-use tauri::{App, Manager, WebviewWindow, WebviewWindowBuilder};
+use tauri::{App, Listener, Manager, WebviewWindow, WebviewWindowBuilder};
 
 use super::*;
 use crate::events::WindowEmitter;
-use crate::index::perf_tests::{CHECKED_NOTES, REPEATS, Report, median, scales, timed};
+use crate::index::perf_tests::{CHECKED_NOTES, REPEATS, Report, median, ms, scales, timed};
 use crate::index::store::{IndexStore, WriteOutcome};
 use crate::index::{VaultIndex, rebuild};
 use crate::links::Links;
@@ -364,4 +367,201 @@ fn perf_note_list_replace_notes() {
         None => "  вывод по 0.2-7.3: 50 000 в этом прогоне не мерились",
     });
     report.finish();
+}
+
+/// Копия папки `from` в `to` со всеми вложенными (хранилище генератора
+/// для нового повтора: выполнение плана переписывает заметки).
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("папка");
+    for entry in std::fs::read_dir(from).expect("папка") {
+        let entry = entry.expect("элемент");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("тип").is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("копия");
+        }
+    }
+}
+
+/// Готовый ответ `relink_preview` (как окно перед вопросом «Обновить
+/// ссылки?»): знак и число заметок и ссылок плана. Сразу после
+/// `index_status` = `ready` предпросмотр может коротко отвечать
+/// `index_building`, пока индекс сверяется (ревью 0.2-4.6) — ждём.
+fn relink_preview(w: &WebviewWindow<MockRuntime>, request: Value) -> RelinkPreview {
+    let start = Instant::now();
+    loop {
+        let reply = invoke(w, "relink_preview", json!({ "request": request }));
+        match serde_json::from_value::<IndexReply<RelinkPreview>>(reply.clone()) {
+            Ok(IndexReply::Ready(preview)) => return preview,
+            Ok(IndexReply::IndexBuilding(_)) => {
+                assert!(
+                    start.elapsed() < Duration::from_secs(300),
+                    "relink_preview: индекс не готов"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("relink_preview: ответ не по контракту ({e}): {reply}"),
+        }
+    }
+}
+
+/// Переименование «узла» (100 ссылающихся заметок) и перенос папки на
+/// 1 000 заметок с обновлением ссылок — С2-8.3, «от ответа до уведомления»:
+/// время от вызова `entry_rename`/`entry_move` с `links: update` и знаком
+/// предпросмотра до события `links:updated`. Путь целиком, как из окна:
+/// запрос записи ввода (`links:flush-requested`, окно сразу отвечает
+/// `links_flush_done`), план, переименование на диске, переписывание
+/// заметок с журналом (`relink::run`), событие. Предел — по медиане 5
+/// повторов. Каждый повтор — новая копия одного хранилища генератора
+/// (зерно 7, `index.json` как после прошлого запуска), новое приложение и
+/// окно: после первого переноса ссылки в папку уже короткие, и повтор «туда
+/// и обратно» переписывать было бы нечего.
+#[test]
+#[ignore = "замер: --release --ignored perf_ (шаг CI «Замеры ядра»)"]
+fn perf_relink_rename_move_via_commands() {
+    for notes in scales() {
+        let checked = notes == CHECKED_NOTES;
+        let folder_limit = if notes > CHECKED_NOTES {
+            20_000.0
+        } else {
+            15_000.0
+        };
+        let mut report = Report::new(&format!(
+            "perf-core переименование с обновлением ссылок через команды, {notes} заметок"
+        ));
+        let dir = tempfile::tempdir().expect("папка");
+        let pristine = dir.path().join("pristine");
+        let (gen_ms, manifest) = timed(|| {
+            gen_vault::generate(&pristine, &gen_vault::Config::new(notes, 7)).expect("генератор")
+        });
+        std::fs::create_dir_all(pristine.join("Перенесено")).expect("папка");
+        write_index_json(&pristine);
+        report.note(format!("  генератор: {gen_ms:.0} мс"));
+        let hub = manifest.hub.as_ref().expect("узел").path.clone();
+        let hub: Vec<String> = hub.split('/').map(str::to_owned).collect();
+        let hub_new = hub.last().expect("имя").replace(".md", " переименован.md");
+        let folder = manifest.folder_1000.as_ref().expect("папка 1 000");
+
+        let (mut hub_took, mut folder_took) = (Vec::new(), Vec::new());
+        let mut hub_counts = Vec::new();
+        let mut folder_counts = Vec::new();
+        for repeat in 0..REPEATS {
+            let root = dir.path().join(format!("vault-{repeat}"));
+            copy_dir(&pristine, &root);
+            let app = app();
+            let label = format!("perf-relink-{notes}-{repeat}");
+            let w = window(&app, &label);
+            let core = app.state::<Core>();
+            core.open_vault_with(
+                &label,
+                VaultSummary {
+                    id: VaultId(label.clone()),
+                    name: label.clone(),
+                    path: root.display().to_string(),
+                },
+                &root,
+                Arc::new(WindowEmitter::new(app.handle().clone(), label.as_str())),
+                None,
+            )
+            .expect("хранилище открыто");
+            wait_index_ready(&w, Duration::from_secs(300));
+
+            // Окно сразу отвечает «ввод записан» (из другого потока:
+            // слушатель вызывается в потоке команды).
+            let flusher = w.clone();
+            w.listen(event::LINKS_FLUSH_REQUESTED, move |e| {
+                let payload: Value = serde_json::from_str(e.payload()).expect("данные");
+                let window = flusher.clone();
+                std::thread::spawn(move || {
+                    invoke(
+                        &window,
+                        "links_flush_done",
+                        json!({ "request": { "token": payload["token"], "saved": true } }),
+                    );
+                });
+            });
+            let (updated_tx, updated_rx) = std::sync::mpsc::channel::<(Instant, Value)>();
+            w.listen(event::LINKS_UPDATED, move |e| {
+                let payload = serde_json::from_str(e.payload()).unwrap_or(Value::Null);
+                let _ = updated_tx.send((Instant::now(), payload));
+            });
+            // Ответ пользователя (вызов команды) → `links:updated`: время в
+            // мс; переписаны все заметки плана, сбоев нет.
+            let answer = |what: &str, command: &str, request: Value, expected: u32| -> f64 {
+                let start = Instant::now();
+                let reply = invoke(&w, command, json!({ "request": request }));
+                let (at, payload) = updated_rx
+                    .recv_timeout(Duration::from_secs(300))
+                    .unwrap_or_else(|_| panic!("{what}: нет links:updated, ответ {reply}"));
+                assert_eq!(payload["updated"], json!(expected), "{what}: {payload}");
+                assert_eq!(payload["failed"], json!([]), "{what}: {payload}");
+                ms(at - start)
+            };
+
+            let plan = relink_preview(
+                &w,
+                json!({ "op": "rename", "path": hub, "new_name": hub_new }),
+            );
+            hub_counts.push((plan.notes, plan.links));
+            hub_took.push(answer(
+                "узел",
+                "entry_rename",
+                json!({ "path": hub, "new_name": hub_new, "links": "update", "token": plan.token }),
+                plan.notes,
+            ));
+
+            let request = json!({ "op": "move", "path": [folder.path], "new_dir": ["Перенесено"] });
+            let plan = relink_preview(&w, request);
+            folder_counts.push((plan.notes, plan.links));
+            folder_took.push(answer(
+                "папка",
+                "entry_move",
+                json!({
+                    "path": [folder.path],
+                    "new_dir": ["Перенесено"],
+                    "links": "update",
+                    "token": plan.token,
+                }),
+                plan.notes,
+            ));
+            core.unbind_window(&label);
+        }
+        assert!(
+            hub_counts.windows(2).all(|p| p[0] == p[1]),
+            "{hub_counts:?}"
+        );
+        assert!(
+            folder_counts.windows(2).all(|p| p[0] == p[1]),
+            "{folder_counts:?}"
+        );
+        if notes >= 1_000 {
+            assert_eq!(hub_counts[0].0, 100, "заметок, ссылающихся на «узел»");
+        }
+        report.measure(
+            &format!(
+                "переименование «узла» ({} заметок, {} ссылок): ответ → links:updated",
+                hub_counts[0].0, hub_counts[0].1
+            ),
+            &hub_took,
+            "мс",
+            Some(2_000.0),
+            checked,
+        );
+        report.note(format!(
+            "  папка «{}»: {} заметок; входящих ссылок по генератору {} (с именем папки {})",
+            folder.path, folder.notes, folder.incoming_links, folder.incoming_with_folder_name
+        ));
+        report.measure(
+            &format!(
+                "перенос папки на 1 000 заметок ({} заметок, {} ссылок в плане): ответ → links:updated",
+                folder_counts[0].0, folder_counts[0].1
+            ),
+            &folder_took,
+            "мс",
+            Some(folder_limit),
+            checked,
+        );
+        report.finish();
+    }
 }
