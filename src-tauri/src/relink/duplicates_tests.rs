@@ -22,6 +22,9 @@ use crate::watcher::WatcherEvent;
 const FLUSH_SAVED: u8 = 0;
 const FLUSH_REFUSED: u8 = 1;
 
+/// Запись ввода окна в тесте.
+type FlushWrite = Box<dyn Fn(&OpenVault) + Send + Sync>;
+
 /// Окно хранилища в тестах: запоминает события и отвечает на запрос записи
 /// ввода, как настоящее окно (`links_flush_done`).
 #[derive(Default)]
@@ -29,6 +32,8 @@ struct TestWindow {
     events: Mutex<Vec<(String, Value)>>,
     open: OnceLock<Weak<OpenVault>>,
     flush: AtomicU8,
+    /// Что окно записывает по запросу записи ввода (до ответа).
+    on_flush: OnceLock<FlushWrite>,
 }
 
 impl Emit for TestWindow {
@@ -37,6 +42,9 @@ impl Emit for TestWindow {
             && let Some(open) = self.open.get().and_then(Weak::upgrade)
         {
             let token = RelinkToken(payload["token"].as_str().expect("знак").to_owned());
+            if let Some(write) = self.on_flush.get() {
+                write(&open);
+            }
             let saved = self.flush.load(Ordering::SeqCst) == FLUSH_SAVED;
             assert!(open.relink.flush_done(&token, saved), "ответ принят");
         }
@@ -425,6 +433,17 @@ fn no_war_100_edit_revert_cycles() {
     f.create_outside(&["Бета/Встреча.md"]);
     clarified(&f);
     f.window.clear();
+    let core_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&core_writes);
+    f.open.vault.own_writes().observe(Box::new(move |_, _, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+    let mtime = |rel: &str| {
+        std::fs::metadata(f.abs(rel))
+            .and_then(|m| m.modified())
+            .expect("дата изменения")
+    };
+    let mut written = Vec::new();
     for cycle in 0..100 {
         let text = if cycle % 2 == 0 {
             LIST.1
@@ -434,8 +453,19 @@ fn no_war_100_edit_revert_cycles() {
         f.edit_outside("Список.md", text);
         f.edit_outside("Бета/Встреча.md", "[[Встреча]]\n");
         assert_eq!(f.read("Список.md"), text, "цикл {cycle}");
+        written = vec![mtime("Список.md"), mtime("Бета/Встреча.md")];
     }
     f.window.quiet_for(AFTER_QUIET);
+    assert_eq!(
+        core_writes.load(Ordering::SeqCst),
+        0,
+        "ни одной записи ядра"
+    );
+    assert_eq!(
+        vec![mtime("Список.md"), mtime("Бета/Встреча.md")],
+        written,
+        "файлы не перезаписаны даже теми же байтами"
+    );
     assert_eq!(f.read("Список.md"), LIST_CLARIFIED);
     assert_eq!(f.read("Бета/Встреча.md"), "[[Встреча]]\n");
 }
@@ -751,5 +781,80 @@ proptest! {
         let joined = compose(a, b);
         prop_assert_eq!(&joined.origin, &one.origin);
         prop_assert_eq!(&joined.left, &one.left);
+    }
+}
+
+/// Записанный перед уточнением ввод добавил ссылки и план стал больше 20
+/// заметок — без вопроса ничего не переписывается (решение 111).
+#[test]
+fn flushed_input_over_twenty_asks() {
+    let refs = referring(20);
+    let mut files: Vec<(&str, &str)> = refs.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    files.push(MEETING);
+    files.push(("Черновик.md", ""));
+    let f = fixture(&files, RenameLinks::Ask, true);
+    let _ = f.window.on_flush.set(Box::new(|open: &OpenVault| {
+        let path = vp("Черновик.md");
+        let abs = open.vault.root().join("Черновик.md");
+        std::fs::write(abs, "[[Встреча]]\n").expect("ввод");
+        open.apply_own(&[TreeChange::Modified { path }]);
+    }));
+    f.create_outside(&["Бета/Встреча.md"]);
+    let pending = f.window.wait(event::LINKS_PENDING);
+    assert_eq!(pending["notes"], json!(21));
+    std::thread::sleep(AFTER_QUIET);
+    assert!(!names(&f.window.links_events()).contains(&event::LINKS_UPDATED));
+    assert_eq!(f.read("Ссылки/00.md"), "[[Встреча]]\n");
+}
+
+/// «Не трогать» на вопрос, где есть ссылки, которые уточнить нельзя, —
+/// о них всё равно `conflict` (Р20).
+#[test]
+fn answer_keep_reports_unfixable() {
+    let refs = referring(21);
+    let mut files: Vec<(&str, &str)> = refs.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect();
+    files.push(MEETING);
+    files.push(("А#1/План.md", "x"));
+    files.push(("План-ссылка.md", "[[План]]"));
+    let f = fixture(&files, RenameLinks::Ask, true);
+    f.create_outside(&["Бета/Встреча.md", "Бета/План.md"]);
+    let pending = f.window.wait(event::LINKS_PENDING);
+    f.window.clear();
+    f.answer(pending["token"].as_str().expect("знак"), false)
+        .expect("ответ");
+    let updated = f.window.wait(event::LINKS_UPDATED);
+    assert_eq!(
+        updated["failed"],
+        json!([{ "path": ["План-ссылка.md"], "reason": "conflict" }])
+    );
+    assert_eq!(updated["updated"], json!(0));
+    assert_eq!(f.read("Ссылки/00.md"), "[[Встреча]]\n");
+}
+
+/// Замер (ревью безопасности 0.2-6.2): 10 000 заметок появились и 10 000
+/// ушли в одной пачке — время под замком списка заметок (список и пачка).
+/// Отладочная сборка — справочно; выпускная (perf-core) — не дольше 0,1 с.
+#[test]
+#[ignore = "замер: --release --ignored perf_ (perf-core)"]
+fn perf_duplicates_batch_10000_created_and_removed() {
+    const N: usize = 10_000;
+    let mut changes: Vec<TreeChange> = (0..N)
+        .map(|i| created(&format!("К/{i}/Встреча.md")))
+        .collect();
+    changes.extend((0..N).map(|i| TreeChange::Removed {
+        path: vp(&format!("К/{i}/Встреча.md")),
+    }));
+    let mut notes = list(&["Альфа/Встреча.md"]);
+    let mut batch = Batch::default();
+    let start = Instant::now();
+    observe_all(&mut notes, &mut batch, &changes);
+    let took = start.elapsed();
+    println!(
+        "perf_duplicates_batch_10000_created_and_removed: под замком {} мс",
+        took.as_millis()
+    );
+    assert!(prepare(&batch, notes.note_refs()).is_empty());
+    if !cfg!(debug_assertions) {
+        assert!(took <= Duration::from_millis(100), "{took:?}");
     }
 }

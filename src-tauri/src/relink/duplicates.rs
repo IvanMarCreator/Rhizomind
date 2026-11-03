@@ -41,7 +41,7 @@
 //! не ведёт однозначно на заметку), — в [`Found::unfixable`]: вызывающий
 //! сообщает о ней сбоем `conflict` (Р20), а не молчит.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
 use super::{NotePlan, PlannedLink, RelinkPlan};
@@ -98,8 +98,9 @@ enum Origin {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Batch {
     /// Ключ пути заметки сейчас → откуда она. Заметки, которых здесь нет,
-    /// лежат там же, где до пачки.
-    origin: HashMap<Key, Origin>,
+    /// лежат там же, где до пачки. Упорядочено: заметки папки — диапазон
+    /// ключей ([`Batch::under`]), без перебора всей пачки на каждое событие.
+    origin: BTreeMap<Key, Origin>,
     /// Пути (до пачки) заметок, ушедших за пачку, — для сложения пачек.
     /// Заметка, созданная снова по тому же пути, — новая заметка: наблюдатель
     /// замену файла на месте выдаёт как `Modified`, а не как удаление и
@@ -136,16 +137,19 @@ impl Batch {
                 }
             }
             TreeChange::Removed { path } => {
+                // Заметки пачки — диапазоном ключей; список спрашивается,
+                // только если в пачке по этому пути ничего нет (заметка
+                // была до пачки) — O(log n + найденные) на событие.
                 let prefix = key(path);
-                let mut keys: Vec<Key> = notes_under(path).iter().map(key).collect();
-                keys.extend(
-                    self.origin
-                        .keys()
-                        .filter(|k| k.starts_with(&prefix))
-                        .cloned(),
-                );
-                keys.sort();
-                keys.dedup();
+                let mut keys = self.under(&prefix);
+                if keys.is_empty() {
+                    keys = notes_under(path).iter().map(key).collect();
+                } else if !self.origin.contains_key(&prefix) {
+                    // Папка: в ней могут быть и заметки, лежавшие до пачки.
+                    keys.extend(notes_under(path).iter().map(key));
+                    keys.sort();
+                    keys.dedup();
+                }
                 for k in &keys {
                     self.gone(k);
                 }
@@ -184,6 +188,16 @@ impl Batch {
         }
         self.touched |= changed || born;
         changed || born
+    }
+
+    /// Ключи пачки по пути `prefix` и под ним: в упорядоченном словаре они
+    /// идут подряд — O(log n + найденные).
+    fn under(&self, prefix: &Key) -> Vec<Key> {
+        self.origin
+            .range::<Key, _>(prefix..)
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     /// Заметка появилась по пути `path`.
@@ -264,7 +278,7 @@ impl Batch {
 /// Пачка `newer` поверх пачки `older` — как одна пачка из изменений обеих
 /// по порядку (неотвеченный вопрос присоединяется к следующей пачке).
 pub fn compose(older: Batch, newer: Batch) -> Batch {
-    let mut origin: HashMap<Key, Origin> = HashMap::new();
+    let mut origin: BTreeMap<Key, Origin> = BTreeMap::new();
     let mut left: HashSet<Key> = older.left;
     let mut consumed: HashSet<Key> = HashSet::new();
     for (k, o) in &newer.origin {

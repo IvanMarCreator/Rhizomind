@@ -495,14 +495,20 @@ impl Relinker {
     }
 
     /// Неотвеченный вопрос о повторах имён на пачку `batch` с новым знаком;
-    /// прежний знак (если был) гасится.
-    fn open_duplicate_ask(&self, batch: Batch) -> CoreResult<RelinkToken> {
+    /// прежний знак (если был) гасится. `unfixable` — заметки со ссылками,
+    /// которые уточнить нельзя: о них сообщается и при «Не трогать».
+    fn open_duplicate_ask(
+        &self,
+        batch: Batch,
+        unfixable: Vec<VaultPath>,
+    ) -> CoreResult<RelinkToken> {
         let token = tokens::fresh()?;
         let issued = self.asks().now();
         let mut asks = self.duplicate_asks();
         if let Some(old) = asks.open.replace(DuplicateAsk {
             token: token.clone(),
             batch,
+            unfixable,
             issued,
         }) {
             asks.retire(old.token);
@@ -544,6 +550,7 @@ impl Relinker {
             Some(ask) => DuplicateAnswer::Open {
                 expired: now.saturating_duration_since(ask.issued) >= tokens::TTL,
                 batch: ask.batch,
+                unfixable: ask.unfixable,
             },
             None => DuplicateAnswer::Unknown,
         }
@@ -1254,6 +1261,8 @@ fn apply_external(
 struct DuplicateAsk {
     token: RelinkToken,
     batch: Batch,
+    /// Заметки со ссылками, которые уточнить нельзя (`conflict`).
+    unfixable: Vec<VaultPath>,
     issued: Instant,
 }
 
@@ -1279,7 +1288,11 @@ impl DuplicateAsks {
 /// повторах имён.
 enum DuplicateAnswer {
     /// Знак открытого вопроса (вопрос взят).
-    Open { batch: Batch, expired: bool },
+    Open {
+        batch: Batch,
+        expired: bool,
+        unfixable: Vec<VaultPath>,
+    },
     /// Погашенный знак.
     Stale,
     /// Знак вопроса о повторах, предъявленный чужим окном (погашен).
@@ -1544,9 +1557,9 @@ fn on_duplicates(open: &OpenVault, emit: &dyn Emit) {
         return;
     }
     if !asked && found.plan.note_count() <= duplicates::MAX_IMMEDIATE {
-        settle_duplicates(open, emit, &prepared, None);
+        settle_duplicates(open, emit, batch, &prepared, None);
     } else {
-        ask_duplicates(open, emit, batch, &found.plan);
+        ask_duplicates(open, emit, batch, &found);
     }
 }
 
@@ -1556,12 +1569,12 @@ fn apply_duplicates(open: &OpenVault, emit: &dyn Emit, older: Batch, token: Reli
     let Some((batch, now)) = take_batch(open, false) else {
         return;
     };
-    let (_, prepared, found) = duplicate_plan(open, Some(older), batch, now);
+    let (batch, prepared, found) = duplicate_plan(open, Some(older), batch, now);
     if found.plan.notes.is_empty() {
         report_unfixable(emit, &found.unfixable);
         return;
     }
-    settle_duplicates(open, emit, &prepared, Some(token));
+    settle_duplicates(open, emit, batch, &prepared, Some(token));
 }
 
 /// Знак вопроса просрочен или погашен: план заново и свежий вопрос.
@@ -1574,14 +1587,18 @@ fn reask_duplicates(open: &OpenVault, emit: &dyn Emit, older: Batch) {
         report_unfixable(emit, &found.unfixable);
         return;
     }
-    ask_duplicates(open, emit, batch, &found.plan);
+    ask_duplicates(open, emit, batch, &found);
 }
 
 /// Вопрос `links:pending {reason: duplicate}` на пачку `batch` с планом
-/// `plan`.
-fn ask_duplicates(open: &OpenVault, emit: &dyn Emit, batch: Batch, plan: &RelinkPlan) {
+/// `found`.
+fn ask_duplicates(open: &OpenVault, emit: &dyn Emit, batch: Batch, found: &Found) {
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-    let Ok(token) = open.relink.open_duplicate_ask(batch) else {
+    let plan = &found.plan;
+    let Ok(token) = open
+        .relink
+        .open_duplicate_ask(batch, found.unfixable.clone())
+    else {
         return;
     };
     send(
@@ -1602,10 +1619,13 @@ fn ask_duplicates(open: &OpenVault, emit: &dyn Emit, batch: Batch, plan: &Relink
 /// по свежему индексу (записанный ввод мог добавить ссылки) →
 /// переписывание → `links:updated {reason: duplicate}`. Ввод не записан
 /// (инвариант 4) — ни один файл не переписан, `busy` у каждой заметки плана
-/// и знак «Повторить».
+/// и знак «Повторить». Без ответа пользователя (`token` нет) пересчитанный
+/// план больше [`duplicates::MAX_IMMEDIATE`] заметок (ввод добавил ссылки)
+/// не выполняется — вопрос (решение 111).
 fn settle_duplicates(
     open: &OpenVault,
     emit: &dyn Emit,
+    batch: Batch,
     prepared: &Prepared,
     token: Option<RelinkToken>,
 ) {
@@ -1613,6 +1633,10 @@ fn settle_duplicates(
     let found = refind(open, prepared);
     if found.plan.notes.is_empty() {
         report_unfixable(emit, &found.unfixable);
+        return;
+    }
+    if token.is_none() && found.plan.note_count() > duplicates::MAX_IMMEDIATE {
+        ask_duplicates(open, emit, batch, &found);
         return;
     }
     if !flushed {
@@ -1776,13 +1800,19 @@ pub fn relink_answer_blocking(
     limits::token(&request.token, "token")?;
     let serial = open.relink.serial();
     match open.relink.answer_duplicate(window, &request.token) {
-        DuplicateAnswer::Open { batch, expired } => {
-            if request.apply {
-                if expired {
-                    reask_duplicates(open, emit, batch);
-                } else {
-                    apply_duplicates(open, emit, batch, request.token.clone());
-                }
+        DuplicateAnswer::Open {
+            batch,
+            expired,
+            unfixable,
+        } => {
+            if !request.apply {
+                // «Не трогать»: ничего не переписано, но неуточняемые ссылки
+                // — не тишина (Р20, `conflict`).
+                report_unfixable(emit, &unfixable);
+            } else if expired {
+                reask_duplicates(open, emit, batch);
+            } else {
+                apply_duplicates(open, emit, batch, request.token.clone());
             }
             return Ok(());
         }
