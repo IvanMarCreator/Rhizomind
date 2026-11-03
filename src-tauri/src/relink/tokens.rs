@@ -12,14 +12,19 @@
 //!
 //! Знак:
 //! - одноразовый — [`Tokens::take`] убирает его при любом предъявлении, в
-//!   том числе неудачном (чужое окно, другой план);
-//! - привязан к окну — предъявленный из другого окна не принимается;
+//!   том числе неудачном (другой план); вернуть его может только ядро —
+//!   [`Tokens::restore`], если действие по нему не началось (запись ввода не
+//!   удалась), с прежним временем выдачи;
+//! - привязан к окну — знак, предъявленный чужим окном, ищется в хранилище
+//!   знаков этого (чужого) окна и не принимается: знаки другого окна там не
+//!   лежат;
 //! - живёт не дольше
 //!   [`RELINK_TOKEN_TTL_SECS`](crate::commands::limits::RELINK_TOKEN_TTL_SECS);
 //! - хранится только в памяти и пропадает с окном; на диск не пишется.
 //!
-//! Знаков на окно — не больше [`MAX_TOKENS`]: самые старые вытесняются
-//! (окно, которое без конца спрашивает предпросмотр, не растит память).
+//! Знаков на окно — не больше [`MAX_TOKENS`] (64): при пределе вытесняются
+//! самые старые знаки (окно, которое без конца спрашивает предпросмотр, не
+//! растит память).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
@@ -117,13 +122,35 @@ impl<T> Tokens<T> {
     /// то, что за ним стоит, — только если знак выдан этому окну и не
     /// просрочен. Иначе `None` (вызывающий отвечает `invalid_argument`).
     pub fn take(&self, window: &str, token: &RelinkToken) -> Option<T> {
+        self.take_issued(window, token).map(|(value, _)| value)
+    }
+
+    /// [`Tokens::take`] с временем выдачи (для [`Tokens::restore`]).
+    pub fn take_issued(&self, window: &str, token: &RelinkToken) -> Option<(T, Instant)> {
         let now = self.now();
         let issued = self
             .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&token.0)?;
-        (issued.window == window && !expired(issued.issued, now)).then_some(issued.value)
+        (issued.window == window && !expired(issued.issued, now))
+            .then_some((issued.value, issued.issued))
+    }
+
+    /// Возвращает взятый знак с прежним окном и временем выдачи — срок жизни
+    /// не продлевается. Только для знака, по которому действие не началось.
+    pub fn restore(&self, window: &str, token: &RelinkToken, value: T, issued: Instant) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                token.0.clone(),
+                Issued {
+                    window: window.to_owned(),
+                    issued,
+                    value,
+                },
+            );
     }
 
     /// Сколько знаков хранится (тесты).
@@ -185,6 +212,17 @@ mod tests {
         let old = tokens.issue("w", 2).expect("знак");
         tokens.advance(TTL);
         assert_eq!(tokens.take("w", &old), None, "600 с — просрочен");
+    }
+
+    #[test]
+    fn restored_token_keeps_issue_time() {
+        let tokens = Tokens::default();
+        let token = tokens.issue("w", 1).expect("знак");
+        tokens.advance(TTL - Duration::from_secs(10));
+        let (value, issued) = tokens.take_issued("w", &token).expect("знак");
+        tokens.restore("w", &token, value, issued);
+        tokens.advance(Duration::from_secs(10));
+        assert_eq!(tokens.take("w", &token), None, "срок не продлён");
     }
 
     #[test]

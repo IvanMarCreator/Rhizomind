@@ -12,6 +12,10 @@ source: src/commands/contract_tests.rs
     {
       "code": "already_exists",
       "message_key": "errors.already_exists"
+    },
+    {
+      "code": "io_failed",
+      "message_key": "errors.io_failed"
     }
   ],
   "request": {

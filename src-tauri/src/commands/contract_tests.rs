@@ -472,6 +472,9 @@ fn entry_rename_update() {
             CoreError::invalid_argument("token"),
             err(ErrorCode::NotFound),
             CoreError::invalid_name(NameProblem::Duplicate),
+            // Окно не записало ввод (не ответило за 10 с или «не записано»):
+            // переименование не выполнено, знак действует (0.2-4.6).
+            err(ErrorCode::IoFailed),
         ],
     );
 }
@@ -500,6 +503,7 @@ fn entry_move_update() {
         &[
             CoreError::invalid_argument("token"),
             err(ErrorCode::AlreadyExists),
+            err(ErrorCode::IoFailed),
         ],
     );
 }

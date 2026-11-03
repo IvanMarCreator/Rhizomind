@@ -146,13 +146,14 @@ impl OpenVault {
     /// Открытое хранилище со списком заметок с диска.
     pub fn new(summary: VaultSummary, vault: Vault) -> CoreResult<Self> {
         let notes = NoteList::new(vault.notes()?);
+        let relink = Relinker::for_root(vault.root());
         Ok(Self {
             summary,
             vault,
             notes: RwLock::new(notes),
             shown: Mutex::new(None),
             index: WindowIndex::new(),
-            relink: Relinker::default(),
+            relink,
         })
     }
 
@@ -408,13 +409,15 @@ impl Core {
                 trash,
             },
         )?;
+        // Очередь планов — общая для всех окон этого хранилища.
+        let relink = Relinker::for_root(vault.root());
         let open = Arc::new(OpenVault {
             summary,
             vault,
             notes: RwLock::default(),
             shown: Mutex::default(),
             index: WindowIndex::new(),
-            relink: Relinker::default(),
+            relink,
         });
         open.relink.bind_window(window_label);
         let mut index = open.write_notes();

@@ -2190,9 +2190,24 @@ fn flush_waited_before_rewrite() {
     );
 }
 
-/// Окно не ответило за предел (или ответило «не записано») — ссылки не
-/// переписываются, а переименование выполняется; события `links:updated`
-/// нет, поздний ответ не принимается.
+/// Сбой записи ввода — ошибка `io_failed`, на диске ничего не меняется.
+fn assert_flush_failed(result: Result<Value, Value>, root: &Path) {
+    let error = core_error("entry_rename", result.expect_err("ввод не записан"));
+    assert_eq!(error.code, ErrorCode::IoFailed);
+    assert!(root.join("Встреча.md").is_file(), "не переименована");
+    assert!(!root.join("Планёрка.md").exists());
+    assert_eq!(read(root, "Список.md"), "до [[Встреча]] после\n");
+    assert_eq!(
+        read(root, "Другая.md"),
+        "[[Встреча|встречи]] и [[Встреча#Итоги]]\r\n"
+    );
+}
+
+/// Окно не ответило на запрос записи ввода за предел — переименование не
+/// выполняется (С2-5.4: запись ввода раньше переименования, решение 114),
+/// ошибка `io_failed`, ни один файл не тронут, `links:updated` нет; поздний
+/// ответ не принимается; знак плана остаётся действующим — попытка
+/// повторяется с тем же знаком.
 #[test]
 fn flush_timeout_cancels_rewrite() {
     let app = app();
@@ -2205,18 +2220,11 @@ fn flush_timeout_cancels_rewrite() {
     let seen = record_events(&w, &RELINK_EVENTS);
 
     let plan = preview_rename(&w, &["Встреча.md"], "Планёрка.md");
-    let response = moved(
-        "entry_rename",
-        rename_update(&w, &["Встреча.md"], "Планёрка.md", &plan.token).expect("переименование"),
+    assert_flush_failed(
+        rename_update(&w, &["Встреча.md"], "Планёрка.md", &plan.token),
+        &root,
     );
 
-    assert_eq!(response.path, VaultPath::from_components(["Планёрка.md"]));
-    assert_eq!(response.relink, Some(RelinkOutcome::default()));
-    assert!(
-        root.join("Планёрка.md").is_file(),
-        "переименование осталось"
-    );
-    assert_eq!(read(&root, "Список.md"), "до [[Встреча]] после\n");
     let events = seen.lock().expect("журнал").clone();
     assert!(named(&events, event::LINKS_UPDATED).is_empty());
     let flush = named(&events, event::LINKS_FLUSH_REQUESTED);
@@ -2230,16 +2238,167 @@ fn flush_timeout_cancels_rewrite() {
         ),
     );
 
-    // Ответ «не записано» — так же.
+    // Тот же знак — вторая попытка, окно отвечает: ссылки обновлены.
+    open.relink.set_flush_timeout(Duration::from_secs(10));
+    flush_ok(&w);
+    rename_update(&w, &["Встреча.md"], "Планёрка.md", &plan.token).expect("вторая попытка");
+    assert_eq!(read(&root, "Список.md"), "до [[Планёрка]] после\n");
+}
+
+/// Окно ответило «ввод не записан» — так же: ошибка, ничего не изменилось.
+#[test]
+fn flush_refused_cancels_rename() {
+    let app = app();
+    let (w, _dir, root) = meeting_vault(&app, "relink-refused");
+    let seen = record_events(&w, &RELINK_EVENTS);
     answer_flush(&w, false, |_| {});
-    let plan = preview_rename(&w, &["Планёрка.md"], "Итоги.md");
-    let response = moved(
-        "entry_rename",
-        rename_update(&w, &["Планёрка.md"], "Итоги.md", &plan.token).expect("переименование"),
+
+    let plan = preview_rename(&w, &["Встреча.md"], "Планёрка.md");
+    assert_flush_failed(
+        rename_update(&w, &["Встреча.md"], "Планёрка.md", &plan.token),
+        &root,
     );
-    assert_eq!(response.relink, Some(RelinkOutcome::default()));
-    assert!(root.join("Итоги.md").is_file());
+    std::thread::sleep(Duration::from_millis(200));
+    let events = seen.lock().expect("журнал").clone();
+    assert!(named(&events, event::LINKS_UPDATED).is_empty());
+    assert!(named(&events, event::NOTE_CHANGED).is_empty());
+}
+
+/// «Повторить», а ввод не записан — ни одна заметка не переписана, но знак
+/// не теряется молча: `links:updated` (`retry`) со сбоем `busy` у заметок
+/// повтора и новым `retry_token`, по которому повтор проходит.
+#[test]
+fn retry_flush_failure_reported_with_new_token() {
+    let app = app();
+    let (w, _dir, root) = meeting_vault(&app, "relink-retry-flush");
+    let busy = root.join("Список.md");
+    let set_readonly = |readonly: bool| {
+        let mut permissions = std::fs::metadata(&busy).expect("мета").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(readonly);
+        std::fs::set_permissions(&busy, permissions).expect("права");
+    };
+    set_readonly(true);
+    let seen = record_events(&w, &[event::LINKS_UPDATED]);
+    let saved = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let answer = Arc::clone(&saved);
+    let window = w.clone();
+    w.listen(event::LINKS_FLUSH_REQUESTED, move |event| {
+        let payload: Value = serde_json::from_str(event.payload()).expect("данные");
+        let window = window.clone();
+        let saved = answer.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::spawn(move || {
+            call(
+                &window,
+                "links_flush_done",
+                json!({ "token": payload["token"], "saved": saved }),
+            )
+            .expect("links_flush_done");
+        });
+    });
+    let plan = preview_rename(&w, &["Встреча.md"], "Планёрка.md");
+    let relink = moved(
+        "entry_rename",
+        rename_update(&w, &["Встреча.md"], "Планёрка.md", &plan.token).expect("переименование"),
+    )
+    .relink
+    .expect("relink");
+    set_readonly(false);
+    let retry = relink.retry_token.expect("знак повтора");
+
+    saved.store(false, std::sync::atomic::Ordering::SeqCst);
+    call(
+        &w,
+        "relink_answer",
+        json!({ "token": retry, "apply": true }),
+    )
+    .expect("повтор");
+
     assert_eq!(read(&root, "Список.md"), "до [[Встреча]] после\n");
+    assert!(wait_for(&seen, |events| events.len() == 2));
+    let events = seen.lock().expect("журнал").clone();
+    let failed: LinksUpdatedPayload = typed(event::LINKS_UPDATED, events[1].1.clone());
+    assert_eq!(failed.reason, LinksUpdateReason::Retry);
+    assert_eq!(failed.updated, 0);
+    assert_eq!(
+        failed.failed,
+        [RelinkFailure {
+            path: VaultPath::from_components(["Список.md"]),
+            reason: RelinkFailureReason::Busy,
+        }]
+    );
+    let again = failed.retry_token.expect("новый знак повтора");
+    assert_ne!(again, retry);
+    assert_eq!(failed.renames, relink_renames());
+
+    saved.store(true, std::sync::atomic::Ordering::SeqCst);
+    call(
+        &w,
+        "relink_answer",
+        json!({ "token": again, "apply": true }),
+    )
+    .expect("повтор");
+    assert_eq!(read(&root, "Список.md"), "до [[Планёрка]] после\n");
+}
+
+fn relink_renames() -> Vec<PathRename> {
+    vec![PathRename {
+        from: VaultPath::from_components(["Встреча.md"]),
+        to: VaultPath::from_components(["Планёрка.md"]),
+    }]
+}
+
+/// Очередь планов — общая для хранилища (по пути корня), а не для окна:
+/// окно закрыли и сразу открыли снова — доделка в новом окне ждёт
+/// выполнение в старом. Переименование с `links: keep` тоже стоит в очереди.
+#[test]
+fn relink_queue_shared_per_vault() {
+    let app = app();
+    let dir = tempfile::tempdir().expect("папка");
+    put(dir.path(), "Встреча.md", b"");
+    let other = tempfile::tempdir().expect("папка");
+    let open = |root: &Path, label: &str| {
+        OpenVault::new(summary(label, root), Vault::open(root).expect("хранилище"))
+            .expect("заметки")
+    };
+    let old = open(dir.path(), "queue-old");
+    let new = open(dir.path(), "queue-new");
+    let foreign = open(other.path(), "queue-foreign");
+
+    let guard = old.relink.lock_queue();
+    assert!(new.relink.queue_busy(), "то же хранилище — та же очередь");
+    assert!(
+        !foreign.relink.queue_busy(),
+        "другое хранилище — своя очередь"
+    );
+    drop(guard);
+    assert!(!new.relink.queue_busy());
+
+    // `links: keep` ждёт очереди.
+    let w = window(&app, "queue-keep");
+    app.state::<Core>()
+        .bind_window("queue-keep", open(dir.path(), "queue-keep"));
+    let bound = app
+        .state::<Core>()
+        .window_vault("queue-keep")
+        .expect("хранилище");
+    let guard = old.relink.lock_queue();
+    let renamer = {
+        let w = w.clone();
+        std::thread::spawn(move || {
+            call(
+                &w,
+                "entry_rename",
+                json!({ "path": ["Встреча.md"], "new_name": "Планёрка.md" }),
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(dir.path().join("Встреча.md").is_file(), "ждёт очереди");
+    drop(guard);
+    renamer.join().expect("поток").expect("переименование");
+    assert!(dir.path().join("Планёрка.md").is_file());
+    drop(bound);
 }
 
 /// Знак одноразовый: второе предъявление — `invalid_argument` до любого

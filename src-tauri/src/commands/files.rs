@@ -292,16 +292,18 @@ pub async fn entry_rename<R: Runtime>(
             from: request.path.clone(),
             to: renamed_path(&request.path, &request.new_name),
         };
-        open.relink.take_preview(window.label(), &token, &rename)?;
+        let ticket = open.relink.take_preview(window.label(), &token, &rename)?;
         let emit = WindowEmitter::new(window.app_handle().clone(), window.label());
         return blocking(move || {
-            rename_with_links(&open, &emit, &rename, token, || {
+            rename_with_links(&open, &emit, &rename, ticket, || {
                 open.vault.rename(&request.path, &request.new_name)
             })
         })
         .await;
     }
     blocking(move || {
+        // В общей очереди хранилища: не посреди переписывания ссылок.
+        let _serial = open.relink.serial();
         let path = open.vault.rename(&request.path, &request.new_name)?;
         open.apply_own(&[TreeChange::Renamed {
             from: request.path,
@@ -329,16 +331,17 @@ pub async fn entry_move<R: Runtime>(
             from: request.path.clone(),
             to: moved_path(&request.path, &request.new_dir),
         };
-        open.relink.take_preview(window.label(), &token, &rename)?;
+        let ticket = open.relink.take_preview(window.label(), &token, &rename)?;
         let emit = WindowEmitter::new(window.app_handle().clone(), window.label());
         return blocking(move || {
-            rename_with_links(&open, &emit, &rename, token, || {
+            rename_with_links(&open, &emit, &rename, ticket, || {
                 open.vault.move_entry(&request.path, &request.new_dir)
             })
         })
         .await;
     }
     blocking(move || {
+        let _serial = open.relink.serial();
         let path = open.vault.move_entry(&request.path, &request.new_dir)?;
         open.apply_own(&[TreeChange::Renamed {
             from: request.path,

@@ -13,12 +13,12 @@
 //!
 //! Порядок (С2-5.4 «Порядок для переименования в приложении», задача
 //! 0.2-4.6): знак предпросмотра проверяется до любого действия; планы одного
-//! хранилища выполняются строго по очереди (журнал `link-update.json` один,
-//! [`Relinker::serial`]); ввод открытых заметок записывается **до** расчёта
-//! плана и переименования (инвариант 4) — без ответа окна за
-//! [`FLUSH_TIMEOUT`] или с ответом «не записано» переписывание отменяется,
-//! а само переименование выполняется; не удалось переименовать — ни один
-//! файл не переписан. План считается заново по индексу и списку заметок
+//! хранилища выполняются строго по очереди, общей для всех окон одного
+//! хранилища (журнал `link-update.json` один, [`Relinker::serial`]); ввод
+//! открытых заметок записывается **до** расчёта плана и переименования
+//! (инвариант 4) — без ответа окна за [`FLUSH_TIMEOUT`] или с ответом «не
+//! записано» переименование не выполняется (`io_failed`, знак остаётся
+//! действующим); не удалось переименовать — ни один файл не переписан. План считается заново по индексу и списку заметок
 //! после записи ввода: состав заметок или ссылки могли измениться после
 //! предпросмотра (тот же план, если ничего не менялось).
 //!
@@ -32,16 +32,18 @@
 //! переименований с обновлением ссылок (признак `reconciled`).
 
 use std::collections::HashMap;
-use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, Runtime, State, Window};
 
-use super::error::{CoreError, CoreResult};
+use super::error::{CoreError, CoreResult, ErrorCode};
 use super::events::{
     LinksFlushRequestedPayload, LinksProgressPayload, LinksUpdateReason, LinksUpdatedPayload,
-    NoteChangedPayload, PathRename, RelinkOutcome, TreeChange, event,
+    NoteChangedPayload, PathRename, RelinkFailure, RelinkFailureReason, RelinkOutcome, TreeChange,
+    event,
 };
 use super::files::EntryMovedResponse;
 use super::index_cmds::{IndexProgress, IndexReply, Throttle};
@@ -163,6 +165,39 @@ pub enum Grant {
     },
 }
 
+/// Очереди планов по хранилищам: путь корня → общий замок. Окно закрыли и
+/// сразу открыли снова — новое окно получает тот же замок, пока старое
+/// выполнение его держит (запись живёт, пока жив хоть один `Arc`).
+static QUEUES: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+
+/// Общая очередь планов хранилища с корнем `root` (путь уже канонический —
+/// `Vault::root`).
+fn queue_for(root: &Path) -> Arc<Mutex<()>> {
+    let mut queues = QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    queues.retain(|_, queue| queue.strong_count() > 0);
+    if let Some(queue) = queues.get(root).and_then(Weak::upgrade) {
+        return queue;
+    }
+    let queue = Arc::new(Mutex::new(()));
+    queues.insert(root.to_path_buf(), Arc::downgrade(&queue));
+    queue
+}
+
+/// Знак предпросмотра, взятый для выполнения: его можно вернуть, если
+/// выполнение не началось ([`Relinker::restore_preview`]).
+#[derive(Debug)]
+pub struct PreviewTicket {
+    token: RelinkToken,
+    issued: Instant,
+}
+
+impl PreviewTicket {
+    /// Знак (для `links:progress`).
+    pub fn token(&self) -> &RelinkToken {
+        &self.token
+    }
+}
+
 /// Обновление ссылок в работе окна хранилища: знаки планов, ожидание
 /// записи ввода, очередь планов.
 #[derive(Debug)]
@@ -174,8 +209,9 @@ pub struct Relinker {
     /// Ожидания записи ввода: знак → ответ окна (`None` — ещё нет).
     flushes: Mutex<HashMap<String, Option<bool>>>,
     flushed: Condvar,
-    /// Планы — строго по очереди.
-    serial: Mutex<()>,
+    /// Планы и переименования — строго по очереди, общей для всех окон
+    /// одного хранилища ([`queue_for`]).
+    serial: Arc<Mutex<()>>,
     /// Предел ожидания записи ввода ([`FLUSH_TIMEOUT`]; в тестах короче).
     flush_timeout: Mutex<Duration>,
 }
@@ -187,13 +223,22 @@ impl Default for Relinker {
             grants: Tokens::default(),
             flushes: Mutex::default(),
             flushed: Condvar::new(),
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             flush_timeout: Mutex::new(FLUSH_TIMEOUT),
         }
     }
 }
 
 impl Relinker {
+    /// Обновление ссылок хранилища с корнем `root`: очередь планов — общая
+    /// для всех окон этого хранилища.
+    pub fn for_root(root: &Path) -> Self {
+        Self {
+            serial: queue_for(root),
+            ..Self::default()
+        }
+    }
+
     /// Привязка к окну хранилища (один раз, при открытии).
     pub fn bind_window(&self, label: &str) {
         let _ = self.window.set(label.to_owned());
@@ -205,8 +250,9 @@ impl Relinker {
         self.window.get().map_or("", String::as_str)
     }
 
-    /// Очередь планов: держится от записи ввода до `links:updated`.
-    fn serial(&self) -> MutexGuard<'_, ()> {
+    /// Очередь планов хранилища: держится от записи ввода до
+    /// `links:updated`; переименования без обновления ссылок тоже ждут её.
+    pub fn serial(&self) -> MutexGuard<'_, ()> {
         self.serial.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -242,11 +288,32 @@ impl Relinker {
         window: &str,
         token: &RelinkToken,
         rename: &PathRename,
-    ) -> CoreResult<()> {
-        match self.take(window, token, "token")? {
-            Grant::Preview(previewed) if previewed == *rename => Ok(()),
-            _ => Err(CoreError::invalid_argument("token")),
+    ) -> CoreResult<PreviewTicket> {
+        let refused = || CoreError::invalid_argument("token");
+        limits::token(token, "token")?;
+        if window != self.window() {
+            let _ = self.grants.take(window, token);
+            return Err(refused());
         }
+        match self.grants.take_issued(window, token).ok_or_else(refused)? {
+            (Grant::Preview(previewed), issued) if previewed == *rename => Ok(PreviewTicket {
+                token: token.clone(),
+                issued,
+            }),
+            _ => Err(refused()),
+        }
+    }
+
+    /// Возвращает знак предпросмотра, по которому ничего не сделано (ввод не
+    /// записан): тот же знак, то же переименование, прежний срок — окно
+    /// может попробовать снова.
+    fn restore_preview(&self, ticket: PreviewTicket, rename: &PathRename) {
+        self.grants.restore(
+            self.window(),
+            &ticket.token,
+            Grant::Preview(rename.clone()),
+            ticket.issued,
+        );
     }
 
     /// Окно записывает несохранённый ввод всех своих заметок:
@@ -304,6 +371,18 @@ impl Relinker {
             }
             _ => false,
         }
+    }
+
+    /// Занять очередь планов (тесты).
+    #[cfg(test)]
+    pub fn lock_queue(&self) -> MutexGuard<'_, ()> {
+        self.serial()
+    }
+
+    /// Очередь занята (тесты).
+    #[cfg(test)]
+    pub fn queue_busy(&self) -> bool {
+        self.serial.try_lock().is_err()
     }
 
     /// Предел ожидания записи ввода (тесты).
@@ -483,50 +562,88 @@ fn execute(
     publish(open, emit, &report, renames, reason)
 }
 
+/// Ошибка «ввод окна не записан» (`io_failed`): переименование не
+/// выполнено, на диске ничего не изменилось.
+fn flush_failed() -> CoreError {
+    CoreError::new(ErrorCode::IoFailed)
+}
+
 /// Переименование или перемещение с обновлением ссылок (`entry_rename`,
-/// `entry_move` с `links: update`; знак уже проверен): очередь планов →
-/// запись ввода → план → `act` (переименование на диске) → переписывание.
-/// `act` не удался — его ошибка, ни один файл не переписан. Ввод не
-/// записан — переименование выполняется, ссылки не переписываются
-/// (`relink` без обновлённых заметок, события `links:updated` нет: окно
-/// само сообщило, что ввод не записан). Блокирует поток.
+/// `entry_move` с `links: update`; знак уже взят — `ticket`): очередь планов
+/// → запись ввода → план → `act` (переименование на диске) → переписывание.
+///
+/// Ввод не записан (окно ответило «не записано» или не ответило за
+/// предел) — переименование **не выполняется** (С2-5.4: запись ввода
+/// раньше переименования; решение 114: ссылки ни на миг не ведут не туда),
+/// ответ — `io_failed`, на диске ничего не изменилось, знак предпросмотра
+/// возвращается действующим с прежним сроком. `act` не удался — его
+/// ошибка, ни один файл не переписан. Блокирует поток.
 pub fn rename_with_links(
     open: &OpenVault,
     emit: &dyn Emit,
     rename: &PathRename,
-    token: RelinkToken,
+    ticket: PreviewTicket,
     act: impl FnOnce() -> CoreResult<VaultPath>,
 ) -> CoreResult<EntryMovedResponse> {
     let _serial = open.relink.serial();
-    let saved = open.relink.flush(emit);
+    if !open.relink.flush(emit) {
+        open.relink.restore_preview(ticket, rename);
+        return Err(flush_failed());
+    }
     // План — после записи ввода: записанный ввод мог добавить ссылки.
-    let plan = saved.then(|| plan_for(open, rename));
+    let plan = plan_for(open, rename);
     let path = act()?;
     open.apply_own(&[TreeChange::Renamed {
         from: rename.from.clone(),
         to: path.clone(),
     }]);
-    let relink = match plan {
-        Some(plan) => {
-            let renames = [PathRename {
-                from: rename.from.clone(),
-                to: path.clone(),
-            }];
-            execute(
-                open,
-                emit,
-                &plan,
-                &renames,
-                LinksUpdateReason::Rename,
-                Some(token),
-            )
-        }
-        None => RelinkOutcome::default(),
-    };
+    let renames = [PathRename {
+        from: rename.from.clone(),
+        to: path.clone(),
+    }];
+    let relink = execute(
+        open,
+        emit,
+        &plan,
+        &renames,
+        LinksUpdateReason::Rename,
+        Some(ticket.token().clone()),
+    );
     Ok(EntryMovedResponse {
         path,
         relink: Some(relink),
     })
+}
+
+/// «Повторить», а ввод окна не записан: ни одна заметка не переписана, но
+/// знак не теряется молча — `links:updated` (`retry`) с заметками повтора
+/// как `busy` (их можно повторить) и новым знаком повтора на тот же план.
+fn retry_not_started(open: &OpenVault, emit: &dyn Emit, plan: RelinkPlan, renames: &[PathRename]) {
+    let failed: Vec<RelinkFailure> = plan
+        .notes
+        .iter()
+        .map(|note| RelinkFailure {
+            path: note.path.clone(),
+            reason: RelinkFailureReason::Busy,
+        })
+        .collect();
+    let retry_token = open
+        .relink
+        .issue(Grant::Retry {
+            plan,
+            renames: renames.to_vec(),
+        })
+        .ok();
+    let outcome = RelinkOutcome {
+        updated: 0,
+        failed,
+        retry_token,
+    };
+    send(
+        emit,
+        event::LINKS_UPDATED,
+        &LinksUpdatedPayload::new(LinksUpdateReason::Retry, outcome, renames),
+    );
 }
 
 /// Доделка обновления ссылок, прерванного при прошлом запуске (0.2-4.5,
@@ -622,6 +739,8 @@ pub async fn relink_answer<R: Runtime>(
                 LinksUpdateReason::Retry,
                 Some(request.token),
             );
+        } else {
+            retry_not_started(&open, &emit, plan, &renames);
         }
         Ok(())
     })

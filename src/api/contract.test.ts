@@ -394,14 +394,14 @@ const commandVariants: Array<CommandExample<CommandName> & { variant: string }> 
         retry_token: token('b'),
       },
     },
-    errors: [invalidArgument('token'), err('not_found'), invalidName('duplicate')],
+    errors: [invalidArgument('token'), err('not_found'), invalidName('duplicate'), err('io_failed')],
   } satisfies CommandExample<'entry_rename'> & { variant: string },
   {
     command: 'entry_move',
     variant: 'update',
     request: { path: ['Альфа', 'Встреча.md'], new_dir: ['Бета'], links: 'update', token: token('c') },
     response: { path: ['Бета', 'Встреча.md'], relink: { updated: 2, failed: [], retry_token: null } },
-    errors: [invalidArgument('token'), err('already_exists')],
+    errors: [invalidArgument('token'), err('already_exists'), err('io_failed')],
   } satisfies CommandExample<'entry_move'> & { variant: string },
   {
     command: 'relink_preview',
