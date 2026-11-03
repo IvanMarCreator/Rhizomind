@@ -76,6 +76,11 @@ fn vault_window(app: &App<MockRuntime>, parent: &Path, name: &str) -> WebviewWin
     )
     .expect("окно");
     call(&window, "vault_open", json!({ "request": { "id": id.0 } })).expect("vault_open");
+    // Индекс готов и его события отправлены: слушатели окна, которые тест
+    // регистрирует после, не теряются (`WindowIndex::wait_settled`).
+    if let Some(open) = app.state::<Core>().window_vault(window.label()) {
+        open.index.wait_settled();
+    }
     window
 }
 

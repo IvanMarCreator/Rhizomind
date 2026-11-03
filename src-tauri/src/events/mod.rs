@@ -14,7 +14,11 @@
 //!   решение 90),
 //!   пропажа и возвращение папки → `vault:availability`;
 //! - `note:conflict-saved` отправляет команда `note_write` (конфликт
-//!   изменений решён при записи, а не по событию наблюдателя).
+//!   изменений решён при записи, а не по событию наблюдателя);
+//! - после пачки — обновление индекса (задача 0.2-1.4,
+//!   `commands::WindowIndex::update`): изменённые заметки читаются вне
+//!   замков, `index:changed` — из потока событий индекса, не чаще 4 раз в
+//!   секунду; при полной сверке (`rescan`) индекс сверяется с диском.
 //!
 //! Сбой отправки окну не роняет поток наблюдателя; если упадёт сам
 //! получатель, наблюдатель сообщит `DeliveryFailed` и через пару секунд
@@ -29,7 +33,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, EventTarget, Manager, Runtime};
 
 use crate::commands::{
-    NoteChangedPayload, NoteDeletedPayload, NoteRenamedPayload, OpenVault, TreeChange,
+    IndexUpdate, NoteChangedPayload, NoteDeletedPayload, NoteRenamedPayload, OpenVault, TreeChange,
     VaultAvailabilityPayload, VaultChangedPayload, VaultPath, event,
 };
 use crate::watcher::{ChangeSink, WatcherEvent};
@@ -148,12 +152,15 @@ impl VaultEvents {
         // заметки лежали по удалённому или переименованному пути.
         let mut notes: Vec<(&'static str, serde_json::Value)> = Vec::new();
         let mut modified: Vec<VaultPath> = Vec::new();
+        let mut update = IndexUpdate::default();
+        if payload.rescan {
+            update.rescan();
+        }
         {
             let mut index = self.open.write_notes();
-            index.apply_observed(
-                &payload.changes,
-                &created_ms,
-                &mut |index, change| match change {
+            index.apply_observed(&payload.changes, &created_ms, &mut |index, change| {
+                update.before(index, change);
+                match change {
                     TreeChange::Modified { path } if index.contains(path) => {
                         modified.push(path.clone());
                     }
@@ -196,8 +203,8 @@ impl VaultEvents {
                         }
                     }
                     _ => {}
-                },
-            );
+                }
+            });
             if let Some(all) = all_notes {
                 index.replace(all);
             }
@@ -222,6 +229,9 @@ impl VaultEvents {
         for (name, payload) in notes {
             self.emit.emit(name, payload);
         }
+        // Индекс — после событий дерева: изменённые заметки читаются вне
+        // замков; `index:changed` отправляет поток событий индекса.
+        self.open.index.update(vault, update);
     }
 }
 

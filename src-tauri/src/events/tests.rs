@@ -501,3 +501,190 @@ fn shown_note_name_is_spelled_as_in_the_vault() {
         vec![format!("Итоги — t — {}", app_title())]
     );
 }
+
+// ---- Индекс по пачкам наблюдателя (задача 0.2-1.4) -----------------------------
+
+/// Отправитель, который запоминает события индекса со временем отправки.
+#[derive(Default)]
+struct Timed(Mutex<Vec<(String, std::time::Instant)>>);
+
+impl Emit for Timed {
+    fn emit(&self, event: &str, _payload: Value) {
+        self.0
+            .lock()
+            .expect("журнал")
+            .push((event.to_owned(), std::time::Instant::now()));
+    }
+}
+
+impl Timed {
+    fn times(&self, name: &str) -> Vec<std::time::Instant> {
+        self.0
+            .lock()
+            .expect("журнал")
+            .iter()
+            .filter(|(event, _)| event == name)
+            .map(|(_, at)| *at)
+            .collect()
+    }
+}
+
+const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn wait_until(what: &str, check: impl Fn() -> bool) {
+    let start = std::time::Instant::now();
+    while !check() {
+        assert!(start.elapsed() < WAIT, "не дождались: {what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// [`fixture`] с запущенным индексом; события индекса — в [`Timed`].
+fn indexed(files: &[(&str, &str)]) -> (Fixture, Arc<Timed>) {
+    let f = fixture(&[]);
+    for (rel, text) in files {
+        write(&f, rel, text);
+    }
+    *f.open.write_notes() = crate::commands::NoteList::new(f.open.vault.notes().expect("заметки"));
+    let timed = Arc::new(Timed::default());
+    crate::commands::start_index(&f.open, timed.clone());
+    wait_until("индекс готов", || {
+        f.open.index.status().state == crate::commands::IndexState::Ready
+    });
+    (f, timed)
+}
+
+fn write(f: &Fixture, rel: &str, text: &str) {
+    let path = rel
+        .split('/')
+        .fold(f.dir.path().to_path_buf(), |p, c| p.join(c));
+    std::fs::create_dir_all(path.parent().expect("родитель")).expect("папки");
+    std::fs::write(&path, text).expect("файл");
+}
+
+fn backlinks_of(f: &Fixture, rel: &str) -> Vec<String> {
+    let list = f.open.read_notes();
+    f.open
+        .index
+        .backlinks_of(&list, &vp(rel))
+        .iter()
+        .map(|p| p.components().join("/"))
+        .collect()
+}
+
+/// Заметку сохранили снаружи: после пачки наблюдателя индекс обновлён,
+/// окну — `index:changed`.
+#[test]
+fn index_updated_after_external_save() {
+    let (f, timed) = indexed(&[("Узел.md", ""), ("А.md", "без ссылок")]);
+    assert!(backlinks_of(&f, "Узел.md").is_empty());
+    let before = timed.times(crate::commands::event::INDEX_CHANGED).len();
+
+    write(&f, "А.md", "теперь [[Узел]]");
+    f.events
+        .handle(changed(vec![TreeChange::Modified { path: vp("А.md") }]));
+    assert_eq!(backlinks_of(&f, "Узел.md"), ["А.md"]);
+    wait_until("index:changed", || {
+        timed.times(crate::commands::event::INDEX_CHANGED).len() > before
+    });
+
+    // Новая заметка снаружи и удаление — тоже.
+    write(&f, "Папка/Б.md", "![[Узел]]");
+    f.events.handle(changed(vec![TreeChange::Created {
+        path: vp("Папка/Б.md"),
+        entry_kind: EntryKind::Note,
+    }]));
+    assert_eq!(backlinks_of(&f, "Узел.md"), ["А.md", "Папка/Б.md"]);
+    std::fs::rename(f.dir.path().join("Папка"), f.dir.path().join("Новая")).expect("перенос");
+    f.events.handle(changed(vec![TreeChange::Renamed {
+        from: vp("Папка"),
+        to: vp("Новая"),
+    }]));
+    assert_eq!(backlinks_of(&f, "Узел.md"), ["А.md", "Новая/Б.md"]);
+    std::fs::remove_file(f.dir.path().join("А.md")).expect("удаление");
+    f.events
+        .handle(changed(vec![TreeChange::Removed { path: vp("А.md") }]));
+    assert_eq!(backlinks_of(&f, "Узел.md"), ["Новая/Б.md"]);
+}
+
+/// Правка без ссылок и тегов `index:changed` не даёт; частые правки — не
+/// чаще 4 событий в секунду, последняя всё равно доходит.
+#[test]
+fn index_changed_throttled_4_per_second() {
+    let (f, timed) = indexed(&[("Узел.md", ""), ("А.md", "")]);
+    let name = crate::commands::event::INDEX_CHANGED;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let before = timed.times(name).len();
+
+    write(&f, "Узел.md", "просто текст без ссылок");
+    f.events.handle(changed(vec![TreeChange::Modified {
+        path: vp("Узел.md"),
+    }]));
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(timed.times(name).len(), before, "правка без ссылок и тегов");
+
+    let start = std::time::Instant::now();
+    let mut last_change = start;
+    for i in 0..30 {
+        // Положение ссылки меняется каждый раз — каждая правка видна виду.
+        write(&f, "А.md", &format!("{} [[Узел]]", "x".repeat(i)));
+        f.events
+            .handle(changed(vec![TreeChange::Modified { path: vp("А.md") }]));
+        last_change = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    wait_until(
+        "событие после последней правки",
+        || {
+            timed
+                .times(name)
+                .last()
+                .is_some_and(|at| *at >= last_change)
+        },
+    );
+    let times: Vec<_> = timed.times(name).into_iter().skip(before).collect();
+    let interval = std::time::Duration::from_millis(1000 / 4);
+    for pair in times.windows(2) {
+        let gap = pair[1].duration_since(pair[0]);
+        // Время пишется после отправки, а не в момент решения: запас на
+        // задержку потока (медленные машины CI). Пять событий в секунду и
+        // чаще всё равно не проходят.
+        assert!(
+            gap + std::time::Duration::from_millis(50) >= interval,
+            "{gap:?}"
+        );
+    }
+    let seconds = last_change.duration_since(start).as_secs_f64();
+    assert!(
+        times.len() as f64 <= seconds * 4.0 + 2.0,
+        "{} событий за {seconds:.1} с",
+        times.len()
+    );
+}
+
+/// Своя запись обновляет индекс сразу; то же изменение от наблюдателя
+/// (повтор) не даёт второго `index:changed`.
+#[test]
+fn own_write_updates_index_without_duplicate() {
+    let (f, timed) = indexed(&[("Узел.md", ""), ("А.md", "")]);
+    let name = crate::commands::event::INDEX_CHANGED;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let before = timed.times(name).len();
+
+    let version = f.open.vault.file_version(&vp("А.md")).expect("версия");
+    f.open
+        .vault
+        .write_note(&vp("А.md"), "своя [[Узел]]", &version)
+        .expect("запись");
+    // Так делает `note_write` после записи.
+    f.open
+        .apply_own(&[TreeChange::Modified { path: vp("А.md") }]);
+    assert_eq!(backlinks_of(&f, "Узел.md"), ["А.md"]);
+
+    // Повтор от наблюдателя.
+    f.events
+        .handle(changed(vec![TreeChange::Modified { path: vp("А.md") }]));
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    assert_eq!(timed.times(name).len(), before + 1);
+    assert_eq!(backlinks_of(&f, "Узел.md"), ["А.md"]);
+}

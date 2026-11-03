@@ -11,7 +11,7 @@
 //! - окно подтверждения безвозвратного удаления и общий замок диалогов ядра.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -159,18 +159,23 @@ fn open_vault(
     trash: crate::vault::TrashBackend,
 ) -> Arc<OpenVault> {
     let core = app.state::<Core>();
-    core.open_vault_with(
-        label,
-        VaultSummary {
-            id: VaultId(id.into()),
-            name: id.into(),
-            path: root.display().to_string(),
-        },
-        root,
-        Arc::new(WindowEmitter::new(app.handle().clone(), label)),
-        Some(trash),
-    )
-    .expect("хранилище открыто")
+    let open = core
+        .open_vault_with(
+            label,
+            VaultSummary {
+                id: VaultId(id.into()),
+                name: id.into(),
+                path: root.display().to_string(),
+            },
+            root,
+            Arc::new(WindowEmitter::new(app.handle().clone(), label)),
+            Some(trash),
+        )
+        .expect("хранилище открыто");
+    // Индекс готов и его события отправлены: слушатели `record_events`,
+    // зарегистрированные после, не теряются (`WindowIndex::wait_settled`).
+    open.index.wait_settled();
+    open
 }
 
 /// События окна, полученные слушателем на стороне Rust.
@@ -1270,4 +1275,608 @@ fn settings_new_note_folder_must_be_a_vault_path() {
     }
     settings["new_note_location"] = json!({ "kind": "folder", "path": ["Входящие"] });
     call(&w, "settings_write", json!({ "settings": settings })).expect("обычная папка");
+}
+
+// ---- 0.2-1.4: индекс в работе окна ------------------------------------------
+
+/// Ждёт готовности индекса окна (`index_status`).
+fn wait_index_ready(w: &WebviewWindow<MockRuntime>) {
+    wait_index_ready_within(w, WAIT);
+}
+
+/// [`wait_index_ready`] с пределом `limit` (большое хранилище).
+fn wait_index_ready_within(w: &WebviewWindow<MockRuntime>, limit: Duration) {
+    let start = std::time::Instant::now();
+    loop {
+        let status: IndexStatus = typed(
+            "index_status",
+            invoke(w, "index_status", json!({})).expect("index_status"),
+        );
+        if status.state == IndexState::Ready {
+            return;
+        }
+        assert!(start.elapsed() < limit, "индекс не готов: {status:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Хранилище с индексом на настоящем ядре: открыто той же функцией, что
+/// `vault_open`; ждём готовности индекса.
+fn indexed_vault(
+    app: &App<MockRuntime>,
+    label: &str,
+    files: &[(&str, &str)],
+) -> (WebviewWindow<MockRuntime>, tempfile::TempDir, PathBuf) {
+    let w = window(app, label);
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    std::fs::create_dir_all(&root).expect("папка");
+    for (rel, text) in files {
+        put(&root, rel, text.as_bytes());
+    }
+    open_vault(
+        app,
+        label,
+        label,
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    wait_index_ready(&w);
+    (w, dir, root)
+}
+
+fn backlinks(w: &WebviewWindow<MockRuntime>, path: &[&str]) -> Backlinks {
+    let reply: IndexReply<Backlinks> = typed(
+        "backlinks_list",
+        call(w, "backlinks_list", json!({ "path": path })).expect("backlinks_list"),
+    );
+    match reply {
+        IndexReply::Ready(backlinks) => backlinks,
+        IndexReply::IndexBuilding(progress) => panic!("индекс строится: {progress:?}"),
+    }
+}
+
+/// Отрезок строки в единицах UTF-16 — как `String.prototype.slice` в окне.
+fn utf16_slice(text: &str, from: u32, to: u32) -> String {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    String::from_utf16(&units[from as usize..to as usize]).expect("UTF-16")
+}
+
+#[test]
+fn backlinks_list_real_core() {
+    let app = app();
+    let (w, _dir, _root) = indexed_vault(
+        &app,
+        "backlinks",
+        &[
+            ("Узел.md", "# Узел\nСсылка на себя [[Узел]]\n"),
+            (
+                "Вторая.md",
+                "Начало\nТекст [[Узел]] и [[Узел#Итоги|итоги]]\n",
+            ),
+            ("Папка/Альфа.md", "![[узел]]\n"),
+            ("Папка/Заметка 10.md", "[[Узел]]"),
+            ("Заметка 2.md", "[[Узел]]"),
+            ("Код.md", "`[[Узел]]`\n```\n[[Узел]]\n```\n"),
+            ("Другое.md", "[[Другое]] [[Нет такой]]"),
+        ],
+    );
+
+    let got = backlinks(&w, &["Узел.md"]);
+    assert_eq!(got.notes_total, 4);
+    assert!(!got.truncated);
+    // Естественный порядок имён, как в дереве файлов: «2» раньше «10».
+    let names: Vec<&str> = got.notes.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(names, ["Альфа", "Вторая", "Заметка 2", "Заметка 10"]);
+    let second = &got.notes[1];
+    assert_eq!(second.from, VaultPath::from_components(["Вторая.md"]));
+    assert_eq!(second.links_total, 2);
+    let lines: Vec<(u32, u32, &str, String)> = second
+        .links
+        .iter()
+        .map(|l| {
+            (
+                l.line,
+                l.column_utf16,
+                l.snippet.as_str(),
+                utf16_slice(&l.snippet, l.from_utf16, l.to_utf16),
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            (
+                2,
+                6,
+                "Текст [[Узел]] и [[Узел#Итоги|итоги]]",
+                "[[Узел]]".to_owned()
+            ),
+            (
+                2,
+                17,
+                "Текст [[Узел]] и [[Узел#Итоги|итоги]]",
+                "[[Узел#Итоги|итоги]]".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        utf16_slice(
+            &got.notes[0].links[0].snippet,
+            got.notes[0].links[0].from_utf16,
+            got.notes[0].links[0].to_utf16
+        ),
+        "![[узел]]"
+    );
+
+    // Заметки нет — «Нет обратных ссылок», не ошибка.
+    assert_eq!(backlinks(&w, &["Нет.md"]).notes_total, 0);
+    // Путь в другом регистре — та же заметка.
+    assert_eq!(backlinks(&w, &["узел.md"]).notes_total, 4);
+}
+
+#[test]
+fn backlinks_snippet_cut_to_200() {
+    let app = app();
+    let long_before = "а".repeat(500);
+    let long_after = "б".repeat(500);
+    let middle = format!("{long_before} [[Узел]] {long_after}\n");
+    let start = format!("[[Узел]] {long_after}\n");
+    let end = format!("{long_before} [[Узел]]\n");
+    let huge_link = format!("[[Узел|{}]]\n", "в".repeat(300));
+    let (w, _dir, _root) = indexed_vault(
+        &app,
+        "snippet",
+        &[
+            ("Узел.md", ""),
+            ("Середина.md", &middle),
+            ("Начало.md", &start),
+            ("Конец.md", &end),
+            ("Длинная ссылка.md", &huge_link),
+        ],
+    );
+    let got = backlinks(&w, &["Узел.md"]);
+    assert_eq!(got.notes_total, 4);
+    for note in &got.notes {
+        let line = &note.links[0];
+        let chars = line.snippet.chars().count();
+        assert_eq!(chars, limits::MAX_SNIPPET_CHARS, "{}: {chars}", note.name);
+        let link = utf16_slice(&line.snippet, line.from_utf16, line.to_utf16);
+        if note.name == "Длинная ссылка" {
+            assert!(link.starts_with("[[Узел|"), "{link}");
+            assert_eq!(line.from_utf16, 0);
+        } else {
+            assert_eq!(link, "[[Узел]]", "{}", note.name);
+        }
+        match note.name.as_str() {
+            // Ссылка посередине — поровну текста слева и справа.
+            "Середина" => {
+                let left = line.from_utf16 as usize;
+                let right = line.snippet.encode_utf16().count() - line.to_utf16 as usize;
+                assert!(left.abs_diff(right) <= 1, "{left} / {right}");
+                assert_eq!(line.column_utf16, 501);
+            }
+            "Начало" => assert_eq!(line.from_utf16, 0),
+            "Конец" => {
+                assert_eq!(line.to_utf16 as usize, line.snippet.encode_utf16().count());
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn backlinks_utf16_offsets_highlight_link() {
+    let app = app();
+    // Эмодзи — две единицы UTF-16, буква с ударением — две точки кода.
+    let text = "😀 е\u{301} 𝔸 [[Узел]] после\n";
+    let (w, _dir, _root) = indexed_vault(&app, "utf16", &[("Узел.md", ""), ("Эмодзи.md", text)]);
+    let got = backlinks(&w, &["Узел.md"]);
+    let line = &got.notes[0].links[0];
+    assert_eq!(line.snippet, text.trim_end());
+    // 😀 (2) + пробел + е + ударение + пробел + 𝔸 (2) + пробел = 9.
+    assert_eq!(line.from_utf16, 9);
+    assert_eq!(line.column_utf16, 9);
+    assert_eq!(line.to_utf16, 17);
+    assert_eq!(
+        utf16_slice(&line.snippet, line.from_utf16, line.to_utf16),
+        "[[Узел]]"
+    );
+}
+
+/// Строка с HTML возвращается как есть — текстом: ядро не вырезает и не
+/// экранирует разметку, окно показывает её как текст (С2-6).
+#[test]
+fn backlinks_html_returned_as_text() {
+    let app = app();
+    let text = "<img src=x onerror=alert(1)> [[Узел]] <script>alert(2)</script>\n";
+    let (w, _dir, _root) = indexed_vault(&app, "html", &[("Узел.md", ""), ("Html.md", text)]);
+    let got = backlinks(&w, &["Узел.md"]);
+    let line = &got.notes[0].links[0];
+    assert_eq!(line.snippet, text.trim_end());
+    assert_eq!(
+        utf16_slice(&line.snippet, line.from_utf16, line.to_utf16),
+        "[[Узел]]"
+    );
+}
+
+/// Подменённый `index.json` с положениями за концом текста, внутри символа
+/// и не на ссылке: команда не падает, такие строки пропускаются.
+#[test]
+fn backlinks_forged_index_positions_do_not_panic() {
+    let app = app();
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    // BOM и `\r\n`: текст `read_note` короче файла.
+    put(&root, "Узел.md", b"");
+    put(
+        &root,
+        "Подмена.md",
+        "\u{feff}Привет [[Узел]]\r\nещё [[Узел]]\r\n".as_bytes(),
+    );
+    // Настоящий индекс — затем подмена положений с теми же размером и датой.
+    {
+        let vault = crate::vault::Vault::open(&root).expect("хранилище");
+        let index = RwLock::new(crate::index::VaultIndex::new());
+        crate::index::rebuild(&vault, &index, &|_| {}).expect("индекс");
+        crate::index::store::IndexStore::new().write_now(&vault, &index);
+    }
+    let file = root.join(".rhizomind").join("index.json");
+    let mut json: Value =
+        serde_json::from_slice(&std::fs::read(&file).expect("индекс")).expect("JSON");
+    let size = std::fs::metadata(root.join("Подмена.md"))
+        .expect("файл")
+        .len();
+    let note = json["notes"]
+        .as_array_mut()
+        .expect("заметки")
+        .iter_mut()
+        .find(|n| n["p"] == json!(["Подмена.md"]))
+        .expect("заметка в индексе");
+    let link = note["l"][0].clone();
+    let forged = |start: u64, end: u64| {
+        let mut l = link.clone();
+        l[4] = json!(start);
+        l[5] = json!(end);
+        l[6] = json!(start);
+        l[7] = json!(end);
+        l
+    };
+    note["l"] = json!([
+        forged(1, 3),           // внутри «П»
+        forged(size - 2, size), // за концом текста (BOM и `\r` убраны)
+        forged(0, 6),           // не ссылка
+        forged(13, 25),         // настоящая ссылка `[[Узел]]`
+    ]);
+    std::fs::write(&file, serde_json::to_vec(&json).expect("JSON")).expect("подмена");
+
+    let w = window(&app, "forged");
+    open_vault(
+        &app,
+        "forged",
+        "forged",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    wait_index_ready(&w);
+    let got = backlinks(&w, &["Узел.md"]);
+    assert_eq!(got.notes_total, 1);
+    let note = &got.notes[0];
+    assert_eq!(note.links_total, 4);
+    let shown: Vec<String> = note
+        .links
+        .iter()
+        .map(|l| utf16_slice(&l.snippet, l.from_utf16, l.to_utf16))
+        .collect();
+    assert_eq!(shown, ["[[Узел]]"]);
+    assert_eq!(note.links[0].line, 1);
+}
+
+#[test]
+fn tags_list_real_core() {
+    let app = app();
+    let (w, _dir, _root) = indexed_vault(
+        &app,
+        "tags",
+        &[
+            ("А.md", "#Проект и #проект #идея"),
+            ("Б.md", "---\ntags: [ПРОЕКТ]\n---\n`#не-тег` #Проект"),
+            ("В.md", "#123 текст"),
+        ],
+    );
+    let reply: IndexReply<Tags> = typed(
+        "tags_list",
+        invoke(&w, "tags_list", json!({})).expect("tags_list"),
+    );
+    let IndexReply::Ready(Tags { mut tags }) = reply else {
+        panic!("индекс строится");
+    };
+    tags.sort_by(|a, b| a.key.cmp(&b.key));
+    let got: Vec<(&str, &str, u32)> = tags
+        .iter()
+        .map(|t| (t.tag.as_str(), t.key.as_str(), t.count))
+        .collect();
+    assert_eq!(got, [("идея", "идея", 1), ("Проект", "проект", 2)]);
+
+    let reply: IndexReply<TagNotes> = typed(
+        "tag_notes",
+        call(&w, "tag_notes", json!({ "key": "проект" })).expect("tag_notes"),
+    );
+    assert_eq!(
+        reply,
+        IndexReply::Ready(TagNotes {
+            notes_total: 2,
+            notes: vec![
+                VaultPath::from_components(["А.md"]),
+                VaultPath::from_components(["Б.md"])
+            ],
+        })
+    );
+    let reply: IndexReply<TagNotes> = typed(
+        "tag_notes",
+        call(&w, "tag_notes", json!({ "key": "нет-такого" })).expect("tag_notes"),
+    );
+    assert_eq!(
+        reply,
+        IndexReply::Ready(TagNotes {
+            notes_total: 0,
+            notes: vec![],
+        })
+    );
+}
+
+#[test]
+fn tag_notes_limit_10000() {
+    let app = app();
+    let w = window(&app, "tag-limit");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    for folder in 0..11 {
+        let path = root.join(format!("п{folder}"));
+        std::fs::create_dir_all(&path).expect("папка");
+        for note in 0..910 {
+            std::fs::write(path.join(format!("{note}.md")), "#общий").expect("заметка");
+        }
+    }
+    open_vault(
+        &app,
+        "tag-limit",
+        "tag-limit",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    wait_index_ready(&w);
+    let reply: IndexReply<TagNotes> = typed(
+        "tag_notes",
+        call(&w, "tag_notes", json!({ "key": "общий" })).expect("tag_notes"),
+    );
+    let IndexReply::Ready(notes) = reply else {
+        panic!("индекс строится");
+    };
+    assert_eq!(notes.notes_total, 10_010);
+    assert_eq!(notes.notes.len(), limits::MAX_TAG_NOTES);
+}
+
+/// Пока индекс строится, команды отвечают `index_building` с ходом; по
+/// готовности — `index:status` с `ready`, и те же команды дают данные.
+#[test]
+fn index_status_building_then_ready() {
+    let app = app();
+    let w = window(&app, "building");
+    let seen = record_events(&w, &[event::INDEX_STATUS, event::INDEX_CHANGED]);
+    let dir = tempfile::tempdir().expect("папка");
+    put(dir.path(), "Узел.md", b"");
+    put(dir.path(), "А.md", "[[Узел]] #тег".as_bytes());
+    let core = app.state::<Core>();
+    core.bind_window(
+        "building",
+        OpenVault::new(
+            summary("building", dir.path()),
+            Vault::open(dir.path()).expect("хранилище"),
+        )
+        .expect("заметки"),
+    );
+    // Индекс ещё не запущен — строится.
+    assert_eq!(
+        invoke(&w, "index_status", json!({})).expect("index_status"),
+        json!({ "state": "building", "done": 0, "total": 0 })
+    );
+    for (name, args) in [
+        (
+            "backlinks_list",
+            json!({ "request": { "path": ["Узел.md"] } }),
+        ),
+        ("tags_list", json!({})),
+        ("tag_notes", json!({ "request": { "key": "тег" } })),
+    ] {
+        assert_eq!(
+            invoke(&w, name, args).expect(name)["status"],
+            json!("index_building"),
+            "{name}"
+        );
+    }
+
+    let open = core.window_vault("building").expect("хранилище окна");
+    start_index(
+        &open,
+        Arc::new(WindowEmitter::new(app.handle().clone(), "building")),
+    );
+    assert!(
+        wait_for(&seen, |events| events.iter().any(|(name, payload)| {
+            name == event::INDEX_STATUS && payload["state"] == json!("ready")
+        })),
+        "index:status ready"
+    );
+    for (name, payload) in seen.lock().expect("журнал").iter() {
+        if name == event::INDEX_STATUS {
+            let status: IndexStatus = typed(name, payload.clone());
+            assert!(
+                status.done <= status.total || status.total == 0,
+                "{status:?}"
+            );
+        }
+    }
+    assert_eq!(
+        invoke(&w, "index_status", json!({})).expect("index_status"),
+        json!({ "state": "ready", "done": 2, "total": 2 })
+    );
+    assert_eq!(backlinks(&w, &["Узел.md"]).notes_total, 1);
+}
+
+/// `note_write` обновляет индекс сразу после своей записи: обратная ссылка
+/// видна без наблюдателя, `index:changed` приходит.
+#[test]
+fn note_write_updates_backlinks() {
+    let app = app();
+    let (w, _dir, _root) = indexed_vault(&app, "own-write", &[("Узел.md", ""), ("А.md", "пусто")]);
+    let seen = record_events(&w, &[event::INDEX_CHANGED]);
+    let read: NoteReadResponse = typed(
+        "note_read",
+        call(&w, "note_read", json!({ "path": ["А.md"] })).expect("note_read"),
+    );
+    call(
+        &w,
+        "note_write",
+        json!({ "path": ["А.md"], "text": "теперь [[Узел]]", "expected_version": read.version }),
+    )
+    .expect("note_write");
+    assert_eq!(backlinks(&w, &["Узел.md"]).notes_total, 1);
+    assert!(
+        wait_for(&seen, |events| !events.is_empty()),
+        "index:changed"
+    );
+}
+
+/// Пределы ответа на настоящем ядре: 1 000 заметок, 100 строк на заметку,
+/// 5 000 строк всего, признак `truncated`.
+#[test]
+fn backlinks_list_limits_real_core() {
+    let app = app();
+    let w = window(&app, "limits");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    put(&root, "Узел.md", b"");
+    let many = "[[Узел]]\n".repeat(120);
+    for i in 0..1_001 {
+        // Первые 60 заметок по порядку имён — по 120 ссылок (7 200 строк).
+        let text = if i < 60 {
+            many.as_str()
+        } else {
+            "[[Узел]]"
+        };
+        put(&root, &format!("Ссылки/з{i:04}.md"), text.as_bytes());
+    }
+    open_vault(
+        &app,
+        "limits",
+        "limits",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    wait_index_ready(&w);
+    let got = backlinks(&w, &["Узел.md"]);
+    assert_eq!(got.notes_total, 1_001);
+    assert!(got.truncated);
+    assert_eq!(got.notes.len(), limits::MAX_BACKLINK_NOTES);
+    assert_eq!(got.notes[0].name, "з0000");
+    assert_eq!(got.notes[0].links_total, 120);
+    assert_eq!(got.notes[0].links.len(), limits::MAX_BACKLINK_LINES);
+    let shown: usize = got.notes.iter().map(|n| n.links.len()).sum();
+    assert_eq!(shown, limits::MAX_BACKLINK_LINES_TOTAL);
+    // 50 заметок по 100 строк исчерпали общий предел: дальше — имена без строк.
+    assert!(got.notes[50..].iter().all(|n| n.links.is_empty()));
+    assert!(got.notes.iter().all(|n| n.links_total >= 1));
+
+    // Ответ без превышения пределов — без признака.
+    let small = backlinks(&w, &["Ссылки", "з0000.md"]);
+    assert!(!small.truncated);
+}
+
+/// Заметку изменили снаружи — настоящий наблюдатель, `index:changed` не
+/// позже 2 с (С2-3.2), обратная ссылка видна.
+#[test]
+fn external_change_gives_index_changed_within_2s() {
+    let app = app();
+    let (w, _dir, root) =
+        indexed_vault(&app, "external", &[("Узел.md", ""), ("А.md", "без ссылок")]);
+    let seen = record_events(&w, &[event::INDEX_CHANGED]);
+    let start = std::time::Instant::now();
+    std::fs::write(root.join("А.md"), "снаружи [[Узел]]").expect("запись снаружи");
+    assert!(
+        wait_for(&seen, |events| !events.is_empty()),
+        "index:changed не пришло"
+    );
+    let took = start.elapsed();
+    eprintln!("внешнее изменение → index:changed: {took:?}");
+    assert!(took <= Duration::from_secs(2), "{took:?}");
+    assert_eq!(backlinks(&w, &["Узел.md"]).notes_total, 1);
+}
+
+// ---- Замеры на хранилище генератора (справочно) ------------------------------
+
+/// `cargo test -p rhizomind --lib commands::core_tests::index_queries_on_generated_10k -- --ignored --nocapture`.
+/// Пределы (`backlinks_list` «узла» ≤ 200 мс, `tags_list` ≤ 100 мс) — в
+/// выпускной сборке; в отладочной — только печать.
+#[test]
+#[ignore = "замер: --ignored"]
+fn index_queries_on_generated_10k() {
+    let app = app();
+    let w = window(&app, "gen10k");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("v10k");
+    let manifest =
+        gen_vault::generate(&root, &gen_vault::Config::new(10_000, 7)).expect("генератор");
+    open_vault(
+        &app,
+        "gen10k",
+        "gen10k",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    // Сборка 10 000 заметок рядом с другими замерами на машине CI (Windows,
+    // антивирус) — дольше обычного предела ожидания; время сборки здесь не
+    // проверяется (это `index::tests::index_build_10k`).
+    wait_index_ready_within(&w, Duration::from_secs(120));
+    let hub = manifest.hub.as_ref().expect("узел");
+    let hub_path: Vec<&str> = hub.path.split('/').collect();
+
+    // Первый вызов — холодный: 100 только что созданных генератором файлов
+    // читаются впервые (на Windows их при первом открытии проверяет
+    // антивирус — в CI до 1,5 с). Он печатается отдельно; предел — на
+    // повторных вызовах (файлы заметок пользователя не создаются за секунду
+    // до запроса).
+    let start = std::time::Instant::now();
+    let mut hub_count = backlinks(&w, &hub_path).notes_total;
+    let backlinks_cold = start.elapsed();
+    let mut backlinks_worst = Duration::ZERO;
+    let mut tags_worst = Duration::ZERO;
+    let mut tags_count = 0;
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        hub_count = backlinks(&w, &hub_path).notes_total;
+        backlinks_worst = backlinks_worst.max(start.elapsed());
+        let start = std::time::Instant::now();
+        let reply = invoke(&w, "tags_list", json!({})).expect("tags_list");
+        tags_worst = tags_worst.max(start.elapsed());
+        tags_count = reply["tags"].as_array().map_or(0, Vec::len);
+    }
+    let build = if cfg!(debug_assertions) {
+        "отладочная сборка"
+    } else {
+        "выпускная сборка"
+    };
+    println!(
+        "backlinks_list «узла»: {hub_count} заметок, худший {backlinks_worst:?} \
+         (первый, холодный — {backlinks_cold:?}); \
+         tags_list: {tags_count} тегов, худший {tags_worst:?} ({build})"
+    );
+    assert_eq!(hub_count, 100);
+    assert_eq!(tags_count, manifest.tags.len());
+    if !cfg!(debug_assertions) {
+        assert!(
+            backlinks_worst <= Duration::from_millis(200),
+            "{backlinks_worst:?}"
+        );
+        assert!(tags_worst <= Duration::from_millis(100), "{tags_worst:?}");
+    }
 }

@@ -141,12 +141,18 @@ pub async fn note_write<R: Runtime>(
         let response =
             open.vault
                 .write_note(&request.path, &request.text, &request.expected_version)?;
+        // Своя запись — в индекс сразу (обратные ссылки и теги, 0.2-1.4);
+        // наблюдатель её не сообщает, а повтор безвреден.
+        let mut changes = vec![TreeChange::Modified {
+            path: request.path.clone(),
+        }];
         if let NoteWriteResponse::ConflictSaved { copy_path, .. } = &response {
-            open.apply_own(&[TreeChange::Created {
+            changes.push(TreeChange::Created {
                 path: copy_path.clone(),
                 entry_kind: EntryKind::Note,
-            }]);
+            });
         }
+        open.apply_own(&changes);
         Ok(response)
     })
     .await?;

@@ -508,6 +508,11 @@ fn note_entry(note: NoteRepr) -> Option<(VaultPath, NoteEntry)> {
         .t
         .into_iter()
         .map(|(name, source, line)| {
+            // Тег, которого разбор не дал бы (длинный, с пробелом и т.п.), —
+            // файл подменён (ревью безопасности 0.2-1.4).
+            if !crate::markdown::is_valid_tag_name(&name) {
+                return None;
+            }
             let source = match source {
                 0 => TagSource::Text,
                 1 => TagSource::Frontmatter,
