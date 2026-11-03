@@ -7,10 +7,7 @@
 // ссылки переписаны побайтно, набранный текст не потерян. Снимки — в светлой и
 // тёмной теме (`relink-external-NN-…`).
 //
-// Внешние переименования в ядре — задача 0.2-6.1 (ветка
-// `task/0.2-6.1-external-renames`); до её слияния ядро в main не присылает
-// `links:pending`, поэтому сценарий выключен (`describe.skip`). Включить —
-// убрать `.skip` после слияния 0.2-6.1.
+// Внешние переименования в ядре — задача 0.2-6.1.
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -65,7 +62,7 @@ async function waitForFiles(vault: string, files: Record<string, string>, what: 
 const noticeTexts = (browser: WebdriverIO.Browser) =>
   browser.execute(() => [...document.querySelectorAll('.notice')].map((notice) => (notice.textContent ?? '').replace(/\s+/g, ' ').trim()));
 
-describe.skip('переименование в Проводнике (mv снаружи) при открытом приложении — после 0.2-6.1', () => {
+describe('переименование в Проводнике (mv снаружи) при открытом приложении', () => {
   let session: Session | undefined;
   let vault = '';
   let profile = '';
