@@ -224,9 +224,12 @@ describe('заметка только из блока свойств, без п�
 
   it('открытие заметки и ввод — блок цел, набранное с новой строки', async () => {
     const { view } = await openShell(MEETING, SETTINGS, ONLY);
-    expect(collapsed(view)).toBe(true);
+    // Под блоком нет текста — блок раскрыт (О-1), курсор в конце `---`.
+    expect(collapsed(view)).toBe(false);
+    expect(view.state.selection.main.head).toBe(ONLY.length);
     type(view, 'Привет');
     expect(view.state.doc.toString()).toBe(`${ONLY}\nПривет`);
+    // Под блоком появился текст, курсор в нём — блок свернулся.
     expect(collapsed(view)).toBe(true);
     // Набор подряд — одна группа отмены вместе с новой строкой: текст файла возвращается к прежнему.
     undo(view);
@@ -245,29 +248,32 @@ describe('заметка только из блока свойств, без п�
     await waitFor(() => expect(model.currentPath).toEqual(MEETING));
     const meeting = await editorView(view);
     await waitFor(() => expect(meeting.hasFocus).toBe(true));
-    expect(collapsed(meeting)).toBe(true);
+    expect(collapsed(meeting)).toBe(false);
     type(meeting, 'Привет');
     expect(meeting.state.doc.toString()).toBe(`${ONLY}\nПривет`);
   });
 
   it('файл с переводами CRLF: открытие и ввод — блок цел', async () => {
     const { view } = await openShell(MEETING, SETTINGS, '---\r\ntags: x\r\n---');
-    expect(collapsed(view)).toBe(true);
+    expect(collapsed(view)).toBe(false);
     type(view, 'Привет');
     expect(view.state.doc.toString()).toBe('---\ntags: x\n---\nПривет');
   });
 
-  it('вставка в позицию 0 и в конец блока — с новой строки, отмена одной правкой', () => {
-    for (const at of [0, ONLY.length]) {
+  it('вставка в конец блока — с новой строки, отмена одной правкой; Enter там — одна новая строка', () => {
+    for (const at of [ONLY.length]) {
       const editor = new EditorView({ parent: document.body, state: createEditorState(ONLY, { mode: 'live_preview' }) });
       editor.dispatch({ selection: { anchor: at } });
-      expect(collapsed(editor)).toBe(true);
+      expect(collapsed(editor)).toBe(false);
       editor.dispatch({ changes: { from: at, insert: 'Вставка' }, selection: { anchor: at + 7 }, userEvent: 'input.paste' });
       expect(editor.state.doc.toString(), `позиция ${at}`).toBe(`${ONLY}\nВставка`);
       expect(editor.state.selection.main.head).toBe(editor.state.doc.length);
       expect(collapsed(editor)).toBe(true);
       undo(editor);
       expect(editor.state.doc.toString()).toBe(ONLY);
+      editor.dispatch({ selection: { anchor: ONLY.length } });
+      editor.dispatch(editor.state.replaceSelection('\n'), { userEvent: 'input' });
+      expect(editor.state.doc.toString()).toBe(`${ONLY}\n`);
       editor.destroy();
     }
   });
@@ -305,7 +311,7 @@ describe('отмена и Backspace у свёрнутого блока', () => {
   });
 });
 
-describe('заметка только из блока свойств: составление, пустой блок, Backspace', () => {
+describe('заметка только из блока свойств: составление, пустой блок, раскрытый блок', () => {
   const ONLY = '---\ntags: [проект]\n---';
   let view: EditorView | null = null;
   afterEach(() => {
@@ -337,7 +343,7 @@ describe('заметка только из блока свойств: соста
 
   it('составление (IME) в конце блока без текста под ним — с новой строки, блок цел', () => {
     const editor = make(ONLY);
-    expect(collapsed(editor)).toBe(true);
+    expect(collapsed(editor)).toBe(false);
     compose(editor, ['п', 'пр', 'привет']);
     expect(editor.state.doc.toString()).toBe(`${ONLY}\nпривет`);
     expect(collapsed(editor)).toBe(true);
@@ -352,26 +358,24 @@ describe('заметка только из блока свойств: соста
   });
 
   it('пустой блок `---\\n---`: щелчок ставит курсор на новую пустую строку между `---`, ввод — внутри блока', () => {
-    const editor = make('---\n---');
+    const editor = make('---\n---\nтекст');
     const row = editor.contentDOM.querySelector('.cm-rz-properties');
     if (!row) throw new Error('нет строки «Свойства»');
     row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
-    expect(editor.state.doc.toString()).toBe('---\n\n---');
+    expect(editor.state.doc.toString()).toBe('---\n\n---\nтекст');
     expect(editor.state.selection.main.head).toBe(4);
     expect(collapsed(editor)).toBe(false);
     type(editor, 'a: 1');
-    expect(editor.state.doc.toString()).toBe('---\na: 1\n---');
+    expect(editor.state.doc.toString()).toBe('---\na: 1\n---\nтекст');
     undo(editor);
     undo(editor);
-    expect(editor.state.doc.toString()).toBe('---\n---');
+    expect(editor.state.doc.toString()).toBe('---\n---\nтекст');
   });
 
-  it('Backspace в конце свёрнутого блока без текста под ним раскрывает блок, ничего не удаляя', () => {
+  it('без текста под блоком блок раскрыт: Backspace правит видимый текст', () => {
     const editor = make(ONLY);
-    expect(collapsed(editor)).toBe(true);
-    editor.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
-    expect(editor.state.doc.toString()).toBe(ONLY);
-    expect(editor.state.selection.main.head).toBe(ONLY.length);
     expect(collapsed(editor)).toBe(false);
+    expect(editor.contentDOM.querySelectorAll('.cm-line')).toHaveLength(3);
   });
+
 });
