@@ -23,8 +23,12 @@ const shot = themeShots('index');
 
 const SHELL = '[data-testid="shell"]';
 const OPEN_FOLDER = 'button[aria-label="Открыть папку как хранилище"]';
-/** Заметок генератора: на Linux сборка быстрее — хранилище больше (предел требований — 50 000). */
-const NOTES = Number(process.env.RHIZOMIND_E2E_KT1_NOTES ?? (process.platform === 'linux' ? 50_000 : 10_000));
+/**
+ * Заметок генератора — объём критерия «дерево ≤ 3 с» (С2-3.7). На Linux окно
+ * в Xvfb появляется через 5–8 с, сборка к этому времени уже закончена (и на
+ * 50 000 заметок), поэтому «строится» там не видно; на Windows — видно.
+ */
+const NOTES = Number(process.env.RHIZOMIND_E2E_KT1_NOTES ?? 10_000);
 const TARGET = 'КТ1 Узел';
 const SOURCE = 'КТ1 Ссылка';
 const OWN_TAG = '#кт1-проверка, заметок: 1';
@@ -42,6 +46,8 @@ interface Observed {
   building: string[];
   /** Все тексты панели до списка, по порядку, без повторов (для отчёта). */
   states: string[];
+  /** Строк дерева, когда панель показывала «строится» (последний такой опрос); -1 — «строится» не видели. */
+  treeWhileBuilding: number;
   /** Через сколько мс после «Открыть папку…» появилось окно хранилища и список. */
   shellMs: number;
   listMs: number;
@@ -56,7 +62,7 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
   await browser.$(OPEN_FOLDER).waitForDisplayed({ timeout: 30_000 });
   const started = Date.now();
   await browser.$(OPEN_FOLDER).click();
-  const observed: Observed = { building: [], states: [], shellMs: -1, listMs: -1 };
+  const observed: Observed = { building: [], states: [], treeWhileBuilding: -1, shellMs: -1, listMs: -1 };
   const deadline = started + 120_000;
   // Окно хранилища.
   while (observed.shellMs < 0) {
@@ -80,6 +86,7 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
     if (observed.states.at(-1) !== body) observed.states.push(body);
     if (body.startsWith('Индекс строится')) {
       if (observed.building.at(-1) !== body) observed.building.push(body);
+      observed.treeWhileBuilding = await treeRows(browser);
       if (!captured) {
         captured = true;
         await saveBuilding(browser, step);
@@ -92,9 +99,13 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
   }
   notice(
     `${step}: ${NOTES} заметок генератора; окно хранилища через ${observed.shellMs} мс, список через ${observed.listMs} мс; ` +
-      `«строится» видно: ${observed.building.length > 0 ? observed.building.join(' → ') : 'нет (сборка закончилась раньше первого опроса)'}; панель до списка: ${observed.states.map((t) => `«${t.slice(0, 60)}»`).join(' → ')}`,
+      `«строится» видно: ${observed.building.length > 0 ? observed.building.join(' → ') : 'нет (сборка закончилась раньше первого опроса)'}; строк дерева во время «строится»: ${observed.treeWhileBuilding}; панель до списка: ${observed.states.map((t) => `«${t.slice(0, 60)}»`).join(' → ')}`,
   );
   return observed;
+}
+
+function treeRows(browser: WebdriverIO.Browser): Promise<number> {
+  return browser.execute(() => document.querySelectorAll('[role="treeitem"]').length);
 }
 
 async function saveBuilding(browser: WebdriverIO.Browser, step: string): Promise<void> {
@@ -159,7 +170,9 @@ describe('индекс: первое открытие и пересборка б
     const seen = await openFromManager(b, 'first-open');
     for (const text of seen.building) expect(text).toMatch(/^Индекс строится…( \d{1,3} %)?$/);
     // Дерево показано, не дожидаясь индекса (С2-3.7).
-    expect(await b.execute(() => document.querySelectorAll('[role="treeitem"]').length)).toBeGreaterThan(0);
+    // Дерево не ждёт индекса (С2-3.7): пока панель показывала «строится», дерево уже было.
+    if (seen.building.length > 0) expect(seen.treeWhileBuilding, 'строк дерева во время сборки').toBeGreaterThan(0);
+    await b.waitUntil(async () => (await treeRows(b)) > 0, { timeout: 20_000, timeoutMsg: 'дерево пусто' });
     expect((await backlinkGroups(b)).map((g) => g.name)).toEqual([SOURCE]);
     first = await snapshot(b, 'first-open');
     expect(first.tags).toContain(OWN_TAG);
