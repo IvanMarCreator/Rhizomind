@@ -802,29 +802,28 @@ fn apply_external(
     renames: &[PathRename],
     token: Option<RelinkToken>,
 ) {
-    let saved = open.relink.flush(emit);
-    let (plan, renames) = external_plan(open, renames);
+    // Переписывать уже нечего (например, переименовали обратно) — и ввод
+    // записывать незачем.
+    let (plan, kept) = external_plan(open, renames);
     if plan.notes.is_empty() {
         return;
     }
-    if saved {
-        execute(
-            open,
-            emit,
-            &plan,
-            &renames,
-            LinksUpdateReason::ExternalRename,
-            token,
-        );
-    } else {
-        not_started(
-            open,
-            emit,
-            plan,
-            &renames,
-            LinksUpdateReason::ExternalRename,
-        );
+    if !open.relink.flush(emit) {
+        not_started(open, emit, plan, &kept, LinksUpdateReason::ExternalRename);
+        return;
     }
+    let (plan, kept) = external_plan(open, renames);
+    if plan.notes.is_empty() {
+        return;
+    }
+    execute(
+        open,
+        emit,
+        &plan,
+        &kept,
+        LinksUpdateReason::ExternalRename,
+        token,
+    );
 }
 
 /// Доделка обновления ссылок, прерванного при прошлом запуске (0.2-4.5,
