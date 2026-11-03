@@ -690,9 +690,17 @@ impl Vault {
             }
             self.own_writes.record(path, &hash, bytes.len() as u64);
             atomic::replace(temp, &abs).map_err(|e| rebuild_failure(&e))?;
+            replaced_hook();
+            // Файл уже заменён: заметка записана, даже если версию с диска
+            // прочитать не удалось (дата изменения тогда неизвестна).
+            let size = bytes.len() as u64;
             let version = self
-                .version_after_write(&abs, hash, bytes.len() as u64)
-                .map_err(io)?;
+                .version_after_write(&abs, hash.clone(), size)
+                .unwrap_or(FileVersion {
+                    hash,
+                    size,
+                    modified_ms: 0,
+                });
             return Ok(Rebuilt::Written(version));
         }
         Err(RelinkFailureReason::Busy)
@@ -1254,8 +1262,9 @@ impl Vault {
     /// Открывает существующий служебный файл `file` в `.rhizomind/` для
     /// дописывания в конец (отметки журнала обновления ссылок). Имя
     /// фиксированное ([`ServiceFile`]); служебная папка проверена по
-    /// дескриптору; файл-ссылка или не файл — `outside_vault`; итоговый путь
-    /// открытого файла проверен по дескриптору **до** первой записи. Файла
+    /// дескриптору; файл-ссылка или не файл — `outside_vault` (на Unix ещё и
+    /// `O_NOFOLLOW`); **до** первой записи по дескриптору проверены итоговый
+    /// путь и то, что у файла одно имя (жёсткая ссылка — `outside_vault`). Файла
     /// нет — `not_found` (он создаётся атомарно [`Self::write_service_file`]).
     pub(crate) fn open_service_append(&self, file: ServiceFile) -> CoreResult<ServiceAppend> {
         self.check_service_dir()?;
@@ -1264,12 +1273,20 @@ impl Vault {
         if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(contour::outside_vault());
         }
-        let handle = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .map_err(io_error)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let handle = options.open(&path).map_err(io_error)?;
         self.contour
             .check_opened_in(&handle, &path, &self.service)?;
+        // Жёсткая ссылка: тот же файл может иметь имя и вне хранилища.
+        if !single_name(&handle) {
+            return Err(contour::outside_vault());
+        }
         Ok(ServiceAppend(handle))
     }
 }
@@ -1451,6 +1468,28 @@ fn io_error(error: std::io::Error) -> CoreError {
     })
 }
 
+/// У открытого файла ровно одно имя (не жёсткая ссылка): Unix — `nlink`,
+/// Windows — `nNumberOfLinks` из `GetFileInformationByHandle`.
+fn single_name(file: &File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        file.metadata().is_ok_and(|meta| meta.nlink() == 1)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        // SAFETY: структура из простых чисел, нули — допустимое значение.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: дескриптор открыт и живёт дольше вызова; `info` — наш буфер.
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+        ok != 0 && info.nNumberOfLinks == 1
+    }
+}
+
 /// Ошибка ОС при записи чужой заметки → причина пропуска (С2-3.5 «Где
 /// ссылки не могут быть обновлены»): занят другой программой, только чтение,
 /// нет прав — `busy` (можно повторить); остальное — `io`.
@@ -1497,6 +1536,27 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn after_disk_rename(action: impl FnOnce() + 'static) {
     AFTER_DISK_RENAME.with(|cell| *cell.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_REPLACED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Тестовый шов: `action` выполнится один раз в этом потоке сразу после
+/// замены файла в [`Vault::write_note_rebuilt`], до чтения версии.
+#[cfg(test)]
+pub(crate) fn after_replaced(action: impl FnOnce() + 'static) {
+    AFTER_REPLACED.with(|cell| *cell.borrow_mut() = Some(Box::new(action)));
+}
+
+/// Точка шва [`after_replaced`]; вне тестов ничего не делает.
+fn replaced_hook() {
+    #[cfg(test)]
+    if let Some(action) = AFTER_REPLACED.with(|cell| cell.borrow_mut().take()) {
+        action();
+    }
 }
 
 /// Точка шва [`after_disk_rename`]; вне тестов ничего не делает.

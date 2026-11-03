@@ -566,3 +566,118 @@ fn rebuilt_external_edit_is_rebuilt_from_fresh_text() {
     assert!(matches!(result, Ok(Rebuilt::Written(_))), "{result:?}");
     assert_eq!(t.bytes("Список.md"), "Планёрка\nчужая правка\n".as_bytes());
 }
+
+/// Файл уже заменён, а версию после записи прочитать не удалось (файл
+/// держит антивирус, его убрали снаружи): заметка всё равно записана —
+/// `Written` с хэшем и размером записанного, а не `io` (иначе повтор
+/// переписал бы её второй раз без сверки хэшей).
+#[test]
+fn rebuilt_version_read_failure_after_replace_is_still_written() {
+    let t = TestVault::new();
+    let path = t.put("Список.md", "Встреча\n");
+    crate::vault::after_replaced(move || {
+        std::fs::remove_file(&path).expect("файл убран снаружи");
+    });
+
+    let result = t
+        .vault
+        .write_note_rebuilt(&vp("Список.md"), LIMIT, &swap, &mut no_journal);
+
+    let Ok(Rebuilt::Written(version)) = result else {
+        panic!("ожидалась запись: {result:?}");
+    };
+    let expected = "Планёрка\n".as_bytes();
+    assert_eq!(version.hash, blake3::hash(expected).to_hex().to_string());
+    assert_eq!(version.size, expected.len() as u64);
+}
+
+// --- Дописывание служебного файла (журнал обновления ссылок, 0.2-4.5) ---
+
+use crate::vault::ServiceFile;
+
+fn journal_path(t: &TestVault) -> PathBuf {
+    t.root()
+        .join(".rhizomind")
+        .join(ServiceFile::LinkUpdate.name())
+}
+
+#[test]
+fn service_append_writes_to_the_existing_file_only() {
+    let t = TestVault::new();
+    assert_eq!(
+        code(t.vault.open_service_append(ServiceFile::LinkUpdate)),
+        ErrorCode::NotFound
+    );
+    assert!(!journal_path(&t).exists(), "файл не создаётся");
+
+    t.vault
+        .write_service_file(ServiceFile::LinkUpdate.name(), b"head\n")
+        .expect("заголовок");
+    let mut file = t
+        .vault
+        .open_service_append(ServiceFile::LinkUpdate)
+        .expect("открыт");
+    file.append(b"mark\n", true).expect("дописано");
+    drop(file);
+    assert_eq!(
+        std::fs::read(journal_path(&t)).expect("файл"),
+        b"head\nmark\n"
+    );
+}
+
+#[test]
+fn service_append_refuses_symlinked_file() {
+    let t = TestVault::new();
+    let target = t.outside().join("journal.json");
+    std::fs::write(&target, "снаружи\n").expect("цель");
+    symlink_file(&target, &journal_path(&t));
+
+    assert!(
+        t.vault
+            .open_service_append(ServiceFile::LinkUpdate)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("цель"),
+        "снаружи\n".as_bytes()
+    );
+}
+
+#[test]
+fn service_append_refuses_symlinked_service_dir() {
+    let t = TestVault::new();
+    let outside_service = t.outside().join("service");
+    std::fs::create_dir(&outside_service).expect("папка");
+    let target = outside_service.join(ServiceFile::LinkUpdate.name());
+    std::fs::write(&target, "снаружи\n").expect("цель");
+    std::fs::remove_dir_all(t.root().join(".rhizomind")).expect("служебная папка");
+    symlink_dir(&outside_service, &t.root().join(".rhizomind"));
+
+    assert!(
+        t.vault
+            .open_service_append(ServiceFile::LinkUpdate)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("цель"),
+        "снаружи\n".as_bytes()
+    );
+}
+
+#[test]
+fn service_append_refuses_hard_link() {
+    let t = TestVault::new();
+    let target = t.outside().join("journal.json");
+    std::fs::write(&target, "снаружи\n").expect("цель");
+    std::fs::hard_link(&target, journal_path(&t)).expect("жёсткая ссылка");
+
+    assert!(
+        t.vault
+            .open_service_append(ServiceFile::LinkUpdate)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("цель"),
+        "снаружи\n".as_bytes()
+    );
+}
