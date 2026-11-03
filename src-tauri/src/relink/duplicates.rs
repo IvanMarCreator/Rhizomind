@@ -106,14 +106,80 @@ pub struct Batch {
     /// замену файла на месте выдаёт как `Modified`, а не как удаление и
     /// создание.
     left: HashSet<Key>,
+    /// Появившиеся заметки, ключ которых ещё не посчитан. Ключ имени (NFC и
+    /// приведение регистра) — самое дорогое в учёте события, поэтому под
+    /// замком списка заметок он не считается для частых событий (создание;
+    /// удаление только что созданной или лежавшей до пачки заметки): ключи —
+    /// после пачки наблюдателя, вне замка ([`Batch::take_unkeyed`]).
+    fresh: HashSet<VaultPath>,
+    /// Ушедшие заметки, лежавшие до пачки, ключ которых ещё не посчитан.
+    fresh_left: Vec<VaultPath>,
     /// Состав менялся.
     touched: bool,
+}
+
+/// Пути без посчитанных ключей, взятые из пачки ([`Batch::take_unkeyed`]).
+#[derive(Debug, Default)]
+pub struct Unkeyed {
+    born: Vec<VaultPath>,
+    left: Vec<VaultPath>,
+}
+
+/// Ключи для [`Unkeyed`] (считаются без замков).
+#[derive(Debug, Default)]
+pub struct Keyed {
+    born: Vec<Key>,
+    left: Vec<Key>,
+}
+
+impl Unkeyed {
+    /// Нечего считать.
+    pub fn is_empty(&self) -> bool {
+        self.born.is_empty() && self.left.is_empty()
+    }
+
+    /// Ключи путей.
+    pub fn keyed(&self) -> Keyed {
+        Keyed {
+            born: self.born.iter().map(key).collect(),
+            left: self.left.iter().map(key).collect(),
+        }
+    }
 }
 
 impl Batch {
     /// Состав менялся с последнего уточнения.
     pub fn is_touched(&self) -> bool {
         self.touched
+    }
+
+    /// Забирает пути без посчитанных ключей — посчитать вне замков и
+    /// вернуть [`Batch::put_keyed`].
+    pub fn take_unkeyed(&mut self) -> Unkeyed {
+        Unkeyed {
+            born: self.fresh.drain().collect(),
+            left: std::mem::take(&mut self.fresh_left),
+        }
+    }
+
+    /// Возвращает посчитанные ключи ([`Batch::take_unkeyed`]).
+    pub fn put_keyed(&mut self, keyed: Keyed) {
+        for k in keyed.born {
+            // Создание по пути — что бы там ни числилось раньше, теперь там
+            // новая заметка.
+            self.origin.insert(k, Origin::Born);
+        }
+        self.left.extend(keyed.left);
+    }
+
+    /// Считает ключи всех путей пачки сразу (перед переименованием,
+    /// удалением папки, сверкой, планом и сложением пачек).
+    pub fn settle(&mut self) {
+        if self.fresh.is_empty() && self.fresh_left.is_empty() {
+            return;
+        }
+        let unkeyed = self.take_unkeyed();
+        self.put_keyed(unkeyed.keyed());
     }
 
     /// Учитывает изменение дерева `change`; `notes_under(путь)` — заметки
@@ -130,13 +196,24 @@ impl Batch {
             TreeChange::Modified { .. } => false,
             TreeChange::Created { path, entry_kind } => {
                 if *entry_kind == EntryKind::Note && is_note(path) {
-                    self.appear(path);
+                    self.fresh.insert(path.clone());
                     true
                 } else {
                     false
                 }
             }
+            TreeChange::Removed { path } if is_note(path) && self.fresh.remove(path) => true,
+            TreeChange::Removed { path } if is_note(path) && self.origin.is_empty() => {
+                // Заметка лежала до пачки (в пачке ещё ничего не пришло с
+                // другого пути) — ключ посчитается после. Допущение: путь с
+                // именем заметки — файл; папку с именем `*.md` и заметками
+                // внутри это учтёт как одну ушедшую заметку (лишь учёт для
+                // сложения пачек; план смотрит только заметки списка).
+                self.fresh_left.push(path.clone());
+                true
+            }
             TreeChange::Removed { path } => {
+                self.settle();
                 // Заметки пачки — диапазоном ключей; список спрашивается,
                 // только если в пачке по этому пути ничего нет (заметка
                 // была до пачки) — O(log n + найденные) на событие.
@@ -164,6 +241,7 @@ impl Batch {
     /// Полная сверка: список был `old`, стал `new` (пути заметок). `true` —
     /// состав изменился.
     pub fn rescan(&mut self, old: &[VaultPath], new: &[VaultPath]) -> bool {
+        self.settle();
         let old_keys: HashSet<Key> = old.iter().map(key).collect();
         let new_keys: HashSet<Key> = new.iter().filter(|p| is_note(p)).map(key).collect();
         let mut gone: Vec<Key> = old_keys.difference(&new_keys).cloned().collect();
@@ -224,6 +302,7 @@ impl Batch {
         to: &VaultPath,
         notes_under: &dyn Fn(&VaultPath) -> Vec<VaultPath>,
     ) -> bool {
+        self.settle();
         let under = notes_under(from);
         let pairs: Vec<(VaultPath, VaultPath)> = if under.is_empty() {
             // Команда уже переименовала — перенесённые лежат под `to`.
@@ -277,7 +356,9 @@ impl Batch {
 
 /// Пачка `newer` поверх пачки `older` — как одна пачка из изменений обеих
 /// по порядку (неотвеченный вопрос присоединяется к следующей пачке).
-pub fn compose(older: Batch, newer: Batch) -> Batch {
+pub fn compose(mut older: Batch, mut newer: Batch) -> Batch {
+    older.settle();
+    newer.settle();
     let mut origin: BTreeMap<Key, Origin> = BTreeMap::new();
     let mut left: HashSet<Key> = older.left;
     let mut consumed: HashSet<Key> = HashSet::new();
@@ -324,6 +405,7 @@ pub fn compose(older: Batch, newer: Batch) -> Batch {
         origin,
         left,
         touched: older.touched || newer.touched,
+        ..Batch::default()
     }
 }
 
@@ -345,7 +427,8 @@ pub struct Prepared {
 }
 
 /// План пачки `batch` по списку заметок сейчас `now` (без индекса).
-pub fn prepare(batch: &Batch, now: Vec<NoteRef>) -> Prepared {
+pub fn prepare(batch: &mut Batch, now: Vec<NoteRef>) -> Prepared {
+    batch.settle();
     let mut removed = Vec::new();
     let mut moved_in: Vec<(NoteRef, VaultPath)> = Vec::new();
     let mut names: HashSet<NameKey> = HashSet::new();

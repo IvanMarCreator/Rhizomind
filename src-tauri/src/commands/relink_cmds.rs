@@ -1389,7 +1389,14 @@ impl DuplicateShared {
     /// Пачка наблюдателя применена к списку и индексу: затишье — с этого
     /// момента.
     pub fn settled(&self) {
+        // Ключи появившихся и ушедших заметок — вне замков (поток повторов
+        // пачку не возьмёт: она ещё `pending`).
+        let unkeyed = self.lock().batch.take_unkeyed();
+        let keyed = (!unkeyed.is_empty()).then(|| unkeyed.keyed());
         let mut state = self.lock();
+        if let Some(keyed) = keyed {
+            state.batch.put_keyed(keyed);
+        }
         if state.pending {
             state.pending = false;
             state.last = Some(Instant::now());
@@ -1522,11 +1529,11 @@ fn duplicate_plan(
     batch: Batch,
     now: Vec<NoteRef>,
 ) -> (Batch, Prepared, Found) {
-    let batch = match older {
+    let mut batch = match older {
         Some(older) => duplicates::compose(older, batch),
         None => batch,
     };
-    let prepared = duplicates::prepare(&batch, now);
+    let prepared = duplicates::prepare(&mut batch, now);
     let found = refind(open, &prepared);
     (batch, prepared, found)
 }
