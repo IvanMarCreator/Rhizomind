@@ -65,8 +65,9 @@ describe('блок свойств', () => {
     vault = createTestVault('Свойства', {
       'Свойства.md': BLOCK + BODY,
       'Только блок.md': ONLY_BLOCK,
+      'Только блок вставка.md': ONLY_BLOCK,
       'Блок и строка.md': `${ONLY_BLOCK}\n`,
-      'Вход.md': 'Переходы: [[Свойства]], [[Только блок]] и [[Блок и строка]].\n\nПоследняя строка.\n',
+      'Вход.md': 'Переходы: [[Свойства]], [[Только блок]], [[Только блок вставка]] и [[Блок и строка]].\n\nПоследняя строка.\n',
     });
     file = path.join(vault, 'Свойства.md');
     profile = createTestProfile();
@@ -126,26 +127,53 @@ describe('блок свойств', () => {
     await shot(b, 'typed-after-open');
   });
 
-  // Ошибка О-1 (отчёт QA 0.2-8.3, КТ1), исправлена в 0.2-3.2b: в заметке только
-  // из блока без перевода строки в конце строк для курсора в окне нет —
-  // браузер набранное не вставлял, а вставка в конец блока уходила в скрытый
-  // участок. Теперь редактор сам вставляет перевод строки и набранное
-  // (src/editor/live-preview/frontmatter.ts). Тот же блок с переводом строки
-  // в конце — шаг ниже.
-  it('О-1: заметка только из блока без перевода строки: ввод начинается с новой строки (Б-2)', async () => {
+  // Ошибка О-1 (отчёт QA 0.2-8.3, КТ1; 0.2-3.2b): в заметке только из блока
+  // без перевода строки в конце свёрнутый блок был всем текстом — строк для
+  // курсора в окне не было, выделение браузера стояло вне поля, ввод
+  // пропадал (клавиатура, вставка, составление, экранная клавиатура, голос).
+  // Теперь без текста под блоком блок раскрыт, курсор — в видимой строке
+  // `---`, ввод начинается с новой строки (src/editor/live-preview/frontmatter.ts).
+  // Тот же блок с переводом строки в конце — шаг ниже.
+
+  /** Блок раскрыт, курсор — в фокусе, в конце видимой строки `---`. */
+  async function expectExpandedWithCaret(b: WebdriverIO.Browser, what: string): Promise<void> {
+    await b.waitUntil(async () => (await propertiesRow(b)).rows === 0 && (await editorLines(b)).includes('tags: [идея]'), {
+      timeout: 5_000,
+      timeoutMsg: `блок без текста под ним не раскрыт: ${what}`,
+    });
+    await b.waitUntil(async () => (await caret(b)).focused, { timeout: 5_000, timeoutMsg: `нет фокуса в тексте: ${what}` });
+    expect(await caret(b)).toEqual({ focused: true, line: '---', after: '' });
+  }
+
+  it('О-1: заметка только из блока без перевода строки: блок раскрыт, ввод начинается с новой строки (Б-2)', async () => {
     const b = browser();
     const only = path.join(vault, 'Только блок.md');
     await followFromEntry(b, 'Только блок');
-    await waitCollapsed(b, 'заметка только из блока').catch(() => undefined);
-    const before = { caret: await caret(b), lines: await editorLines(b), row: await propertiesRow(b) };
+    await expectExpandedWithCaret(b, 'после перехода');
+    await shot(b, 'only-block-expanded');
     await b.keys([...'Привет']);
-    const text = await waitForFileText(only, (t) => t.includes('Привет'), 'набранное не записано').catch(async (error: unknown) => {
-      const after = { caret: await caret(b), lines: await editorLines(b), row: await propertiesRow(b) };
-      await shot(b, 'only-block-failed');
-      throw new Error(`${String(error)}; до ввода ${JSON.stringify(before)}; после ${JSON.stringify(after)}`);
-    });
+    const text = await waitForFileText(only, (t) => t.includes('Привет'), 'набранное не записано');
     expect(text).toBe(`${ONLY_BLOCK}\nПривет`);
     await shot(b, 'only-block-typed');
+  });
+
+  it('О-1: заметка только из блока без перевода строки: вставка из буфера — с новой строки', async () => {
+    const b = browser();
+    const only = path.join(vault, 'Только блок вставка.md');
+    await followFromEntry(b, 'Только блок вставка');
+    await expectExpandedWithCaret(b, 'перед вставкой');
+    // Буфер обмена ОС из WebDriver не заполнить: вставка — событием `paste` с
+    // данными в поле редактора, тем же путём, что Ctrl+V (выделение браузера —
+    // в строке `---`, проверено выше).
+    await b.execute((selector) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', 'Вставка');
+      const target = document.getSelection()?.focusNode?.parentElement ?? document.querySelector(selector);
+      target?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    }, TEXT);
+    const text = await waitForFileText(only, (t) => t.includes('Вставка'), 'вставленное не записано');
+    expect(text).toBe(`${ONLY_BLOCK}\nВставка`);
+    await shot(b, 'only-block-pasted');
   });
 
   it('заметка только из блока с переводом строки в конце: ввод под блоком', async () => {

@@ -32,7 +32,6 @@ import {
   EditorSelection,
   EditorState,
   Prec,
-  StateEffect,
   StateField,
   Transaction,
   type Extension,
@@ -69,11 +68,15 @@ interface FieldValue {
  * блок остаётся, каким был. Конец блока с текстом ниже — внутри блока.
  */
 function expandedAt(state: EditorState, span: Span, wasExpanded: boolean): boolean {
-  const atEnd = span.to >= state.doc.length;
+  // Под блоком нет текста (нет даже перевода строки): свёрнутый блок был бы
+  // всем текстом, строки для курсора в окне не было бы, и ввод не через
+  // нажатие (вставка, составление, экранная клавиатура, голос) пропадал бы
+  // (О-1). Такой блок всегда раскрыт. С переводом строки в конце пустая
+  // строка под блоком — видимая строка редактора, блок сворачивается.
+  if (span.to >= state.doc.length) return true;
   return state.selection.ranges.some((range) => {
     const { head } = range;
-    if (head > span.from && head < span.to) return true;
-    if (head === span.to) return !atEnd || wasExpanded;
+    if (head > span.from && head <= span.to) return true;
     return head === span.from && wasExpanded;
   });
 }
@@ -218,7 +221,7 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
   const view: PropertiesView = {
     from: span.from,
     to: span.to,
-    expanded: expandedAt(state, span, old?.expanded === true || tr?.effects.some((effect) => effect.is(expandEffect)) === true),
+    expanded: expandedAt(state, span, old?.expanded === true),
     tags: old && sameTags(old.tags, tags) ? old.tags : tags,
   };
   // Сдвинуть прежнее оформление можно, только если правка не задела блок и его
@@ -231,9 +234,6 @@ function compute(state: EditorState, lookup: PropertiesLookup, previous: FieldVa
   }
   return { view, decorations: decorate(state, view) };
 }
-
-/** Раскрыть блок при курсоре на его краю (конец блока без текста под ним): Backspace там. */
-const expandEffect = StateEffect.define<null>();
 
 function propertiesField(lookup: PropertiesLookup) {
   return StateField.define<FieldValue>({
@@ -291,67 +291,41 @@ function down(extend: boolean): Command {
 }
 
 /**
- * Backspace в начале строки под свёрнутым блоком склеил бы её с `---`, а в
- * конце свёрнутого блока без текста под ним стёр бы `-` из невидимой
- * `---`: вместо этого блок раскрывается, курсор — в конце `---`, ничего не
- * удаляется.
+ * Backspace в начале строки под свёрнутым блоком склеил бы её с `---` и
+ * разрушил блок: вместо этого блок раскрывается, курсор — в конце `---`,
+ * ничего не удаляется.
  */
 const backspace: Command = (editor) => {
   const { state } = editor;
   const view = collapsedView(state);
   const { main } = state.selection;
-  if (!view || state.selection.ranges.length !== 1 || !main.empty) return false;
-  if (main.head !== view.to + 1 && !(main.head === view.to && view.to >= state.doc.length)) return false;
-  editor.dispatch({
-    selection: EditorSelection.cursor(view.to),
-    effects: expandEffect.of(null),
-    scrollIntoView: true,
-    userEvent: 'select',
-  });
+  if (!view || state.selection.ranges.length !== 1 || !main.empty || main.head !== view.to + 1) return false;
+  editor.dispatch({ selection: EditorSelection.cursor(view.to), scrollIntoView: true, userEvent: 'select' });
   return true;
 };
 
 /**
- * Составление (IME) в конце свёрнутого блока без текста под ним дописало бы
- * текст к `---`, а переносить правки составления нельзя — их узел уже в окне.
- * Поэтому до появления узла составления отдельной правкой вставляется
- * перевод строки, и составление идёт на новой строке под блоком.
+ * Заметка только из блока свойств (под ним нет текста, блок раскрыт) и
+ * курсор в конце закрывающей строки — там он стоит после открытия заметки.
+ * Составление (IME) дописало бы текст к `---`, а переносить правки
+ * составления нельзя — их узел уже в окне. Поэтому до появления узла
+ * составления отдельной правкой вставляется перевод строки, и составление
+ * идёт на новой строке. Остальной ввод переносит `guardStart`.
  */
 function newLineBeforeComposition(editor: EditorView): void {
-  insertBelowOnlyBlock(editor, '');
-}
-
-/**
- * Свёрнутый блок — весь текст заметки (под ним нет даже перевода строки), а
- * курсор у его края: строк для ввода в окне нет, и браузер набранное не
- * вставляет — ввод пропадал (О-1, WebKitGTK и WebView2). Тогда редактор
- * вставляет сам: перевод строки и `text` одной правкой (одна отмена), курсор
- * — в конце. `false` — не тот случай.
- */
-function insertBelowOnlyBlock(editor: EditorView, text: string): boolean {
   const { state } = editor;
-  const view = collapsedView(state);
+  const view = propertiesView(state);
   const { main } = state.selection;
-  if (!view || view.to < state.doc.length || state.selection.ranges.length !== 1 || !main.empty) return false;
-  if (main.head !== view.to && main.head !== view.from) return false;
-  if (state.readOnly) return false;
-  const insert = `\n${text}`;
+  if (!view || view.to < state.doc.length || state.readOnly) return;
+  if (state.selection.ranges.length !== 1 || !main.empty || main.head !== view.to) return;
   editor.dispatch({
-    changes: { from: view.to, insert },
-    selection: EditorSelection.cursor(view.to + insert.length),
+    changes: { from: view.to, insert: '\n' },
+    selection: EditorSelection.cursor(view.to + 1),
     scrollIntoView: true,
     userEvent: 'input.type',
     // Мимо `guardStart`: перевод строки уже на своём месте, второй не нужен.
     filter: false,
   });
-  return true;
-}
-
-/** Нажатие вводит один символ (без Ctrl, Cmd; Alt — только как AltGr): `Dead`, `Process`, F5 — не ввод. */
-function typedChar(event: KeyboardEvent): string | null {
-  if (event.ctrlKey !== event.altKey || event.metaKey || event.isComposing) return null;
-  if (event.ctrlKey && !event.getModifierState('AltGraph')) return null;
-  return [...event.key].length === 1 ? event.key : null;
 }
 
 /**
@@ -385,20 +359,24 @@ function expandAt(editor: EditorView, view: PropertiesView): void {
  */
 const guardStart = EditorState.transactionFilter.of((tr): Transaction | readonly (Transaction | TransactionSpec)[] | TransactionSpec => {
   const before = propertiesView(tr.startState);
-  if (before?.expanded) return tr;
+  const length = tr.startState.doc.length;
+  // Под блоком нет текста: блок раскрыт (`expandedAt`), но ввод ровно в конец
+  // закрывающей строки — это ввод сразу после открытия заметки (курсор там,
+  // `textStart`): он начинается с новой строки, `---` остаётся ограничителем.
+  const noBody = before !== null && before.to >= length;
+  if (before?.expanded && !noBody) return tr;
   if (before && tr.docChanged && tr.isUserEvent('input') && !tr.isUserEvent('input.type.compose')) {
-    const length = tr.startState.doc.length;
-    // Под блоком нет текста: конец блока — тоже край свёрнутой строки.
-    const noBody = before.to >= length;
     let at: number | null = null;
     let single = true;
     let inserted = '';
     tr.changes.iterChanges((fromA, toA, _fromB, _toB, text) => {
-      if (fromA !== toA || (fromA !== before.from && !(noBody && fromA === before.to)) || (at !== null && at !== fromA)) single = false;
+      const edge = noBody ? fromA === before.to : fromA === before.from;
+      if (fromA !== toA || !edge || (at !== null && at !== fromA)) single = false;
       at = fromA;
       inserted += text.toString();
     });
-    if (single && at !== null) {
+    // Перевод строки (Enter) в конце блока без текста под ним — и так новая строка.
+    if (single && at !== null && !(noBody && inserted.startsWith('\n'))) {
       // Без текста под блоком набранное начинается с новой строки: `---` остаётся закрывающей строкой.
       const start = noBody ? length : textStart(tr.startState.doc);
       const prefix = noBody ? '\n' : '';
@@ -466,18 +444,6 @@ export function frontmatterPreview(lookup: PropertiesLookup): Extension {
       compositionstart(_event, editor) {
         newLineBeforeComposition(editor);
         return false;
-      },
-      keydown(event, editor) {
-        const char = typedChar(event);
-        if (char === null || !insertBelowOnlyBlock(editor, char)) return false;
-        event.preventDefault();
-        return true;
-      },
-      beforeinput(event, editor) {
-        // Ввод без нажатия клавиши (экранная клавиатура, автозамена): то же.
-        if (event.inputType !== 'insertText' || !event.data || !insertBelowOnlyBlock(editor, event.data)) return false;
-        event.preventDefault();
-        return true;
       },
       mousedown(event, editor) {
         if (event.button !== 0 || !(event.target instanceof Element)) return false;

@@ -1,10 +1,9 @@
 // Заметка только из блока свойств без перевода строки в конце (О-1, отчёт QA
-// 0.2-8.3): свёрнутый блок — весь текст, строк для курсора в окне нет, и
-// браузеру некуда вставить набранное — ввод пропадал (WebKitGTK, WebView2).
-// Ввод с клавиатуры и `beforeinput` (экранная клавиатура, вставка без
-// клавиши) редактор берёт сам: перевод строки и набранное — одной правкой.
-// В jsdom у нажатия и `beforeinput` нет действия по умолчанию, как и у
-// браузера без места для ввода: без исправления текст не меняется.
+// 0.2-8.3): свёрнутый блок был бы всем текстом — строк для курсора в окне
+// нет, выделение браузера вне поля, и вставка, составление, экранная
+// клавиатура, голосовой ввод до редактора не доходили. Поэтому без текста
+// под блоком блок не сворачивается: он раскрыт, курсор — в видимой строке, ввод
+// идёт обычным путём; ввод в конец `---` начинается с новой строки (`guardStart`).
 import { undo } from '@codemirror/commands';
 import { EditorView } from '@codemirror/view';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -46,59 +45,39 @@ function press(editor: EditorView, key: string, init: KeyboardEventInit = {}): K
   return event;
 }
 
-describe('О-1: заметка только из блока свойств без перевода строки', () => {
-  it('ввод с клавиатуры — с новой строки под блоком, блок цел', () => {
+describe('О-1: заметка только из блока свойств', () => {
+  it('без текста под блоком блок раскрыт: строки видны, курсор в строке', () => {
     const editor = open();
-    expect(editor.contentDOM.querySelectorAll('.cm-line')).toHaveLength(0);
-    expect(press(editor, 'П').defaultPrevented).toBe(true);
-    expect(editor.state.doc.toString()).toBe(`${ONLY}\nП`);
-    expect(editor.state.selection.main.head).toBe(editor.state.doc.length);
+    expect(collapsed(editor)).toBe(false);
+    expect([...editor.contentDOM.querySelectorAll('.cm-line')].map((line) => line.textContent)).toEqual(['---', 'tags: [идея]', '---']);
+    // Курсор вне блока (в начале текста) — блок всё равно раскрыт.
+    editor.dispatch({ selection: { anchor: 0 } });
+    expect(collapsed(editor)).toBe(false);
+  });
+
+  it('с переводом строки в конце блок свёрнут, пустая строка под ним — видимая строка редактора', () => {
+    const editor = open(`${ONLY}\n`);
     expect(collapsed(editor)).toBe(true);
-    // Набранное — на экране, в строке под свёрнутым блоком, а не в скрытом участке.
-    expect([...editor.contentDOM.querySelectorAll('.cm-line')].map((line) => line.textContent)).toEqual(['П']);
-    // Дальше под блоком есть строка — ввод идёт обычным путём браузера.
-    expect(press(editor, 'р').defaultPrevented).toBe(false);
-    // Отмена возвращает файл к исходному виду.
+    expect([...editor.contentDOM.querySelectorAll('.cm-line')].map((line) => line.textContent)).toEqual(['']);
+  });
+
+  it('вставка из буфера (Ctrl+V) в конец блока — с новой строки, блок цел', () => {
+    const editor = open();
+    const paste = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: { getData: (type: string) => (type === 'text/plain' ? 'Вставка' : '') } });
+    editor.contentDOM.dispatchEvent(paste);
+    expect(editor.state.doc.toString()).toBe(`${ONLY}\nВставка`);
+    expect(collapsed(editor)).toBe(true);
     undo(editor);
     expect(editor.state.doc.toString()).toBe(ONLY);
   });
 
-  it('вставка в конец блока (правка) — строка под блоком видна', () => {
+  it('нажатия и `beforeinput` редактор не перехватывает: ввод идёт обычным путём браузера', () => {
     const editor = open();
-    editor.dispatch({ changes: { from: ONLY.length, insert: '\nтекст' }, selection: { anchor: ONLY.length + 6 }, filter: false });
-    expect([...editor.contentDOM.querySelectorAll('.cm-line')].map((line) => line.textContent)).toEqual(['текст']);
-    expect(collapsed(editor)).toBe(true);
-  });
-
-  it('ввод из `beforeinput` без нажатия клавиши (экранная клавиатура) — с новой строки', () => {
-    const editor = open();
+    expect(press(editor, 'П').defaultPrevented).toBe(false);
     const event = new InputEvent('beforeinput', { inputType: 'insertText', data: 'Х', bubbles: true, cancelable: true });
     editor.contentDOM.dispatchEvent(event);
-    expect(event.defaultPrevented).toBe(true);
-    expect(editor.state.doc.toString()).toBe(`${ONLY}\nХ`);
-  });
-
-  it('курсор в начале текста — то же', () => {
-    const editor = open(ONLY, 0);
-    press(editor, 'Ж');
-    expect(editor.state.doc.toString()).toBe(`${ONLY}\nЖ`);
-  });
-
-  it('сочетания и служебные клавиши не перехватываются', () => {
-    const editor = open();
-    for (const key of ['Shift', 'Dead', 'Process', 'F5']) expect(press(editor, key).defaultPrevented, key).toBe(false);
-    // Сочетание с Ctrl (Ctrl+B не назначено) — не ввод: текст не меняется.
-    press(editor, 'b', { ctrlKey: true });
-    press(editor, 'b', { metaKey: true });
+    expect(event.defaultPrevented).toBe(false);
     expect(editor.state.doc.toString()).toBe(ONLY);
-  });
-
-  it('блок с текстом под ним и раскрытый блок — нажатие не перехватывается', () => {
-    const below = open(`${ONLY}\nтекст`);
-    expect(press(below, 'я').defaultPrevented).toBe(false);
-    below.destroy();
-    const expanded = open(ONLY, 6);
-    expect(collapsed(expanded)).toBe(false);
-    expect(press(expanded, 'я').defaultPrevented).toBe(false);
   });
 });
