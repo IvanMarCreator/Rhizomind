@@ -41,8 +41,8 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::{
     CoreError, CoreResult, EntryKind, ErrorCode, FileVersion, NameCheck, NameProblem,
-    NoteReadResponse, NoteWriteResponse, ReadOnlyReason, Settings, TrashOutcome, TreeEntry,
-    VaultPath, Workspace,
+    NoteReadResponse, NoteWriteResponse, ReadOnlyReason, RelinkFailureReason, Settings,
+    TrashOutcome, TreeEntry, VaultPath, Workspace,
 };
 
 pub use contour::{SERVICE_DIR, check_component, is_service_dir};
@@ -622,6 +622,112 @@ impl Vault {
         Err(CoreError::new(ErrorCode::IoFailed))
     }
 
+    /// Записывает заметку, которую пользователь мог и не открывать, по плану
+    /// обновления ссылок (задача 0.2-4.5; С2-5.4, шаг 4): прочитать файл,
+    /// построить новый текст `build` из **свежего** текста, записать
+    /// атомарно с проверкой версии.
+    ///
+    /// - `build` получает файл целиком, как на диске (BOM как `U+FEFF` в
+    ///   начале, переносы как есть), и возвращает новый текст или `None` —
+    ///   менять нечего (файл не трогается, [`Rebuilt::Unchanged`]).
+    /// - Больше `max_bytes` (настройка «максимальный размер для
+    ///   редактирования») — `too_large`; не UTF-8 — `not_utf8`; файл только
+    ///   для чтения, занят другой программой, нет прав — `busy`; прочие сбои
+    ///   ввода-вывода и пути вне контура — `io`. Файла нет —
+    ///   [`Rebuilt::Gone`]: его удалили или переместили, переписывать нечего.
+    /// - Файл изменили снаружи между чтением и заменой — текст строится
+    ///   заново из свежего, до [`WRITE_ATTEMPTS`] попыток; после этого —
+    ///   `busy`. Чужая правка не затирается (инвариант 4), копия конфликта не
+    ///   нужна: новый текст всегда построен из того, что на диске.
+    /// - `before_replace(хэш прочитанного, хэш нового содержимого)`
+    ///   вызывается перед заменой (после записи временного файла, до
+    ///   повторной сверки с диском) — отметка в журнале обновления ссылок;
+    ///   ошибка — `io`, файл не заменяется.
+    /// - Своя запись — в журнал своих записей до замены (наблюдатель не
+    ///   примет её за внешнюю); дата создания сохраняется, как у
+    ///   [`Self::write_note`].
+    pub fn write_note_rebuilt(
+        &self,
+        path: &VaultPath,
+        max_bytes: u64,
+        build: &dyn Fn(&str) -> Option<String>,
+        before_replace: &mut dyn FnMut(&str, &str) -> CoreResult<()>,
+    ) -> Result<Rebuilt, RelinkFailureReason> {
+        let io = |_| RelinkFailureReason::Io;
+        let abs = self.contour.resolve(path).map_err(io)?;
+        require_note_name(path).map_err(io)?;
+        let max_bytes = max_bytes.min(crate::commands::limits::MAX_NOTE_BYTES);
+        for _ in 0..WRITE_ATTEMPTS {
+            let meta = match std::fs::metadata(&abs) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Rebuilt::Gone),
+                Err(e) => return Err(rebuild_failure(&e)),
+            };
+            if meta.is_dir() {
+                return Ok(Rebuilt::Gone);
+            }
+            if meta.len() > max_bytes {
+                return Err(RelinkFailureReason::TooLarge);
+            }
+            if meta.permissions().readonly() {
+                return Err(RelinkFailureReason::Busy);
+            }
+            let (disk, disk_hash) = self.read_for_rebuild(&abs, max_bytes)?;
+            let Ok(text) = std::str::from_utf8(&disk) else {
+                return Err(RelinkFailureReason::NotUtf8);
+            };
+            let Some(new_text) = build(text) else {
+                return Ok(Rebuilt::Unchanged);
+            };
+            let bytes = new_text.into_bytes();
+            let temp = self.temp(atomic::Kind::Note, &bytes).map_err(io)?;
+            atomic::temp_written_hook();
+            let hash = blake3::hash(&bytes).to_hex().to_string();
+            before_replace(&disk_hash, &hash).map_err(io)?;
+            // Повторная сверка перед заменой: внешняя правка — строим заново.
+            if self.disk_hash_and_size(&abs).map_err(io)? != (disk_hash, disk.len() as u64) {
+                continue;
+            }
+            self.own_writes.record(path, &hash, bytes.len() as u64);
+            atomic::replace(temp, &abs).map_err(|e| rebuild_failure(&e))?;
+            replaced_hook();
+            // Файл уже заменён: заметка записана, даже если версию с диска
+            // прочитать не удалось (дата изменения тогда неизвестна).
+            let size = bytes.len() as u64;
+            let version = self
+                .version_after_write(&abs, hash.clone(), size)
+                .unwrap_or(FileVersion {
+                    hash,
+                    size,
+                    modified_ms: 0,
+                });
+            return Ok(Rebuilt::Written(version));
+        }
+        Err(RelinkFailureReason::Busy)
+    }
+
+    /// Байты заметки и их хэш для [`Self::write_note_rebuilt`]: итоговый
+    /// путь проверен по дескриптору, больше `max_bytes` не читается.
+    fn read_for_rebuild(
+        &self,
+        abs: &Path,
+        max_bytes: u64,
+    ) -> Result<(Vec<u8>, String), RelinkFailureReason> {
+        let file = File::open(abs).map_err(|e| rebuild_failure(&e))?;
+        self.contour
+            .check_opened(&file, abs, false)
+            .map_err(|_| RelinkFailureReason::Io)?;
+        let mut bytes = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| rebuild_failure(&e))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(RelinkFailureReason::TooLarge);
+        }
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        Ok((bytes, hash))
+    }
+
     /// Хэш и размер файла на диске сейчас.
     fn disk_hash_and_size(&self, abs: &Path) -> CoreResult<(String, u64)> {
         let mut file = File::open(abs).map_err(io_error)?;
@@ -1133,6 +1239,101 @@ impl Vault {
             other => other.map_err(io_error),
         }
     }
+
+    /// Удаляет служебный файл `file` из `.rhizomind/`. Служебная папка
+    /// проверена по дескриптору; ссылка или не файл не удаляются
+    /// (`outside_vault`); файла нет — не ошибка.
+    pub(crate) fn remove_service_file(&self, file: ServiceFile) -> CoreResult<()> {
+        self.check_service_dir()?;
+        let path = self.service.join(file.name());
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
+                Err(contour::outside_vault())
+            }
+            Ok(_) => match std::fs::remove_file(&path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_error(e)),
+                _ => Ok(()),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_error(e)),
+        }
+    }
+
+    /// Открывает существующий служебный файл `file` в `.rhizomind/` для
+    /// дописывания в конец (отметки журнала обновления ссылок). Имя
+    /// фиксированное ([`ServiceFile`]); служебная папка проверена по
+    /// дескриптору; файл-ссылка или не файл — `outside_vault` (на Unix ещё и
+    /// `O_NOFOLLOW`); **до** первой записи по дескриптору проверены итоговый
+    /// путь и то, что у файла одно имя (жёсткая ссылка — `outside_vault`). Файла
+    /// нет — `not_found` (он создаётся атомарно [`Self::write_service_file`]).
+    pub(crate) fn open_service_append(&self, file: ServiceFile) -> CoreResult<ServiceAppend> {
+        self.check_service_dir()?;
+        let path = self.service.join(file.name());
+        let meta = std::fs::symlink_metadata(&path).map_err(io_error)?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(contour::outside_vault());
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let handle = options.open(&path).map_err(io_error)?;
+        self.contour
+            .check_opened_in(&handle, &path, &self.service)?;
+        // Жёсткая ссылка: тот же файл может иметь имя и вне хранилища.
+        if !single_name(&handle) {
+            return Err(contour::outside_vault());
+        }
+        Ok(ServiceAppend(handle))
+    }
+}
+
+/// Служебные файлы с фиксированным именем, которые ядро удаляет или
+/// дописывает (не через атомарную замену).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceFile {
+    /// Журнал обновления ссылок `link-update.json` (задача 0.2-4.5).
+    LinkUpdate,
+}
+
+impl ServiceFile {
+    /// Имя файла в `.rhizomind/`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ServiceFile::LinkUpdate => "link-update.json",
+        }
+    }
+}
+
+/// Служебный файл, открытый для дописывания ([`Vault::open_service_append`]);
+/// дескриптор проверен по контуру.
+#[derive(Debug)]
+pub struct ServiceAppend(File);
+
+impl ServiceAppend {
+    /// Дописывает `bytes` в конец; `sync` — сбросить на диск до возврата.
+    pub fn append(&mut self, bytes: &[u8], sync: bool) -> CoreResult<()> {
+        use std::io::Write;
+        self.0.write_all(bytes).map_err(io_error)?;
+        if sync {
+            self.0.sync_data().map_err(io_error)?;
+        }
+        Ok(())
+    }
+}
+
+/// Итог [`Vault::write_note_rebuilt`], когда пропуска нет.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rebuilt {
+    /// Записана новая версия.
+    Written(FileVersion),
+    /// Менять нечего — файл не тронут.
+    Unchanged,
+    /// Заметки больше нет (удалили или переместили) — переписывать нечего.
+    Gone,
 }
 
 /// Результат чтения служебного файла.
@@ -1267,6 +1468,52 @@ fn io_error(error: std::io::Error) -> CoreError {
     })
 }
 
+/// У открытого файла ровно одно имя (не жёсткая ссылка): Unix — `nlink`,
+/// Windows — `nNumberOfLinks` из `GetFileInformationByHandle`.
+fn single_name(file: &File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        file.metadata().is_ok_and(|meta| meta.nlink() == 1)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        // SAFETY: структура из простых чисел, нули — допустимое значение.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: дескриптор открыт и живёт дольше вызова; `info` — наш буфер.
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+        ok != 0 && info.nNumberOfLinks == 1
+    }
+}
+
+/// Ошибка ОС при записи чужой заметки → причина пропуска (С2-3.5 «Где
+/// ссылки не могут быть обновлены»): занят другой программой, только чтение,
+/// нет прав — `busy` (можно повторить); остальное — `io`.
+fn rebuild_failure(error: &std::io::Error) -> RelinkFailureReason {
+    use std::io::ErrorKind;
+    if matches!(
+        error.kind(),
+        ErrorKind::PermissionDenied
+            | ErrorKind::ReadOnlyFilesystem
+            | ErrorKind::ResourceBusy
+            | ErrorKind::ExecutableFileBusy
+    ) {
+        return RelinkFailureReason::Busy;
+    }
+    // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION,
+    // ERROR_UNABLE_TO_REMOVE_REPLACED (`ReplaceFileW` не смог убрать
+    // заменяемый файл — он открыт без общего доступа).
+    #[cfg(windows)]
+    if matches!(error.raw_os_error(), Some(32 | 33 | 1175)) {
+        return RelinkFailureReason::Busy;
+    }
+    RelinkFailureReason::Io
+}
+
 /// Один из компонентов пути — служебная папка `.rhizomind` (по ключу имени).
 fn is_inside_service_dir(path: &Path) -> bool {
     path.components()
@@ -1289,6 +1536,27 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn after_disk_rename(action: impl FnOnce() + 'static) {
     AFTER_DISK_RENAME.with(|cell| *cell.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_REPLACED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Тестовый шов: `action` выполнится один раз в этом потоке сразу после
+/// замены файла в [`Vault::write_note_rebuilt`], до чтения версии.
+#[cfg(test)]
+pub(crate) fn after_replaced(action: impl FnOnce() + 'static) {
+    AFTER_REPLACED.with(|cell| *cell.borrow_mut() = Some(Box::new(action)));
+}
+
+/// Точка шва [`after_replaced`]; вне тестов ничего не делает.
+fn replaced_hook() {
+    #[cfg(test)]
+    if let Some(action) = AFTER_REPLACED.with(|cell| cell.borrow_mut().take()) {
+        action();
+    }
 }
 
 /// Точка шва [`after_disk_rename`]; вне тестов ничего не делает.

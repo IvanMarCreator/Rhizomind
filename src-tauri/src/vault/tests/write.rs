@@ -405,3 +405,279 @@ fn write_keeps_file_permissions() {
     let mode = std::fs::metadata(&path).expect("мета").permissions().mode() & 0o777;
     assert_eq!(mode, 0o640);
 }
+
+// --- Запись чужой заметки по плану обновления ссылок (задача 0.2-4.5) ---
+
+use crate::commands::RelinkFailureReason;
+use crate::vault::Rebuilt;
+
+const LIMIT: u64 = 10 * 1024 * 1024;
+
+/// Замена `Встреча` → `Планёрка` во всём тексте (как построитель плана).
+fn swap(text: &str) -> Option<String> {
+    text.contains("Встреча")
+        .then(|| text.replace("Встреча", "Планёрка"))
+}
+
+fn no_journal(_: &str, _: &str) -> Result<(), CoreError> {
+    Ok(())
+}
+
+#[test]
+fn rebuilt_note_keeps_bom_and_crlf_and_records_own_write() {
+    let t = TestVault::new();
+    t.put(
+        "Список.md",
+        b"\xEF\xBB\xBF[[\xD0\x92\xD1\x81\xD1\x82\xD1\x80\xD0\xB5\xD1\x87\xD0\xB0]]\r\n",
+    );
+    let mut hashes = Vec::new();
+
+    let result = t.vault.write_note_rebuilt(
+        &vp("Список.md"),
+        LIMIT,
+        &swap,
+        &mut |before: &str, after: &str| {
+            hashes.push((before.to_owned(), after.to_owned()));
+            Ok(())
+        },
+    );
+
+    let Ok(Rebuilt::Written(version)) = result else {
+        panic!("ожидалась запись: {result:?}");
+    };
+    let expected = "\u{feff}[[Планёрка]]\r\n".as_bytes();
+    assert_eq!(t.bytes("Список.md"), expected);
+    assert_eq!(version.hash, blake3::hash(expected).to_hex().to_string());
+    let read = blake3::hash(
+        b"\xEF\xBB\xBF[[\xD0\x92\xD1\x81\xD1\x82\xD1\x80\xD0\xB5\xD1\x87\xD0\xB0]]\r\n",
+    )
+    .to_hex()
+    .to_string();
+    assert_eq!(
+        hashes,
+        [(read, version.hash.clone())],
+        "журнал узнал хэш до замены"
+    );
+    assert!(
+        t.vault
+            .is_own_write(&vp("Список.md"), &version.hash, version.size)
+    );
+}
+
+#[test]
+fn rebuilt_nothing_to_change_leaves_the_file_alone() {
+    let t = TestVault::new();
+    t.put("Список.md", "без ссылок\n");
+    let modified = std::fs::metadata(t.file("Список.md"))
+        .expect("мета")
+        .modified()
+        .expect("дата");
+
+    let result = t
+        .vault
+        .write_note_rebuilt(&vp("Список.md"), LIMIT, &swap, &mut no_journal);
+
+    assert_eq!(result, Ok(Rebuilt::Unchanged));
+    assert_eq!(
+        std::fs::metadata(t.file("Список.md"))
+            .expect("мета")
+            .modified()
+            .expect("дата"),
+        modified
+    );
+}
+
+#[test]
+fn rebuilt_missing_note_is_gone_and_creates_nothing() {
+    let t = TestVault::new();
+    let result = t
+        .vault
+        .write_note_rebuilt(&vp("Нет.md"), LIMIT, &swap, &mut no_journal);
+    assert_eq!(result, Ok(Rebuilt::Gone));
+    assert!(!t.file("Нет.md").exists());
+}
+
+#[test]
+fn rebuilt_skips_large_invalid_readonly_and_outside() {
+    let t = TestVault::new();
+    t.put("Большая.md", format!("Встреча{}", "x".repeat(100)));
+    t.put(
+        "Битая.md",
+        b"\xD0\x92\xD1\x81\xD1\x82\xD1\x80\xD0\xB5\xD1\x87\xD0\xB0 \xFF",
+    );
+    let readonly = t.put("Только.md", "Встреча\n");
+    let mut permissions = std::fs::metadata(&readonly).expect("мета").permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&readonly, permissions.clone()).expect("права");
+    symlink_dir(&t.outside(), &t.file("Наружу"));
+
+    let write = |path: &str, limit: u64| {
+        t.vault
+            .write_note_rebuilt(&vp(path), limit, &swap, &mut no_journal)
+    };
+    assert_eq!(write("Большая.md", 50), Err(RelinkFailureReason::TooLarge));
+    assert_eq!(write("Битая.md", LIMIT), Err(RelinkFailureReason::NotUtf8));
+    assert_eq!(write("Только.md", LIMIT), Err(RelinkFailureReason::Busy));
+    assert_eq!(
+        write("Наружу/secret.md", LIMIT),
+        Err(RelinkFailureReason::Io)
+    );
+    assert_eq!(
+        write(".rhizomind/settings.json", LIMIT),
+        Err(RelinkFailureReason::Io)
+    );
+
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&readonly, permissions).expect("права");
+    assert_eq!(t.bytes("Только.md"), "Встреча\n".as_bytes());
+    assert_eq!(
+        std::fs::read(t.outside().join("secret.md")).expect("секрет"),
+        "секрет\n".as_bytes()
+    );
+}
+
+#[test]
+fn rebuilt_journal_failure_writes_nothing() {
+    let t = TestVault::new();
+    t.put("Список.md", "Встреча\n");
+    let result = t.vault.write_note_rebuilt(
+        &vp("Список.md"),
+        LIMIT,
+        &swap,
+        &mut |_: &str, _: &str| Err(CoreError::new(ErrorCode::IoFailed)),
+    );
+    assert_eq!(result, Err(RelinkFailureReason::Io));
+    assert_eq!(t.bytes("Список.md"), "Встреча\n".as_bytes());
+}
+
+#[test]
+fn rebuilt_external_edit_is_rebuilt_from_fresh_text() {
+    let t = TestVault::new();
+    let path = t.put("Список.md", "Встреча\n");
+    crate::vault::atomic::after_temp_written(Box::new(move || {
+        std::fs::write(&path, "Встреча\nчужая правка\n").expect("правка");
+    }));
+
+    let result = t
+        .vault
+        .write_note_rebuilt(&vp("Список.md"), LIMIT, &swap, &mut no_journal);
+
+    assert!(matches!(result, Ok(Rebuilt::Written(_))), "{result:?}");
+    assert_eq!(t.bytes("Список.md"), "Планёрка\nчужая правка\n".as_bytes());
+}
+
+/// Файл уже заменён, а версию после записи прочитать не удалось (файл
+/// держит антивирус, его убрали снаружи): заметка всё равно записана —
+/// `Written` с хэшем и размером записанного, а не `io` (иначе повтор
+/// переписал бы её второй раз без сверки хэшей).
+#[test]
+fn rebuilt_version_read_failure_after_replace_is_still_written() {
+    let t = TestVault::new();
+    let path = t.put("Список.md", "Встреча\n");
+    crate::vault::after_replaced(move || {
+        std::fs::remove_file(&path).expect("файл убран снаружи");
+    });
+
+    let result = t
+        .vault
+        .write_note_rebuilt(&vp("Список.md"), LIMIT, &swap, &mut no_journal);
+
+    let Ok(Rebuilt::Written(version)) = result else {
+        panic!("ожидалась запись: {result:?}");
+    };
+    let expected = "Планёрка\n".as_bytes();
+    assert_eq!(version.hash, blake3::hash(expected).to_hex().to_string());
+    assert_eq!(version.size, expected.len() as u64);
+}
+
+// --- Дописывание служебного файла (журнал обновления ссылок, 0.2-4.5) ---
+
+use crate::vault::ServiceFile;
+
+fn journal_path(t: &TestVault) -> PathBuf {
+    t.root()
+        .join(".rhizomind")
+        .join(ServiceFile::LinkUpdate.name())
+}
+
+#[test]
+fn service_append_writes_to_the_existing_file_only() {
+    let t = TestVault::new();
+    assert_eq!(
+        code(t.vault.open_service_append(ServiceFile::LinkUpdate)),
+        ErrorCode::NotFound
+    );
+    assert!(!journal_path(&t).exists(), "файл не создаётся");
+
+    t.vault
+        .write_service_file(ServiceFile::LinkUpdate.name(), b"head\n")
+        .expect("заголовок");
+    let mut file = t
+        .vault
+        .open_service_append(ServiceFile::LinkUpdate)
+        .expect("открыт");
+    file.append(b"mark\n", true).expect("дописано");
+    drop(file);
+    assert_eq!(
+        std::fs::read(journal_path(&t)).expect("файл"),
+        b"head\nmark\n"
+    );
+}
+
+#[test]
+fn service_append_refuses_symlinked_file() {
+    let t = TestVault::new();
+    let target = t.outside().join("journal.json");
+    std::fs::write(&target, "снаружи\n").expect("цель");
+    symlink_file(&target, &journal_path(&t));
+
+    assert!(
+        t.vault
+            .open_service_append(ServiceFile::LinkUpdate)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("цель"),
+        "снаружи\n".as_bytes()
+    );
+}
+
+#[test]
+fn service_append_refuses_symlinked_service_dir() {
+    let t = TestVault::new();
+    let outside_service = t.outside().join("service");
+    std::fs::create_dir(&outside_service).expect("папка");
+    let target = outside_service.join(ServiceFile::LinkUpdate.name());
+    std::fs::write(&target, "снаружи\n").expect("цель");
+    std::fs::remove_dir_all(t.root().join(".rhizomind")).expect("служебная папка");
+    symlink_dir(&outside_service, &t.root().join(".rhizomind"));
+
+    assert!(
+        t.vault
+            .open_service_append(ServiceFile::LinkUpdate)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("цель"),
+        "снаружи\n".as_bytes()
+    );
+}
+
+#[test]
+fn service_append_refuses_hard_link() {
+    let t = TestVault::new();
+    let target = t.outside().join("journal.json");
+    std::fs::write(&target, "снаружи\n").expect("цель");
+    std::fs::hard_link(&target, journal_path(&t)).expect("жёсткая ссылка");
+
+    assert!(
+        t.vault
+            .open_service_append(ServiceFile::LinkUpdate)
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("цель"),
+        "снаружи\n".as_bytes()
+    );
+}
