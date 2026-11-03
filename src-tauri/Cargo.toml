@@ -72,6 +72,9 @@ notify = "=9.0.0-rc.6"
 notify-debouncer-full = "=0.8.0-rc.2"
 # Идентификатор файла (FileId NTFS, inode) — распознавание переименований.
 file-id = "=0.2.3"
+# Знак плана переписывания ссылок (задача 0.2-4.6) — из криптостойкого
+# генератора ОС. Уже был в дереве через tempfile и uuid: новых крейтов нет.
+getrandom = { version = "=0.4.3", default-features = false }
 # Папка списка хранилищ: data_local_dir (Windows %LOCALAPPDATA%, решение 46).
 # Уже был в дереве через tauri: новых крейтов нет.
 dirs = "=7.0.0"

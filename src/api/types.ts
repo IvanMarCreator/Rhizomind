@@ -475,8 +475,11 @@ export interface LinksFlushDoneRequest {
   saved: boolean;
 }
 
-/** Почему заметка не переписана; «Повторить» — только `busy` и `io` (решение 115). */
-export type RelinkFailureReason = 'too_large' | 'not_utf8' | 'busy' | 'io';
+/**
+ * Почему заметка не переписана; «Повторить» — только `busy` и `io` (решение 115).
+ * `conflict` (Р20) — изменилась, пока шло обновление: повтор опасен, «Повторить» нет.
+ */
+export type RelinkFailureReason = 'too_large' | 'not_utf8' | 'busy' | 'io' | 'conflict';
 
 export interface RelinkFailure {
   path: VaultPath;
@@ -644,6 +647,9 @@ export interface LinksUpdatedPayload {
   updated: number;
   failed: RelinkFailure[];
   retry_token: RelinkToken | null;
+  /** Переименования «старое → новое», не больше `LIMITS.max_pending_renames`; у `duplicate` и `resumed` — пусто. */
+  renames: PathRename[];
+  renames_total: number;
 }
 
 /** `links:progress`: ход переписывания (перенос большой папки), не чаще `LIMITS.max_events_per_sec` в секунду. */

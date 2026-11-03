@@ -330,6 +330,13 @@ export const ru = {
   'editor.properties': 'Свойства',
   'editor.properties.expand': 'Показать свойства',
 
+  // 0.2-4.6 Причина conflict (Р20) и имена «старое → новое» в списке сбоев (ревью 0.2-5.1, М2)
+  'relink.failure.conflict': 'Изменилась, пока шло обновление — проверьте ссылки вручную',
+  'relink.failed.noRetryConflict': 'Повтор не поможет: заметки изменились, пока шло обновление.',
+  'relink.failed.noRetryHintConflict': 'Откройте эти заметки и проверьте ссылки вручную.',
+  'relink.failed.renamed': '«{from}» → «{to}»',
+  'relink.failed.renamedMore': '«{from}» → «{to}» и ещё {count}',
+
   // 0.2-5.1 Запись ввода перед переписыванием и уведомления о результате (С2-3.5, С2-5.4, макеты У-1, У-3)
   'relink.notesIn.one': '{count} заметке',
   'relink.notesIn.many': '{count} заметках',

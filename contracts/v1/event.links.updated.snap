@@ -19,6 +19,18 @@ source: src/commands/contract_tests.rs
       }
     ],
     "reason": "external_rename",
+    "renames": [
+      {
+        "from": [
+          "Встреча.md"
+        ],
+        "to": [
+          "Архив",
+          "Встреча.md"
+        ]
+      }
+    ],
+    "renames_total": 1,
     "retry_token": "22222222222222222222222222222222",
     "updated": 11
   }

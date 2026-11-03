@@ -1,13 +1,15 @@
 //! Команды группы «Файлы»: дерево и операции с ним.
 
 use serde::{Deserialize, Serialize};
-use tauri::{Runtime, State, Window};
+use tauri::{Manager, Runtime, State, Window};
 
 use super::error::{CoreError, CoreResult, NameProblem};
-use super::events::{RelinkOutcome, TreeChange};
+use super::events::{PathRename, RelinkOutcome, TreeChange};
 use super::limits;
+use super::relink_cmds::{moved_path, rename_with_links, renamed_path};
 use super::types::{EntryKind, RelinkToken, VaultPath};
 use super::{Core, blocking, check_entry_name, checked_path};
+use crate::events::WindowEmitter;
 
 /// Элемент дерева файлов.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,9 +265,11 @@ pub async fn folder_create<R: Runtime>(
 /// `note_extension`); смена только регистра разрешена.
 ///
 /// `links: keep` (по умолчанию) — ссылки не трогаются, как в 0.1 (С3.2).
-/// `links: update` с `token` из `relink_preview` — ссылки обновляются по
-/// плану ядра (С2-3.5, порядок — модуль `relink_cmds`); реализация — задача
-/// 0.2-4.6, до неё знак ядру неизвестен (`invalid_argument`, `token`).
+/// `links: update` с `token` из `relink_preview` для этого же переименования —
+/// ссылки обновляются по плану, который ядро считает само (С2-3.5; порядок —
+/// модуль `relink_cmds`, [`rename_with_links`]). Знак неизвестный,
+/// использованный, чужой, просроченный или от другого переименования —
+/// `invalid_argument` (`token`) до любого действия с файлами.
 #[tauri::command]
 pub async fn entry_rename<R: Runtime>(
     window: Window<R>,
@@ -283,10 +287,23 @@ pub async fn entry_rename<R: Runtime>(
         return Err(CoreError::invalid_name(problem));
     }
     let open = core.require_vault(window.label())?;
-    if let Some(token) = &request.token {
-        super::relink_cmds::unknown_token(token, "token")?;
+    if let Some(token) = request.token {
+        let rename = PathRename {
+            from: request.path.clone(),
+            to: renamed_path(&request.path, &request.new_name),
+        };
+        let ticket = open.relink.take_preview(window.label(), &token, &rename)?;
+        let emit = WindowEmitter::new(window.app_handle().clone(), window.label());
+        return blocking(move || {
+            rename_with_links(&open, &emit, &rename, ticket, || {
+                open.vault.rename(&request.path, &request.new_name)
+            })
+        })
+        .await;
     }
     blocking(move || {
+        // В общей очереди хранилища: не посреди переписывания ссылок.
+        let _serial = open.relink.serial();
         let path = open.vault.rename(&request.path, &request.new_name)?;
         open.apply_own(&[TreeChange::Renamed {
             from: request.path,
@@ -309,10 +326,22 @@ pub async fn entry_move<R: Runtime>(
     checked_path(&request.new_dir, "new_dir")?;
     check_links_mode(request.links, request.token.as_ref())?;
     let open = core.require_vault(window.label())?;
-    if let Some(token) = &request.token {
-        super::relink_cmds::unknown_token(token, "token")?;
+    if let Some(token) = request.token {
+        let rename = PathRename {
+            from: request.path.clone(),
+            to: moved_path(&request.path, &request.new_dir),
+        };
+        let ticket = open.relink.take_preview(window.label(), &token, &rename)?;
+        let emit = WindowEmitter::new(window.app_handle().clone(), window.label());
+        return blocking(move || {
+            rename_with_links(&open, &emit, &rename, ticket, || {
+                open.vault.move_entry(&request.path, &request.new_dir)
+            })
+        })
+        .await;
     }
     blocking(move || {
+        let _serial = open.relink.serial();
         let path = open.vault.move_entry(&request.path, &request.new_dir)?;
         open.apply_own(&[TreeChange::Renamed {
             from: request.path,
