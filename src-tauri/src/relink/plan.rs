@@ -307,7 +307,9 @@ fn inside<'p>(path: &'p [String], folder: &[String]) -> Option<&'p [String]> {
 /// заметку, главнее): переименование того, что уже переименовано, меняет
 /// «куда» прежнего; переименование заметки внутри переименованной папки —
 /// своё переименование от исходного пути, раньше папки; переименования,
-/// вернувшие всё на место, убираются.
+/// вернувшие всё на место, убираются — кроме тех, что держат заметку на
+/// месте против более позднего переименования её папки (`Х → Альфа`,
+/// `Альфа/План.md → Х/План.md`).
 fn collapse(renames: &[PathRename]) -> Vec<PathRename> {
     let mut out: Vec<PathRename> = Vec::new();
     for event in renames {
@@ -346,7 +348,20 @@ fn collapse(renames: &[PathRename]) -> Vec<PathRename> {
             None => out.push(event.clone()),
         }
     }
-    out.retain(|rename| rename.from != rename.to);
+    // «На месте» убирается, только если его не перекрыло бы более позднее
+    // (менее главное) переименование папки: иначе оно держит заметку на
+    // месте (папку переименовали, заметку вернули обратно).
+    let pinned: Vec<bool> = (0..out.len())
+        .map(|i| {
+            out[i].from == out[i].to
+                && out[i + 1..].iter().any(|later| {
+                    let (mine, theirs) = (out[i].from.components(), later.from.components());
+                    later.from != later.to && inside(mine, theirs).is_some()
+                })
+        })
+        .collect();
+    let mut keep = pinned.into_iter();
+    out.retain(|rename| keep.next().unwrap_or(false) || rename.from != rename.to);
     out
 }
 

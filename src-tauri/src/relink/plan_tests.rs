@@ -411,6 +411,32 @@ fn path_link_becomes_ambiguous_clarifies() {
 }
 
 #[test]
+fn note_returned_out_of_renamed_folder_stays() {
+    // Найдено proptest на CI (every_rename_accounted_10000): папка
+    // переименована, затем заметка из неё возвращена на прежнее место.
+    // Итог для заметки — «на месте»; свёрнутое «Х/План → Х/План» нельзя
+    // выбрасывать: без него переименование папки унесло бы заметку.
+    let vault = Vault::new(&[
+        ("Х/План.md", 0, ""),
+        ("Х/Итог.md", 0, ""),
+        ("Заметка.md", 1, "[[Х/План]] [[План]] [[Х/Итог]]"),
+    ]);
+    let ops = [rename("Х", "Альфа"), rename("Альфа/План.md", "Х/План.md")];
+    let plan = vault.plan(&ops);
+    assert!(plan.unmatched.is_empty(), "{plan:?}");
+    assert_eq!(
+        plan.notes,
+        vec![NotePlan {
+            path: p("Заметка.md"),
+            links: vec![planned("Х/Итог", "Итог", "Альфа/Итог.md")],
+        }]
+    );
+    // Только эта заметка в папке: ничего не переписывается.
+    let vault = Vault::new(&[("Х/План.md", 0, ""), ("Заметка.md", 1, "[[Х/План]]")]);
+    assert!(vault.plan(&ops).is_empty(), "{:?}", vault.plan(&ops));
+}
+
+#[test]
 fn chain_collapsed() {
     let vault = Vault::new(&[
         ("Альфа/Встреча.md", 1, ""),
