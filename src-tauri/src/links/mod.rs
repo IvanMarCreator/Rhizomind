@@ -171,8 +171,9 @@ struct Entry {
     haystack: Haystack,
 }
 
-/// Ссылки одного хранилища. Список заметок заменяется целиком при изменении
-/// дерева (`replace_notes`); запросы не меняют состояние.
+/// Ссылки одного хранилища. Список заметок заменяется целиком
+/// (`replace_notes`) или по изменениям (`splice`, список заметок окна);
+/// запросы не меняют состояние.
 #[derive(Debug, Default)]
 pub struct Links {
     entries: Vec<Entry>,
@@ -218,15 +219,89 @@ impl Links {
             }
         }
         let mut order: Vec<usize> = (0..self.entries.len()).collect();
-        order.sort_by(|&a, &b| {
-            let (a, b) = (&self.entries[a], &self.entries[b]);
-            a.note
-                .keyed
-                .name_sort_key()
-                .cmp(&b.note.keyed.name_sort_key())
-                .then(a.rank.cmp(&b.rank))
-        });
+        order.sort_by(|&a, &b| name_order(&self.entries, a, b));
         self.by_name_order = order;
+    }
+
+    /// Меняет список по местам, без пересчёта ключей остальных заметок
+    /// (задача 0.2-7.3, С2-5.2): убирает заметки с мест `removed` списка
+    /// «до» (по возрастанию) и ставит заметки `added` на их места в списке
+    /// «после» (по возрастанию мест; все — заметки `.md`, иначе места
+    /// разъедутся). Результат — тот же, что у [`Links::replace_notes`] со
+    /// списком «после»: порядки дополняются вставкой, а не сортируются
+    /// заново.
+    pub(crate) fn splice(&mut self, removed: &[usize], added: Vec<(usize, NoteRef)>) {
+        let mut natural = vec![0; self.entries.len()];
+        for (i, entry) in self.entries.iter().enumerate() {
+            natural[entry.rank as usize] = i;
+        }
+        let added = added
+            .into_iter()
+            .filter_map(|(at, note)| {
+                let note = Note::new(note)?;
+                Some((
+                    at,
+                    Entry {
+                        haystack: Haystack::new(&note.keyed),
+                        note,
+                        rank: 0,
+                    },
+                ))
+            })
+            .collect();
+        let switcher::Spliced {
+            items,
+            remap,
+            fresh,
+        } = switcher::splice_items(std::mem::take(&mut self.entries), removed, added);
+        self.entries = items;
+        let entries = &self.entries;
+        // Порядок путей ядра; при равных путях — по номеру, как устойчивая
+        // сортировка в `replace_notes`.
+        let natural =
+            switcher::merge_sorted(switcher::kept(&natural, &remap), fresh.clone(), |a, b| {
+                entries[a]
+                    .note
+                    .keyed
+                    .cmp(&entries[b].note.keyed)
+                    .then(a.cmp(&b))
+            });
+        for (rank, i) in natural.into_iter().enumerate() {
+            self.entries[i].rank = u32::try_from(rank).unwrap_or(u32::MAX);
+        }
+        for group in self.by_name.values_mut() {
+            group.retain_mut(|i| {
+                *i = remap[*i];
+                *i != usize::MAX
+            });
+        }
+        for &i in &fresh {
+            if let Some(name) = self.entries[i].note.keys().last() {
+                self.by_name.entry(name.clone()).or_default().push(i);
+            }
+        }
+        for &i in &fresh {
+            if let Some(group) = self.entries[i]
+                .note
+                .keys()
+                .last()
+                .and_then(|name| self.by_name.get_mut(name))
+            {
+                group.sort_unstable();
+            }
+        }
+        self.by_name.retain(|_, group| !group.is_empty());
+        let entries = &self.entries;
+        self.by_name_order = switcher::merge_sorted(
+            switcher::kept(&self.by_name_order, &remap),
+            fresh,
+            |a, b| name_order(entries, a, b),
+        );
+    }
+
+    /// Места заметок в порядке путей ядра, по порядку списка.
+    pub(crate) fn ranks(&self) -> impl Iterator<Item = u32> + '_ {
+        self.entries.iter().map(|e| e.rank)
     }
 
     /// Куда ведёт цель ссылки `target` (текст между `[[` и `|`/`#`; если
@@ -309,6 +384,16 @@ impl Links {
     pub fn shortest_unique_path(&self, note: &VaultPath) -> CoreResult<String> {
         self.view().shortest_unique_path(note)
     }
+}
+
+/// Порядок подсказок на пустой запрос: по имени, затем по порядку путей.
+fn name_order(entries: &[Entry], a: usize, b: usize) -> std::cmp::Ordering {
+    let (a, b) = (&entries[a], &entries[b]);
+    a.note
+        .keyed
+        .name_sort_key()
+        .cmp(&b.note.keyed.name_sort_key())
+        .then(a.rank.cmp(&b.rank))
 }
 
 /// Текст пути в ссылке: компоненты через `/`; имя, которое само кончается на
