@@ -12,11 +12,13 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
 import { cursorTo, editorLines, openFromTree, TEXT, themeShots } from './kt1.ts';
+import { saveScreenshot } from './screenshot.ts';
 
 const OLD = 'Узел';
 const NEW = 'Хаб';
 const REFERRERS = 100;
-const TYPED = ' Набранный текст.';
+// Без двойных букв подряд: WebKitWebDriver на Linux теряет повтор клавиши.
+const TYPED = ' Свежая запись.';
 const OPEN_NOTE = 'Открытая';
 
 /**
@@ -122,11 +124,15 @@ describe('переименование «узла» со 100 ссылками в
     await cursorTo(b, `${OPEN_NOTE} ссылается`);
     await b.keys(TYPED);
 
-    // Переименование «узла» из меню дерева: правый щелчок только выбирает строку,
-    // открытой остаётся заметка с набранным текстом.
-    const hub = b.$(`[role="treeitem"][aria-label="${OLD}"]`);
-    await hub.click({ button: 'right' });
-    await b.$('[role="menuitem"]*=Переименовать').click();
+    // Переименование «узла» клавишами дерева (End — последняя строка, F2):
+    // без щелчка, открытой остаётся заметка с набранным текстом.
+    await b.execute(() => (document.querySelector('[role="tree"]') as HTMLElement | null)?.focus());
+    await b.keys('End');
+    await b.waitUntil(async () => (await b.$(`[role="treeitem"][aria-label="${OLD}"]`).getAttribute('aria-selected')) === 'true', {
+      timeout: 5_000,
+      timeoutMsg: `не выбрана строка «${OLD}»`,
+    });
+    await b.keys('F2');
     const field = b.$('input[aria-label="Новое имя"]');
     await field.waitForDisplayed();
     await b.keys(['Control', 'a']);
@@ -135,11 +141,16 @@ describe('переименование «узла» со 100 ссылками в
 
     // Пока индекс строится — окно ожидания; потом — вопрос (решение 114).
     const question = `На «${OLD}» ссылается ${REFERRERS + 1} заметка. Обновить ссылки?`;
-    await b.waitUntil(async () => (await dialogTitle(b)) === question, {
-      timeout: 60_000,
-      interval: 100,
-      timeoutMsg: 'нет окна вопроса',
-    });
+    await b
+      .waitUntil(async () => (await dialogTitle(b)) === question, { timeout: 45_000, interval: 100 })
+      .catch(async () => {
+        await saveScreenshot(b, 'relink-app-no-question');
+        const rows = await b.execute(() => [...document.querySelectorAll('[role="treeitem"]')].slice(0, 5).map((row) => row.getAttribute('aria-label')));
+        throw new Error(
+          `нет окна вопроса: заголовок ${JSON.stringify(await dialogTitle(b))}, уведомления ${JSON.stringify(await noticeTexts(b))}, ` +
+            `строки ${JSON.stringify(rows)}, «${OLD}.md» есть: ${existsSync(path.join(vault, `${OLD}.md`))}`,
+        );
+      });
     // До ответа ничего не переименовано и не переписано.
     expect(existsSync(path.join(vault, `${OLD}.md`))).toBe(true);
     const untouched = Object.fromEntries(Object.entries(expected(OLD, '')).filter(([name]) => name !== `${OPEN_NOTE}.md`));
