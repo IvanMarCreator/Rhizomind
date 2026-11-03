@@ -23,7 +23,12 @@
 //!   (не свои — по журналу своих переименований) уходят в поток внешних
 //!   переименований (`commands::ExternalRenames`, задача 0.2-6.1): вопрос
 //!   `links:pending` или обновление ссылок — там, поток наблюдателя их не
-//!   ждёт.
+//!   ждёт;
+//! - изменения состава заметок (появилась, переименована, перемещена,
+//!   удалена — свои и внешние, но не правка текста) пополняют пачку
+//!   повторов имён (`commands::DuplicateWatch`, задача 0.2-6.2) под замком
+//!   списка заметок; после затишья поток повторов уточняет ссылки, которые
+//!   стали неоднозначными.
 //!
 //! Сбой отправки окну не роняет поток наблюдателя; если упадёт сам
 //! получатель, наблюдатель сообщит `DeliveryFailed` и через пару секунд
@@ -38,9 +43,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, EventTarget, Manager, Runtime};
 
 use crate::commands::{
-    ExternalRenames, IndexUpdate, NoteChangedPayload, NoteDeletedPayload, NoteRenamedPayload,
-    OpenVault, PathRename, TreeChange, VaultAvailabilityPayload, VaultChangedPayload, VaultPath,
-    event,
+    DuplicateWatch, ExternalRenames, IndexUpdate, NoteChangedPayload, NoteDeletedPayload,
+    NoteRenamedPayload, OpenVault, PathRename, TreeChange, VaultAvailabilityPayload,
+    VaultChangedPayload, VaultPath, event,
 };
 use crate::watcher::{ChangeSink, WatcherEvent};
 
@@ -103,16 +108,20 @@ pub struct VaultEvents {
     emit: Arc<dyn Emit>,
     /// Поток внешних переименований (задача 0.2-6.1).
     external: ExternalRenames,
+    /// Поток уточнения ссылок при повторе имени (задача 0.2-6.2).
+    _duplicates: DuplicateWatch,
 }
 
 impl VaultEvents {
     /// События хранилища `open` — в `emit`.
     pub fn new(open: Arc<OpenVault>, emit: Arc<dyn Emit>) -> Self {
         let external = ExternalRenames::start(Arc::downgrade(&open), Arc::clone(&emit));
+        let duplicates = DuplicateWatch::start(Arc::downgrade(&open), Arc::clone(&emit));
         Self {
             open,
             emit,
             external,
+            _duplicates: duplicates,
         }
     }
 
@@ -175,8 +184,12 @@ impl VaultEvents {
         let mut with_notes: Vec<PathRename> = Vec::new();
         {
             let mut index = self.open.write_notes();
+            // Пачка повторов имён — под тем же замком: поток повторов видит
+            // список и пачку согласованными.
+            let mut duplicates = self.open.relink.duplicates().observing();
             index.apply_observed(&payload.changes, &created_ms, &mut |index, change| {
                 update.before(index, change);
+                duplicates.change(index, change);
                 // Только переименования, после которых заметка осталась
                 // заметкой (`а.md` → `а.txt` — удаление, решение 90).
                 if let TreeChange::Renamed { from, to } = change
@@ -232,8 +245,13 @@ impl VaultEvents {
                 }
             });
             if let Some(all) = all_notes {
+                duplicates.rescan(
+                    &crate::commands::note_paths(&index.note_refs()),
+                    &crate::commands::note_paths(&all),
+                );
                 index.replace(all);
             }
+            drop(duplicates);
             // Под замком списка заметок, где пачка уже применена: поток
             // внешних переименований не увидит список раньше пачки.
             self.external.submit(with_notes);
@@ -261,6 +279,9 @@ impl VaultEvents {
         // Индекс — после событий дерева: изменённые заметки читаются вне
         // замков; `index:changed` отправляет поток событий индекса.
         self.open.index.update(vault, update);
+        // Затишье пачки повторов — после обновления индекса: план видит
+        // ссылки новых заметок.
+        self.open.relink.duplicates().settled();
     }
 }
 

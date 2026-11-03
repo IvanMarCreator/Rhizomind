@@ -31,12 +31,17 @@
 //! свой поток, та же очередь планов, вопрос `links:pending` или сразу
 //! обновление; ответ — [`relink_answer`].
 //!
+//! Повторы имён (задача 0.2-6.2) — [`DuplicateWatch`]: пачка изменений
+//! состава заметок, затишье, та же очередь планов, сразу или вопрос
+//! `links:pending {reason: duplicate}`; ответ — [`relink_answer`].
+//!
 //! Доделка после сбоя ([`resume_after_reconcile`]) — при открытии хранилища
 //! после сверки индекса и до того, как индекс станет годен для
 //! переименований с обновлением ссылок (признак `reconciled`).
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -54,11 +59,13 @@ use super::index_cmds::{IndexProgress, IndexReply, Throttle};
 use super::limits;
 use super::settings::RenameLinks;
 use super::types::{RelinkToken, VaultPath};
-use super::{Core, OpenVault, blocking, check_entry_name, checked_path};
+use super::{Core, NoteList, OpenVault, blocking, check_entry_name, checked_path};
 use crate::events::{Emit, WindowEmitter, send};
 use crate::links::Links;
+use crate::relink::duplicates::{self, Batch, Found, Prepared};
 use crate::relink::tokens::{self, Tokens};
 use crate::relink::{self, RelinkPlan, RunReport};
+use crate::vault::NoteRef;
 
 /// Запрос `relink_preview`: какое переименование или перемещение
 /// пользователь собирается сделать. В JSON — поле `op`:
@@ -222,6 +229,11 @@ pub struct Relinker {
     /// Неотвеченная цепочка внешних переименований и погашенные знаки
     /// (задача 0.2-6.1).
     external: Mutex<ExternalAsks>,
+    /// Пачка изменений состава заметок для уточнения повторов имён (задача
+    /// 0.2-6.2): её пополняет поток наблюдателя, закрывает [`DuplicateWatch`].
+    duplicates: Arc<DuplicateShared>,
+    /// Неотвеченный вопрос о повторах имён и погашенные знаки.
+    duplicate_asks: Mutex<DuplicateAsks>,
 }
 
 impl Default for Relinker {
@@ -234,6 +246,8 @@ impl Default for Relinker {
             serial: Arc::new(Mutex::new(())),
             flush_timeout: Mutex::new(FLUSH_TIMEOUT),
             external: Mutex::default(),
+            duplicates: Arc::default(),
+            duplicate_asks: Mutex::default(),
         }
     }
 }
@@ -461,6 +475,85 @@ impl Relinker {
     #[cfg(test)]
     pub fn queue_busy(&self) -> bool {
         self.serial.try_lock().is_err()
+    }
+
+    /// Затишье пачки повторов имён (тесты).
+    #[cfg(test)]
+    pub fn set_duplicate_quiet(&self, quiet: Duration) {
+        self.duplicates.lock().quiet = quiet;
+    }
+
+    /// Пачка изменений состава заметок (повторы имён, задача 0.2-6.2).
+    pub fn duplicates(&self) -> &DuplicateShared {
+        &self.duplicates
+    }
+
+    fn duplicate_asks(&self) -> MutexGuard<'_, DuplicateAsks> {
+        self.duplicate_asks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Неотвеченный вопрос о повторах имён на пачку `batch` с новым знаком;
+    /// прежний знак (если был) гасится. `unfixable` — заметки со ссылками,
+    /// которые уточнить нельзя: о них сообщается и при «Не трогать».
+    fn open_duplicate_ask(
+        &self,
+        batch: Batch,
+        unfixable: Vec<VaultPath>,
+    ) -> CoreResult<RelinkToken> {
+        let token = tokens::fresh()?;
+        let issued = self.asks().now();
+        let mut asks = self.duplicate_asks();
+        if let Some(old) = asks.open.replace(DuplicateAsk {
+            token: token.clone(),
+            batch,
+            unfixable,
+            issued,
+        }) {
+            asks.retire(old.token);
+        }
+        Ok(token)
+    }
+
+    /// Забирает неотвеченный вопрос о повторах (его знак гасится): следующая
+    /// пачка присоединяет его к себе.
+    fn take_duplicate_ask(&self) -> Option<Batch> {
+        let mut asks = self.duplicate_asks();
+        let ask = asks.open.take()?;
+        asks.retire(ask.token);
+        Some(ask.batch)
+    }
+
+    /// Знак `token`, предъявленный окном `window`, среди вопросов о повторах
+    /// имён. Знак открытого вопроса, предъявленный своим окном, забирает его.
+    fn answer_duplicate(&self, window: &str, token: &RelinkToken) -> DuplicateAnswer {
+        let now = self.asks().now();
+        let mut asks = self.duplicate_asks();
+        let is_open = asks.open.as_ref().is_some_and(|a| a.token == *token);
+        let stale_at = asks.stale.iter().position(|t| t == token);
+        if !is_open && stale_at.is_none() {
+            return DuplicateAnswer::Unknown;
+        }
+        if window != self.window() {
+            if is_open && let Some(ask) = asks.open.as_mut() {
+                let burnt = std::mem::replace(&mut ask.token, RelinkToken(String::new()));
+                asks.retire(burnt);
+            }
+            return DuplicateAnswer::Foreign;
+        }
+        if let Some(at) = stale_at {
+            asks.stale.remove(at);
+            return DuplicateAnswer::Stale;
+        }
+        match asks.open.take() {
+            Some(ask) => DuplicateAnswer::Open {
+                expired: now.saturating_duration_since(ask.issued) >= tokens::TTL,
+                batch: ask.batch,
+                unfixable: ask.unfixable,
+            },
+            None => DuplicateAnswer::Unknown,
+        }
     }
 
     /// Предел ожидания записи ввода (тесты).
@@ -1163,6 +1256,460 @@ fn apply_external(
     );
 }
 
+/// Неотвеченный вопрос о повторах имён: пачка, на которую он задан.
+#[derive(Debug)]
+struct DuplicateAsk {
+    token: RelinkToken,
+    batch: Batch,
+    /// Заметки со ссылками, которые уточнить нельзя (`conflict`).
+    unfixable: Vec<VaultPath>,
+    issued: Instant,
+}
+
+/// Вопрос о повторах имён окна и погашенные знаки. Новый вопрос заменяет
+/// старый: старый знак гасится, пачка старого вопроса присоединяется к
+/// новой — ни одно изменение состава не остаётся без ответа молча.
+#[derive(Debug, Default)]
+struct DuplicateAsks {
+    open: Option<DuplicateAsk>,
+    stale: VecDeque<RelinkToken>,
+}
+
+impl DuplicateAsks {
+    fn retire(&mut self, token: RelinkToken) {
+        self.stale.push_back(token);
+        while self.stale.len() > STALE_EXTERNAL_TOKENS {
+            self.stale.pop_front();
+        }
+    }
+}
+
+/// Что стоит за знаком, предъявленным в `relink_answer`, среди вопросов о
+/// повторах имён.
+enum DuplicateAnswer {
+    /// Знак открытого вопроса (вопрос взят).
+    Open {
+        batch: Batch,
+        expired: bool,
+        unfixable: Vec<VaultPath>,
+    },
+    /// Погашенный знак.
+    Stale,
+    /// Знак вопроса о повторах, предъявленный чужим окном (погашен).
+    Foreign,
+    /// Не знак вопроса о повторах.
+    Unknown,
+}
+
+/// Пачка изменений состава заметок (задача 0.2-6.2) и её затишье. Пополняет
+/// поток наблюдателя (`VaultEvents`) под замком списка заметок
+/// ([`DuplicateShared::observing`]); закрывает поток [`DuplicateWatch`].
+#[derive(Debug, Default)]
+pub struct DuplicateShared {
+    state: Mutex<DuplicateState>,
+    wake: Condvar,
+}
+
+#[derive(Debug)]
+struct DuplicateState {
+    batch: Batch,
+    /// Когда пачка наблюдателя с изменением состава применена (список и
+    /// индекс); от этого момента отсчитывается затишье.
+    last: Option<Instant>,
+    /// Изменение состава учтено, индекс по нему ещё обновляется.
+    pending: bool,
+    quiet: Duration,
+}
+
+impl Default for DuplicateState {
+    fn default() -> Self {
+        Self {
+            batch: Batch::default(),
+            last: None,
+            pending: false,
+            quiet: duplicates::QUIET,
+        }
+    }
+}
+
+impl DuplicateState {
+    /// Сколько ещё ждать затишья; `None` — ждать нечего (пачка пуста или
+    /// индекс по ней ещё обновляется).
+    fn remaining(&self, now: Instant) -> Option<Duration> {
+        if !self.batch.is_touched() || self.pending {
+            return None;
+        }
+        let last = self.last?;
+        Some((last + self.quiet).saturating_duration_since(now))
+    }
+}
+
+/// Пачка наблюдателя, которая сейчас применяется к списку заметок: замок
+/// пачки держится, пока держится замок списка (порядок замков «список
+/// заметок → пачка»).
+pub struct Observing<'a> {
+    state: MutexGuard<'a, DuplicateState>,
+}
+
+impl Observing<'_> {
+    /// Изменение дерева `change`; `list` — список заметок до него.
+    pub fn change(&mut self, list: &NoteList, change: &TreeChange) {
+        if self
+            .state
+            .batch
+            .observe(change, &|path| list.notes_under(path))
+        {
+            self.state.pending = true;
+        }
+    }
+
+    /// Полная сверка: список заметок был `old`, стал `new`.
+    pub fn rescan(&mut self, old: &[VaultPath], new: &[VaultPath]) {
+        if self.state.batch.rescan(old, new) {
+            self.state.pending = true;
+        }
+    }
+}
+
+/// Пути заметок списка.
+pub fn note_paths(notes: &[NoteRef]) -> Vec<VaultPath> {
+    notes.iter().map(|note| note.path.clone()).collect()
+}
+
+impl DuplicateShared {
+    fn lock(&self) -> MutexGuard<'_, DuplicateState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Начало пачки наблюдателя (вызывающий держит замок списка заметок).
+    pub fn observing(&self) -> Observing<'_> {
+        Observing { state: self.lock() }
+    }
+
+    /// Пачка наблюдателя применена к списку и индексу: затишье — с этого
+    /// момента.
+    pub fn settled(&self) {
+        // Ключи появившихся и ушедших заметок — вне замков (поток повторов
+        // пачку не возьмёт: она ещё `pending`).
+        let unkeyed = self.lock().batch.take_unkeyed();
+        let keyed = (!unkeyed.is_empty()).then(|| unkeyed.keyed());
+        let mut state = self.lock();
+        if let Some(keyed) = keyed {
+            state.batch.put_keyed(keyed);
+        }
+        if state.pending {
+            state.pending = false;
+            state.last = Some(Instant::now());
+            drop(state);
+            self.wake.notify_all();
+        }
+    }
+
+    /// Ждёт затишья пачки. `false` — поток закрыт.
+    fn wait_due(&self, closed: &AtomicBool) -> bool {
+        let mut state = self.lock();
+        loop {
+            if closed.load(Ordering::Acquire) {
+                return false;
+            }
+            let wait = match state.remaining(Instant::now()) {
+                Some(left) if left.is_zero() => return true,
+                Some(left) => left.min(DUPLICATE_POLL),
+                None => DUPLICATE_POLL,
+            };
+            state = self
+                .wake
+                .wait_timeout(state, wait)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    fn sleep(&self, pause: Duration) {
+        let state = self.lock();
+        let _ = self.wake.wait_timeout(state, pause);
+    }
+
+    /// Забирает пачку (`due` — только если затишье прошло).
+    fn take(&self, due: bool) -> Option<Batch> {
+        let mut state = self.lock();
+        if due && state.remaining(Instant::now()) != Some(Duration::ZERO) {
+            return None;
+        }
+        state.last = None;
+        Some(std::mem::take(&mut state.batch))
+    }
+}
+
+/// Как часто поток повторов имён проверяет, не закрыт ли он.
+const DUPLICATE_POLL: Duration = Duration::from_millis(100);
+
+/// Уточнение ссылок при повторе имени (задача 0.2-6.2; С2-3.6, Р11,
+/// решение 111): свой поток на хранилище.
+///
+/// 1. Пачку пополняет поток наблюдателя — только изменения состава заметок
+///    ([`relink::duplicates::Batch::observe`]), свои (создание,
+///    переименование в приложении) и внешние одинаково; правка текста пачку
+///    не трогает.
+/// 2. Затишье [`duplicates::QUIET`] без изменений состава → поток ждёт,
+///    пока индекс сверен, занимает общую очередь планов хранилища
+///    ([`Relinker::serial`]), забирает пачку и присоединяет неотвеченный
+///    вопрос о повторах (его знак гасится).
+/// 3. План по списку заметок и снимку нужной части индекса
+///    ([`relink::duplicates::prepare`]); не зависит от `rename_links`.
+/// 4. До [`duplicates::MAX_IMMEDIATE`] заметок (и вопроса ещё не было) —
+///    сразу: запись ввода окна, план заново, переписывание, `links:updated
+///    {reason: duplicate}`; больше или вопрос уже задан —
+///    `links:pending {reason: duplicate}`, ответ — `relink_answer`.
+///
+/// Уточнить нельзя или ввод не записан — `links:updated` со сбоем
+/// (`conflict`, `busy` со знаком «Повторить»), не тишина.
+pub struct DuplicateWatch {
+    shared: Arc<DuplicateShared>,
+    closed: Arc<AtomicBool>,
+}
+
+impl DuplicateWatch {
+    /// Поток повторов имён хранилища `open`; события — окну `emit`.
+    pub fn start(open: Weak<OpenVault>, emit: Arc<dyn Emit>) -> Self {
+        let shared = open
+            .upgrade()
+            .map(|open| Arc::clone(&open.relink.duplicates))
+            .unwrap_or_default();
+        let closed = Arc::new(AtomicBool::new(false));
+        let (thread_shared, thread_closed) = (Arc::clone(&shared), Arc::clone(&closed));
+        let _ = std::thread::Builder::new()
+            .name("rhizomind-duplicates".into())
+            .spawn(move || duplicate_loop(&thread_shared, &thread_closed, &open, &*emit));
+        Self { shared, closed }
+    }
+}
+
+impl Drop for DuplicateWatch {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::Release);
+        self.shared.wake.notify_all();
+    }
+}
+
+fn duplicate_loop(
+    shared: &DuplicateShared,
+    closed: &AtomicBool,
+    open: &Weak<OpenVault>,
+    emit: &dyn Emit,
+) {
+    loop {
+        if !shared.wait_due(closed) {
+            return;
+        }
+        let Some(open) = open.upgrade() else {
+            return;
+        };
+        if !open.index.ready_for_relink() {
+            drop(open);
+            shared.sleep(READY_POLL);
+            continue;
+        }
+        on_duplicates(&open, emit);
+    }
+}
+
+/// Пачка (`due` — только после затишья) и список заметок сейчас — под
+/// замком списка заметок, чтобы пачка и список совпадали.
+fn take_batch(open: &OpenVault, due: bool) -> Option<(Batch, Vec<NoteRef>)> {
+    let list = open.read_notes();
+    let batch = open.relink.duplicates.take(due)?;
+    Some((batch, list.note_refs()))
+}
+
+/// План пачки `batch` (поверх неотвеченной `older`) по списку `now`.
+fn duplicate_plan(
+    open: &OpenVault,
+    older: Option<Batch>,
+    batch: Batch,
+    now: Vec<NoteRef>,
+) -> (Batch, Prepared, Found) {
+    let mut batch = match older {
+        Some(older) => duplicates::compose(older, batch),
+        None => batch,
+    };
+    let prepared = duplicates::prepare(&mut batch, now);
+    let found = refind(open, &prepared);
+    (batch, prepared, found)
+}
+
+/// План по свежему индексу: под замком индекса — только копия записей
+/// заметок со ссылками на имена пачки, план — без замков.
+fn refind(open: &OpenVault, prepared: &Prepared) -> Found {
+    if prepared.is_empty() {
+        return Found::default();
+    }
+    let index = open
+        .index
+        .with_index(|index| duplicates::snapshot(index, prepared));
+    prepared.finish(&index)
+}
+
+/// Пачка после затишья: сразу, вопрос или ничего.
+fn on_duplicates(open: &OpenVault, emit: &dyn Emit) {
+    let _serial = open.relink.serial();
+    let Some((batch, now)) = take_batch(open, true) else {
+        return;
+    };
+    let older = open.relink.take_duplicate_ask();
+    let asked = older.is_some();
+    let (batch, prepared, found) = duplicate_plan(open, older, batch, now);
+    if found.plan.notes.is_empty() {
+        report_unfixable(emit, &found.unfixable);
+        return;
+    }
+    if !asked && found.plan.note_count() <= duplicates::MAX_IMMEDIATE {
+        settle_duplicates(open, emit, batch, &prepared, None);
+    } else {
+        ask_duplicates(open, emit, batch, &found);
+    }
+}
+
+/// «Уточнить» (очередь планов уже занята): пачка вопроса вместе со всем,
+/// что пришло после, — план заново по текущему состоянию.
+fn apply_duplicates(open: &OpenVault, emit: &dyn Emit, older: Batch, token: RelinkToken) {
+    let Some((batch, now)) = take_batch(open, false) else {
+        return;
+    };
+    let (batch, prepared, found) = duplicate_plan(open, Some(older), batch, now);
+    if found.plan.notes.is_empty() {
+        report_unfixable(emit, &found.unfixable);
+        return;
+    }
+    settle_duplicates(open, emit, batch, &prepared, Some(token));
+}
+
+/// Знак вопроса просрочен или погашен: план заново и свежий вопрос.
+fn reask_duplicates(open: &OpenVault, emit: &dyn Emit, older: Batch) {
+    let Some((batch, now)) = take_batch(open, false) else {
+        return;
+    };
+    let (batch, _, found) = duplicate_plan(open, Some(older), batch, now);
+    if found.plan.notes.is_empty() {
+        report_unfixable(emit, &found.unfixable);
+        return;
+    }
+    ask_duplicates(open, emit, batch, &found);
+}
+
+/// Вопрос `links:pending {reason: duplicate}` на пачку `batch` с планом
+/// `found`.
+fn ask_duplicates(open: &OpenVault, emit: &dyn Emit, batch: Batch, found: &Found) {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let plan = &found.plan;
+    let Ok(token) = open
+        .relink
+        .open_duplicate_ask(batch, found.unfixable.clone())
+    else {
+        return;
+    };
+    send(
+        emit,
+        event::LINKS_PENDING,
+        &LinksPendingPayload {
+            token,
+            reason: PendingReason::Duplicate,
+            notes: count(plan.note_count()),
+            links: count(plan.link_count()),
+            renames: Vec::new(),
+            renames_total: 0,
+        },
+    );
+}
+
+/// Уточнение (очередь планов уже занята): запись ввода окна → план заново
+/// по свежему индексу (записанный ввод мог добавить ссылки) →
+/// переписывание → `links:updated {reason: duplicate}`. Ввод не записан
+/// (инвариант 4) — ни один файл не переписан, `busy` у каждой заметки плана
+/// и знак «Повторить». Без ответа пользователя (`token` нет) пересчитанный
+/// план больше [`duplicates::MAX_IMMEDIATE`] заметок (ввод добавил ссылки)
+/// не выполняется — вопрос (решение 111).
+fn settle_duplicates(
+    open: &OpenVault,
+    emit: &dyn Emit,
+    batch: Batch,
+    prepared: &Prepared,
+    token: Option<RelinkToken>,
+) {
+    let flushed = open.relink.flush(emit);
+    let found = refind(open, prepared);
+    if found.plan.notes.is_empty() {
+        report_unfixable(emit, &found.unfixable);
+        return;
+    }
+    if token.is_none() && found.plan.note_count() > duplicates::MAX_IMMEDIATE {
+        ask_duplicates(open, emit, batch, &found);
+        return;
+    }
+    if !flushed {
+        let mut failed = busy_failures(&found.plan);
+        failed.extend(unfixable_failures(&found.unfixable));
+        let retry_token = open
+            .relink
+            .issue(Grant::Retry {
+                plan: found.plan,
+                renames: Vec::new(),
+            })
+            .ok();
+        send_updated(emit, LinksUpdateReason::Duplicate, failed, retry_token, &[]);
+        return;
+    }
+    let report = run_plan(open, emit, &found.plan, &[], token);
+    if report.updated.is_empty() && report.failed.is_empty() && found.unfixable.is_empty() {
+        // Всё уже уточнено (например, тем же переименованием в приложении).
+        return;
+    }
+    let retry = |plan: &RelinkPlan| {
+        open.relink
+            .issue(Grant::Retry {
+                plan: plan.clone(),
+                renames: Vec::new(),
+            })
+            .ok()
+    };
+    publish(
+        open,
+        emit,
+        &report,
+        &[],
+        LinksUpdateReason::Duplicate,
+        &retry,
+        unfixable_failures(&found.unfixable),
+    );
+}
+
+/// Ссылки, которые уточнить нельзя, — `conflict` по заметке, где они
+/// стоят (без повтора: повтор не поможет).
+fn unfixable_failures(unfixable: &[VaultPath]) -> Vec<RelinkFailure> {
+    unfixable
+        .iter()
+        .map(|path| RelinkFailure {
+            path: path.clone(),
+            reason: RelinkFailureReason::Conflict,
+        })
+        .collect()
+}
+
+/// `links:updated {reason: duplicate}` с `conflict` по `unfixable`; пусто —
+/// ничего.
+fn report_unfixable(emit: &dyn Emit, unfixable: &[VaultPath]) {
+    if unfixable.is_empty() {
+        return;
+    }
+    send_updated(
+        emit,
+        LinksUpdateReason::Duplicate,
+        unfixable_failures(unfixable),
+        None,
+        &[],
+    );
+}
+
 /// Доделка обновления ссылок, прерванного при прошлом запуске (0.2-4.5,
 /// [`relink::resume_on_open`]). Вызывается потоком индекса **после сверки
 /// индекса** и до признака `reconciled` — то есть до любого другого плана.
@@ -1259,6 +1806,34 @@ pub fn relink_answer_blocking(
 ) -> CoreResult<()> {
     limits::token(&request.token, "token")?;
     let serial = open.relink.serial();
+    match open.relink.answer_duplicate(window, &request.token) {
+        DuplicateAnswer::Open {
+            batch,
+            expired,
+            unfixable,
+        } => {
+            if !request.apply {
+                // «Не трогать»: ничего не переписано, но неуточняемые ссылки
+                // — не тишина (Р20, `conflict`).
+                report_unfixable(emit, &unfixable);
+            } else if expired {
+                reask_duplicates(open, emit, batch);
+            } else {
+                apply_duplicates(open, emit, batch, request.token.clone());
+            }
+            return Ok(());
+        }
+        DuplicateAnswer::Stale => {
+            if request.apply
+                && let Some(batch) = open.relink.take_duplicate_ask()
+            {
+                reask_duplicates(open, emit, batch);
+            }
+            return Ok(());
+        }
+        DuplicateAnswer::Foreign => return Err(CoreError::invalid_argument("token")),
+        DuplicateAnswer::Unknown => {}
+    }
     match open.relink.answer_external(window, &request.token) {
         ExternalAnswer::Open { renames, expired } => {
             if !request.apply {
