@@ -172,6 +172,40 @@ describe('С2-3.5: переименование в приложении по н�
     expect(host.entryRenamed).not.toHaveBeenCalled();
   });
 
+  it('М3 (ревью 0.2-5.2): ловушка фокуса — Tab и Shift+Tab ходят по кругу внутри окна', async () => {
+    await setup();
+    await renameRow('Встреча', 'Планёрка');
+    const box = await screen.findByRole('dialog');
+    const first = within(box).getByRole('button', { name: 'Закрыть' });
+    const last = within(box).getByRole('button', { name: 'Обновить ссылки' });
+    // Окно открывается с фокусом на «Обновить ссылки» — последней кнопке.
+    await waitFor(() => expect(document.activeElement).toBe(last));
+
+    // Tab с последней — на первую, не за окно.
+    await fireEvent.keyDown(box, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+    // Shift+Tab с первой — снова на последнюю.
+    await fireEvent.keyDown(box, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+
+    // Полный круг: фокус ни разу не уходит из окна и возвращается на место.
+    const visited: (Element | null)[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      await fireEvent.keyDown(box, { key: 'Tab' });
+      visited.push(document.activeElement);
+    }
+    expect(visited.every((element) => element !== null && box.contains(element))).toBe(true);
+    expect(new Set(visited).size).toBe(5);
+    expect(document.activeElement).toBe(last);
+    // Недоступная кнопка пропускается: с галочкой «Переименовать без обновления» выключена.
+    await fireEvent.click(within(box).getByRole('checkbox', { name: 'Больше не спрашивать' }));
+    const keep = within(box).getByRole('button', { name: 'Переименовать без обновления' });
+    last.focus();
+    await fireEvent.keyDown(box, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).not.toBe(keep);
+    expect(box.contains(document.activeElement)).toBe(true);
+  });
+
   it('Больше не спрашивать + Обновить — настройка стала update; следующее — без окна', async () => {
     const { calls, setRenameLinks } = await setup();
     await renameRow('Встреча', 'Планёрка');
@@ -314,10 +348,10 @@ describe('Р9: Ctrl+Z после переименования', () => {
     expect(commands(calls, 'entry_rename').at(-1)).toEqual({ path: ['Планёрка.md'], new_name: 'Встреча.md' });
   });
 
-  it('Ctrl+Z на заголовке заметки — тот же путь', async () => {
+  it('М2 (ревью 0.2-5.2): Ctrl+Z на заголовке заметки — тот же путь, ссылки возвращены', async () => {
     const { calls, state, vault } = await setup();
     const path: VaultPath = ['Встреча.md'];
-    render(NoteTitle, { tree: state, path });
+    const title = render(NoteTitle, { tree: state, path });
     await fireEvent.click(screen.getByRole('button', { name: 'Встреча' }));
     await fireEvent.input(nameField(), { target: { value: 'Планёрка' } });
     await fireEvent.keyDown(nameField(), { key: 'Enter' });
@@ -325,6 +359,17 @@ describe('Р9: Ctrl+Z после переименования', () => {
     await waitFor(() => expect(row('Планёрка')).toBeTruthy());
     expect(commands(calls, 'entry_rename')[0]).toMatchObject({ links: 'update' });
     expect(vault.text(['Дневник.md'])).toContain('[[Планёрка]]');
+    // Оболочка окна показывает заголовок переименованной заметки.
+    await title.rerender({ tree: state, path: ['Планёрка.md'] });
+
+    // М2 (ревью 0.2-5.2): Ctrl+Z нажимается на заголовке.
+    await fireEvent.keyDown(screen.getByRole('button', { name: 'Планёрка' }), { key: 'z', code: 'KeyZ', ctrlKey: true });
+
+    await waitFor(() => expect(row('Встреча')).toBeTruthy());
+    expect(queryDialog()).toBeNull();
+    expect(commands(calls, 'entry_rename').at(-1)).toMatchObject({ path: ['Планёрка.md'], new_name: 'Встреча.md', links: 'update' });
+    expect(vault.text(['Дневник.md'])).toBe(LINKED['Дневник.md']);
+    expect(vault.text(['Итоги.md'])).toBe(LINKED['Итоги.md']);
   });
 });
 

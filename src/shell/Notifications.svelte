@@ -3,11 +3,13 @@
   Под обычными — уведомления об итоге обновления ссылок (0.2-5.1, макет У-1):
   значок, текст, приглушённая вторая строка, кнопки «Показать» / «Повторить»;
   сами не исчезают (решение 121). «Показать» открывает список У-3.
+  Ниже — вопросы «нужен ответ» (0.2-6.3, макеты У-1, У-2), висят до ответа.
 -->
 <script lang="ts">
   import type { VaultPath } from '../api/index.ts';
   import { t } from '../i18n/index.ts';
   import FailedList from '../relink/FailedList.svelte';
+  import PendingNotice from '../relink/PendingNotice.svelte';
   import type { RelinkNotices, RelinkNoticesState } from '../relink/notices.ts';
   import Icon from './Icon.svelte';
   import type { Notice } from './window.svelte.ts';
@@ -26,7 +28,7 @@
     onOpenNote?: ((path: VaultPath) => void) | undefined;
   } = $props();
 
-  let relinkState = $state.raw<RelinkNoticesState>({ notices: [], shown: null });
+  let relinkState = $state.raw<RelinkNoticesState>({ notices: [], questions: [], shown: null });
   $effect(() => relink?.subscribe((next) => (relinkState = next)));
 
   function openNote(path: VaultPath) {
@@ -89,6 +91,13 @@
         </button>
       {/if}
     </div>
+  {/each}
+  {#each relinkState.questions as question (question.id)}
+    <PendingNotice
+      {question}
+      onAnswer={(apply) => void relink?.answer(question.id, apply)}
+      onDismiss={() => relink?.dismissQuestion(question.id)}
+    />
   {/each}
 </section>
 

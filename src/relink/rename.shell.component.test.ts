@@ -93,6 +93,8 @@ async function openWindow(disk: Disk, settings: Partial<Settings> = {}) {
   ]);
   let resolve = () => {};
   const flushed = { done: new Promise<void>((r) => (resolve = r)), resolve: () => resolve() };
+  /** Порядок завершения: запись ввода отвечает не сразу (ревью 0.2-5.2, М1). */
+  const log: string[] = [];
   const mocks: CoreMocks = {
     ...vault.mocks(),
     vault_current: () => ({ api_version: 1, vault: { id: 'v1', name: 'База' } }),
@@ -101,14 +103,23 @@ async function openWindow(disk: Disk, settings: Partial<Settings> = {}) {
     workspace_read: () => ({ workspace: null }),
     workspace_write: () => null,
     note_read: ({ path }) => ({ text: disk.get(path), version: disk.version(path.join('/')), read_only: null }),
-    note_write: ({ path, text }) => ({ outcome: 'saved', version: disk.set(path, text) }),
+    note_write: async ({ path, text }) => {
+      log.push(`note_write:start ${path.join('/')}`);
+      await new Promise((r) => setTimeout(r, 30));
+      const version = disk.set(path, text);
+      log.push(`note_write:done ${path.join('/')}`);
+      return { outcome: 'saved', version };
+    },
     links_resolve: ({ targets }) => ({ results: targets.map((target) => ({ target, path: null })) }),
     relink_preview: () => ({ status: 'ready', notes: 1, links: 1, token: TOKEN }),
     links_flush_done: () => {
+      log.push('links_flush_done');
       flushed.resolve();
       return null;
     },
     entry_rename: coreRename(disk, flushed),
+    // Ядро-подмена переименовывает без FakeVault: прежнее имя свободно (Ctrl+Z).
+    name_check: () => ({ status: 'ok', warning: null }),
   };
   const calls = mockCore(mocks);
   const model = new WindowModel();
@@ -119,7 +130,7 @@ async function openWindow(disk: Disk, settings: Partial<Settings> = {}) {
   const view = EditorView.findFromDOM(content);
   if (!view) throw new Error('нет редактора');
   await waitFor(() => expect(view.state.doc.toString()).toBe(disk.get(OPEN)));
-  return { calls, model, view };
+  return { calls, model, view, log };
 }
 
 const index = (calls: RecordedCall[], command: string) => calls.findIndex(([name]) => name === command);
@@ -140,11 +151,11 @@ afterEach(() => {
 });
 
 describe('переименование с обновлением ссылок в окне', () => {
-  it('инвариант 4: открыта заметка, набран текст, переименование с обновлением ссылок — набранный текст сохраняется', async () => {
+  it('инвариант 4: открыта заметка, набран текст, переименование с обновлением ссылок — набранный текст сохраняется; links_flush_done после завершения note_write (М1)', async () => {
     const disk = new Disk();
     disk.set(OPEN, 'см. [[Встреча]]\n');
     disk.set(TARGET, 'текст встречи\n');
-    const { calls, view, model } = await openWindow(disk);
+    const { calls, view, model, log } = await openWindow(disk);
     view.dispatch({ changes: { from: view.state.doc.length, insert: 'набранное' }, userEvent: 'input.type' });
 
     // Переименовывается другая заметка — из дерева клавишами, без щелчка:
@@ -166,6 +177,9 @@ describe('переименование с обновлением ссылок в
     expect(index(calls, 'note_write')).toBeGreaterThan(-1);
     expect(index(calls, 'note_write')).toBeLessThan(index(calls, 'links_flush_done'));
     expect(calls[index(calls, 'links_flush_done')]).toEqual(['links_flush_done', { request: { token: TOKEN, saved: true } }]);
+    // М1 (ревью 0.2-5.2): ответ ядру — после завершения записи, а не после её начала.
+    expect(log.indexOf('note_write:done Начало.md')).toBeGreaterThan(-1);
+    expect(log.indexOf('note_write:done Начало.md')).toBeLessThan(log.indexOf('links_flush_done'));
     // Итог — уведомлением по `links:updated`; открытая заметка осталась открытой.
     expect(await screen.findByText('Ссылки обновлены в 1 заметке')).toBeTruthy();
     expect(model.currentPath).toEqual(OPEN);
@@ -206,5 +220,23 @@ describe('переименование с обновлением ссылок в
     await screen.findByRole('dialog');
     await fireEvent.keyDown(window, { key: 'o', code: 'KeyO', ctrlKey: true });
     expect(screen.queryByRole('dialog', { name: 'Быстрый переход' })).toBeNull();
+  });
+
+  it('М4 (ревью 0.2-5.2): Ctrl+Z — «Переименование отменено, ссылки возвращены…» вместо второго «Ссылки обновлены…»', async () => {
+    const disk = new Disk();
+    disk.set(OPEN, 'см. [[Встреча]]\n');
+    await openWindow(disk, { rename_links: 'update' });
+    await renameInTree('Встреча', 'Планёрка');
+    expect(await screen.findByText('Ссылки обновлены в 1 заметке')).toBeTruthy();
+    await waitFor(() => expect(disk.get(OPEN)).toBe('см. [[Планёрка]]\n'));
+    // Переименование завершено: строка дерева с новым именем, поле имени закрыто.
+    await screen.findByRole('treeitem', { name: 'Планёрка' });
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Новое имя' })).toBeNull());
+
+    await fireEvent.keyDown(screen.getByRole('tree', { name: 'Файлы хранилища' }), { key: 'z', code: 'KeyZ', ctrlKey: true });
+
+    expect(await screen.findByText('Переименование отменено, ссылки возвращены в 1 заметке')).toBeTruthy();
+    await waitFor(() => expect(disk.get(OPEN)).toBe('см. [[Встреча]]\n'));
+    expect(screen.queryByText('Ссылки обновлены в 1 заметке')).toBeNull();
   });
 });

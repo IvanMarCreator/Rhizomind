@@ -59,6 +59,11 @@ export interface TreeHost {
   /** Элемент удалён в приложении: открытая заметка внутри закрывается. */
   entryRemoved(path: VaultPath): void;
   notify(text: string): void;
+  /**
+   * Ctrl+Z с обновлением ссылок начинается: итог этого переименования —
+   * «Переименование отменено, ссылки возвращены…» (ревью 0.2-5.2, М4).
+   */
+  undoingRename?(rename: { from: VaultPath; to: VaultPath }): void;
 }
 
 /** Сколько раз подбирать свободное «Без названия», если ядро отвечает «занято». */
@@ -358,7 +363,10 @@ export class FileTreeState {
         return;
       }
       const op: RelinkOp = { kind: 'rename', path: last.to, newName: oldName };
-      if (last.links === 'update') await this.#relink(op, false);
+      if (last.links === 'update') {
+        this.host.undoingRename?.({ from: last.to, to: [...dir, oldName] });
+        await this.#relink(op, false);
+      }
       else await this.#run(op, 'keep');
     } catch (error) {
       const cause = error instanceof RelinkFailed ? error.cause : error;
