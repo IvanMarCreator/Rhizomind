@@ -20,6 +20,7 @@
 
 use crate::commands::{PathRename, VaultPath};
 
+pub mod duplicates;
 pub mod external;
 mod journal;
 #[cfg(test)]
