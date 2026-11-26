@@ -13,7 +13,9 @@
   let {
     onPick,
     onCancel,
-  }: { onPick: (path: VaultPath) => void; onCancel: () => void } = $props();
+    title = t('settings.folderPicker.title'),
+    inline = false,
+  }: { onPick: (path: VaultPath) => void; onCancel: () => void; title?: string; inline?: boolean } = $props();
 
   const collator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
   let folders = $state.raw<VaultPath[]>([]);
@@ -43,7 +45,10 @@
   });
 
   function onkeydown(event: KeyboardEvent) {
-    if (event.key === 'Escape') {
+    if (event.target === input && event.key === 'Enter' && filter.trim() && shown[0]) {
+      event.preventDefault();
+      onPick(shown[0]);
+    } else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
       onCancel();
@@ -51,12 +56,12 @@
   }
 </script>
 
-<div class="picker" role="dialog" aria-modal="true" aria-label={t('settings.folderPicker.title')} tabindex="-1" {onkeydown}>
+<div class="picker" class:inline role="dialog" aria-modal="true" aria-label={title} tabindex="-1" {onkeydown}>
   <div class="search">
     <Icon name="search" size={14} />
     <input bind:this={input} bind:value={filter} spellcheck="false" placeholder={t('settings.folderPicker.filter')} aria-label={t('settings.folderPicker.filter')} />
   </div>
-  <ul class="list" role="listbox" aria-label={t('settings.folderPicker.title')}>
+  <ul class="list" role="listbox" aria-label={title}>
     {#each shown as path (path.join('/'))}
       <li role="option" aria-selected="false">
         <button type="button" class="folder" onclick={() => onPick(path)} style:padding-left={`${10 + Math.max(0, path.length - 1) * 14}px`}>
@@ -74,6 +79,7 @@
 </div>
 
 <style>
+  .picker.inline { position: static; width: 100%; margin: 0; border: 0; box-shadow: none; }
   .picker {
     position: absolute;
     top: 100%;

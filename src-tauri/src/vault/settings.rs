@@ -74,6 +74,11 @@ impl SettingsFile {
                 .filter(|size| (min_font..=max_font).contains(size))
                 .unwrap_or(defaults.font_size),
             new_note_location,
+            template_folder: field(&self.values, "template_folder").filter(|path| {
+                limits::path(path, "template_folder").is_ok()
+                    && path.check().is_ok()
+                    && !path.components().iter().any(|c| c.starts_with('.'))
+            }),
             confirm_delete: field(&self.values, "confirm_delete")
                 .unwrap_or(defaults.confirm_delete),
             max_edit_size_bytes: field(&self.values, "max_edit_size_bytes")
@@ -97,7 +102,11 @@ impl SettingsFile {
     /// в этой настройке другое: интерфейс получил вместо него значение по
     /// умолчанию и вернул его же.
     pub fn update(&mut self, settings: &Settings) {
-        let presented = serde_json::to_value(self.to_settings()).ok();
+        let current = self.to_settings();
+        if current.template_folder.is_some() && settings.template_folder.is_none() {
+            self.values.remove("template_folder");
+        }
+        let presented = serde_json::to_value(current).ok();
         if let Ok(Value::Object(known)) = serde_json::to_value(settings) {
             for (key, value) in known {
                 let unchanged = presented.as_ref().and_then(|p| p.get(&key)) == Some(&value);
@@ -152,6 +161,21 @@ mod tests {
         assert_eq!(written["format_version"], 1);
         assert_eq!(written["theme"], "dark");
         assert_eq!(written["graph"], json!({ "physics": true }));
+    }
+
+    #[test]
+    fn unknown_template_folder_survives_unrelated_settings_change() {
+        let future = json!({ "folder_id": 42 });
+        let mut file: SettingsFile =
+            serde_json::from_value(json!({ "template_folder": future })).unwrap();
+        let mut settings = file.to_settings();
+        assert!(settings.template_folder.is_none());
+        settings.theme = Theme::Dark;
+        file.update(&settings);
+        assert_eq!(
+            serde_json::to_value(file).unwrap()["template_folder"],
+            future
+        );
     }
 
     #[test]

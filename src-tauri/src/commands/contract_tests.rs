@@ -180,6 +180,7 @@ fn settings_example() -> Settings {
         .into_iter()
         .collect(),
         rename_links: RenameLinks::Ask,
+        template_folder: None,
     }
 }
 
@@ -385,6 +386,31 @@ fn note_create() {
             CoreError::invalid_name(NameProblem::Duplicate),
             err(ErrorCode::InvalidPath),
             err(ErrorCode::OutsideVault),
+        ],
+    );
+}
+
+#[test]
+fn note_create_from_template() {
+    assert_eq!(
+        serde_json::to_value(TemplateCreateResponse { path: None }).expect("результат публикации"),
+        serde_json::json!({ "path": null })
+    );
+    command_with(
+        "note_create_from_template",
+        &TemplateCreateRequest {
+            template: VaultPath::from_components(["Шаблоны", "План.md"]),
+            dir: VaultPath::root(),
+            name: "Итоги.md".into(),
+        },
+        &TemplateCreateResponse {
+            path: Some(VaultPath::from_components(["Итоги.md"])),
+        },
+        &[
+            err(ErrorCode::AlreadyExists),
+            err(ErrorCode::InvalidPath),
+            err(ErrorCode::OutsideVault),
+            err(ErrorCode::NotFound),
         ],
     );
 }

@@ -65,6 +65,15 @@ afterEach(() => {
 });
 
 describe('окно «Настройки хранилища»', () => {
+  it('template: папку шаблонов выбирают в открытом хранилище независимо от папки новых заметок', async () => {
+    const { calls } = setup();
+    const dialog = await openSettings('Файлы и ссылки');
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Выбрать папку шаблонов' }));
+    const picker = within(dialog).getByRole('dialog', { name: 'Папка шаблонов' });
+    await fireEvent.click(await within(picker).findByRole('button', { name: 'Альфа' }));
+    await waitFor(() => expect(lastWrite(calls)?.template_folder).toEqual(['Проекты', 'Альфа']));
+    expect(lastWrite(calls)?.new_note_location).toEqual({ kind: 'vault_root' });
+  });
   it('шестерёнка открывает окно с разделами; Esc и «Закрыть» закрывают', async () => {
     setup();
     const dialog = await openSettings();
@@ -290,7 +299,7 @@ describe('окно «Настройки хранилища»', () => {
   it('«О программе»: версия, редакция, лицензия, безопасность', async () => {
     setup();
     const dialog = await openSettings('О программе');
-    expect(within(dialog).getByText('0.1.0')).toBeTruthy();
+    expect(within(dialog).getByText('0.2.0')).toBeTruthy();
     expect(within(dialog).getByText('Secure')).toBeTruthy();
     expect(within(dialog).getByText('GPL-3.0')).toBeTruthy();
     expect(within(dialog).getByText('Приложение не выходит в сеть: в нём нет сетевых функций.')).toBeTruthy();

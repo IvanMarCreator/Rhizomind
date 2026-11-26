@@ -1279,6 +1279,52 @@ fn settings_new_note_folder_must_be_a_vault_path() {
 
 // ---- 0.2-1.4: индекс в работе окна ------------------------------------------
 
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn template_settings_and_copy_preserve_the_selected_bytes() {
+    let app = app();
+    let w = window(&app, "templates");
+    let dir = tempfile::tempdir().expect("папка");
+    let root = dir.path().join("хранилище");
+    let bytes = "\u{feff}---\r\ntags: [дело]\r\n---\r\n[[Узел]] {{дата}}\r\n".as_bytes();
+    put(&root, "Шаблоны/А/План.md", b"other");
+    put(&root, "Шаблоны/Б/План.md", bytes);
+    put(&root, "Чужая.md", b"outside template folder");
+    open_vault(
+        &app,
+        "templates",
+        "templates",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let mut settings = invoke(&w, "settings_read", json!({})).expect("чтение")["settings"].clone();
+    assert_eq!(settings["template_folder"], json!(null));
+    settings["template_folder"] = json!(["Шаблоны"]);
+    call(&w, "settings_write", json!({ "settings": settings })).expect("папка шаблонов");
+    assert_eq!(
+        invoke(&w, "settings_read", json!({})).unwrap()["settings"]["template_folder"],
+        json!(["Шаблоны"])
+    );
+    let request = json!({"template": ["Шаблоны", "Б", "План.md"], "dir": [], "name": "Новая.md"});
+    assert_eq!(
+        call(&w, "note_create_from_template", request.clone()).expect("копия"),
+        json!({"path":["Новая.md"]})
+    );
+    assert_eq!(std::fs::read(root.join("Новая.md")).unwrap(), bytes);
+    put(&root, "Новая.md", b"my draft");
+    assert!(call(&w, "note_create_from_template", request.clone()).is_err());
+    assert_eq!(std::fs::read(root.join("Новая.md")).unwrap(), b"my draft");
+    assert_eq!(
+        std::fs::read(root.join("Шаблоны/Б/План.md")).unwrap(),
+        bytes
+    );
+    let mut other = request;
+    other["template"] = json!(["Чужая.md"]);
+    other["name"] = json!("Запрет.md");
+    assert!(call(&w, "note_create_from_template", other).is_err());
+    assert!(!root.join("Запрет.md").exists());
+}
+
 /// Ждёт готовности индекса окна (`index_status`).
 fn wait_index_ready(w: &WebviewWindow<MockRuntime>) {
     wait_index_ready_within(w, WAIT);

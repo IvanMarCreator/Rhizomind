@@ -8,6 +8,8 @@ mod ops;
 mod parent;
 mod read;
 mod service;
+#[cfg(any(windows, target_os = "linux"))]
+mod template;
 mod write;
 
 use std::path::{Path, PathBuf};

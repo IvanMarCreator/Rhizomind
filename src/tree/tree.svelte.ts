@@ -235,6 +235,13 @@ export class FileTreeState {
     return this.entries.get(pathKey(path));
   }
 
+  /** Общий путь для действий над строкой из клавиатуры, меню дерева и палитры. */
+  runCommand(command: 'tree.rename' | 'tree.delete', path: VaultPath) {
+    if (!this.entry(path)) return;
+    if (command === 'tree.rename') this.startRename(path);
+    else this.requestDelete(path);
+  }
+
   isExpanded(path: VaultPath): boolean {
     return this.expanded.has(pathKey(path));
   }

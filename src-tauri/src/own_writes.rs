@@ -131,6 +131,23 @@ struct Journal {
 }
 
 impl Journal {
+    fn insert_version(&mut self, key: PathKey, hash: &str, size: u64, at: Instant, now: Instant) {
+        self.expire(now);
+        let versions = self.by_path.entry(key).or_default();
+        versions.push_back(Version {
+            hash: hash.to_ascii_lowercase(),
+            size,
+            at,
+        });
+        let dropped = versions.len().saturating_sub(VERSIONS_PER_PATH);
+        versions.drain(..dropped);
+        self.total = self.total + 1 - dropped;
+        self.expire(now);
+        while self.total > MAX_TOTAL {
+            self.evict_oldest();
+        }
+    }
+
     fn expire_renames(&mut self, now: Instant) {
         self.renames
             .retain(|r| now.saturating_duration_since(r.at) < RENAME_TTL);
@@ -213,21 +230,25 @@ impl OwnWrites {
         // Ключ — вне замка: приведение регистра не должно держать журнал.
         let key = path_key(path);
         let now = self.now();
+        self.lock().insert_version(key, hash, size, at, now);
+    }
+
+    /// Наблюдатель увидит запись о создании вместе с появлением нового файла.
+    /// Ошибки, включая занятое имя, оставляют прежние версии журнала целыми.
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn publish_created<E>(
+        &self,
+        hash: &str,
+        size: u64,
+        publish: impl FnOnce() -> Result<Option<VaultPath>, E>,
+    ) -> Result<Option<VaultPath>, E> {
         let mut journal = self.lock();
-        journal.expire(now);
-        let versions = journal.by_path.entry(key).or_default();
-        versions.push_back(Version {
-            hash: hash.to_ascii_lowercase(),
-            size,
-            at,
-        });
-        let dropped = versions.len().saturating_sub(VERSIONS_PER_PATH);
-        versions.drain(..dropped);
-        journal.total = journal.total + 1 - dropped;
-        journal.expire(now);
-        while journal.total > MAX_TOTAL {
-            journal.evict_oldest();
+        let published = publish()?;
+        if let Some(path) = &published {
+            let now = self.now();
+            journal.insert_version(path_key(path), hash, size, now, now);
         }
+        Ok(published)
     }
 
     /// На диске (`file` размером `size`) побайтно одна из своих версий

@@ -12,6 +12,7 @@
     "allow-vault-manager-open",
     "allow-tree-list",
     "allow-note-create",
+    "allow-note-create-from-template",
     "allow-folder-create",
     "allow-entry-rename",
     "allow-entry-move",

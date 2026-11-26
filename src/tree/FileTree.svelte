@@ -78,10 +78,9 @@
     const row = selectedIndex >= 0 ? tree.rows[selectedIndex] : undefined;
     // Переименование и удаление — по назначенным сочетаниям (реестр, решение 72).
     const command = matchCommand(tree.host.hotkeys ?? {}, event, 'tree');
-    if (command) {
+    if (command === 'tree.rename' || command === 'tree.delete') {
       event.preventDefault();
-      if (row && command === 'tree.rename') tree.startRename(row.node.path);
-      if (row && command === 'tree.delete') tree.requestDelete(row.node.path);
+      if (row) tree.runCommand(command, row.node.path);
       return;
     }
     // Alt+←/→ — история переходов окна, Ctrl+… — общие сочетания: не дерево.
@@ -176,8 +175,8 @@
     if (entry) {
       const path = entry.path;
       items.push(
-        { id: 'rename', label: t('tree.rename'), shortcut: shortcutOf('tree.rename'), run: () => tree.startRename(path) },
-        { id: 'delete', label: t('tree.delete'), shortcut: shortcutOf('tree.delete'), run: () => tree.requestDelete(path) },
+        { id: 'rename', label: t('tree.rename'), shortcut: shortcutOf('tree.rename'), run: () => tree.runCommand('tree.rename', path) },
+        { id: 'delete', label: t('tree.delete'), shortcut: shortcutOf('tree.delete'), run: () => tree.runCommand('tree.delete', path) },
       );
     }
     menu = { x, y, items };

@@ -91,6 +91,9 @@ pub struct Settings {
     pub font_size: u16,
     /// Где создавать новые заметки.
     pub new_note_location: NewNoteLocation,
+    /// Папка шаблонов. None — ещё не выбрана, пустой путь — корень.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_folder: Option<VaultPath>,
     /// Спрашивать подтверждение перед удалением в корзину.
     pub confirm_delete: bool,
     /// Максимальный размер файла для редактирования, байты (по умолчанию 10 МБ).
@@ -116,6 +119,7 @@ impl Default for Settings {
             text_width: TextWidth::Column,
             font_size: 16,
             new_note_location: NewNoteLocation::VaultRoot,
+            template_folder: None,
             confirm_delete: true,
             max_edit_size_bytes: 10 * 1024 * 1024,
             hotkeys: HotkeyOverrides::new(),

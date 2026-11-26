@@ -1,0 +1,37 @@
+---
+source: src-tauri/src/commands/contract_tests.rs
+---
+{
+  "command": "note_create_from_template",
+  "errors": [
+    {
+      "code": "already_exists",
+      "message_key": "errors.already_exists"
+    },
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "outside_vault",
+      "message_key": "errors.outside_vault"
+    },
+    {
+      "code": "not_found",
+      "message_key": "errors.not_found"
+    }
+  ],
+  "request": {
+    "dir": [],
+    "name": "Итоги.md",
+    "template": [
+      "Шаблоны",
+      "План.md"
+    ]
+  },
+  "response": {
+    "path": [
+      "Итоги.md"
+    ]
+  }
+}
