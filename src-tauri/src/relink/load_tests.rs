@@ -177,7 +177,12 @@ impl Watched {
         }
     }
 
-    fn assert_one_update(&self, reason: &str, pending_count: usize) {
+    fn assert_one_update(
+        &self,
+        reason: &str,
+        pending_count: usize,
+        externally_copied: &[VaultPath],
+    ) {
         self.quiet();
         let updated = self.events(event::LINKS_UPDATED);
         assert_eq!(updated.len(), 1, "без второй волны: {updated:?}");
@@ -198,13 +203,24 @@ impl Watched {
                 1
             );
         }
-        let changed = self.events(event::NOTE_CHANGED);
-        assert_eq!(changed.len(), SOURCES, "каждая запись ровно один раз");
+        // Наблюдатель может застать создание и наполнение внешней копии
+        // в разных пачках. Эти пути не переписывались командой обновления ссылок.
+        let changed: Vec<VaultPath> = self
+            .events(event::NOTE_CHANGED)
+            .into_iter()
+            .map(|p| serde_json::from_value(p["path"].clone()).expect("путь note:changed"))
+            .filter(|path| !externally_copied.contains(path))
+            .collect();
+        assert_eq!(
+            changed.len(),
+            SOURCES,
+            "каждая запись ровно один раз: {changed:?}"
+        );
         for n in 0..SOURCES {
             assert_eq!(
                 changed
                     .iter()
-                    .filter(|p| p["path"] == json!([format!("Ref{n:02}.md")]))
+                    .filter(|p| **p == vp(&format!("Ref{n:02}.md")))
                     .count(),
                 1
             );
@@ -265,12 +281,15 @@ fn copy_folder_1000_with_duplicates_one_plan_no_second_wave() {
     let w = Watched::new("load-copy", "");
     std::fs::create_dir(w.root.join("Copy")).expect("папка копии");
     // Именно поток копирования в наблюдаемую папку: не rename готовой папки.
+    let mut copied = Vec::with_capacity(NOTES);
     for n in 0..NOTES {
+        let destination = format!("Copy/N{n:04}.md");
         std::fs::copy(
             w.root.join(format!("Original/N{n:04}.md")),
-            w.root.join(format!("Copy/N{n:04}.md")),
+            w.root.join(&destination),
         )
         .expect("копирование");
+        copied.push(vp(&destination));
     }
     let pending = w.wait_event(event::LINKS_PENDING);
     assert_eq!(pending["reason"], "duplicate");
@@ -280,7 +299,7 @@ fn copy_folder_1000_with_duplicates_one_plan_no_second_wave() {
     w.answer(&pending);
     w.wait_event(event::LINKS_UPDATED);
     w.assert_refs("Original/");
-    w.assert_one_update("duplicate", 1);
+    w.assert_one_update("duplicate", 1, &copied);
     assert!(
         !w.events(event::VAULT_CHANGED).is_empty(),
         "наблюдатель доставил изменения"
@@ -310,7 +329,7 @@ fn move_folder_1000_external_confirmed_and_relinked() {
     w.answer(&pending);
     w.wait_event(event::LINKS_UPDATED);
     w.assert_refs("");
-    w.assert_one_update("external_rename", 1);
+    w.assert_one_update("external_rename", 1, &[]);
     let renamed = w.events(event::NOTE_RENAMED);
     assert_eq!(renamed.len(), NOTES);
     for n in 0..NOTES {
@@ -423,7 +442,7 @@ fn own_renames_not_processed_twice_under_load() {
         },
     );
     w.assert_refs("");
-    w.assert_one_update("rename", 0);
+    w.assert_one_update("rename", 0, &[]);
     for n in 0..NOTES {
         assert!(!w.root.join(format!("Original/N{n:04}.md")).exists());
         assert_eq!(
