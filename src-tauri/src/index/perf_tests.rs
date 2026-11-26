@@ -519,7 +519,11 @@ fn perf_search() {
             for _ in 0..REPEATS {
                 let (elapsed, result) =
                     timed(|| query.results(&vault, query.candidates(&index).expect("выборка")));
-                assert!(!result.items.is_empty(), "пустая выдача для {text}");
+                assert_eq!(
+                    result.items.len(),
+                    super::query::PAGE_SIZE,
+                    "неполная первая страница для {text}"
+                );
                 samples.push(elapsed);
             }
             println!(

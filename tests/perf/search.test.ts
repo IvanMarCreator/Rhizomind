@@ -25,9 +25,9 @@ async function firstScreen(browser: WebdriverIO.Browser, text: string): Promise<
     enter(word);
     while (performance.now() - start < 15000) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
-      if (document.querySelector('.vault-search .result')) return performance.now() - start;
+      if (document.querySelectorAll('.vault-search .result').length === 50) return performance.now() - start;
     }
-    throw new Error('Нет видимых результатов для ' + word);
+    throw new Error('Первая страница не отрисовала ожидаемые 50 заметок для ' + word);
   }, text);
 }
 
