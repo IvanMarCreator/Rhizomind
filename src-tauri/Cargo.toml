@@ -32,6 +32,8 @@ webdriver = []
 tauri-build = { version = "=2.7.4", features = ["isolation"] }
 
 [dependencies]
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled", "serialize", "cache"] }
+frostem = { version = "=2.20261016.4", default-features = false, features = ["russian"] }
 # Функции по умолчанию: wry, compression, common-controls-v6, dynamic-acl, x11, dbus.
 # isolation — вызовы ядра через изолированный iframe с шифрованием (ADR 0009,
 # `app.security.pattern` в tauri.conf.json, код фильтра — src-isolation/).

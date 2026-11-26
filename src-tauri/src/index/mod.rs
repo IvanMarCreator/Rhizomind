@@ -7,9 +7,8 @@
 //! (план 0.2, Т3). Ссылки индекс разрешает через [`Links`](crate::links::Links) списка заметок —
 //! правила С3.4 в одном месте.
 //!
-//! Индекс целиком в памяти; модуль — единственный, кто знает формат файла
-//! `.rhizomind/index.json` (в 0.3 его заменит SQLite без изменения
-//! остального кода). Текста заметок в индексе нет (Р13).
+//! Поисковая база и карты связей открыты в памяти. Единственный образ
+//! SQLite сохраняется как `.rhizomind/index.db` через файловый API хранилища.
 //!
 //! Интерфейс модуля:
 //! - [`VaultIndex`] — индекс в памяти: [`VaultIndex::upsert`] и
@@ -24,7 +23,7 @@
 //! - [`rebuild`] — сборка с нуля: вызывающий запускает её в фоновом потоке,
 //!   файлы читаются параллельно (не больше числа ядер), замок берётся только
 //!   на вставку прочитанной пачки.
-//! - [`store`] — файл `.rhizomind/index.json`: чтение с пересборкой при
+//! - [`store`] — файл `.rhizomind/index.db`: чтение с пересборкой при
 //!   сбое или смене версии ([`store::load`]), сверка с диском при открытии
 //!   ([`store::reconcile`]), запись не чаще раза в 30 с и при закрытии окна
 //!   ([`store::IndexStore`]).
@@ -41,21 +40,25 @@ use crate::commands::VaultPath;
 use crate::markdown::ParsedNote;
 
 mod build;
+mod database;
 mod memory;
 #[cfg(test)]
 pub(crate) mod perf_tests;
+pub mod query;
+pub mod search;
 pub mod store;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use build::read_document;
 pub use build::{read_entry, rebuild};
 pub use memory::VaultIndex;
 
-/// Версия формата `index.json` (`format_version`). Не та — пересборка с нуля
+/// Версия формата `index.db` (`format_version`). Не та — пересборка с нуля
 /// без копии старого файла (С2-4.1, Р12).
 pub const FORMAT_VERSION: u32 = 1;
 
-/// Предел размера `index.json` при чтении, байт — собственный, вместо общих
+/// Предел размера `index.db` при чтении, байт — собственный, вместо общих
 /// 4 МБ служебных файлов (С2-4.1). Больше — пересборка.
 pub const MAX_INDEX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 

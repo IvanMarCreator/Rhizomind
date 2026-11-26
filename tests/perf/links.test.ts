@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { startApp } from '../e2e/driver.ts';
 import { openFromTree, showView } from '../e2e/kt1.ts';
 import { dragRow } from '../e2e/drag-row.ts';
-import { enterFromManager, openFromManager, type TreeOpen } from './open-window.ts';
+import { enterFromManager, indexReady, openFromManager, type TreeOpen } from './open-window.ts';
 import { ms, windowRun, type Measured } from './stats.ts';
 import { LONG_TITLE, MOVE_TARGET, prepareVault, removeVault, type PerfVault } from './vault.ts';
 
@@ -38,21 +38,6 @@ function record(id: string, value: number) {
   if (!metric || !Number.isFinite(value) || value < 0) throw new Error(`Некорректный замер ${id}: ${value}`);
   metric.repeats.push([value]);
   console.log(`[perf] ${count} заметок, ${metric.title}: ${Math.round(value)} мс`);
-}
-
-async function indexReady(browser: WebdriverIO.Browser): Promise<number> {
-  let elapsed = 0;
-  await browser.waitUntil(async () => {
-    const result = await browser.execute(async () => {
-      const api = (window as unknown as { __TAURI_INTERNALS__?: { invoke(cmd: string): Promise<{ state: string }> } }).__TAURI_INTERNALS__;
-      const status = await api?.invoke('index_status');
-      return { state: status?.state, elapsed: performance.now() };
-    });
-    elapsed = result.elapsed;
-    return result.state === 'ready';
-  }, { timeout: 180_000, interval: 25, timeoutMsg: 'индекс не готов' });
-  // performance.now() — от начала навигации окна. Опрос даёт верхнюю оценку.
-  return elapsed;
 }
 
 /** Щелчок и ожидание кадра делаются внутри движка, без задержки опроса WebDriver. */
@@ -190,7 +175,7 @@ describe(`С2-8.3: окно на ${count} заметок`, () => {
     it(`холодное открытие, открытие с индексом, панели и изменения — повтор ${run}`, async () => {
       const vault = prepareVault(count);
       try {
-        const index = path.join(vault.root, '.rhizomind', 'index.json');
+        const index = path.join(vault.root, '.rhizomind', 'index.db');
         expect(existsSync(index)).toBe(false);
         const cold = await startApp({ pickFolder: vault.root });
         try {
@@ -198,7 +183,7 @@ describe(`С2-8.3: окно на ${count} заметок`, () => {
           coldOpens.push(tree);
           record('tree.cold', tree.total);
           await indexReady(cold.browser);
-          await cold.browser.waitUntil(() => existsSync(index), { timeout: 120_000, timeoutMsg: 'не записан index.json' });
+          await cold.browser.waitUntil(() => existsSync(index), { timeout: 120_000, timeoutMsg: 'не записан index.db' });
         } finally {
           await cold.stop();
         }

@@ -74,6 +74,7 @@ export const core = {
   /** Пока индекс строится — `{ status: 'index_building', done, total }`. */
   backlinksList: withRequest('backlinks_list'),
   tagsList: withoutRequest('tags_list'),
+  vaultSearch: withRequest('vault_search'),
   tagNotes: withRequest('tag_notes'),
   // Обновление ссылок (0.2)
   /** Сколько заметок и ссылок перепишет переименование, и знак плана. */

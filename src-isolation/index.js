@@ -50,6 +50,7 @@
     'backlinks_list',
     'tags_list',
     'tag_notes',
+    'vault_search',
     'relink_preview',
     'relink_answer',
     'links_flush_done',

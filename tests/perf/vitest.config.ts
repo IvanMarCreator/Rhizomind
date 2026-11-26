@@ -9,7 +9,7 @@ export default defineConfig({
     root: import.meta.dirname,
     // Проверки С9.5 и длинная заметка идут на штатных 10 000. В отдельном
     // прогоне 50 000 нужен только справочный замер окна выпуска 0.2.
-    include: process.env.RHIZOMIND_PERF_NOTES === '50000' ? ['links.test.ts'] : ['**/*.test.ts'],
+    include: process.env.RHIZOMIND_PERF_NOTES === '50000' ? ['links.test.ts', 'search.test.ts'] : ['**/*.test.ts'],
     environment: 'node',
     // Подробный вывод: строки «[perf] …» и таблица попадают в журнал CI и при успехе.
     reporters: ['verbose'],

@@ -1,44 +1,8 @@
-//! Файл индекса `.rhizomind/index.json` (задача 0.2-1.3; С2-4, С2-4.1, Р12,
-//! Р13): запись, чтение, сверка при открытии.
-//!
-//! **Формат** — компактный JSON (без отступов), UTF-8:
-//!
-//! ```text
-//! {"format_version":1,"rules_version":1,"notes":[
-//!   {"p":["папка","Заметка.md"],        путь компонентами (как в API)
-//!    "s":1234,"m":1730000000000,        размер, дата изменения (мс UTC)
-//!    "c":1720000000000,                 дата создания (мс UTC)
-//!    "h":[[1,"Заголовок",3]],           заголовки: уровень, текст, строка
-//!    "t":[["тег",0,5]],                 теги: имя, 0 — текст / 1 — свойства, строка
-//!    "l":[[0,"Цель","Раздел","псевдоним",10,40,12,16,7]]}]}
-//!                                       ссылки: 1 — встраивание `!`, цель,
-//!                                       заголовок, псевдоним, начало и конец
-//!                                       ссылки, начало и конец цели (байты
-//!                                       текста `read_note`), строка
-//! ```
-//!
-//! Пустые `h`, `t`, `l` не пишутся. **Текста заметок в файле нет** — только
-//! заголовки, теги, цели и псевдонимы ссылок и их положения (Р13); строки
-//! для панели обратных ссылок читаются из заметок по запросу (задача 0.2-1.4).
-//!
-//! **Чтение** ([`load`]) — с собственным пределом [`MAX_INDEX_FILE_BYTES`]
-//! (256 МБ) вместо общих 4 МБ служебных файлов. Файла нет, он больше
-//! предела, не разбирается, оборван, версия формата или правил разбора не
-//! та, путь или положения не могут быть настоящими — [`Load::Rebuild`]:
-//! индекс собирается с нуля ([`super::rebuild`]) без копии старого файла
-//! (индекс производный, Р12). Иначе — [`reconcile`]: сверка с диском по
-//! размеру и дате изменения.
-//!
-//! **Запись** ([`IndexStore`]) — только готового индекса, атомарно через
-//! `Vault::write_service_file` (временный файл в `.rhizomind/tmp/`, сброс на
-//! диск, замена; служебная папка и временный файл проверены по дескриптору).
-//! Не чаще раза в [`WRITE_INTERVAL`] и только если индекс изменился
-//! ([`IndexStore::write_if_due`], время передаёт вызывающий); при закрытии
-//! окна — [`IndexStore::write_now`] после записи заметок, если успевает в
-//! предел закрытия (`windows::closing`). Запись не удалась (носитель только
-//! для чтения, нет места) — молча: индекс остаётся в памяти, следующая
-//! попытка — при следующем изменении. Вне хранилища ничего не пишется, сети
-//! нет.
+//! База .rhizomind/index.db. Снимок связей содержит только метаданные и позиции Markdown.
+//! Таблицы FTS5 хранят производные поисковые токены. SQLite работает в памяти,
+//! Vault читает и атомарно заменяет образ под проверенной служебной папкой.
+//! При повреждении, неизвестной схеме или обновлении с 0.2 индекс пересобирается.
+//! Запись происходит не чаще одного раза за WRITE_INTERVAL и при закрытии окна.
 
 use std::collections::HashSet;
 use std::sync::{PoisonError, RwLock};
@@ -46,18 +10,18 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{FORMAT_VERSION, MAX_INDEX_FILE_BYTES, NoteEntry, VaultIndex, read_entry};
+use super::{FORMAT_VERSION, MAX_INDEX_FILE_BYTES, NoteEntry, VaultIndex, read_document};
 use crate::commands::{CoreResult, IndexState, VaultPath};
 use crate::markdown::{Heading, ParsedNote, RULES_VERSION, Tag, TagSource, WikiLink};
 use crate::vault::{ServiceRead, Vault, is_service_dir};
 
 /// Имя файла индекса в `.rhizomind/`.
-pub const FILE_NAME: &str = "index.json";
+pub const FILE_NAME: &str = "index.db";
 
 /// Запись при изменениях — не чаще этого (С2-4.1, Р12).
 pub const WRITE_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Где лежит файл индекса: в программе — [`Vault`] (`.rhizomind/index.json`),
+/// Где лежит файл индекса: в программе — [`Vault`] (`.rhizomind/index.db`),
 /// в тестах — подмена (носитель только для чтения).
 pub trait IndexFile {
     /// Содержимое файла с пределом [`MAX_INDEX_FILE_BYTES`].
@@ -72,7 +36,7 @@ impl IndexFile for Vault {
     }
 
     fn write_index(&self, bytes: &[u8]) -> CoreResult<()> {
-        self.write_service_file(FILE_NAME, bytes)
+        self.publish_search_index(bytes)
     }
 }
 
@@ -174,9 +138,15 @@ pub fn reconcile(vault: &Vault, index: &RwLock<VaultIndex>) -> CoreResult<()> {
     }
 
     // Чтение и разбор — без замка.
-    let read: Vec<(&VaultPath, Option<Stamp>, Option<NoteEntry>)> = stale
+    let read: Vec<(&VaultPath, Option<Stamp>, Option<super::search::Document>)> = stale
         .iter()
-        .map(|&(stat, known)| (&stat.note.path, known, read_entry(vault, &stat.note).ok()))
+        .map(|&(stat, known)| {
+            (
+                &stat.note.path,
+                known,
+                read_document(vault, &stat.note).ok(),
+            )
+        })
         .collect();
 
     let mut index = index.write().unwrap_or_else(PoisonError::into_inner);
@@ -194,7 +164,7 @@ pub fn reconcile(vault: &Vault, index: &RwLock<VaultIndex>) -> CoreResult<()> {
             continue;
         }
         match entry {
-            Some(entry) => index.upsert(path.clone(), entry),
+            Some(entry) => index.upsert_document(path.clone(), entry),
             None => index.remove(path),
         }
     }
@@ -258,7 +228,7 @@ impl IndexStore {
         let throttled = self
             .last_attempt
             .is_some_and(|last| now.saturating_duration_since(last) < WRITE_INTERVAL);
-        let outcome = self.write(file, index, throttled);
+        let outcome = self.write(file, index, throttled, MAX_INDEX_FILE_BYTES);
         if matches!(outcome, WriteOutcome::Written | WriteOutcome::Failed) {
             self.last_attempt = Some(now);
         }
@@ -268,7 +238,7 @@ impl IndexStore {
     /// Пишет индекс сразу, без срока (закрытие окна), если он готов и
     /// изменился с последней попытки.
     pub fn write_now(&mut self, file: &dyn IndexFile, index: &RwLock<VaultIndex>) -> WriteOutcome {
-        self.write(file, index, false)
+        self.write(file, index, false, MAX_INDEX_FILE_BYTES)
     }
 
     fn write(
@@ -276,6 +246,7 @@ impl IndexStore {
         file: &dyn IndexFile,
         index: &RwLock<VaultIndex>,
         throttled: bool,
+        max_bytes: u64,
     ) -> WriteOutcome {
         let (revision, bytes) = {
             let index = index.read().unwrap_or_else(PoisonError::into_inner);
@@ -289,7 +260,24 @@ impl IndexStore {
             if throttled {
                 return WriteOutcome::Throttled;
             }
-            (revision, encode(&index))
+            if index.search_failed {
+                return WriteOutcome::Failed;
+            }
+            let mut db = index
+                .database
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let result = if let Some(db) = db.as_mut() {
+                super::database::snapshot(db, &encode(&index), max_bytes)
+            } else {
+                super::database::new_database().and_then(|mut db| {
+                    super::database::snapshot(&mut db, &encode(&index), max_bytes)
+                })
+            };
+            let Ok(bytes) = result else {
+                return WriteOutcome::Failed;
+            };
+            (revision, bytes)
         };
         // Диск — уже без замка индекса.
         self.attempted = Some(revision);
@@ -533,6 +521,17 @@ fn note_repr(path: &VaultPath, entry: &NoteEntry) -> NoteRepr {
 
 /// Готовый индекс из байтов файла или причина пересборки.
 fn decode(bytes: &[u8]) -> Result<VaultIndex, RebuildReason> {
+    let db = super::database::from_image(bytes).map_err(|_| RebuildReason::Broken)?;
+    let bytes = super::database::links(&db).map_err(|_| RebuildReason::Broken)?;
+    let mut index = decode_links(&bytes)?;
+    *index
+        .database
+        .get_mut()
+        .unwrap_or_else(PoisonError::into_inner) = Some(db);
+    Ok(index)
+}
+
+fn decode_links(bytes: &[u8]) -> Result<VaultIndex, RebuildReason> {
     let header: Header = serde_json::from_slice(bytes).map_err(|_| RebuildReason::Broken)?;
     if !header.format_version.is(FORMAT_VERSION) || !header.rules_version.is(RULES_VERSION) {
         return Err(RebuildReason::WrongVersion);

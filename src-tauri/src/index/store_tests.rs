@@ -70,6 +70,20 @@ fn sorted(index: &VaultIndex) -> Vec<(VaultPath, NoteEntry)> {
     entries
 }
 
+fn links_bytes(path: &Path) -> Vec<u8> {
+    let db = crate::index::database::from_image(&std::fs::read(path).unwrap()).unwrap();
+    crate::index::database::links(&db).unwrap()
+}
+
+fn replace_links(path: &Path, bytes: &[u8]) {
+    let mut db = crate::index::database::new_database().unwrap();
+    std::fs::write(
+        path,
+        crate::index::database::snapshot(&mut db, bytes, MAX_INDEX_FILE_BYTES).unwrap(),
+    )
+    .unwrap();
+}
+
 fn loaded(file: &dyn IndexFile) -> VaultIndex {
     match load(file) {
         Load::Loaded(index) => *index,
@@ -85,6 +99,192 @@ fn rebuild_reason(file: &dyn IndexFile) -> RebuildReason {
 }
 
 const RICH_NOTE: &str = "---\ntags: [проект, Draft]\n---\n# Заголовок\n\nТекст со ссылками [[Узел]], [[папка/Цель#Раздел|псевдоним]] и ![[картинка.png]].\n\n## Второй\n#тег/вложенный и #Тег\n";
+
+#[test]
+fn search_index_is_sqlite_inside_vault_and_omits_raw_paragraphs() {
+    let t = TestVault::new();
+    let sentence = "После проверки отчёт готов к отправке!";
+    t.put("План.md", sentence);
+    let legacy = t.root.join(".rhizomind/index.json");
+    std::fs::write(&legacy, b"{legacy cache}").unwrap();
+    let index = t.built();
+    assert_eq!(
+        IndexStore::new().write_now(&t.vault, &index),
+        WriteOutcome::Written
+    );
+    let bytes = std::fs::read(t.root.join(".rhizomind/index.db")).expect("база поиска");
+    assert!(!legacy.exists());
+    assert!(bytes.starts_with(b"SQLite format 3\0"));
+    assert!(
+        !bytes
+            .windows(sentence.len())
+            .any(|slice| slice == sentence.as_bytes())
+    );
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
+fn search_storage_changes_only_the_open_service_directory() {
+    let t = TestVault::new();
+    let legacy = t.root.join(".rhizomind/index.json");
+    std::fs::write(&legacy, "старый индекс").unwrap();
+    let moved = t._dir.path().join("перенесённый каталог");
+    let service = t.root.join(".rhizomind");
+    let result = t
+        .vault
+        .publish_search_index_with("новый индекс".as_bytes(), || {
+            if std::fs::rename(&service, &moved).is_ok() {
+                std::fs::create_dir(&service).unwrap();
+                std::fs::write(service.join("index.json"), "индекс другой папки").unwrap();
+            }
+        });
+    if moved.exists() {
+        assert!(result.is_err());
+        assert!(!moved.join("index.db").exists());
+        assert_eq!(
+            std::fs::read_to_string(moved.join("index.json")).unwrap(),
+            "старый индекс"
+        );
+        assert!(!service.join("index.db").exists());
+        assert_eq!(
+            std::fs::read_to_string(legacy).unwrap(),
+            "индекс другой папки"
+        );
+    } else {
+        result.expect("папка закреплена");
+        assert_eq!(
+            std::fs::read(service.join("index.db")).unwrap(),
+            "новый индекс".as_bytes()
+        );
+        assert!(!legacy.exists());
+    }
+}
+
+#[test]
+fn search_oversized_image_keeps_previous_index_and_markdown() {
+    let t = TestVault::new();
+    t.put("А.md", "Первый текст");
+    let first = t.built();
+    assert_eq!(
+        IndexStore::new().write_now(&t.vault, &first),
+        WriteOutcome::Written
+    );
+    let before = std::fs::read(t.index_file()).unwrap();
+    let md = t.put("А.md", "Новый текст");
+    let next = t.built();
+    assert_eq!(
+        IndexStore::new().write(&t.vault, &next, false, 128),
+        WriteOutcome::Failed
+    );
+    assert_eq!(std::fs::read(t.index_file()).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(md).unwrap(), "Новый текст");
+}
+
+#[test]
+fn search_tokens_follow_russian_forms_and_skip_substrings() {
+    let t = TestVault::new();
+    t.put("Работа/План.md", "После проверки отчёт готов");
+    t.put("Архив.md", "Перепроверка");
+    let index = t.built();
+    IndexStore::new().write_now(&t.vault, &index);
+    let db = crate::index::database::from_image(&std::fs::read(t.index_file()).unwrap()).unwrap();
+    let paths: Vec<String> = db.prepare("SELECT path FROM documents WHERE id IN (SELECT rowid FROM bodies WHERE bodies MATCH 'проверк')").unwrap()
+        .query_map([], |r| r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(paths, ["Работа/План.md"]);
+    for sql in [
+        "SELECT count(*) FROM bodies WHERE words IS NOT NULL",
+        "SELECT count(*) FROM titles WHERE words IS NOT NULL",
+    ] {
+        assert_eq!(db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+}
+
+fn search_now(
+    t: &TestVault,
+    index: &RwLock<VaultIndex>,
+    query: &crate::index::query::SearchQuery,
+) -> crate::index::query::SearchResults {
+    let candidates = query.candidates(&index.read().unwrap()).unwrap();
+    query.results(&t.vault, candidates)
+}
+
+#[test]
+fn search_uses_current_text_and_tag_and_tracks_reconcile_after_reopen() {
+    use crate::index::query::SearchQuery;
+    let t = TestVault::new();
+    let old = t.put("А.md", "#проект\nПервая проверка");
+    let index = t.built();
+    assert_eq!(
+        IndexStore::new().write_now(&t.vault, &index),
+        WriteOutcome::Written
+    );
+    drop(index);
+    let Load::Loaded(index) = load(&t.vault) else {
+        panic!("база поиска")
+    };
+    let index = RwLock::new(*index);
+    let query = SearchQuery {
+        text: "проверки".into(),
+        tag: Some("проект".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        search_now(&t, &index, &query).items[0]
+            .location
+            .as_ref()
+            .unwrap()
+            .line,
+        2
+    );
+    t.put("А.md", "Здесь осталась проверка");
+    assert!(
+        search_now(&t, &index, &query).items.is_empty(),
+        "удалённый из Markdown тег"
+    );
+    t.put("А.md", "После правки\n\nДругая проверка #проект");
+    assert_eq!(
+        search_now(&t, &index, &query).items[0]
+            .location
+            .as_ref()
+            .unwrap()
+            .line,
+        3
+    );
+    let next = t.root.join("Б.md");
+    std::fs::rename(old, &next).unwrap();
+    reconcile(&t.vault, &index).unwrap();
+    assert_eq!(search_now(&t, &index, &query).items[0].path, vp("Б.md"));
+    std::fs::remove_file(next).unwrap();
+    reconcile(&t.vault, &index).unwrap();
+    assert!(search_now(&t, &index, &query).items.is_empty());
+}
+
+#[test]
+fn search_unlinked_mentions_uses_real_occurrence_and_utf16() {
+    use crate::index::query::SearchQuery;
+    let t = TestVault::new();
+    t.put("План.md", "План");
+    t.put("Связана.md", "[[План]] и ![[План|План]]");
+    t.put(
+        "Черновик.md",
+        "Вступление\n[[План]] 🖋 Обновить План завтра.",
+    );
+    t.put("Планёрка.md", "Планёрка");
+    let index = t.built();
+    let query = SearchQuery {
+        mentions_of: Some(vp("План.md")),
+        ..Default::default()
+    };
+    let hits = search_now(&t, &index, &query).items;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, vp("Черновик.md"));
+    let pos = hits[0].location.as_ref().unwrap();
+    assert_eq!(pos.line, 2);
+    assert_eq!(
+        pos.column_utf16,
+        "[[План]] 🖋 Обновить ".encode_utf16().count() as u32
+    );
+}
 
 #[test]
 fn roundtrip() {
@@ -113,7 +313,7 @@ fn roundtrip() {
     assert!(!rich.parsed.links.is_empty() && !rich.parsed.tags.is_empty());
 
     // Компактный JSON с версиями, пути компонентами.
-    let raw = std::fs::read(t.index_file()).expect("файл");
+    let raw = links_bytes(&t.index_file());
     assert!(!raw.contains(&b'\n'), "без отступов и переносов");
     let value: Value = serde_json::from_slice(&raw).expect("JSON");
     assert_eq!(value["format_version"], json!(FORMAT_VERSION));
@@ -131,10 +331,9 @@ fn roundtrip() {
 fn with_field(t: &TestVault, field: &str, value: Value) {
     let index = t.built();
     IndexStore::new().write_now(&t.vault, &index);
-    let mut file: Value =
-        serde_json::from_slice(&std::fs::read(t.index_file()).expect("файл")).expect("JSON");
+    let mut file: Value = serde_json::from_slice(&links_bytes(&t.index_file())).expect("JSON");
     file[field] = value;
-    std::fs::write(t.index_file(), serde_json::to_vec(&file).expect("JSON")).expect("запись");
+    replace_links(&t.index_file(), &serde_json::to_vec(&file).expect("JSON"));
 }
 
 #[test]
@@ -186,12 +385,11 @@ fn tampered_entries_rebuild() {
     t.put("a.md", "[[b]] #тег");
     let index = t.built();
     IndexStore::new().write_now(&t.vault, &index);
-    let good: Value =
-        serde_json::from_slice(&std::fs::read(t.index_file()).expect("файл")).expect("JSON");
+    let good: Value = serde_json::from_slice(&links_bytes(&t.index_file())).expect("JSON");
     let tamper = |edit: &dyn Fn(&mut Value)| {
         let mut file = good.clone();
         edit(&mut file["notes"][0]);
-        std::fs::write(t.index_file(), serde_json::to_vec(&file).expect("JSON")).expect("запись");
+        replace_links(&t.index_file(), &serde_json::to_vec(&file).expect("JSON"));
         rebuild_reason(&t.vault)
     };
     assert_eq!(
@@ -232,7 +430,7 @@ fn tampered_entries_rebuild() {
     // 200 кодовых точек — допустимый тег: файл загружается.
     let mut file = good.clone();
     file["notes"][0]["t"][0][0] = json!("т".repeat(200));
-    std::fs::write(t.index_file(), serde_json::to_vec(&file).expect("JSON")).expect("запись");
+    replace_links(&t.index_file(), &serde_json::to_vec(&file).expect("JSON"));
     assert!(matches!(load(&t.vault), Load::Loaded(_)));
 }
 
@@ -370,8 +568,12 @@ fn no_note_text_in_file() {
         IndexStore::new().write_now(&t.vault, &index),
         WriteOutcome::Written
     );
-    let raw = String::from_utf8(std::fs::read(t.index_file()).expect("файл")).expect("UTF-8");
-    assert!(!raw.contains(MARKER), "текст заметки попал в индекс: {raw}");
+    let image = std::fs::read(t.index_file()).unwrap();
+    let raw = String::from_utf8_lossy(&image);
+    assert!(
+        !raw.contains(MARKER),
+        "исходный текст заметки попал в индекс"
+    );
     assert!(raw.contains("видимый") && raw.contains("Цель") && raw.contains("Заголовок"));
 }
 
@@ -593,13 +795,13 @@ fn huge_version_value_is_wrong_version() {
         raw.push(b'0');
     }
     raw.extend_from_slice(b"],\"rules_version\":1,\"notes\":[]}");
-    std::fs::write(t.index_file(), &raw).expect("файл");
+    replace_links(&t.index_file(), &raw);
     assert_eq!(rebuild_reason(&t.vault), RebuildReason::WrongVersion);
     // Та же подмена в rules_version и вложенный объект.
     let raw = format!(
         "{{\"format_version\":{FORMAT_VERSION},\"rules_version\":{{\"a\":[[1,2],{{\"b\":3}}]}},\"notes\":[]}}"
     );
-    std::fs::write(t.index_file(), raw).expect("файл");
+    replace_links(&t.index_file(), raw.as_bytes());
     assert_eq!(rebuild_reason(&t.vault), RebuildReason::WrongVersion);
     assert!(
         !store_source().contains("serde_json::Value"),

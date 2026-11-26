@@ -73,3 +73,18 @@ export async function openFromManager(browser: WebdriverIO.Browser, vault: PerfV
     }
   }
 }
+
+export async function indexReady(browser: WebdriverIO.Browser): Promise<number> {
+  let elapsed = 0;
+  await browser.waitUntil(async () => {
+    const result = await browser.execute(async () => {
+      const api = (window as unknown as { __TAURI_INTERNALS__?: { invoke(cmd: string): Promise<{ state: string }> } }).__TAURI_INTERNALS__;
+      const status = await api?.invoke('index_status');
+      return { state: status?.state, elapsed: performance.now() };
+    });
+    elapsed = result.elapsed;
+    return result.state === 'ready';
+  }, { timeout: 180_000, interval: 25, timeoutMsg: 'индекс не готов' });
+  // performance.now() — от начала навигации окна. Опрос даёт верхнюю оценку.
+  return elapsed;
+}

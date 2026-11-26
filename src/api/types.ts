@@ -441,6 +441,23 @@ export interface Tags {
   tags: TagSummary[];
 }
 
+export interface SearchQuery {
+  text: string;
+  folder?: VaultPath | null;
+  tag?: string | null;
+  mentions_of?: VaultPath | null;
+}
+
+export interface SearchHit {
+  path: VaultPath;
+  location: { line: number; column_utf16: number; snippet: string } | null;
+}
+
+export interface SearchResults {
+  items: SearchHit[];
+  truncated: boolean;
+}
+
 export interface TagNotesRequest {
   key: string;
 }
@@ -541,6 +558,7 @@ export interface CoreCommands {
   index_status: { request: null; response: IndexStatus };
   backlinks_list: { request: BacklinksListRequest; response: IndexReply<Backlinks> };
   tags_list: { request: null; response: IndexReply<Tags> };
+  vault_search: { request: SearchQuery; response: IndexReply<SearchResults> };
   tag_notes: { request: TagNotesRequest; response: IndexReply<TagNotes> };
   // Обновление ссылок (0.2)
   /** Пока индекс строится — `index_building`: окно «Подождите, индекс строится…» (решение 114). */

@@ -3,12 +3,12 @@
 //
 // Сценарий (задача 0.6б; с 0.2 — задача 0.2-8.1, С2-4, С2-6, С2-9 п. 8):
 // приложение открывает тестовое хранилище без индекса из vaults.json, в
-// заметку вводится текст; после сборки индекса (`.rhizomind/index.json`)
+// заметку вводится текст; после сборки индекса (`.rhizomind/index.db`)
 // заметка с обратными ссылками переименовывается в дереве с ответом «Обновить
 // ссылки» и галочкой «Больше не спрашивать» (настройка становится «Всегда
 // обновлять ссылки»); другая заметка переименовывается снаружи (`rename`, как
 // `mv`) — ссылки обновляются без вопроса; окно закрывается. Внутри хранилища
-// `index.json` и `link-update.json` (во время плана) появляются только в
+// `index.db` и `link-update.json` (во время плана) появляются только в
 // `.rhizomind/`, после выхода `.rhizomind/tmp/` пуста и журнала нет. Снимки
 // %LOCALAPPDATA%, %APPDATA%, %TEMP% до запуска, во время работы и после
 // выхода; экспорт реестра HKCU до запуска и после выхода (tools/traces/registry.ts).
@@ -437,7 +437,7 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   // Метки данных: не должны встретиться вне хранилища нигде (файлы, реестр).
   const dataMarkers = [noteName, typedText, hubName, hubNewName, tag, heading, extName, extNewName];
   const serviceDir = path.join(vaultDir, '.rhizomind');
-  // События файлов в хранилище (fs.watch): где появлялись index.json и link-update.json.
+  // События файлов в хранилище (fs.watch): где появлялись index.db и link-update.json.
   const vaultEvents = new Set<string>();
   let vaultWatcher: FSWatcher | undefined;
   let renaming = '';
@@ -546,9 +546,9 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
       typing = typeIntoNote(pid, noteKey, typedText);
       console.log(`ввод в заметку: ${typing}`);
       // Индекс собран и записан: первая запись — не раньше 30 с после открытия.
-      const indexFile = path.join(serviceDir, 'index.json');
-      await waitFor('сборка индекса (.rhizomind/index.json)', 90_000, () => (existsSync(indexFile) ? true : undefined));
-      console.log(`индекс: ${statSync(indexFile).size} байт в .rhizomind/index.json`);
+      const indexFile = path.join(serviceDir, 'index.db');
+      await waitFor('сборка индекса (.rhizomind/index.db)', 90_000, () => (existsSync(indexFile) ? true : undefined));
+      console.log(`индекс: ${statSync(indexFile).size} байт в .rhizomind/index.db`);
 
       // Переименование в приложении: «Обновить ссылки» + «Больше не спрашивать».
       renaming = renameInTree(pid, hubName, hubNewName);
@@ -710,19 +710,19 @@ describe.skipIf(!isWindows)('следы и флаги выпускной сбо�
   it.skipIf(!vaultScenario)('служебные файлы 0.2 — только в .rhizomind/; после выхода tmp/ пуста, журнала нет', () => {
     vaultWatcher?.close();
     const sep = path.sep;
-    const serviceOnly = ['index.json', 'link-update.json'];
-    // Пути из событий и с диска: index.json и link-update.json — только `.rhizomind/<имя>`.
+    const serviceOnly = ['index.db', 'link-update.json'];
+    // Пути из событий и с диска: index.db и link-update.json — только `.rhizomind/<имя>`.
     const seen = [...vaultEvents].filter((p) => serviceOnly.includes(path.basename(p)));
     const onDisk = filesIn(vaultDir).filter((p) => serviceOnly.includes(path.basename(p)));
-    console.log(`события хранилища: ${vaultEvents.size} путей; index.json/link-update.json: ${[...new Set([...seen, ...onDisk])].join(', ')}`);
+    console.log(`события хранилища: ${vaultEvents.size} путей; index.db/link-update.json: ${[...new Set([...seen, ...onDisk])].join(', ')}`);
     expect([...seen, ...onDisk].filter((p) => !serviceOnly.some((n) => p === `.rhizomind${sep}${n}`))).toEqual([]);
     // Журнал был во время плана и удалён по завершении (С2-4).
     expect(seen).toContain(`.rhizomind${sep}link-update.json`);
     expect(existsSync(path.join(serviceDir, 'link-update.json'))).toBe(false);
-    expect(existsSync(path.join(serviceDir, 'index.json'))).toBe(true);
+    expect(existsSync(path.join(serviceDir, 'index.db'))).toBe(true);
     expect(filesIn(path.join(serviceDir, 'tmp'))).toEqual([]);
     // Индекс: имена, тег и заголовок в нём есть (он и есть индекс), но не текст заметки.
-    const index = readFileSync(path.join(serviceDir, 'index.json'), 'utf8');
+    const index = readFileSync(path.join(serviceDir, 'index.db'), 'utf8');
     expect(index).toContain(tag);
     expect(index).not.toContain(typedText);
     // Файлы хранилища после сценария.

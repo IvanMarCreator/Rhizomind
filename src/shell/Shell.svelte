@@ -12,6 +12,7 @@
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
   import Palette from '../palette/Palette.svelte';
+  import SearchDialog from '../search/SearchDialog.svelte';
   import TemplateDialog from '../templates/TemplateDialog.svelte';
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
@@ -183,6 +184,7 @@
 
   /** Окно быстрого перехода (задача 2.7) открыто. */
   let switcherOpen = $state(false);
+  let search = $state.raw<{ origin: HTMLElement | null } | null>(null);
   let templateOpen = $state(false);
   let palette = $state.raw<{ origin: HTMLElement | null; treePath: VaultPath | null } | null>(null);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
@@ -193,7 +195,7 @@
    * настройки, вопрос об обновлении ссылок): горячие клавиши окна под ним не действуют.
    */
   const modalOpen = $derived(
-    palette !== null || switcherOpen || templateOpen || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
+    palette !== null || search !== null || switcherOpen || templateOpen || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
   );
 
   /** Меню правки текста (решение 97); `null` — закрыто. */
@@ -232,6 +234,14 @@
   function shortcutOf(id: CommandId): string | null {
     const chord = bindingsOf(model.hotkeys, id)[0];
     return chord ? chordText(chord) : null;
+  }
+
+  async function closeSearch(hit?: { path: VaultPath; at: LinkPosition | null }) {
+    const origin = search?.origin;
+    search = null;
+    await tick();
+    if (hit) openBacklink(hit.path, hit.at);
+    else if (origin?.isConnected) origin.focus({ preventScroll: true });
   }
 
   function openSwitcher() {
@@ -279,6 +289,11 @@
     switch (command) {
       case 'palette.open':
         openPalette();
+        return;
+      case 'search.open':
+        if (model.status.kind === 'ready' && model.vault && !modalOpen) {
+          search = { origin: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+        }
         return;
       case 'quick_switcher.open':
         openSwitcher();
@@ -478,6 +493,10 @@
   <RenameDialog tree={files} />
   {#if palette}
     <Palette hotkeys={model.hotkeys} {available} onChoose={(id) => void closePalette(id)} onCancel={() => void closePalette()} />
+  {/if}
+  {#if search}
+    <SearchDialog current={model.currentPath} onClose={() => void closeSearch()}
+      onOpen={(path, at) => void closeSearch({ path, at })} />
   {/if}
   {#if templateOpen}
     <TemplateDialog {model} onClose={() => (templateOpen = false)} />

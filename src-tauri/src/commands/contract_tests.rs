@@ -854,6 +854,33 @@ fn command_tags_list() {
 }
 
 #[test]
+fn command_vault_search() {
+    use crate::index::query::{SearchHit, SearchPosition, SearchQuery, SearchResults};
+    command_with(
+        "vault_search",
+        &SearchQuery {
+            text: "проверка".into(),
+            ..Default::default()
+        },
+        &IndexReply::Ready(SearchResults {
+            items: vec![SearchHit {
+                path: path(&["План.md"]),
+                location: Some(SearchPosition {
+                    line: 2,
+                    column_utf16: 6,
+                    snippet: "После проверки".into(),
+                }),
+            }],
+            truncated: false,
+        }),
+        &[
+            CoreError::invalid_argument("query"),
+            err(ErrorCode::NoVaultOpen),
+        ],
+    );
+}
+
+#[test]
 fn command_tag_notes() {
     command_with(
         "tag_notes",

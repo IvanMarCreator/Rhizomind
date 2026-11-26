@@ -349,6 +349,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     },
     errors: [err('no_vault_open')],
   },
+  vault_search: {
+    command: 'vault_search',
+    request: { text: 'проверка', folder: null, tag: null, mentions_of: null },
+    response: { status: 'ready', items: [{ path: ['План.md'], location: { line: 2, column_utf16: 6, snippet: 'После проверки' } }], truncated: false },
+    errors: [invalidArgument('query'), err('no_vault_open')],
+  },
   tag_notes: {
     command: 'tag_notes',
     request: { key: 'проект' },
