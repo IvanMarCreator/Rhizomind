@@ -151,17 +151,20 @@ impl VaultEvents {
     }
 
     fn changed(&self, payload: VaultChangedPayload) {
+        let writer = self.open.note_update_guard();
         let vault = &self.open.vault;
-        // Всё, что читается с диска, — до замка списка заметок: дата
-        // создания новых заметок и (после полной сверки) полный список.
+        // Метаданные изменившихся путей и полный список при сверке
+        // читаются до замка списка заметок.
         let created: std::collections::HashMap<VaultPath, i64> = payload
             .changes
             .iter()
             .filter_map(|change| match change {
-                TreeChange::Created { path, .. } | TreeChange::Renamed { to: path, .. } => {
+                TreeChange::Created { path, .. }
+                | TreeChange::Modified { path }
+                | TreeChange::Renamed { to: path, .. } => {
                     vault.note_created_ms(path).map(|ms| (path.clone(), ms))
                 }
-                _ => None,
+                TreeChange::Removed { .. } => None,
             })
             .collect();
         let created_ms = |path: &VaultPath| created.get(path).copied();
@@ -262,6 +265,7 @@ impl VaultEvents {
                     self.emit.set_title(title);
                 });
         }
+        drop(writer);
         // Версии изменённых заметок — с диска, вне замка списка заметок.
         for path in modified {
             if let Ok(version) = vault.file_version(&path) {

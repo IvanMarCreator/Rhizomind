@@ -132,6 +132,9 @@ pub struct OpenVault {
     pub vault: Vault,
     /// Список заметок, разрешение ссылок и быстрый переход.
     notes: RwLock<NoteList>,
+    /// Порядок подготовки и применения снимков с диска. Пока наблюдатель
+    /// читает метаданные, ссылки и быстрый переход доступны для чтения.
+    note_updates: Mutex<()>,
     /// Заметка, показанная в окне (`window_shown_note`, задача 2.12): по ней
     /// ядро ставит заголовок окна. Меняется под замком списка заметок
     /// (чтение — команда, запись — наблюдатель): порядок «команда ↔
@@ -153,6 +156,7 @@ impl OpenVault {
             summary,
             vault,
             notes: RwLock::new(notes),
+            note_updates: Mutex::new(()),
             shown: Mutex::new(None),
             index: WindowIndex::new(),
             relink,
@@ -173,6 +177,14 @@ impl OpenVault {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Снимок с диска и запись в список составляют одно обновление относительно
+    /// других писателей. Замок самого списка нужен лишь для применения.
+    pub(crate) fn note_update_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.note_updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Учитывает изменения своей команды окна сразу, не дожидаясь
     /// наблюдателя (повтор тем же событием наблюдателя безвреден): список
     /// заметок и индекс (задача 0.2-1.4; `Modified` — своя запись заметки).
@@ -180,11 +192,13 @@ impl OpenVault {
     pub fn apply_own(&self, changes: &[TreeChange]) {
         let vault = &self.vault;
         let mut update = IndexUpdate::default();
+        let writer = self.note_update_guard();
         self.write_notes().apply_observed(
             changes,
             &|path| vault.note_created_ms(path),
             &mut |list, change| update.before(list, change),
         );
+        drop(writer);
         self.index.update(vault, update);
     }
 
@@ -417,11 +431,13 @@ impl Core {
             summary,
             vault,
             notes: RwLock::default(),
+            note_updates: Mutex::default(),
             shown: Mutex::default(),
             index: WindowIndex::new(),
             relink,
         });
         open.relink.bind_window(window_label);
+        let initial_update = open.note_update_guard();
         let mut index = open.write_notes();
         let watcher = match VaultWatcher::start_with(
             open.vault.root(),
@@ -440,6 +456,7 @@ impl Core {
         // Замок отпускается до возможной остановки наблюдателя: его поток
         // может ждать этот замок.
         drop(index);
+        drop(initial_update);
         indexed?;
         // Индекс — в фоне: дерево файлов не ждёт его (С2-3.7).
         start_index(&open, emit);

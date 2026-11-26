@@ -122,8 +122,8 @@ impl NoteList {
     }
 
     /// Применяет изменения дерева по порядку. `created_ms` — дата создания
-    /// новой заметки с диска (`None` — файла уже нет, заметка не
-    /// добавляется). Возвращает, изменился ли список.
+    /// заметки на диске. Если метаданные недоступны, новая заметка не
+    /// добавляется, а известная сохраняет прежнюю дату.
     pub fn apply(
         &mut self,
         changes: &[TreeChange],
@@ -166,7 +166,23 @@ impl NoteList {
                     && is_note_path(path)
                     && self.insert(path, created_ms, touched)
             }
-            TreeChange::Modified { .. } => false,
+            TreeChange::Modified { path } => {
+                let key = path_key(path);
+                let Some(note) = self.notes.get_mut(&key) else {
+                    return false;
+                };
+                // Атомарная замена может оставить по тому же пути файл
+                // с другой датой создания (см. Vault::notes).
+                let Some(created) = created_ms(path) else {
+                    return false;
+                };
+                if note.1 == created {
+                    return false;
+                }
+                touched.entry(key).or_insert_with(|| Some(note.clone()));
+                note.1 = created;
+                true
+            }
             TreeChange::Removed { path } => self.remove_under(path, touched).is_some(),
             TreeChange::Renamed { from, to } => match self.remove_under(from, touched) {
                 Some(moved) => {
@@ -463,6 +479,17 @@ mod tests {
             index.switcher().search("нов").expect("поиск")[0].path,
             vp("Новая.md")
         );
+    }
+
+    #[test]
+    fn unchanged_or_unavailable_creation_time_keeps_modified_note() {
+        let original = note("А.md", 7);
+        let mut list = NoteList::new(vec![original.clone()]);
+        let changes = [TreeChange::Modified { path: vp("А.md") }];
+        assert!(!list.apply(&changes, NOW));
+        assert!(!list.apply(&changes, &|_| None));
+        assert!(!list.apply(&[TreeChange::Modified { path: vp("Б.md") }], NOW));
+        assert_eq!(list.note_refs(), [original]);
     }
 
     #[test]

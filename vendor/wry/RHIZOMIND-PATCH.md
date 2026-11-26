@@ -19,7 +19,7 @@ options.set_is_custom_crash_reporting_enabled(true);
 
 ## Почему
 
-По умолчанию WebView2 отправляет дампы падений своих процессов в Microsoft (`ICoreWebView2EnvironmentOptions3::IsCustomCrashReportingEnabled = FALSE`). Дамп процесса интерфейса может содержать текст открытых заметок. wry это свойство не выставляет, Tauri его не открывает (ADR 0007, инвариант 3 в `CLAUDE.md`).
+По умолчанию WebView2 отправляет дампы падений своих процессов в Microsoft (`ICoreWebView2EnvironmentOptions3::IsCustomCrashReportingEnabled = FALSE`). Дамп процесса интерфейса может содержать текст открытых заметок. wry это свойство не выставляет, Tauri его не открывает (ADR 0007, инвариант 3 в `AGENTS.md`).
 
 Проверено в CI на Windows (WebView2 155): с правкой процесс браузера запускается с ключом `--edge-webview-disable-crash-reporting=1`, без неё — без ключа. Этот ключ проверяет интеграционный тест `src-tauri/tests/webview2_runtime.rs`.
 

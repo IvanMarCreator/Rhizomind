@@ -24,7 +24,7 @@
 - [Требования и план выпусков](docs/product/requirements.md)
 - [Архитектура](docs/ARCHITECTURE.md)
 - [Модель безопасности для ИБ](docs/SECURITY.md)
-- [Правила работы агентов](CLAUDE.md)
+- [Правила работы агентов](AGENTS.md)
 
 ## Разработка
 
