@@ -46,7 +46,7 @@ describe('создание из шаблона через палитру', () =>
     expect(await dialog.$('button=А/План.md').isDisplayed()).toBe(true);
     await shot(browser, 'templates');
     await chosen.click();
-    const name = dialog.$('form input');
+    const name = dialog.$('input[name="note-title"]');
     await name.setValue('Результат');
     await shot(browser, 'name');
     await browser.keys('Enter');

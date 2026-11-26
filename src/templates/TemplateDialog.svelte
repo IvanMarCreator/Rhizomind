@@ -83,8 +83,7 @@
     nameInput?.select();
   }
 
-  async function create(event: SubmitEvent) {
-    event.preventDefault();
+  async function create() {
     const title = name.trim();
     if (!selected || !title || busy) return;
     const dir = newNoteDir(model.settings.new_note_location, model.currentPath);
@@ -128,6 +127,10 @@
         const next = event.key === 'ArrowDown' ? pos + 1 : pos <= 0 ? rows.length - 1 : pos - 1;
         rows[next % rows.length]?.focus();
       }
+    } else if (event.key === 'Enter' && event.target === nameInput) {
+      if (event.isComposing) return;
+      event.preventDefault();
+      if (!event.repeat) void create();
     } else if (event.key === 'Enter' && event.target === searchInput && shown[0]) {
       event.preventDefault();
       void select(shown[0]);
@@ -153,14 +156,14 @@
       </ul>
       <div class="actions"><button type="button" onclick={onClose}>{t('templates.cancel')}</button></div>
     {:else}
-      <form onsubmit={create}>
+      <div>
         <p>{label(selected)}</p>
-        <label>{t('templates.name')}<input spellcheck="false" bind:this={nameInput} bind:value={name} disabled={busy} /></label>
+        <label>{t('templates.name')}<input name="note-title" spellcheck="false" bind:this={nameInput} bind:value={name} disabled={busy} /></label>
         <div class="actions">
           <button type="button" disabled={busy} onclick={onClose}>{t('templates.cancel')}</button>
-          <button class="primary" type="submit" disabled={busy || !name.trim()}>{t('templates.create')}</button>
+          <button class="primary" type="button" disabled={busy || !name.trim()} onclick={() => void create()}>{t('templates.create')}</button>
         </div>
-      </form>
+      </div>
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}
   </div>

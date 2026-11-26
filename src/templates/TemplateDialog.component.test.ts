@@ -84,6 +84,18 @@ it('template: опубликованная копия без доступног�
   expect(calls.filter(([cmd]) => cmd === 'note_create_from_template')).toHaveLength(1);
 });
 
+it('template: Enter создаёт копию один раз после окончания композиции и отпускания повтора', async () => {
+  const { calls, onClose } = setup(['Шаблоны']);
+  await fireEvent.click(await screen.findByRole('button', { name: 'А/План.md' }));
+  const input = screen.getByRole('textbox', { name: 'Имя новой заметки' });
+  await fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  await fireEvent.keyDown(input, { key: 'Enter', repeat: true });
+  expect(calls.some(([cmd]) => cmd === 'note_create_from_template')).toBe(false);
+  await fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  expect(calls.filter(([cmd]) => cmd === 'note_create_from_template')).toHaveLength(1);
+});
+
 it('template: первое открытие предлагает папку, при отмене файл не создаётся', async () => {
   const { calls, model, onClose } = setup(null);
   await fireEvent.click(await screen.findByRole('button', { name: 'Шаблоны' }));
