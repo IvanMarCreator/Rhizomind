@@ -142,7 +142,7 @@
       <FolderPicker title={t('templates.folder')} inline onPick={pickFolder} onCancel={() => { if (!busy) onClose(); }} />
     {:else if !selected}
       <label>{t('templates.choose')}
-        <input aria-label={t('templates.filter')} placeholder={t('templates.filter')} bind:this={searchInput} bind:value={filter} />
+        <input spellcheck="false" aria-label={t('templates.filter')} placeholder={t('templates.filter')} bind:this={searchInput} bind:value={filter} />
       </label>
       <ul class="template-list">
         {#each shown as path (path.join('/'))}
@@ -155,7 +155,7 @@
     {:else}
       <form onsubmit={create}>
         <p>{label(selected)}</p>
-        <label>{t('templates.name')}<input bind:this={nameInput} bind:value={name} disabled={busy} /></label>
+        <label>{t('templates.name')}<input spellcheck="false" bind:this={nameInput} bind:value={name} disabled={busy} /></label>
         <div class="actions">
           <button type="button" disabled={busy} onclick={onClose}>{t('templates.cancel')}</button>
           <button class="primary" type="submit" disabled={busy || !name.trim()}>{t('templates.create')}</button>
