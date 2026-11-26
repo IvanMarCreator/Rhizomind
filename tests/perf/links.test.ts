@@ -159,12 +159,16 @@ async function measureChanges(browser: WebdriverIO.Browser, vault: PerfVault) {
   await browser.waitUntil(() => browser.execute((s) => document.querySelectorAll(s).length === 100, GROUPS), { timeout: 30_000 });
   await browser.$(hubRow).click();
   await browser.keys('F2');
-  await browser.$('input[aria-label="Новое имя"]').waitForDisplayed();
+  const nameField = browser.$('input[aria-label="Новое имя"]');
+  const newName = 'Переименованный узел';
+  await nameField.waitForDisplayed();
   await browser.keys(['Control', 'a']);
-  await browser.keys('Переименованный узел');
+  // WebKitWebDriver склеивает соседние одинаковые клавиши в одном вызове.
+  for (const letter of newName) await browser.keys(letter);
+  expect(await nameField.getValue()).toBe(newName);
   await browser.keys('Enter');
   const renameMs = await answer(browser, false);
-  expect(existsSync(path.join(vault.root, 'Переименованный узел.md'))).toBe(true);
+  expect(existsSync(path.join(vault.root, `${newName}.md`))).toBe(true);
   expect(existsSync(path.join(vault.root, `${hub}.md`))).toBe(false);
   record('rename', renameMs);
 
