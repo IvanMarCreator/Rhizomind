@@ -17,8 +17,6 @@
 # ключа кэша в ci.yml).
 set -euo pipefail
 
-packages=(libwebkit2gtk-4.1-dev librsvg2-dev webkit2gtk-driver xvfb)
-
 cache="${APT_CACHE_DIR:?нужна папка кэша APT_CACHE_DIR}"
 archives=/var/cache/apt/archives
 work="$(mktemp -d)"
@@ -34,6 +32,13 @@ if compgen -G "$cache/*.deb" > /dev/null; then
 fi
 
 sudo apt-get "${apt_opts[@]}" update
+
+# В Ubuntu 26.04 пакет WebKitWebDriver переименован; в 24.04 он носит прежнее имя.
+driver_package=webkit2gtk-driver
+if LC_ALL=C apt-cache policy webkitgtk-webdriver | grep -E '^[[:space:]]*Candidate: [0-9]' > /dev/null; then
+  driver_package=webkitgtk-webdriver
+fi
+packages=(libwebkit2gtk-4.1-dev librsvg2-dev "$driver_package" xvfb)
 
 # Базы зеркал для адресов вида mirror+file:/etc/apt/apt-mirrors.txt/pool/…
 mirrors=()
@@ -109,4 +114,5 @@ trap - EXIT
 
 # Установка — только из скачанного, без сети.
 sudo apt-get install -y --no-download "${packages[@]}"
+command -v WebKitWebDriver
 rm -rf "$work"
