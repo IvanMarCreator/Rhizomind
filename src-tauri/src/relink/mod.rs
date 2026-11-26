@@ -24,6 +24,8 @@ pub mod duplicates;
 pub mod external;
 mod journal;
 #[cfg(test)]
+mod load_tests;
+#[cfg(test)]
 mod perf_tests;
 mod plan;
 mod rewrite;

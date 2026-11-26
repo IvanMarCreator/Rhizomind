@@ -797,6 +797,101 @@ fn torn_last_mark_line_is_dropped() {
     assert!(!fx.journal().exists());
 }
 
+/// Оборванная отметка предыдущего падения не должна портить отметки первой
+/// доделки, если та тоже прервётся: следующее открытие завершает весь план.
+#[test]
+fn torn_tail_and_interrupted_resume_are_resumed_again() {
+    use std::sync::{Arc, Mutex};
+
+    let mut fx = meeting(&[
+        ("A.md", "[[Встреча]]\n".as_bytes()),
+        ("B.md", "[[Встреча]]\n".as_bytes()),
+        ("C.md", "[[Встреча]]\n".as_bytes()),
+    ]);
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+    assert_eq!(plan.note_count(), 4);
+    crash_after(1);
+    let first = fx.run(&plan, &renames);
+    assert_eq!(updated_paths(&first), vec!["A.md"]);
+    assert_eq!(fx.text("A.md"), "[[Планёрка]]\n");
+    assert_eq!(fx.text("B.md"), "[[Встреча]]\n");
+    assert_eq!(fx.text("C.md"), "[[Встреча]]\n");
+    assert!(fx.journal().is_file());
+    let mut bytes = std::fs::read(fx.journal()).expect("журнал");
+    bytes.extend_from_slice(br#"{"done":"#);
+    std::fs::write(fx.journal(), bytes).expect("оборванная последняя отметка");
+
+    fx.reopen();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&writes);
+    fx.own.observe(Box::new(move |path, _, _| {
+        seen.lock().expect("записи").push(path.clone())
+    }));
+    crash_after(2);
+    let interrupted = fx.resume().expect("первая доделка");
+    assert_eq!(updated_paths(&interrupted), vec!["A.md", "B.md"]);
+    assert!(interrupted.failed.is_empty());
+    assert_eq!(
+        *writes.lock().expect("записи"),
+        vec![vp("B.md")],
+        "A уже записана до первого падения"
+    );
+    assert_eq!(fx.text("B.md"), "[[Планёрка]]\n");
+    assert_eq!(
+        fx.text("C.md"),
+        "[[Встреча]]\n",
+        "первая доделка не завершена"
+    );
+    assert_eq!(fx.text("Список.md"), "до [[Встреча]] после\n");
+    assert!(fx.journal().is_file(), "после второго падения журнал нужен");
+
+    fx.reopen();
+    let seen = Arc::clone(&writes);
+    fx.own.observe(Box::new(move |path, _, _| {
+        seen.lock().expect("записи").push(path.clone())
+    }));
+    let finished = fx
+        .resume()
+        .expect("второе открытие доделывает оставшиеся ссылки");
+    assert!(finished.failed.is_empty());
+    for path in ["A.md", "B.md", "C.md"] {
+        assert_eq!(fx.text(path), "[[Планёрка]]\n", "{path}");
+    }
+    assert_eq!(fx.text("Список.md"), "до [[Планёрка]] после\n");
+    assert_eq!(
+        *writes.lock().expect("записи"),
+        vec![vp("B.md"), vp("C.md"), vp("Список.md")],
+        "готовые заметки повторно не записаны"
+    );
+    assert!(!fx.journal().exists(), "весь план завершён, журнал удалён");
+    assert!(fx.resume().is_none(), "доделывать больше нечего");
+}
+#[test]
+fn torn_hardlinked_journal_is_refused_without_repair_or_note_writes() {
+    let mut fx = meeting(&[("A.md", "[[Встреча]]\n".as_bytes())]);
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+    crash_after(1);
+    fx.run(&plan, &renames);
+    let mut bytes = std::fs::read(fx.journal()).expect("журнал");
+    bytes.extend_from_slice(br#"{"done":"#);
+    std::fs::write(fx.journal(), &bytes).expect("оборванный хвост");
+    let outside = fx.outside().join("journal-copy");
+    std::fs::hard_link(fx.journal(), &outside).expect("жёсткая ссылка снаружи");
+    fx.reopen();
+    assert_eq!(fx.text("A.md"), "[[Планёрка]]\n");
+    assert_eq!(fx.text("Список.md"), "до [[Встреча]] после\n");
+    let before = fx.snapshot();
+    assert!(
+        fx.resume().is_none(),
+        "журнал с двумя именами не открыт для записи"
+    );
+    assert_eq!(
+        fx.snapshot(),
+        before,
+        "не исправлен ни журнал, ни заметки, ни внешние файлы"
+    );
+    assert_eq!(std::fs::read(outside).expect("внешнее имя журнала"), bytes);
+}
 /// Объём журнала на заметку — O(1): заголовок плюс две короткие отметки на
 /// заметку. Замер на 10 000 заметках (`--ignored`, CI — шаг производительности).
 #[test]

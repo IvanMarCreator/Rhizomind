@@ -25,19 +25,20 @@
 // Нажатия — временем движка окна (probe.ts), без задержек WebDriver.
 // Вывод — по медиане повторов (stats.ts: почему не одна попытка).
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applicationPath, startApp, type Session } from '../e2e/driver.ts';
+import { openFromTree, showView } from '../e2e/kt1.ts';
 import { saveScreenshot } from '../e2e/screenshot.ts';
+import { openFromManager, type TreeOpen } from './open-window.ts';
 import { armProbe, collectProbe, finishProbe } from './probe.ts';
 import { median, ms, nth, renderTable, summarize, type Measured } from './stats.ts';
 import { LONG_LINES, LONG_MARKER, LONG_TITLE, NOTES, SEED, prepareVault, removeVault, type PerfVault } from './vault.ts';
 
 const ROOT = path.join(import.meta.dirname, '..', '..');
 const REPORT_DIR = path.join(ROOT, 'test-results', 'perf');
-const MANAGER = '[data-testid="vault-manager"]';
 const SWITCHER = 'input[role="combobox"][aria-label="Быстрый переход"]';
 const OPTION_SELECTED = '[role="option"][aria-selected="true"] .name';
 
@@ -56,69 +57,6 @@ function log(text: string): void {
   console.log(`[perf] ${text}`);
 }
 
-interface TreeOpen {
-  /** Щелчок → дерево увидел тест (часы теста), мс. */
-  total: number;
-  /** Щелчок → начало загрузки страницы нового окна (часы окна). */
-  navigation: number;
-  /** Щелчок → DOMContentLoaded нового окна: скрипт интерфейса загружен и выполнен; `null` — нет данных. */
-  domReady: number | null;
-  /** Начало и конец запроса `tree_list` от щелчка; `null` — движок не даёт Resource Timing для ipc. */
-  treeList: { start: number; end: number } | null;
-  /** Щелчок → дерево в DOM (часы окна). */
-  rendered: number;
-}
-
-/** «Открыть папку как хранилище» в окне управления; ждёт все записи корня в дереве нового окна. */
-async function openFromManager(browser: WebdriverIO.Browser, vault: PerfVault): Promise<TreeOpen> {
-  await browser.$(MANAGER).waitForDisplayed({ timeout: 60_000 });
-  const manager = await browser.getWindowHandle();
-  const button = browser.$('button[aria-label="Открыть папку как хранилище"]');
-  await button.waitForClickable({ timeout: 10_000 });
-  const clickAt = Date.now();
-  await button.click();
-  const deadline = clickAt + 60_000;
-  let current = manager;
-  for (;;) {
-    if (Date.now() > deadline) throw new Error(`дерево не показано за 60 с (записей корня ${vault.rootEntries})`);
-    const other = (await browser.getWindowHandles()).find((handle) => handle !== manager);
-    if (!other) continue;
-    try {
-      if (current !== other) {
-        await browser.switchToWindow(other);
-        current = other;
-      }
-      const state = await browser.execute(() => {
-        const nav = performance.timeOrigin;
-        const ipc = performance
-          .getEntriesByType('resource')
-          .filter((e) => /tree_list/.test(e.name))
-          .map((e) => ({ start: nav + e.startTime, end: nav + (e as PerformanceResourceTiming).responseEnd }));
-        const page = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-        return {
-          items: document.querySelectorAll('[role="treeitem"]').length,
-          nav,
-          domReady: page && page.domContentLoadedEventEnd > 0 ? nav + page.domContentLoadedEventEnd : null,
-          now: nav + performance.now(),
-          treeList: ipc[0] ?? null,
-        };
-      });
-      if (state.items >= vault.rootEntries) {
-        const seen = Date.now();
-        return {
-          total: seen - clickAt,
-          navigation: state.nav - clickAt,
-          domReady: state.domReady === null ? null : state.domReady - clickAt,
-          treeList: state.treeList ? { start: state.treeList.start - clickAt, end: state.treeList.end - clickAt } : null,
-          rendered: state.now - clickAt,
-        };
-      }
-    } catch {
-      // Окно ещё создаётся (WebDriver видит его раньше, чем страницу).
-    }
-  }
-}
-
 /** Быстрый переход закрыт (остался открытым после сбоя прошлой проверки — Esc). */
 async function switcherClosed(browser: WebdriverIO.Browser): Promise<void> {
   if (await browser.$(SWITCHER).isExisting()) await browser.keys('Escape');
@@ -126,7 +64,7 @@ async function switcherClosed(browser: WebdriverIO.Browser): Promise<void> {
 }
 
 /** Ctrl+O, запрос, Enter на пункте `title`. */
-async function openNote(browser: WebdriverIO.Browser, query: string, title: string | null): Promise<void> {
+async function openNote(browser: WebdriverIO.Browser, query: string, title: string): Promise<void> {
   await switcherClosed(browser);
   await browser.keys(['Control', 'o']);
   await browser.$(SWITCHER).waitForDisplayed({ timeout: 5_000 });
@@ -134,9 +72,9 @@ async function openNote(browser: WebdriverIO.Browser, query: string, title: stri
   await browser.waitUntil(
     async () => {
       const name = await browser.execute((sel) => document.querySelector(sel)?.textContent ?? null, OPTION_SELECTED);
-      return title === null ? name !== null && name !== LONG_TITLE : name === title;
+      return name === title;
     },
-    { timeout: 10_000, timeoutMsg: `быстрый переход: нет пункта ${title ?? 'для ' + query}` },
+    { timeout: 10_000, timeoutMsg: `быстрый переход: нет пункта ${title}` },
   );
 }
 
@@ -328,13 +266,9 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
       repeats.push(latencies);
       bursts.push(burstLatencies);
       if (r === 0) await saveScreenshot(browser, 'perf-typing');
-      // Уйти на другую заметку: следующий повтор снова открывает длинную.
-      await openNote(browser, vault.queries[r % vault.queries.length] ?? 'а', null);
-      await browser.keys('Enter');
-      await browser.waitUntil(
-        async () => !(await browser.execute((m) => (document.querySelector('.cm-content')?.textContent ?? '').includes(m), LONG_MARKER)),
-        { timeout: 10_000, timeoutMsg: 'длинная заметка не закрылась' },
-      );
+      // Заголовок подтверждает завершённый переход. Маркер первой строки
+      // исчезает из DOM уже при прокрутке виртуализированного редактора.
+      await openFromTree(browser, vault.fixture.hub);
     }
     const typing: Measured = {
       id: 'typing',
@@ -355,6 +289,54 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
         : 'Длинных задач (> 50 мс) за время ввода нет или движок не даёт Long Tasks API.',
       eventMax > 0 ? `Event Timing: самое долгое событие ввода ${ms(eventMax)} мс.` : 'Event Timing: событий дольше 16 мс нет или движок не даёт API.',
     );
+  });
+
+  it('набор в тех же 5000 строк при работе индексатора', async () => {
+    const b = await vaultSession();
+    const file = path.join(vault.root, `${vault.fixture.hub}.md`);
+    const original = readFileSync(file);
+    const link = `.backlinks button.note[aria-label="Открыть «${vault.fixture.hub}»"]`;
+    await openFromTree(b, LONG_TITLE);
+    await showView(b, 'Обратные ссылки');
+    expect(await b.$(link).isExisting()).toBe(false);
+    const repeats: number[][] = [];
+    let linked = false;
+    try {
+      for (let r = 0; r < TYPING_REPEATS; r++) {
+        const latencies: number[] = [];
+        for (const where of ['конец', 'начало', 'середина'] as const) {
+          await placeCaret(b, where);
+          await armProbe(b, 'editor');
+          linked = !linked;
+          let observed = false;
+          let minimumKeys = SINGLE_KEYS;
+          let samples: number[] = [];
+          const started = performance.now();
+          for (let i = 0; i < minimumKeys || !observed; i++) {
+            if (performance.now() - started > 30_000) throw new Error(`Индекс не обновил обратные ссылки во время набора: ${where}`);
+            await b.keys(TYPED.charAt(i % TYPED.length));
+            samples = await collectProbe(b, i + 1);
+            if (i === 0) {
+              if (linked) appendFileSync(file, `\n[[${LONG_TITLE}]]\n`);
+              else writeFileSync(file, original);
+            }
+            if (!observed && await b.$(link).isExisting() === linked) {
+              observed = true;
+              minimumKeys = Math.max(minimumKeys, i + 2);
+            }
+          }
+          await finishProbe(b);
+          // Та же длина серии, что в С9.5. Обновление панели произошло в ходе
+          // измеряемой серии, в том числе если наблюдателю понадобилось >20 клавиш.
+          latencies.push(...samples.slice(-SINGLE_KEYS));
+        }
+        repeats.push(latencies);
+      }
+    } finally {
+      writeFileSync(file, original);
+    }
+    measured.push({ id: 'typing.active', title: 'Ввод в 5000 строк при обновлении индекса (95-й процентиль)',
+      limitMs: process.platform === 'win32' ? 100 : null, repeatStat: 'p95', repeats });
   });
 
   // Справочно, для профиля (находка Н1): на Linux CI окно хранилища под
@@ -406,7 +388,9 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
       failed.map((s) => s.title),
       `критерий С9.5 не выполнен:\n${renderTable(summaries)}`,
     ).toEqual([]);
-    const verdicts = process.platform === 'linux' ? ['switcher', 'typing'] : ['tree', 'switcher', 'typing'];
+    const verdicts = ['switcher', 'typing'];
+    if (process.platform !== 'linux') verdicts.unshift('tree');
+    if (process.platform === 'win32') verdicts.push('typing.active');
     expect(summaries.filter((s) => s.pass !== null).map((s) => s.id)).toEqual(verdicts);
   });
 });
@@ -414,10 +398,31 @@ describe(`С9.5: хранилище из ${NOTES} заметок`, () => {
 function writeReport(): void {
   mkdirSync(REPORT_DIR, { recursive: true });
   const summaries = measured.map(summarize);
+  const baseline = summaries.find((s) => s.id === 'typing');
+  const active = summaries.find((s) => s.id === 'typing.active');
+  // Окончательная методика решения 103, отчёт 3.2 от 01.11.2026.
+  const historical = process.platform === 'win32' ? 5.2 : process.platform === 'linux' ? 11 : null;
+  const typingComparison = baseline && active ? {
+    historicalRun: '41309090609', historicalP95Ms: historical,
+    currentBaselineP95Ms: baseline.median, activeIndexP95Ms: active.median,
+    deltaFromCurrentBaselineMs: active.median - baseline.median,
+    deltaFromHistoricalMs: historical === null ? null : active.median - historical,
+  } : null;
+  if (typingComparison) {
+    const c = typingComparison;
+    extra.push(
+      `Ввод, медиана p95 (три повтора, по 20 нажатий в конце, начале и середине): штатный замер С9.5 ${ms(c.currentBaselineP95Ms)} мс, ` +
+      `при действительном обновлении индекса ${ms(c.activeIndexP95Ms)} мс. Разница ${ms(c.deltaFromCurrentBaselineMs)} мс.`,
+    );
+    if (c.historicalP95Ms !== null && c.deltaFromHistoricalMs !== null) extra.push(
+      `В выпуске 0.1 на ${process.platform} было ${ms(c.historicalP95Ms)} мс (CI ${c.historicalRun}). ` +
+      `Разница при обновлении индекса ${ms(c.deltaFromHistoricalMs)} мс. Порог отклика С9.5 — 100 мс.`,
+    );
+  }
   const name = `perf-${process.platform}`;
   writeFileSync(
     path.join(REPORT_DIR, `${name}.json`),
-    `${JSON.stringify({ environment, summaries, measured, notes: extra }, null, 2)}\n`,
+    `${JSON.stringify({ environment, summaries, measured, notes: extra, typingComparison }, null, 2)}\n`,
   );
   const markdown = [
     `## Производительность (С9.5), ${process.platform}`,

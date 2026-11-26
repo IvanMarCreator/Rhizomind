@@ -93,3 +93,18 @@ export function renderTable(summaries: readonly Summary[]): string {
   });
   return ['| Критерий | Предел | Медиана | Худший | Повторы | Вывод |', '|---|---|---|---|---|---|', ...rows].join('\n');
 }
+
+/** Отдельно читаемый отчёт не выдаёт частичные повторы за приёмочную медиану. */
+export function windowRun(measured: readonly Measured[], expectedRepeats: number, completedRuns: number) {
+  const progress = measured.map(({ id, repeats }) => ({ id, completedRepeats: repeats.length, expectedRepeats }));
+  const complete = completedRuns === expectedRepeats && progress.every((item) => item.completedRepeats === expectedRepeats);
+  const summaries = complete ? measured.map(summarize) : [];
+  const rows = measured.map((m) => {
+    const values = m.repeats.map((sample) => sample.map(ms).join(', ')).join(' / ');
+    return `| ${m.title} | ${m.repeats.length} из ${expectedRepeats} | ${values || '—'} |`;
+  });
+  const status = complete ? 'Выполнены все повторы по каждой метрике.' : '**Прогон неполный, приёмка открыта.**';
+  const markdown = [status, `Сценарии целиком: ${completedRuns} из ${expectedRepeats}.`, '', '| Метрика | Повторы | Наблюдения, мс |', '|---|---|---|', ...rows];
+  if (complete) markdown.push('', renderTable(summaries));
+  return { complete, progress, summaries, markdown: markdown.join('\n') };
+}

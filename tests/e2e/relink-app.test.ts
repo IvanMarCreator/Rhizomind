@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestProfile, createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
-import { cursorTo, editorLines, openFromTree, TEXT, themeShots } from './kt1.ts';
+import { cursorTo, editorLines, headerPath, openFromTree, TEXT, themeShots } from './kt1.ts';
 import { saveScreenshot } from './screenshot.ts';
 
 const OLD = 'Узел';
@@ -89,13 +89,27 @@ const dialogTitle = (browser: WebdriverIO.Browser) =>
 const noticeTexts = (browser: WebdriverIO.Browser) =>
   browser.execute(() => [...document.querySelectorAll('.notice')].map((notice) => (notice.textContent ?? '').replace(/\s+/g, ' ').trim()));
 
+/** Вызвать переименование выбранной строки дерева и ввести новое имя. */
+async function submitRename(b: WebdriverIO.Browser, name: string): Promise<void> {
+  await b.keys('F2');
+  const field = b.$('input[aria-label="Новое имя"]');
+  await field.waitForDisplayed();
+  await b.keys(['Control', 'a']);
+  await b.keys(name);
+  await b.keys('Enter');
+}
+
 describe('переименование «узла» со 100 ссылками в приложении', () => {
   let session: Session | undefined;
   let vault = '';
   let profile = '';
 
   beforeAll(async () => {
-    const notes: Record<string, string> = { [`${OLD}.md`]: HUB_TEXT, ...expected(OLD, '') };
+    const notes: Record<string, string> = {
+      [`${OLD}.md`]: HUB_TEXT, ...expected(OLD, ''),
+      'Альбом.md': 'Страницы альбома.\n',
+      'Обзор.md': 'Введение.\nСм. [[Альбом]].\n',
+    };
     vault = createTestVault('Переименование', {});
     for (const [name, text] of Object.entries(notes)) {
       const file = path.join(vault, ...name.split('/'));
@@ -132,12 +146,7 @@ describe('переименование «узла» со 100 ссылками в
       timeout: 5_000,
       timeoutMsg: `не выбрана строка «${OLD}»`,
     });
-    await b.keys('F2');
-    const field = b.$('input[aria-label="Новое имя"]');
-    await field.waitForDisplayed();
-    await b.keys(['Control', 'a']);
-    await b.keys(NEW);
-    await b.keys('Enter');
+    await submitRename(b, NEW);
 
     // Пока индекс строится — окно ожидания; потом — вопрос (решение 114).
     const question = `На «${OLD}» ссылается ${REFERRERS + 1} заметка. Обновить ссылки?`;
@@ -192,6 +201,42 @@ describe('переименование «узла» со 100 ссылками в
     await waitForFiles(vault, expected(OLD, TYPED), 'после Ctrl+Z', 30_000);
     expect(readFileSync(path.join(vault, `${OLD}.md`)).equals(Buffer.from(HUB_TEXT, 'utf8'))).toBe(true);
     expect(existsSync(path.join(vault, `${NEW}.md`))).toBe(false);
+    const undone = `Переименование отменено, ссылки возвращены в ${REFERRERS + 1} заметке`;
+    await b.waitUntil(async () => (await headerPath(b)) === OLD && (await noticeTexts(b)).some((text) => text.includes(undone)), {
+      timeout: 15_000,
+      timeoutMsg: 'окно не показало прежнее имя и завершение отмены',
+    });
     await shot(b, 'undone');
+  });
+
+  it('отмена сохраняет имя и ссылку, переименование без обновления оставляет старую ссылку', async () => {
+    const b = browser();
+    const before = path.join(vault, 'Альбом.md');
+    const after = path.join(vault, 'Атлас.md');
+    const review = path.join(vault, 'Обзор.md');
+    const raw = Buffer.from('Введение.\nСм. [[Альбом]].\n');
+    async function choose(answer: string, step: string): Promise<void> {
+      await b.$('[role="treeitem"][aria-label="Альбом"]').click();
+      await submitRename(b, 'Атлас');
+      const dialog = b.$('[data-testid="rename-dialog"]');
+      await b.waitUntil(async () => (await dialogTitle(b)) === 'На «Альбом» ссылается 1 заметка. Обновить ссылки?', { timeout: 30_000 });
+      await shot(b, step);
+      await dialog.$(`button=${answer}`).click();
+      await dialog.waitForExist({ reverse: true });
+    }
+    await choose('Отменить переименование', 'before-cancel');
+    expect(readFileSync(before, 'utf8')).toBe('Страницы альбома.\n');
+    expect(existsSync(after)).toBe(false);
+    expect(readFileSync(review)).toEqual(raw);
+    await shot(b, 'cancelled');
+
+    await choose('Переименовать без обновления', 'before-keep');
+    await b.$('[role="treeitem"][aria-label="Атлас"]').waitForExist();
+    expect(existsSync(before)).toBe(false);
+    expect(readFileSync(after, 'utf8')).toBe('Страницы альбома.\n');
+    await openFromTree(b, 'Обзор');
+    await b.$(`${TEXT} .cm-rz-wikilink-unresolved[data-rz-wiki="Альбом"]`).waitForDisplayed();
+    expect(readFileSync(review)).toEqual(raw);
+    await shot(b, 'kept');
   });
 });

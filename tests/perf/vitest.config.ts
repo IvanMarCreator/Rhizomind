@@ -7,7 +7,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     root: import.meta.dirname,
-    include: ['**/*.test.ts'],
+    // Проверки С9.5 и длинная заметка идут на штатных 10 000. В отдельном
+    // прогоне 50 000 нужен только справочный замер окна выпуска 0.2.
+    include: process.env.RHIZOMIND_PERF_NOTES === '50000' ? ['links.test.ts'] : ['**/*.test.ts'],
     environment: 'node',
     // Подробный вывод: строки «[perf] …» и таблица попадают в журнал CI и при успехе.
     reporters: ['verbose'],

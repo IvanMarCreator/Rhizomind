@@ -48,7 +48,7 @@ mod acl_tests;
 #[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
-mod core_tests;
+pub(crate) mod core_tests;
 #[cfg(test)]
 mod note_list_perf;
 

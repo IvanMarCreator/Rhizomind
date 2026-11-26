@@ -16,10 +16,20 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createTestProfile, startApp, waitForAppExit, type Session } from './driver.ts';
-import { backlinkGroups, generateVault, panelBody, showView, tagRows, themeShots } from './kt1.ts';
+import { createTestProfile, SCREENSHOT_DIR, startApp, waitForAppExit, type Session } from './driver.ts';
+import { backlinkGroups, generateVault, panelBody, showView, tagRows } from './kt1.ts';
+import { distinctBytes, saveScreenshot } from './screenshot.ts';
 
-const shot = themeShots('index');
+type Theme = 'light' | 'dark';
+type Opening = 'first-open' | 'reopen';
+const steps = {
+  'first-open': { building: '01', backlinks: '02', tags: '03' },
+  reopen: { building: '04', backlinks: '05', tags: '06' },
+} as const;
+
+function frameName(opening: Opening, state: 'building' | 'backlinks' | 'tags', theme: Theme): string {
+  return `index-${steps[opening][state]}-${opening}-${state}-${theme}`;
+}
 
 const SHELL = '[data-testid="shell"]';
 const OPEN_FOLDER = 'button[aria-label="Открыть папку как хранилище"]';
@@ -56,9 +66,9 @@ interface Observed {
 /**
  * Окно управления → «Открыть папку как хранилище» (ответ окна выбора папки —
  * `pickFolder`) → окно хранилища. Пока нет списка обратных ссылок, панель
- * опрашивается без пауз; первое «Индекс строится…» снимается в обеих темах.
+ * опрашивается без пауз. Тема уже выбрана в настройках хранилища.
  */
-async function openFromManager(browser: WebdriverIO.Browser, step: string): Promise<Observed> {
+async function openFromManager(browser: WebdriverIO.Browser, step: Opening, theme: Theme): Promise<Observed> {
   await browser.$(OPEN_FOLDER).waitForDisplayed({ timeout: 30_000 });
   const started = Date.now();
   await browser.$(OPEN_FOLDER).click();
@@ -82,34 +92,46 @@ async function openFromManager(browser: WebdriverIO.Browser, step: string): Prom
   let captured = false;
   for (;;) {
     if (Date.now() > deadline) throw new Error(`список не появился; панель: «${await panelBody(browser)}»`);
-    const body = await panelBody(browser).catch(() => '');
+    const state = await browser.execute(() => ({
+      body: (document.querySelector('aside.right-panel .body')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      theme: document.documentElement.dataset.theme,
+      rows: document.querySelectorAll('[role="treeitem"]').length,
+      ready: document.querySelector('.backlinks .groups > .group') !== null,
+    }));
+    const body = state.body;
     if (observed.states.at(-1) !== body) observed.states.push(body);
     if (body.startsWith('Индекс строится')) {
       if (observed.building.at(-1) !== body) observed.building.push(body);
-      observed.treeWhileBuilding = await treeRows(browser);
-      if (!captured) {
-        captured = true;
-        await saveBuilding(browser, step);
+      observed.treeWhileBuilding = state.rows;
+      if (!captured && state.theme === theme && state.rows > 0) {
+        // Индекс может закончиться прямо во время снимка. Сохраняем PNG как
+        // «строится» только если после захвата кадра окно ещё на этом этапе.
+        const png = Buffer.from(await browser.takeScreenshot(), 'base64');
+        const stillBuilding = await browser.execute((expected) =>
+          document.documentElement.dataset.theme === expected &&
+          (document.querySelector('aside.right-panel .body')?.textContent ?? '').trimStart().startsWith('Индекс строится'), theme);
+        if (stillBuilding) {
+          expect(distinctBytes(png)).toBeGreaterThanOrEqual(16);
+          writeFileSync(path.join(SCREENSHOT_DIR, `${frameName(step, 'building', theme)}-${process.platform}.png`), png);
+          captured = true;
+        }
       }
     }
-    if ((await backlinkGroups(browser)).length > 0) {
+    if (state.ready) {
       observed.listMs = Date.now() - started;
       break;
     }
   }
   notice(
-    `${step}: ${NOTES} заметок генератора; окно хранилища через ${observed.shellMs} мс, список через ${observed.listMs} мс; ` +
+    `${step} (${theme}): ${NOTES} заметок генератора; окно хранилища через ${observed.shellMs} мс, список через ${observed.listMs} мс; ` +
       `«строится» видно: ${observed.building.length > 0 ? observed.building.join(' → ') : 'нет (сборка закончилась раньше первого опроса)'}; строк дерева во время «строится»: ${observed.treeWhileBuilding}; панель до списка: ${observed.states.map((t) => `«${t.slice(0, 60)}»`).join(' → ')}`,
   );
+  if (process.platform === 'win32') expect(captured, `нет снимка построения для ${step} (${theme})`).toBe(true);
   return observed;
 }
 
 function treeRows(browser: WebdriverIO.Browser): Promise<number> {
   return browser.execute(() => document.querySelectorAll('[role="treeitem"]').length);
-}
-
-async function saveBuilding(browser: WebdriverIO.Browser, step: string): Promise<void> {
-  await shot(browser, `${step}-building`);
 }
 
 interface Snapshot {
@@ -118,33 +140,44 @@ interface Snapshot {
 }
 
 /** Что показывают оба вида после сборки: группы обратных ссылок и все строки тегов. */
-async function snapshot(browser: WebdriverIO.Browser, step: string): Promise<Snapshot> {
+async function snapshot(browser: WebdriverIO.Browser, step: Opening, theme: Theme): Promise<Snapshot> {
+  expect(await browser.execute(() => document.documentElement.dataset.theme)).toBe(theme);
   const groups = await backlinkGroups(browser);
-  await shot(browser, `${step}-backlinks`);
+  await saveScreenshot(browser, frameName(step, 'backlinks', theme));
   await showView(browser, 'Теги');
   await browser.waitUntil(async () => (await tagRows(browser)).length > 0, { timeout: 30_000, timeoutMsg: 'список тегов пуст' });
   const tags = (await tagRows(browser)).map((r) => r.label);
-  await shot(browser, `${step}-tags`);
+  await saveScreenshot(browser, frameName(step, 'tags', theme));
   await showView(browser, 'Обратные ссылки');
   return { backlinks: groups.map((g) => `${g.name}: ${g.lines.join(' | ')}`), tags };
 }
 
-describe('индекс: первое открытие и пересборка без index.json', () => {
+let parent = '';
+let vault = '';
+
+beforeAll(() => {
+  parent = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-kt1-'));
+  vault = path.join(parent, 'Генератор');
+  const ms = generateVault(vault, NOTES, 7);
+  notice(`генератор: ${NOTES} заметок за ${ms} мс`);
+  writeFileSync(path.join(vault, `${TARGET}.md`), `# ${TARGET}\n\nЦель для проверки индекса.\n`);
+  writeFileSync(path.join(vault, `${SOURCE}.md`), `Ссылка на [[${TARGET}]] и тег #кт1-проверка\n`);
+}, 180_000);
+
+afterAll(() => {
+  if (parent) rmSync(parent, { recursive: true, force: true });
+});
+
+describe.each(['light', 'dark'] as const)('индекс: первое открытие и пересборка без index.json (%s)', (theme) => {
   let session: Session | undefined;
-  let parent = '';
-  let vault = '';
   let profile = '';
   let first: Snapshot | undefined;
 
   beforeAll(() => {
-    parent = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-e2e-kt1-'));
-    vault = path.join(parent, 'Генератор');
-    const ms = generateVault(vault, NOTES, 7);
-    notice(`генератор: ${NOTES} заметок за ${ms} мс`);
-    writeFileSync(path.join(vault, `${TARGET}.md`), `# ${TARGET}\n\nЦель для проверки индекса.\n`);
-    writeFileSync(path.join(vault, `${SOURCE}.md`), `Ссылка на [[${TARGET}]] и тег #кт1-проверка\n`);
     // Раскладка: открыта заметка-цель, правая панель — «Обратные ссылки» (модель раскладки v1, src/core/layout/layout.ts).
     mkdirSync(path.join(vault, '.rhizomind'), { recursive: true });
+    rmSync(path.join(vault, '.rhizomind', 'index.json'), { force: true });
+    writeFileSync(path.join(vault, '.rhizomind', 'settings.json'), JSON.stringify({ format_version: 1, theme }));
     writeFileSync(
       path.join(vault, '.rhizomind', 'workspace.json'),
       JSON.stringify({
@@ -155,26 +188,24 @@ describe('индекс: первое открытие и пересборка б
         side_panel: { open: true, view: 'backlinks', width: 300, tag_order: 'name' },
       }),
     );
-  }, 180_000);
+  });
 
   afterAll(async () => {
     await session?.stop().catch(() => undefined);
     if (profile) rmSync(profile, { recursive: true, force: true });
-    if (parent) rmSync(parent, { recursive: true, force: true });
   });
 
   it('первое открытие: дерево сразу, «Индекс строится… N %», потом список', async () => {
     profile = createTestProfile();
     session = await startApp({ pickFolder: vault, profile });
     const b = session.browser;
-    const seen = await openFromManager(b, 'first-open');
+    const seen = await openFromManager(b, 'first-open', theme);
     for (const text of seen.building) expect(text).toMatch(/^Индекс строится…( \d{1,3} %)?$/);
-    // Дерево показано, не дожидаясь индекса (С2-3.7).
     // Дерево не ждёт индекса (С2-3.7): пока панель показывала «строится», дерево уже было.
     if (seen.building.length > 0) expect(seen.treeWhileBuilding, 'строк дерева во время сборки').toBeGreaterThan(0);
     await b.waitUntil(async () => (await treeRows(b)) > 0, { timeout: 20_000, timeoutMsg: 'дерево пусто' });
     expect((await backlinkGroups(b)).map((g) => g.name)).toEqual([SOURCE]);
-    first = await snapshot(b, 'first-open');
+    first = await snapshot(b, 'first-open', theme);
     expect(first.tags).toContain(OWN_TAG);
     notice(`первое открытие: тегов ${first.tags.length}`);
   }, 300_000);
@@ -199,9 +230,9 @@ describe('индекс: первое открытие и пересборка б
     profile = createTestProfile();
     session = await startApp({ pickFolder: vault, profile });
     const b = session.browser;
-    const seen = await openFromManager(b, 'reopen');
+    const seen = await openFromManager(b, 'reopen', theme);
     for (const text of seen.building) expect(text).toMatch(/^Индекс строится…( \d{1,3} %)?$/);
-    const again = await snapshot(b, 'reopen');
+    const again = await snapshot(b, 'reopen', theme);
     expect(again).toEqual(first);
     // Индекс собран с нуля и записан снова.
     const deadline = Date.now() + INDEX_WRITE_MS;

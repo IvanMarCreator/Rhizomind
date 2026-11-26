@@ -22,6 +22,9 @@
 //! ([`ServiceFile::LinkUpdate`]), служебная папка и открытый файл проверены
 //! по дескриптору до первой записи. Атомарность каждой отметки — при чтении:
 //! строка после последнего `\n` (оборванная запись) отбрасывается.
+//! Перед доделкой только при таком хвосте полные проверенные строки
+//! атомарно восстанавливаются через ту же служебную запись Vault. Иначе
+//! новые отметки склеились бы с хвостом при повторном прерывании.
 //!
 //! **Чтение** — с собственным пределом [`MAX_JOURNAL_BYTES`]. Журнал на диске
 //! — недоверенные данные (его могли поправить руками или подменить):
@@ -64,6 +67,9 @@ pub struct Journal {
     pub done: HashSet<usize>,
     /// Начатые записи по номеру заметки (при повторах — несколько).
     pub started: HashMap<usize, Vec<Started>>,
+    /// Только при оборванном хвосте: все полные строки после успешного
+    /// разбора заголовка и каждой отметки, вместе с последним переводом строки.
+    repair_prefix: Option<Vec<u8>>,
 }
 
 /// Результат чтения журнала.
@@ -203,11 +209,25 @@ pub fn start(vault: &Vault, renames: &[PathRename], notes: &[NotePlan]) -> CoreR
     }
     vault.write_service_file(FILE.name(), &bytes)?;
     count(bytes.len());
-    reopen(vault)
+    open_writer(vault)
 }
 
-/// Открывает существующий журнал для отметок (доделка).
-pub fn reopen(vault: &Vault) -> CoreResult<Writer> {
+/// Открывает проверенный журнал для доделки. Оборванный хвост заменяется
+/// полными проверенными строками атомарно: иначе следующая отметка склеится
+/// с хвостом и после повторного падения испортит журнал целиком.
+pub fn reopen(vault: &Vault, journal: &Journal) -> CoreResult<Writer> {
+    // Даже перед восстановлением сохраняются все проверки append:
+    // контур, файл-ссылка и единственное имя (не жёсткая ссылка).
+    let writer = open_writer(vault)?;
+    let Some(prefix) = journal.repair_prefix.as_deref() else {
+        return Ok(writer);
+    };
+    drop(writer);
+    vault.write_service_file(FILE.name(), prefix)?;
+    open_writer(vault)
+}
+
+fn open_writer(vault: &Vault) -> CoreResult<Writer> {
     Ok(Writer {
         file: vault.open_service_append(FILE)?,
     })
@@ -219,7 +239,7 @@ pub fn read(vault: &Vault) -> Read {
         Err(_) => Read::Refused,
         Ok(ServiceRead::Missing) => Read::Missing,
         Ok(ServiceRead::TooLarge) => Read::Unusable,
-        Ok(ServiceRead::Bytes(bytes)) => match parse(&bytes) {
+        Ok(ServiceRead::Bytes(bytes)) => match parse(bytes) {
             Some(journal) => Read::Found(journal),
             None => Read::Unusable,
         },
@@ -228,8 +248,9 @@ pub fn read(vault: &Vault) -> Read {
 
 /// Разбор байтов журнала; не тот формат — `None`. Всё после последнего
 /// `\n` — оборванная запись, отбрасывается.
-fn parse(bytes: &[u8]) -> Option<Journal> {
-    let complete = &bytes[..bytes.iter().rposition(|&b| b == b'\n')?];
+fn parse(mut bytes: Vec<u8>) -> Option<Journal> {
+    let complete_end = bytes.iter().rposition(|&b| b == b'\n')? + 1;
+    let complete = &bytes[..complete_end - 1];
     let mut lines = complete.split(|&b| b == b'\n');
     let header: HeaderIn = serde_json::from_slice(lines.next()?).ok()?;
     if header.format_version != FORMAT_VERSION {
@@ -272,6 +293,10 @@ fn parse(bytes: &[u8]) -> Option<Journal> {
             .collect(),
         done,
         started,
+        repair_prefix: (complete_end < bytes.len()).then(|| {
+            bytes.truncate(complete_end);
+            bytes
+        }),
     })
 }
 
@@ -356,19 +381,45 @@ mod tests {
     }
 
     #[test]
+    fn healthy_reopen_keeps_file_identity_and_appends_after_original_bytes() {
+        let dir = tempfile::tempdir().expect("папка");
+        let vault = Vault::open(dir.path()).expect("хранилище");
+        let notes = [NotePlan {
+            path: p("X.md"),
+            links: vec![],
+        }];
+        drop(start(&vault, &[], &notes).expect("журнал"));
+        let path = dir.path().join(".rhizomind").join(FILE.name());
+        let identity = file_id::get_file_id(&path).expect("идентичность");
+        let mut expected = std::fs::read(&path).expect("исходный журнал");
+        let Read::Found(journal) = read(&vault) else {
+            panic!("журнал не прочитан")
+        };
+        let mut writer = reopen(&vault, &journal).expect("дописывание");
+        writer.done(0);
+        drop(writer);
+        expected.extend_from_slice(b"{\"done\":0}\n");
+        assert_eq!(
+            file_id::get_file_id(&path).expect("идентичность"),
+            identity,
+            "здоровый журнал не заменяется"
+        );
+        assert_eq!(std::fs::read(path).expect("журнал с отметкой"), expected);
+    }
+    #[test]
     fn torn_last_line_is_dropped_and_middle_garbage_rejected() {
         let header = br#"{"format_version":1,"renames":[],"notes":[{"path":["X.md"],"links":[]}]}"#;
         let mut ok = header.to_vec();
         ok.extend_from_slice(b"\n{\"done\":0}\n{\"start\":{\"no");
-        let journal = parse(&ok).expect("оборванная строка отброшена");
+        let journal = parse(ok).expect("оборванная строка отброшена");
         assert_eq!(journal.done, HashSet::from([0]));
         assert!(journal.started.is_empty());
 
         let mut bad = header.to_vec();
         bad.extend_from_slice(b"\n{\"don\n{\"done\":0}\n");
-        assert!(parse(&bad).is_none(), "испорченная строка в середине");
+        assert!(parse(bad).is_none(), "испорченная строка в середине");
         assert!(
-            parse(header).is_none(),
+            parse(header.to_vec()).is_none(),
             "заголовок без конца строки — оборван"
         );
     }

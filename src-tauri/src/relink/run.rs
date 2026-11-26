@@ -154,7 +154,7 @@ pub fn resume_on_open(
         }
         Read::Found(journal) => journal,
     };
-    let Ok(mut writer) = journal::reopen(vault) else {
+    let Ok(mut writer) = journal::reopen(vault, &journal) else {
         return None;
     };
     let todo: Vec<usize> = (0..journal.notes.len())

@@ -910,3 +910,142 @@ fn emacs_backup_with_the_same_id_is_not_a_rename_of_the_note() {
         ]
     );
 }
+
+#[test]
+fn vanished_folder_subtree_is_held_until_new_path_arrives() {
+    let dir = tempfile::tempdir().expect("папка");
+    write(dir.path(), "Old/Inner/a.md", "a");
+    write(dir.path(), "Old/b.md", "b");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("Old"), dir.path().join("New")).expect("перенос папки");
+    // Две реальные сверки: ОС сначала сообщила только старый путь.
+    let first = model.reconcile_holding([vp("Old")], &OwnWrites::new());
+    assert!(first.changes.is_empty(), "{:?}", first.changes);
+    assert_eq!(
+        first.held,
+        vec![
+            vp("Old"),
+            vp("Old/Inner"),
+            vp("Old/Inner/a.md"),
+            vp("Old/b.md")
+        ]
+    );
+    let second = model.reconcile_holding([vp("New")], &OwnWrites::new());
+    assert_eq!(
+        second.changes,
+        vec![TreeChange::Renamed {
+            from: vp("Old"),
+            to: vp("New")
+        }]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+#[test]
+fn held_folder_really_deleted_is_removed_at_final_check() {
+    let dir = tempfile::tempdir().expect("папка");
+    write(dir.path(), "Old/a.md", "old");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::remove_dir_all(dir.path().join("Old")).expect("удаление");
+    let own = OwnWrites::new();
+    let first = model.reconcile_holding([vp("Old")], &own);
+    assert!(first.changes.is_empty());
+    assert_eq!(first.held, vec![vp("Old"), vp("Old/a.md")]);
+    assert_eq!(
+        changes(&mut model, first.held, &own),
+        vec![
+            TreeChange::Removed {
+                path: vp("Old/a.md")
+            },
+            TreeChange::Removed { path: vp("Old") }
+        ]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn held_folder_replaced_by_new_files_is_not_a_rename() {
+    let dir = tempfile::tempdir().expect("папка");
+    write(dir.path(), "Old/a.md", "old");
+    // Обе папки живы одновременно, поэтому идентичности различаются.
+    let stage = tempfile::tempdir().expect("замена вне хранилища");
+    write(stage.path(), "Replacement/a.md", "new version");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::remove_dir_all(dir.path().join("Old")).expect("удаление");
+    fs::rename(stage.path().join("Replacement"), dir.path().join("New")).expect("замена");
+    let own = OwnWrites::new();
+    let first = model.reconcile_holding([vp("Old")], &own);
+    assert!(first.changes.is_empty());
+    let second = model.reconcile_holding([vp("New")], &own);
+    assert_eq!(
+        second.changes,
+        vec![
+            TreeChange::Created {
+                path: vp("New"),
+                entry_kind: EntryKind::Folder
+            },
+            TreeChange::Created {
+                path: vp("New/a.md"),
+                entry_kind: EntryKind::Note
+            }
+        ]
+    );
+    assert_eq!(
+        changes(&mut model, first.held, &own),
+        vec![
+            TreeChange::Removed {
+                path: vp("Old/a.md")
+            },
+            TreeChange::Removed { path: vp("Old") }
+        ]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn held_folder_with_edited_child_is_renamed_and_modified() {
+    let dir = tempfile::tempdir().expect("папка");
+    write(dir.path(), "Old/a.md", "same");
+    write(dir.path(), "Old/b.md", "before");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    fs::rename(dir.path().join("Old"), dir.path().join("New")).expect("перенос");
+    let first = model.reconcile_holding([vp("Old")], &OwnWrites::new());
+    assert!(first.changes.is_empty());
+    edit_in_place(dir.path(), "New/b.md", "after external edit");
+    let second = model.reconcile_holding([vp("New")], &OwnWrites::new());
+    assert_eq!(
+        second.changes,
+        vec![
+            TreeChange::Renamed {
+                from: vp("Old"),
+                to: vp("New")
+            },
+            TreeChange::Modified {
+                path: vp("New/b.md")
+            }
+        ]
+    );
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}
+
+#[test]
+fn held_own_folder_rename_keeps_its_own_mark_until_delivery() {
+    let dir = tempfile::tempdir().expect("папка");
+    write(dir.path(), "Old/a.md", "a");
+    let mut model = TreeModel::scan(dir.path()).expect("обход");
+    let own = OwnWrites::new();
+    own.record_rename(&vp("Old"), &vp("New"));
+    fs::rename(dir.path().join("Old"), dir.path().join("New")).expect("перенос");
+    let first = model.reconcile_holding([vp("Old")], &own);
+    assert!(first.changes.is_empty());
+    assert!(own.is_own_rename(&vp("Old/a.md"), &vp("New/a.md")));
+    let second = model.reconcile_holding([vp("New")], &own);
+    assert_eq!(
+        second.changes,
+        vec![TreeChange::Renamed {
+            from: vp("Old"),
+            to: vp("New")
+        }]
+    );
+    assert!(crate::relink::external::confirmed(&second.changes, &own).is_empty());
+    assert_eq!(model, TreeModel::scan(dir.path()).expect("обход"));
+}

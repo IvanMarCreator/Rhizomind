@@ -69,7 +69,11 @@ describe('переименование в Проводнике (mv снаруж�
 
   beforeAll(async () => {
     vault = createTestVault('Внешнее переименование', {});
-    const notes: Record<string, string> = { [`${OLD}.md`]: TARGET_TEXT, ...expected(OLD, '') };
+    const notes: Record<string, string> = {
+      [`${OLD}.md`]: TARGET_TEXT, ...expected(OLD, ''),
+      'Глава.md': '# Глава\n',
+      'Оглавление.md': 'Введение.\n[[Глава|первая глава]]\n',
+    };
     for (const [name, text] of Object.entries(notes)) {
       const file = path.join(vault, ...name.split('/'));
       mkdirSync(path.dirname(file), { recursive: true });
@@ -134,5 +138,25 @@ describe('переименование в Проводнике (mv снаруж�
     });
     expect(await b.$(TEXT).isExisting()).toBe(true);
     await shot(b, 'updated');
+  });
+
+  it('«Не обновлять» сохраняет байты ссылки после переименования файла снаружи', async () => {
+    const b = browser();
+    await openFromTree(b, 'Оглавление');
+    const link = 'Глава|первая глава';
+    await b.$(`${TEXT} [data-rz-wiki="${link}"]:not(.cm-rz-wikilink-unresolved)`).waitForDisplayed();
+    renameSync(path.join(vault, 'Глава.md'), path.join(vault, 'Раздел.md'));
+
+    const question = b.$('.notice[data-reason="external_rename"]');
+    await question.waitForDisplayed({ timeout: 45_000 });
+    expect(await question.$('.text').getText()).toBe('Заметка «Глава» переименована на диске в «Раздел», на неё ссылается 1 заметка');
+    await shot(b, 'before-keep');
+    await question.$('button=Не обновлять').click();
+    await question.waitForExist({ reverse: true });
+    await b.$(`${TEXT} .cm-rz-wikilink-unresolved[data-rz-wiki="${link}"]`).waitForDisplayed();
+    expect(readFileSync(path.join(vault, 'Оглавление.md'))).toEqual(Buffer.from('Введение.\n[[Глава|первая глава]]\n'));
+    expect(readFileSync(path.join(vault, 'Раздел.md'), 'utf8')).toBe('# Глава\n');
+    expect(existsSync(path.join(vault, 'Глава.md'))).toBe(false);
+    await shot(b, 'kept');
   });
 });
