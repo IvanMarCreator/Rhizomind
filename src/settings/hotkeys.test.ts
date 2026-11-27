@@ -32,6 +32,7 @@ describe('реестр команд', () => {
     const defaults = Object.fromEntries(COMMANDS.map((c) => [c.id, c.defaults]));
     expect(defaults).toEqual({
       'palette.open': ['F12'],
+      'search.open': [],
       'quick_switcher.open': ['Ctrl+KeyO'],
       'note.new': ['Ctrl+KeyN'],
       'note.from-template': [],

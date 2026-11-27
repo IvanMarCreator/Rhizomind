@@ -411,6 +411,17 @@ describe('сочетания браузерного движка (решение
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('открывает поиск по хранилищу из палитры F12 и закрывает по Escape', async () => {
+    await renderShell({ ...WITH_VAULT, vault_search: () => ({ status: 'ready', truncated: false, items: [] }) });
+    await screen.findByText('Нет открытой заметки');
+    press(document.body, { key: 'F12', code: 'F12' });
+    const option = await screen.findByRole('option', { name: 'Поиск по хранилищу' });
+    await fireEvent.click(option);
+    const field = await screen.findByRole('searchbox');
+    await fireEvent.keyDown(field, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('searchbox')).toBeNull());
+  });
+
   it('Ctrl+P, назначенное быстрому переходу, открывает его — и из поля формы', async () => {
     await renderShell({
       ...WITH_VAULT,

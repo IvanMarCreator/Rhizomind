@@ -9,14 +9,14 @@
 //! Индекс в работе окна (задача 0.2-1.4) — [`WindowIndex`]: загрузка или
 //! сборка при открытии хранилища ([`start_index`]), обновление после своих
 //! команд и пачек наблюдателя, события `index:status` и `index:changed` не
-//! чаще [`limits::MAX_EVENTS_PER_SEC`] раз в секунду, запись `index.json`
+//! чаще [`limits::MAX_EVENTS_PER_SEC`] раз в секунду, запись `index.db`
 //! не чаще раза в 30 с.
 //!
 //! **Граница с интерфейсом (С2-6).** Команды работают только с хранилищем
 //! своего окна; строки обратных ссылок читаются через `Vault::read_note`
 //! (контур хранилища, только заметки из индекса этого хранилища) по
 //! положениям из индекса, которые проверяются по тексту (`text.get(span)`):
-//! подменённый `index.json` не роняет ядро и не даёт прочитать чужое.
+//! подменённый `index.db` не роняет ядро и не даёт прочитать чужое.
 //! Строки отдаются как есть — текстом; окно показывает их как текст, не как
 //! HTML.
 
@@ -38,7 +38,7 @@ use super::types::VaultPath;
 use super::{Core, OpenVault, blocking, checked_path};
 use crate::events::{Emit, send};
 use crate::index::store::{self, IndexStore, Load, WriteOutcome};
-use crate::index::{BacklinkSource, LinkSite, NoteEntry, VaultIndex, read_entry};
+use crate::index::{BacklinkSource, LinkSite, VaultIndex, read_document};
 use crate::vault::{NoteRef, Vault};
 
 /// Состояние индекса хранилища.
@@ -226,7 +226,7 @@ pub struct TagNotes {
 // --- Индекс в работе окна (задача 0.2-1.4) ---------------------------------
 
 /// Как часто поток событий индекса просыпается без сигнала: проверить срок
-/// записи `index.json` и не пора ли остановиться.
+/// записи `index.db` и не пора ли остановиться.
 const IDLE_WAKE: Duration = Duration::from_secs(1);
 
 /// Через сколько повторить загрузку или сборку, если хранилище недоступно.
@@ -238,13 +238,13 @@ fn event_interval() -> Duration {
 }
 
 /// Индекс хранилища окна в работе: индекс в памяти ([`VaultIndex`]), когда
-/// его писать в `index.json` ([`IndexStore`]) и какие события индекса ждут
+/// его писать в `index.db` ([`IndexStore`]) и какие события индекса ждут
 /// отправки окну.
 ///
 /// - **Запуск** — [`start_index`] при открытии хранилища: загрузка
-///   `index.json` и сверка с диском или сборка с нуля — в фоновом потоке;
+///   `index.db` и сверка с диском или сборка с нуля — в фоновом потоке;
 ///   второй поток отправляет события не чаще [`limits::MAX_EVENTS_PER_SEC`]
-///   раз в секунду и пишет `index.json` не чаще раза в 30 с (первая запись —
+///   раз в секунду и пишет `index.db` не чаще раза в 30 с (первая запись —
 ///   не раньше 30 с после открытия).
 /// - **Обновление** — [`WindowIndex::update`] после своей команды
 ///   (`OpenVault::apply_own`, `note_write`) и после пачки наблюдателя:
@@ -282,6 +282,7 @@ struct Signal {
     status: bool,
     /// Отправить `index:changed`.
     changed: bool,
+    search_changed: bool,
     /// Окно отвязано: потоки индекса выходят.
     stopped: bool,
     /// Поток событий сейчас отправляет события (флаги уже сняты).
@@ -342,7 +343,7 @@ impl WindowIndex {
     /// окно, ждущее готовности для переименования, спросило снова.
     fn mark_reconciled(&self) {
         self.reconciled.store(true, Ordering::Release);
-        self.notify(true, false);
+        self.notify(true, false, false);
     }
 
     /// Чтение индекса в памяти под замком (план переписывания, 0.2-4.6).
@@ -359,7 +360,7 @@ impl WindowIndex {
 
     /// Окно отвязано от хранилища: потоки индекса выходят (сборка — после
     /// текущей пачки заметок), события больше не отправляются, срочной
-    /// записи `index.json` нет.
+    /// записи `index.db` нет.
     pub fn stop(&self) {
         self.signal().stopped = true;
         self.wake.notify_all();
@@ -370,15 +371,16 @@ impl WindowIndex {
     }
 
     /// Ставит события в очередь потока событий.
-    fn notify(&self, status: bool, changed: bool) {
+    fn notify(&self, status: bool, changed: bool, search_changed: bool) {
         let mut signal = self.signal();
         signal.status |= status;
         signal.changed |= changed;
+        signal.search_changed |= search_changed;
         drop(signal);
         self.wake.notify_all();
     }
 
-    /// Пишет `index.json` сразу (закрытие окна после записи заметок), если
+    /// Пишет `index.db` сразу (закрытие окна после записи заметок), если
     /// индекс готов и изменился с прошлой записи. Ошибка — молча.
     pub fn write_now(&self, vault: &Vault) -> WriteOutcome {
         self.store
@@ -394,26 +396,26 @@ impl WindowIndex {
             .write_if_due(vault, &self.index, now)
     }
 
-    /// Загрузка `index.json` и сверка с диском или сборка с нуля. Ход —
+    /// Загрузка `index.db` и сверка с диском или сборка с нуля. Ход —
     /// событиями `index:status`.
     fn prepare(&self, vault: &Vault) -> CoreResult<()> {
         match store::load(vault) {
             Load::Loaded(loaded) => {
                 let revision = loaded.revision();
+                let views = loaded.views_revision();
                 // Записи, вставленные до загрузки (наблюдатель), перекрываются
                 // файлом — сверка ниже перечитает всё, что на диске иначе.
                 *self.write() = *loaded;
                 *self.store.lock().unwrap_or_else(PoisonError::into_inner) =
                     IndexStore::loaded(revision);
-                self.notify(true, true);
+                self.notify(true, true, true);
                 store::reconcile(vault, &self.index)?;
-                let changed = self.read().revision() != revision;
-                self.notify(false, changed);
+                self.notify_changes_since(views, revision);
                 Ok(())
             }
             Load::Rebuild(_) => {
-                crate::index::rebuild(vault, &self.index, &|_| self.notify(true, false))?;
-                self.notify(true, true);
+                crate::index::rebuild(vault, &self.index, &|_| self.notify(true, false, false))?;
+                self.notify(true, true, true);
                 Ok(())
             }
         }
@@ -429,7 +431,10 @@ impl WindowIndex {
             return;
         }
         let _serial = self.updates.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut changed = false;
+        let (views, revision) = {
+            let index = self.read();
+            (index.views_revision(), index.revision())
+        };
         // Порядок изменений важен (`а → б`, затем новая `а`): переносы и
         // удаления — по порядку; чтение — в конце, по состоянию диска.
         let mut reads: Vec<VaultPath> = Vec::new();
@@ -443,28 +448,20 @@ impl WindowIndex {
                         }
                     }
                     Op::Remove(path) => {
-                        changed |= index.entry(&path).is_some();
                         index.remove(&path);
                     }
                     Op::Move(from, to) => {
-                        let entry = index.entry(&from).cloned();
-                        changed |= entry.is_some();
-                        index.remove(&from);
-                        match entry {
-                            // Заметку перед переносом ещё и меняли — читать
-                            // уже по новому пути.
-                            Some(entry) if !reads.contains(&from) => index.upsert(to, entry),
-                            _ => {
-                                if !reads.contains(&to) {
-                                    reads.push(to);
-                                }
+                        if reads.contains(&from) || !index.move_entry(&from, to.clone()) {
+                            index.remove(&from);
+                            if !reads.contains(&to) {
+                                reads.push(to);
                             }
                         }
                     }
                 }
             }
         }
-        let read: Vec<(VaultPath, Option<NoteEntry>)> = reads
+        let read: Vec<(VaultPath, Option<crate::index::search::Document>)> = reads
             .into_iter()
             .map(|path| {
                 let entry = vault.note_created_ms(&path).and_then(|created_ms| {
@@ -472,7 +469,7 @@ impl WindowIndex {
                         path: path.clone(),
                         created_ms,
                     };
-                    read_entry(vault, &note).ok()
+                    read_document(vault, &note).ok()
                 });
                 (path, entry)
             })
@@ -480,21 +477,26 @@ impl WindowIndex {
         {
             let mut index = self.write();
             for (path, entry) in read {
-                changed |= affects_views(index.entry(&path), entry.as_ref());
                 match entry {
-                    Some(entry) => index.upsert(path, entry),
+                    Some(entry) => index.upsert_document(path, entry),
                     None => index.remove(&path),
                 }
             }
         }
         if update.rescan && self.status().state == IndexState::Ready {
-            let revision = self.read().revision();
             // Хранилище недоступно — сверка позже, при следующей пачке.
             let _ = store::reconcile(vault, &self.index);
-            changed |= self.read().revision() != revision;
         }
-        if changed {
-            self.notify(false, true);
+        self.notify_changes_since(views, revision);
+    }
+
+    fn notify_changes_since(&self, views: u64, revision: u64) {
+        let index = self.read();
+        let views_changed = index.views_revision() != views;
+        let search_changed = index.revision() != revision;
+        drop(index);
+        if views_changed || search_changed {
+            self.notify(false, views_changed, search_changed);
         }
     }
 
@@ -509,7 +511,12 @@ impl WindowIndex {
         loop {
             let ready = self.ready_for_relink();
             let signal = self.signal();
-            if ready && !signal.status && !signal.changed && !signal.sending {
+            if ready
+                && !signal.status
+                && !signal.changed
+                && !signal.search_changed
+                && !signal.sending
+            {
                 return;
             }
             drop(signal);
@@ -530,19 +537,6 @@ impl WindowIndex {
             .into_iter()
             .map(|source| source.from)
             .collect()
-    }
-}
-
-/// Изменилось ли то, что показывают виды «Обратные ссылки» и «Теги»:
-/// заметка появилась или исчезла (меняется и разрешение ссылок), её ссылки
-/// (с положениями — строки панели) или теги.
-fn affects_views(old: Option<&NoteEntry>, new: Option<&NoteEntry>) -> bool {
-    match (old, new) {
-        (None, None) => false,
-        (Some(old), Some(new)) => {
-            old.parsed.links != new.parsed.links || old.parsed.tags != new.parsed.tags
-        }
-        _ => true,
     }
 }
 
@@ -625,7 +619,7 @@ fn is_note_path(path: &VaultPath) -> bool {
 }
 
 /// Запускает индекс хранилища окна: загрузка или сборка в фоновом потоке и
-/// поток событий и записи `index.json`. События — в `emit` (только окну
+/// поток событий и записи `index.db`. События — в `emit` (только окну
 /// этого хранилища). Оба потока выходят после [`WindowIndex::stop`].
 pub fn start_index(open: &Arc<OpenVault>, emit: Arc<dyn Emit>) {
     let preparing = Arc::clone(open);
@@ -660,7 +654,7 @@ fn prepare_loop(open: &OpenVault, emit: &dyn Emit) {
 }
 
 /// Отправка событий индекса не чаще [`limits::MAX_EVENTS_PER_SEC`] раз в
-/// секунду (последнее состояние доходит всегда) и запись `index.json` по
+/// секунду (последнее состояние доходит всегда) и запись `index.db` по
 /// сроку.
 fn events_loop(open: &OpenVault, emit: &dyn Emit) {
     let index = &open.index;
@@ -674,10 +668,13 @@ fn events_loop(open: &OpenVault, emit: &dyn Emit) {
         }
         let now = Instant::now();
         let send_status = signal.status && status_gate.try_fire(now);
-        let send_changed = signal.changed && changed_gate.try_fire(now);
+        let send_updates = (signal.changed || signal.search_changed) && changed_gate.try_fire(now);
+        let send_changed = send_updates && signal.changed;
+        let send_search = send_updates && signal.search_changed;
         signal.status &= !send_status;
         signal.changed &= !send_changed;
-        if send_status || send_changed {
+        signal.search_changed &= !send_search;
+        if send_status || send_updates {
             signal.sending = true;
             drop(signal);
             if send_status {
@@ -686,12 +683,15 @@ fn events_loop(open: &OpenVault, emit: &dyn Emit) {
             if send_changed {
                 send(emit, event::INDEX_CHANGED, &IndexChangedPayload {});
             }
+            if send_search {
+                send(emit, event::SEARCH_CHANGED, &IndexChangedPayload {});
+            }
             index.signal().sending = false;
             continue;
         }
         let wait = [
             signal.status.then(|| status_gate.wait(now)),
-            signal.changed.then(|| changed_gate.wait(now)),
+            (signal.changed || signal.search_changed).then(|| changed_gate.wait(now)),
         ]
         .into_iter()
         .flatten()
@@ -797,7 +797,7 @@ pub fn snippet(line: &str, link: Range<usize>) -> (String, u32, u32) {
 }
 
 /// Строки панели по положениям ссылок в тексте заметки (`read_note`: без
-/// BOM, переносы `\n`). Положения приходят из индекса — и из `index.json`,
+/// BOM, переносы `\n`). Положения приходят из индекса — и из `index.db`,
 /// который мог быть подменён или устарел (файл изменили, наблюдатель ещё не
 /// сообщил): каждое берётся через `text.get(span)` (за концом текста и
 /// внутри символа — `None`) и должно быть ссылкой `[[…]]` или `![[…]]` в
@@ -986,6 +986,31 @@ pub async fn backlinks_list<R: Runtime>(
     checked_path(&request.path, "path")?;
     let open = core.require_vault(window.label())?;
     blocking(move || Ok(backlinks_reply(&open, &request.path))).await
+}
+
+/// Поиск по заголовкам и текстам заметок хранилища этого окна.
+#[tauri::command]
+pub async fn vault_search<R: Runtime>(
+    window: Window<R>,
+    core: State<'_, Core>,
+    request: crate::index::query::SearchQuery,
+) -> CoreResult<IndexReply<crate::index::query::SearchResults>> {
+    request.validate()?;
+    let open = core.require_vault(window.label())?;
+    blocking(move || {
+        let status = open.index.status();
+        if status.state == IndexState::Building {
+            return Ok(IndexReply::IndexBuilding(IndexProgress {
+                done: status.done,
+                total: status.total,
+            }));
+        }
+        let result = request.first_page(&open.vault, |limit| {
+            request.candidates(&open.index.read(), limit)
+        })?;
+        Ok(IndexReply::Ready(result))
+    })
+    .await
 }
 
 /// Все теги хранилища.

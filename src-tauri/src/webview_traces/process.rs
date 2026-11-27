@@ -430,42 +430,59 @@ mod tests {
 
     /// Ошибка из теста следов 0.2-8.1: после `TerminateProcess` процесса
     /// браузера его дочерние ещё живы, и ожидание при выходе должно их
-    /// охватить. Модель: `cmd` (браузер) с дочерним `powershell`, который
-    /// ждёт закрытия канала ввода; завершение `cmd` дочерний не трогает.
+    /// охватить. Тестовый родитель сообщает PID созданного им процесса.
+    /// Дочерний ждёт закрытия канала ввода и переживает завершение родителя.
     #[cfg(windows)]
     #[test]
     fn wait_covers_children_alive_after_terminate() {
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Write};
         use std::os::windows::process::CommandExt;
-        use std::process::Stdio;
+        use std::process::{Command, Stdio};
         use std::sync::mpsc;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut parent = std::process::Command::new("cmd")
-            .raw_arg(r#"/D /C powershell -NoProfile -NonInteractive -Command "[Console]::WriteLine($PID); [void][Console]::ReadLine()""#)
+        const PARENT_MODE: &str = "RHIZOMIND_TEST_PROCESS_TREE_PARENT";
+        const CHILD_PID: &str = "rhizomind-child-pid=";
+        if std::env::var_os(PARENT_MODE).is_some() {
+            let mut child = Command::new("cmd.exe")
+                .args(["/D", "/Q", "/C", "set /p rhizomind_wait="])
+                .stdin(Stdio::inherit())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .expect("дочерний процесс запущен");
+            println!("\n{CHILD_PID}{}", child.id());
+            std::io::stdout().flush().expect("PID передан");
+            child.wait().expect("дочерний процесс завершился");
+            return;
+        }
+        let mut parent = Command::new(std::env::current_exe().expect("тестовая программа"))
+            .args(["wait_covers_children_alive_after_terminate", "--nocapture"])
+            .env(PARENT_MODE, "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
-            .expect("cmd запущен");
+            .expect("тестовый родитель запущен");
         // Забираем канал: Child::wait иначе закроет stdin, отпустив дочерний.
         // При выходе из теста (в том числе при панике) Drop также даст EOF.
         let release = parent.stdin.take().expect("канал ввода");
         let pid = parent.id();
-        let root = imp::open_any(pid).expect("дескриптор cmd");
-        // Получаем PID от самого дочернего процесса, когда он уже запущен.
+        let root = imp::open_any(pid).expect("дескриптор родителя");
         let stdout = parent.stdout.take().expect("канал готовности");
         let (ready, child_pid) = mpsc::channel();
         std::thread::spawn(move || {
-            let pid = BufReader::new(stdout).lines().next().and_then(Result::ok);
-            let _ = ready.send(pid.and_then(|line| line.trim().parse().ok()));
+            let pid = BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+                .find_map(|line| line.strip_prefix(CHILD_PID)?.parse().ok());
+            let _ = ready.send(pid);
         });
         let child = imp::open_any(
             child_pid
                 .recv_timeout(Duration::from_secs(20))
-                .expect("дочерний сообщил о готовности")
-                .expect("PID PowerShell"),
+                .expect("родитель сообщил о готовности")
+                .expect("PID дочернего процесса"),
         )
-        .expect("дескриптор PowerShell");
+        .expect("дескриптор дочернего процесса");
         let browser = BrowserProcess::from_handle(pid, root);
 
         assert!(browser.terminate(Duration::from_secs(2)));

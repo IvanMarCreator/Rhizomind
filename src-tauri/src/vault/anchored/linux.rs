@@ -92,6 +92,92 @@ impl Root {
         self.open_beneath(relative, libc::O_RDONLY | libc::O_NONBLOCK)
     }
 
+    /// Landlock действует только в короткоживущем потоке этой файловой операции.
+    fn with_publication_rights<T: Send>(
+        &self,
+        action: impl FnOnce() -> CoreResult<T> + Send,
+    ) -> CoreResult<T> {
+        thread::scope(|scope| {
+            let worker = thread::Builder::new()
+                .spawn_scoped(scope, || {
+                    restrict_publication(&self.file)?;
+                    action()
+                })
+                .map_err(io_error)?;
+            worker
+                .join()
+                .map_err(|_| CoreError::new(ErrorCode::IoFailed))?
+        })
+    }
+
+    pub(super) fn publish_index(
+        &self,
+        service: &Dir,
+        staging: &Dir,
+        bytes: &[u8],
+    ) -> CoreResult<()> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        self.with_publication_rights(|| {
+            // До завершения записи и fsync у файла нет имени. Перенос каталога
+            // снаружи не превращает ещё пишущийся образ в доступный там файл.
+            let mut temp = File::options()
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .custom_flags(libc::O_TMPFILE | libc::O_CLOEXEC)
+                .open(staging.path_for_io())
+                .map_err(io_error)?;
+            temp.write_all(bytes).map_err(io_error)?;
+            temp.sync_all().map_err(io_error)?;
+            let source = CString::new(format!("/proc/self/fd/{}", temp.as_raw_fd()))
+                .map_err(|_| contour::invalid_path())?;
+            // linkat не заменяет существующие файлы. При совпадении служебного имени
+            // берём следующее, в том числе после аварийного завершения старого процесса.
+            let stage = loop {
+                let name = format!(
+                    ".svc-index-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                );
+                let leaf = CString::new(name.as_str()).map_err(|_| contour::invalid_path())?;
+                // SAFETY: обе C-строки и дескрипторы действительны до возврата.
+                // AT_SYMLINK_FOLLOW разрешает принадлежавшую этому потоку ссылку /proc/self/fd.
+                let rc = unsafe {
+                    libc::linkat(
+                        libc::AT_FDCWD,
+                        source.as_ptr(),
+                        staging.file.as_raw_fd(),
+                        leaf.as_ptr(),
+                        libc::AT_SYMLINK_FOLLOW,
+                    )
+                };
+                if rc == 0 {
+                    break staging.path_for_io().join(name);
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(io_error(error));
+                }
+            };
+            let dest = service.path_for_io().join(crate::index::store::FILE_NAME);
+            if let Err(error) = std::fs::rename(&stage, &dest) {
+                let _ = std::fs::remove_file(&stage);
+                return Err(io_error(error));
+            }
+            service.file.sync_all().map_err(io_error)?;
+            match std::fs::remove_file(
+                service
+                    .path_for_io()
+                    .join(crate::vault::ServiceFile::LegacyIndex.name()),
+            ) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(io_error(error)),
+                _ => Ok(()),
+            }
+        })
+    }
+
     pub(super) fn publish(
         &self,
         staging: &Dir,
@@ -109,42 +195,32 @@ impl Root {
         let target = CString::new(name.as_bytes()).map_err(|_| contour::invalid_path())?;
         // no_new_privs и Landlock необратимы для потока. Пул команд ядра продолжает
         // работать с другими хранилищами: поток публикации завершается сразу после rename.
-        thread::scope(|scope| {
-            let worker = thread::Builder::new()
-                .spawn_scoped(scope, || {
-                    restrict_publication(&self.file)?;
-                    // SAFETY: имена — одиночные компоненты, дескрипторы открыты до конца вызова.
-                    let result = unsafe {
-                        libc::syscall(
-                            libc::SYS_renameat2,
-                            staging.file.as_raw_fd(),
-                            source.as_ptr(),
-                            destination.file.as_raw_fd(),
-                            target.as_ptr(),
-                            libc::RENAME_NOREPLACE,
-                        )
-                    };
-                    if result == 0 {
-                        return Ok(());
-                    }
-                    let error = io::Error::last_os_error();
-                    // Сохраняем ошибку занятого имени из самой операции без перезаписи.
-                    if error.kind() == io::ErrorKind::AlreadyExists {
-                        return Err(io_error(error));
-                    }
-                    contour::check_opened_at(&destination.file, &self.path.join(&parent))?;
-                    match error.raw_os_error() {
-                        Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EINVAL) => Err(unavailable()),
-                        Some(libc::EROFS | libc::EACCES) => {
-                            Err(CoreError::new(ErrorCode::ReadOnly))
-                        }
-                        _ => Err(io_error(error)),
-                    }
-                })
-                .map_err(io_error)?;
-            worker
-                .join()
-                .map_err(|_| CoreError::new(ErrorCode::IoFailed))?
+        self.with_publication_rights(|| {
+            // SAFETY: имена — одиночные компоненты, дескрипторы открыты до конца вызова.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    staging.file.as_raw_fd(),
+                    source.as_ptr(),
+                    destination.file.as_raw_fd(),
+                    target.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            if result == 0 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            // Сохраняем ошибку занятого имени из самой операции без перезаписи.
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                return Err(io_error(error));
+            }
+            contour::check_opened_at(&destination.file, &self.path.join(&parent))?;
+            match error.raw_os_error() {
+                Some(libc::ENOSYS | libc::EOPNOTSUPP | libc::EINVAL) => Err(unavailable()),
+                Some(libc::EROFS | libc::EACCES) => Err(CoreError::new(ErrorCode::ReadOnly)),
+                _ => Err(io_error(error)),
+            }
         })?;
         temp.disable_cleanup(true);
         #[cfg(test)]
@@ -317,4 +393,24 @@ fn template_publication_policy_only_permits_the_selected_vault() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::OutsideVault);
     assert!(!other_vault.path().join("note.md").exists());
+}
+
+#[test]
+fn search_index_publication_keeps_a_moved_service_directory_intact() {
+    let parent = tempfile::tempdir().unwrap();
+    let vault = parent.path().join("vault");
+    let service = vault.join(".rhizomind");
+    std::fs::create_dir_all(service.join("tmp")).unwrap();
+    std::fs::write(service.join("index.json"), b"old").unwrap();
+    let root = Root::open(&vault).unwrap();
+    let directory = root.dir(Path::new(".rhizomind")).unwrap();
+    let stage = root.dir(Path::new(".rhizomind/tmp")).unwrap();
+    let moved = parent.path().join("moved");
+    std::fs::rename(&service, &moved).unwrap();
+    std::fs::create_dir(&service).unwrap();
+    assert!(root.publish_index(&directory, &stage, b"new").is_err());
+    assert_eq!(std::fs::read(moved.join("index.json")).unwrap(), b"old");
+    assert!(!moved.join("index.db").exists());
+    assert_eq!(std::fs::read_dir(moved.join("tmp")).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(service).unwrap().count(), 0);
 }

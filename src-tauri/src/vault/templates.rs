@@ -2,12 +2,8 @@
 use super::Vault;
 use crate::commands::{CoreResult, VaultPath};
 
-#[cfg(target_os = "linux")]
-#[path = "templates/linux.rs"]
-mod platform;
-#[cfg(windows)]
-#[path = "templates/windows.rs"]
-mod platform;
+#[cfg(any(windows, target_os = "linux"))]
+use super::anchored as platform;
 
 #[cfg(any(windows, target_os = "linux"))]
 impl Vault {

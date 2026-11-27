@@ -1118,7 +1118,7 @@ fn index_written_after_notes_on_close() {
     let a = vault(&app, temp.path(), "А");
     let first = window(&app);
     open(&first, &a);
-    let index_file = temp.path().join("А").join(".rhizomind").join("index.json");
+    let index_file = temp.path().join("А").join(".rhizomind").join("index.db");
     let calls = Arc::new(AtomicUsize::new(0));
     app.state::<Closing>().set_index_writer(
         first.label(),
@@ -1173,7 +1173,7 @@ fn index_skipped_when_close_deadline_near() {
             .path()
             .join("А")
             .join(".rhizomind")
-            .join("index.json")
+            .join("index.db")
             .exists()
     );
 }
@@ -1228,7 +1228,7 @@ fn index_write_failure_still_closes_window() {
 }
 
 /// Окно, открывшее хранилище, регистрирует запись индекса: при закрытии
-/// `.rhizomind/index.json` пишется настоящим индексом окна.
+/// `.rhizomind/index.db` пишется настоящим индексом окна.
 #[test]
 fn vault_open_registers_index_writer() {
     let (app, temp) = app();
@@ -1243,7 +1243,7 @@ fn vault_open_registers_index_writer() {
         open_vault.index.status().state == crate::commands::IndexState::Ready
     });
     drop(open_vault);
-    let index_file = temp.path().join("А").join(".rhizomind").join("index.json");
+    let index_file = temp.path().join("А").join(".rhizomind").join("index.db");
     assert!(!index_file.exists(), "до закрытия — не раньше срока");
     assert!(on_close_requested(&first.as_ref().window()));
     call(&first, "window_close_ready", json!({})).expect("window_close_ready");

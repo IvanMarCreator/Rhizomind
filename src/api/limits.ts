@@ -31,7 +31,7 @@ export const LIMITS = {
   max_backlink_lines: 100,
   /** Строк всех заметок в одном ответе `backlinks_list`; больше — `truncated`. */
   max_backlink_lines_total: 5_000,
-  /** Частые события (`index:status`, `index:changed`, `links:progress`) — не чаще стольких в секунду. */
+  /** Частые события (`index:status`, `index:changed`, `search:changed`, `links:progress`) — не чаще стольких в секунду. */
   max_events_per_sec: 4,
   /** Строка обратной ссылки, символов Unicode. */
   max_snippet_chars: 200,

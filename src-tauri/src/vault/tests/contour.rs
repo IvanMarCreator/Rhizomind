@@ -10,6 +10,17 @@ fn rejected(component: &str) -> bool {
 }
 
 #[test]
+fn an_open_note_belongs_to_its_exact_path() {
+    let t = TestVault::new();
+    let first = t.put("Первая.md", "первая");
+    let second = t.put("Вторая.md", "вторая");
+    let file = std::fs::File::open(&first).unwrap();
+    crate::vault::contour::check_opened_at(&file, &first).expect("выбранная заметка");
+    let err = crate::vault::contour::check_opened_at(&file, &second).unwrap_err();
+    assert_eq!(err.code, ErrorCode::OutsideVault);
+}
+
+#[test]
 fn component_rejects_traversal_separators_and_absolute_paths() {
     for bad in [
         "",

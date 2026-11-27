@@ -689,6 +689,8 @@ fn index_changed_throttled_4_per_second() {
     let name = crate::commands::event::INDEX_CHANGED;
     std::thread::sleep(std::time::Duration::from_millis(300));
     let before = timed.times(name).len();
+    let search = crate::commands::event::SEARCH_CHANGED;
+    let before_search = timed.times(search).len();
 
     write(&f, "Узел.md", "просто текст без ссылок");
     f.events.handle(changed(vec![TreeChange::Modified {
@@ -696,6 +698,11 @@ fn index_changed_throttled_4_per_second() {
     }]));
     std::thread::sleep(std::time::Duration::from_millis(400));
     assert_eq!(timed.times(name).len(), before, "правка без ссылок и тегов");
+    assert_eq!(
+        timed.times(search).len(),
+        before_search + 1,
+        "правка текста для поиска"
+    );
 
     let start = std::time::Instant::now();
     let mut last_change = start;
@@ -710,15 +717,23 @@ fn index_changed_throttled_4_per_second() {
     wait_until(
         "событие после последней правки",
         || {
-            timed
-                .times(name)
-                .last()
-                .is_some_and(|at| *at >= last_change)
+            [name, search].iter().all(|event| {
+                timed
+                    .times(event)
+                    .last()
+                    .is_some_and(|at| *at >= last_change)
+            })
         },
     );
     let times: Vec<_> = timed.times(name).into_iter().skip(before).collect();
+    let search_times: Vec<_> = timed
+        .times(search)
+        .into_iter()
+        .skip(before_search + 1)
+        .collect();
+    assert_eq!(search_times.len(), times.len());
     let interval = std::time::Duration::from_millis(1000 / 4);
-    for pair in times.windows(2) {
+    for pair in times.windows(2).chain(search_times.windows(2)) {
         let gap = pair[1].duration_since(pair[0]);
         // Время пишется после отправки, а не в момент решения: запас на
         // задержку потока (медленные машины CI). Пять событий в секунду и

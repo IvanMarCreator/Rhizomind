@@ -36,6 +36,7 @@
     "allow-backlinks-list",
     "allow-tags-list",
     "allow-tag-notes",
+    "allow-vault-search",
     "allow-relink-preview",
     "allow-relink-answer",
     "allow-links-flush-done",

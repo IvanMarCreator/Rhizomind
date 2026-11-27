@@ -28,6 +28,12 @@
 //! сделан. Это известное ограничение до перехода на эти ОС (ADR 0006,
 //! уточнение 25.10.2026).
 
+#[cfg(target_os = "linux")]
+#[path = "anchored/linux.rs"]
+mod anchored;
+#[cfg(windows)]
+#[path = "anchored/windows.rs"]
+mod anchored;
 pub(crate) mod atomic;
 mod contour;
 pub(crate) mod fsops;
@@ -458,6 +464,48 @@ impl Vault {
             version,
             read_only,
         })
+    }
+
+    /// Текущий текст для поисковой выдачи. Для просмотра строки не нужны
+    /// настройки редактирования или хэш для будущего сохранения заметки.
+    pub(crate) fn read_search_text(&self, path: &VaultPath) -> CoreResult<String> {
+        let abs = self.contour.resolve(path)?;
+        require_note_name(path)?;
+        let mut options = File::options();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        }
+        let file = options.open(&abs).map_err(io_error)?;
+        contour::check_opened_at(&file, &abs)?;
+        let meta = file.metadata().map_err(io_error)?;
+        if !meta.is_file() {
+            return Err(CoreError::new(ErrorCode::NotANote));
+        }
+        let limit = crate::commands::limits::MAX_NOTE_BYTES;
+        if meta.len() > limit {
+            contour::check_opened_at(&file, &abs)?;
+            return Ok(String::new());
+        }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        (&file)
+            .take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        contour::check_opened_at(&file, &abs)?;
+        // Между metadata и read файл мог вырасти.
+        if bytes.len() as u64 > limit {
+            return Ok(String::new());
+        }
+        Ok(text::decode(&bytes).text)
     }
 
     /// Версия файла больше [`limits::MAX_NOTE_BYTES`] — хэш потоком, без
@@ -1219,8 +1267,7 @@ impl Vault {
         self.write_service_file(WORKSPACE_FILE, &bytes)
     }
 
-    /// Атомарно пишет служебный файл `.rhizomind/<name>` (в том числе
-    /// индекс, `index::store`). Служебная папка
+    /// Атомарно пишет служебный файл `.rhizomind/<name>`. Служебная папка
     /// проверена по дескриптору, временный файл — тоже (до записи байтов);
     /// файл-ссылка не заменяется (`outside_vault`).
     pub(crate) fn write_service_file(&self, name: &str, bytes: &[u8]) -> CoreResult<()> {
@@ -1265,6 +1312,46 @@ impl Vault {
         }
     }
 
+    /// SQLite не получает путь к файлам. Сохранение готового образа и удаление
+    /// старого производного файла выполняются в закреплённом служебном каталоге.
+    pub(crate) fn publish_search_index(&self, bytes: &[u8]) -> CoreResult<()> {
+        #[cfg(any(windows, target_os = "linux"))]
+        return self.publish_search_index_with(bytes, || {});
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            let _ = bytes;
+            Err(CoreError::new(ErrorCode::IoFailed))
+        }
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn publish_search_index_with(
+        &self,
+        bytes: &[u8],
+        after_open: impl FnOnce(),
+    ) -> CoreResult<()> {
+        let root = anchored::Root::open(self.root())?;
+        let service = root.dir(Path::new(SERVICE_DIR))?;
+        let staging = root.dir(&Path::new(SERVICE_DIR).join(TMP_DIR))?;
+        after_open();
+        contour::check_opened_at(&service.file, &self.service)?;
+        contour::check_opened_at(&staging.file, &self.tmp_dir())?;
+        for name in [
+            crate::index::store::FILE_NAME,
+            ServiceFile::LegacyIndex.name(),
+        ] {
+            match std::fs::symlink_metadata(service.path_for_io().join(name)) {
+                Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+                    return Err(contour::outside_vault());
+                }
+                Ok(_) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        root.publish_index(&service, &staging, bytes)
+    }
+
     /// Открывает существующий служебный файл `file` в `.rhizomind/` для
     /// дописывания в конец (отметки журнала обновления ссылок). Имя
     /// фиксированное ([`ServiceFile`]); служебная папка проверена по
@@ -1303,6 +1390,8 @@ impl Vault {
 pub enum ServiceFile {
     /// Журнал обновления ссылок `link-update.json` (задача 0.2-4.5).
     LinkUpdate,
+    /// Производный индекс связей выпуска 0.2.
+    LegacyIndex,
 }
 
 impl ServiceFile {
@@ -1310,6 +1399,7 @@ impl ServiceFile {
     pub fn name(self) -> &'static str {
         match self {
             ServiceFile::LinkUpdate => "link-update.json",
+            ServiceFile::LegacyIndex => "index.json",
         }
     }
 }

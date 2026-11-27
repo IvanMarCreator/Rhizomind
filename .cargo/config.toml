@@ -2,3 +2,7 @@
 # на неё опираются tauri, tests/e2e/driver.ts, tools/package-portable и кэш CI.
 [build]
 target-dir = "src-tauri/target"
+
+# ADR 0004. Временные таблицы только в памяти. Загрузка расширений исключена из SQLite.
+[env]
+LIBSQLITE3_FLAGS = { value = "-DSQLITE_TEMP_STORE=3 -DSQLITE_OMIT_LOAD_EXTENSION", force = true }

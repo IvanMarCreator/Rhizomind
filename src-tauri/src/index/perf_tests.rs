@@ -19,8 +19,8 @@
 //! прогона, которую видно без входа в GitHub (API пометок проверки).
 //!
 //! Здесь — общие помощники замеров ([`Report`], [`memory`], [`scales`]) и
-//! замеры индекса: сборка с нуля, открытие с готовым `index.json` (чтение и
-//! сверка), размер `index.json`, память ядра сверх 0.1. Запросы окна
+//! замеры индекса: сборка с нуля, открытие с готовым `index.db` (чтение и
+//! сверка), размер `index.db`, память ядра сверх 0.1. Запросы окна
 //! (`backlinks_list` холодный и повторный, `tags_list`, `tag_notes`) и
 //! `NoteList::replace_notes` — `commands::note_list_perf`; план
 //! переписывания ссылок — `relink::perf_tests` (каркас, второй прогон).
@@ -203,6 +203,7 @@ fn escape_property(s: &str) -> String {
 pub(crate) struct Memory {
     pub private: u64,
     pub resident: u64,
+    pub peak_resident: u64,
 }
 
 #[cfg(windows)]
@@ -245,6 +246,7 @@ pub(crate) fn memory() -> Option<Memory> {
     (ok != 0).then_some(Memory {
         private: c.private_usage as u64,
         resident: c.working_set_size as u64,
+        peak_resident: c.peak_working_set_size as u64,
     })
 }
 
@@ -264,6 +266,7 @@ pub(crate) fn memory() -> Option<Memory> {
     Some(Memory {
         private: field("RssAnon:")?,
         resident: field("VmRSS:")?,
+        peak_resident: field("VmHWM:")?,
     })
 }
 
@@ -275,7 +278,7 @@ pub(crate) fn memory() -> Option<Memory> {
 pub(crate) const MB: f64 = 1024.0 * 1024.0;
 
 /// Пределы С2-8.3 для размера `notes`: (сборка с нуля, мс; открытие с
-/// готовым индексом, мс; `index.json`, МБ; память сверх 0.1, МБ).
+/// готовым индексом, мс; `index.db`, МБ; память сверх 0.1, МБ).
 fn limits(notes: usize) -> (f64, f64, f64, f64) {
     if notes > CHECKED_NOTES {
         (25_000.0, 4_000.0, 75.0, 300.0)
@@ -284,13 +287,13 @@ fn limits(notes: usize) -> (f64, f64, f64, f64) {
     }
 }
 
-/// Сборка с нуля, открытие с готовым `index.json`, размер `index.json`,
+/// Сборка с нуля, открытие с готовым `index.db`, размер `index.db`,
 /// память ядра сверх 0.1 (С2-8.3).
 ///
 /// - **Сборка** — [`rebuild`] (как фоновый поток окна): пул ядра, чтение
 ///   файлов параллельно; новый пустой индекс на каждый повтор.
 /// - **Открытие с готовым индексом** — [`store::load`] (чтение и разбор
-///   `index.json`) и [`store::reconcile`] (обход папки, сверка размера и
+///   `index.db`) и [`store::reconcile`] (обход папки, сверка размера и
 ///   даты изменения) — то, что делает поток индекса при открытии окна.
 /// - **Память сверх 0.1** — разница памяти процесса ([`memory`], закреплённая
 ///   за процессом) до и после открытия с готовым индексом при уже открытом
@@ -338,18 +341,18 @@ fn perf_index_build_open_size_memory() {
             checked,
         );
 
-        // Размер index.json.
+        // Размер index.db.
         assert_eq!(
             IndexStore::new().write_now(&vault, &built),
             WriteOutcome::Written
         );
         drop(built);
         let size = std::fs::metadata(root.join(".rhizomind").join(store::FILE_NAME))
-            .expect("index.json")
+            .expect("index.db")
             .len() as f64;
         report.measure(
             &format!(
-                "размер index.json ({:.0} байт на заметку)",
+                "размер index.db ({:.0} байт на заметку)",
                 size / total as f64
             ),
             &[size / MB],
@@ -400,7 +403,7 @@ fn perf_index_build_open_size_memory() {
             }
         }
         report.measure(
-            "открытие с готовым index.json (чтение и сверка)",
+            "открытие с готовым index.db (чтение и сверка)",
             &open,
             "мс",
             Some(open_limit),
@@ -452,7 +455,7 @@ fn memory_child_process() {
     let (took, index) = timed(|| {
         let index = match store::load(&vault) {
             Load::Loaded(index) => RwLock::new(*index),
-            Load::Rebuild(reason) => panic!("index.json не прочитан: {reason:?}"),
+            Load::Rebuild(reason) => panic!("index.db не прочитан: {reason:?}"),
         };
         store::reconcile(&vault, &index).expect("сверка");
         index
@@ -469,4 +472,78 @@ fn memory_child_process() {
     println!("{CHILD_MARK}{took} {private} {resident} {total}");
     drop(index);
     drop(list);
+}
+
+/// Замер готовой выдачи включает поиск в FTS, чтение настоящих строк и все
+/// фильтры. Оконное время до появления результатов измеряется отдельно.
+#[test]
+#[ignore = "замер: --release --ignored perf_search"]
+fn perf_search() {
+    use super::query::SearchQuery;
+    for count in scales() {
+        let dir = tempfile::tempdir().expect("временная папка");
+        let root = dir.path().join("vault");
+        gen_vault::generate(&root, &gen_vault::Config::new(count, 1)).expect("генератор");
+        let vault = Vault::open(&root).expect("хранилище");
+        let built = RwLock::new(VaultIndex::new());
+        let (cold, ()) = timed(|| rebuild(&vault, &built, &|_| {}).expect("индекс"));
+        assert_eq!(
+            IndexStore::new().write_now(&vault, &built),
+            WriteOutcome::Written
+        );
+        drop(built);
+        let bytes = std::fs::metadata(root.join(".rhizomind").join(store::FILE_NAME))
+            .unwrap()
+            .len();
+        let (warm, index) = timed(|| {
+            let Load::Loaded(index) = store::load(&vault) else {
+                panic!("база не загрузилась")
+            };
+            let index = RwLock::new(*index);
+            store::reconcile(&vault, &index).expect("сверка");
+            index.into_inner().unwrap()
+        });
+        let total = index.entries().count();
+        assert!(total >= count);
+        let peak = memory().map(|m| m.peak_resident as f64 / MB);
+        println!(
+            "perf_search: {count} заметок; в индексе {total}; построение {cold:.2} мс; открытие и сверка {warm:.2} мс; база {bytes} Б; пик памяти процесса {peak:?} МиБ"
+        );
+        let mut report = Report::new(&format!("Поиск ядра на {count} заметках"));
+        for text in ["проект", "отчёт", "план", "заметка", "работа"] {
+            let query = SearchQuery {
+                text: text.to_string(),
+                ..Default::default()
+            };
+            let mut samples = Vec::new();
+            let mut selections = Vec::new();
+            let mut snippets = Vec::new();
+            for _ in 0..REPEATS {
+                let mut selection = 0.0;
+                let (elapsed, result) = timed(|| {
+                    query
+                        .first_page(&vault, |limit| {
+                            let (duration, paths) = timed(|| query.candidates(&index, limit));
+                            selection += duration;
+                            paths
+                        })
+                        .expect("выдача")
+                });
+                selections.push(selection);
+                snippets.push(elapsed - selection);
+                assert_eq!(
+                    result.items.len(),
+                    super::query::PAGE_SIZE,
+                    "неполная первая страница для {text}"
+                );
+                samples.push(elapsed);
+            }
+            println!(
+                "{text}: выборка путей {selections:.2?}; чтение и проверка строк {snippets:.2?}; пять запросов {samples:.2?} мс; медиана {:.2} мс",
+                median(&samples)
+            );
+            report.measure(text, &samples, "мс", Some(200.0), count == CHECKED_NOTES);
+        }
+        report.finish();
+    }
 }

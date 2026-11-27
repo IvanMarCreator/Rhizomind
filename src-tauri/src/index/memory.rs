@@ -54,6 +54,9 @@ struct Slot {
 /// Индекс хранилища в памяти.
 #[derive(Debug, Default)]
 pub struct VaultIndex {
+    /// База поиска открывается только для индекса хранилища, под замком окна.
+    pub(super) database: std::sync::Mutex<Option<rusqlite::Connection>>,
+    pub(super) search_failed: bool,
     /// Путь заметки → номер.
     ids: HashMap<Arc<VaultPath>, NoteId>,
     /// Заметки по номеру; `None` — номер свободен.
@@ -67,6 +70,8 @@ pub struct VaultIndex {
     state: State,
     /// Растёт при каждом изменении содержимого.
     revision: u64,
+    /// Изменение путей, ссылок или тегов для видов 0.2.
+    views_revision: u64,
     /// Номер последней начатой сборки.
     last_build: u64,
 }
@@ -193,9 +198,12 @@ impl VaultIndex {
         }
     }
 
-    /// Номер изменения содержимого: меняется, только если запись заметки
-    /// добавлена, стала другой или удалена (запись файла индекса «если
-    /// изменился», событие `index:changed`).
+    /// Изменения путей, ссылок и тегов для события `index:changed`.
+    pub(crate) fn views_revision(&self) -> u64 {
+        self.views_revision
+    }
+
+    /// Изменения производного индекса для сохранения на диск и события `search:changed`.
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -209,10 +217,85 @@ impl VaultIndex {
         self.put(path, entry);
     }
 
+    fn update_search(
+        &mut self,
+        apply: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<()>,
+        create: bool,
+    ) {
+        if self.search_failed {
+            return;
+        }
+        let slot = self
+            .database
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if create && slot.is_none() {
+            *slot = super::database::new_database().ok();
+            if slot.is_none() {
+                self.search_failed = true;
+                return;
+            }
+        }
+        if let Some(db) = slot {
+            self.search_failed = db
+                .transaction()
+                .and_then(|tx| {
+                    apply(&tx)?;
+                    tx.commit()
+                })
+                .is_err();
+        }
+    }
+
+    fn put_documents(&mut self, docs: Vec<(VaultPath, super::search::Document)>) {
+        if docs.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        self.update_search(
+            |db| {
+                for (path, doc) in &docs {
+                    changed |= super::search::store_document(db, path, doc)?;
+                }
+                Ok(())
+            },
+            true,
+        );
+        let revision = self.revision;
+        for (path, doc) in docs {
+            self.put(path, doc.entry);
+        }
+        if changed && self.revision == revision {
+            self.revision += 1;
+        }
+    }
+
+    pub(crate) fn upsert_document(&mut self, path: VaultPath, doc: super::search::Document) {
+        self.touch(&path);
+        self.put_documents(vec![(path, doc)]);
+    }
+
+    pub(crate) fn move_entry(&mut self, from: &VaultPath, to: VaultPath) -> bool {
+        let Some(entry) = self.entry(from).cloned() else {
+            return false;
+        };
+        self.touch(from);
+        self.touch(&to);
+        self.update_search(|db| super::search::rename(db, from, &to), false);
+        self.views_revision += 1;
+        self.take(from);
+        self.put(to, entry);
+        true
+    }
+
     /// Убирает заметку (удалена, переименована в не-заметку); нет такой —
     /// ничего не меняется.
     pub fn remove(&mut self, path: &VaultPath) {
         self.touch(path);
+        if self.entry(path).is_some() {
+            self.views_revision += 1;
+        }
+        self.update_search(|db| super::search::remove(db, path), false);
         self.take(path);
     }
 
@@ -414,20 +497,18 @@ impl VaultIndex {
     pub(super) fn insert_built(
         &mut self,
         id: u64,
-        batch: Vec<(VaultPath, Option<NoteEntry>)>,
+        batch: Vec<(VaultPath, Option<super::search::Document>)>,
     ) -> bool {
         let Some(build) = self.build_mut(id) else {
             return false;
         };
         build.done = build.done.saturating_add(count(batch.len()));
-        let fresh: Vec<(VaultPath, NoteEntry)> = batch
+        let fresh: Vec<_> = batch
             .into_iter()
             .filter_map(|(path, entry)| Some((path, entry?)))
             .filter(|(path, _)| !build.touched.contains(path))
             .collect();
-        for (path, entry) in fresh {
-            self.put(path, entry);
-        }
+        self.put_documents(fresh);
         true
     }
 
@@ -446,7 +527,7 @@ impl VaultIndex {
             .map(|path| VaultPath::clone(path))
             .collect();
         for path in &gone {
-            self.take(path);
+            self.remove(path);
         }
         self.state = State::Ready;
         self.shrink();
@@ -495,6 +576,11 @@ impl VaultIndex {
     fn put(&mut self, path: VaultPath, mut entry: NoteEntry) {
         if self.entry(&path) == Some(&entry) {
             return;
+        }
+        if self.entry(&path).is_none_or(|old| {
+            old.parsed.links != entry.parsed.links || old.parsed.tags != entry.parsed.tags
+        }) {
+            self.views_revision += 1;
         }
         self.take(&path);
         let id = match self.free.pop() {

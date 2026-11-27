@@ -18,6 +18,7 @@ import type { MessageKey } from '../i18n/index.ts';
 export type HotkeyScope = 'window' | 'tree';
 
 export type CommandId =
+  | 'search.open'
   | 'palette.open'
   | 'quick_switcher.open'
   | 'note.new'
@@ -59,6 +60,7 @@ export const COMMANDS: readonly HotkeyCommand[] = [
   { id: 'panel.tags', scope: 'window', label: 'hotkeys.command.tags', defaults: [] },
   { id: 'tree.rename', scope: 'tree', label: 'hotkeys.command.rename', defaults: ['F2'] },
   { id: 'tree.delete', scope: 'tree', label: 'hotkeys.command.delete', defaults: ['Delete'] },
+  { id: 'search.open', scope: 'window', label: 'search.title', defaults: [] },
 ];
 
 /** Системные сочетания: показываются с замком, не переназначаются. */

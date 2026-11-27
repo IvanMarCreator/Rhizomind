@@ -2,7 +2,7 @@
 // пп. 1 и 6): хранилище из генератора (tools/gen-vault) открывается через
 // «Открыть папку как хранилище» в работающей программе — дерево сразу, в
 // правой панели «Индекс строится… N %», потом список обратных ссылок и
-// тегов. Затем программа закрывается, `.rhizomind/index.json` удаляется, и
+// тегов. Затем программа закрывается, `.rhizomind/index.db` удаляется, и
 // при новом открытии индекс собирается заново — обратные ссылки и теги те же.
 //
 // Сборка индекса начинается в ядре при открытии хранилища, поэтому окно
@@ -168,7 +168,7 @@ afterAll(() => {
   if (parent) rmSync(parent, { recursive: true, force: true });
 });
 
-describe.each(['light', 'dark'] as const)('индекс: первое открытие и пересборка без index.json (%s)', (theme) => {
+describe.each(['light', 'dark'] as const)('индекс: первое открытие и пересборка без index.db (%s)', (theme) => {
   let session: Session | undefined;
   let profile = '';
   let first: Snapshot | undefined;
@@ -176,7 +176,7 @@ describe.each(['light', 'dark'] as const)('индекс: первое откры
   beforeAll(() => {
     // Раскладка: открыта заметка-цель, правая панель — «Обратные ссылки» (модель раскладки v1, src/core/layout/layout.ts).
     mkdirSync(path.join(vault, '.rhizomind'), { recursive: true });
-    rmSync(path.join(vault, '.rhizomind', 'index.json'), { force: true });
+    rmSync(path.join(vault, '.rhizomind', 'index.db'), { force: true });
     writeFileSync(path.join(vault, '.rhizomind', 'settings.json'), JSON.stringify({ format_version: 1, theme }));
     writeFileSync(
       path.join(vault, '.rhizomind', 'workspace.json'),
@@ -210,20 +210,20 @@ describe.each(['light', 'dark'] as const)('индекс: первое откры
     notice(`первое открытие: тегов ${first.tags.length}`);
   }, 300_000);
 
-  it('индекс записан в .rhizomind/index.json', async () => {
-    const file = path.join(vault, '.rhizomind', 'index.json');
+  it('индекс записан в .rhizomind/index.db', async () => {
+    const file = path.join(vault, '.rhizomind', 'index.db');
     const deadline = Date.now() + INDEX_WRITE_MS;
     while (!existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(existsSync(file), 'index.json не записан').toBe(true);
+    expect(existsSync(file), 'index.db не записан').toBe(true);
   }, INDEX_WRITE_MS + 10_000);
 
-  it('закрыть, удалить index.json, открыть — обратные ссылки и теги те же', async () => {
+  it('закрыть, удалить index.db, открыть — обратные ссылки и теги те же', async () => {
     if (!first) throw new Error('нет результата первого открытия');
     await session?.stop();
     session = undefined;
     expect(await waitForAppExit(15_000)).toBeGreaterThanOrEqual(0);
     rmSync(profile, { recursive: true, force: true });
-    const file = path.join(vault, '.rhizomind', 'index.json');
+    const file = path.join(vault, '.rhizomind', 'index.db');
     rmSync(file);
     expect(existsSync(file)).toBe(false);
 
@@ -237,6 +237,6 @@ describe.each(['light', 'dark'] as const)('индекс: первое откры
     // Индекс собран с нуля и записан снова.
     const deadline = Date.now() + INDEX_WRITE_MS;
     while (!existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(existsSync(file), 'index.json не записан заново').toBe(true);
+    expect(existsSync(file), 'index.db не записан заново').toBe(true);
   }, 400_000);
 });

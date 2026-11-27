@@ -35,6 +35,20 @@ pub fn read_entry(vault: &Vault, note: &NoteRef) -> CoreResult<NoteEntry> {
     })
 }
 
+pub(crate) fn read_document(vault: &Vault, note: &NoteRef) -> CoreResult<super::search::Document> {
+    let read = vault.read_note(&note.path)?;
+    Ok(super::search::Document {
+        entry: NoteEntry {
+            size: read.version.size,
+            modified_ms: read.version.modified_ms,
+            created_ms: note.created_ms,
+            parsed: markdown::parse(&read.text),
+        },
+        words: super::search::words(&read.text),
+        hash: read.version.hash,
+    })
+}
+
 /// Собирает индекс хранилища с нуля: обходит папку, читает и разбирает все
 /// заметки параллельно и вставляет их в `index` пачками; в конце убирает
 /// записи заметок, которых больше нет, и объявляет индекс готовым.
@@ -115,11 +129,12 @@ pub(super) fn rebuild_with(
     let next = AtomicUsize::new(0);
     let stopped = AtomicBool::new(false);
     let worker = || {
-        let mut batch: Vec<(VaultPath, Option<NoteEntry>)> = Vec::with_capacity(BATCH);
+        let mut batch: Vec<(VaultPath, Option<super::search::Document>)> =
+            Vec::with_capacity(BATCH);
         loop {
             let note = notes.get(next.fetch_add(1, Ordering::Relaxed));
             if let Some(note) = note {
-                batch.push((note.path.clone(), read_entry(vault, note).ok()));
+                batch.push((note.path.clone(), read_document(vault, note).ok()));
                 after_read(&note.path);
             }
             let flush = batch.len() == BATCH || (note.is_none() && !batch.is_empty());

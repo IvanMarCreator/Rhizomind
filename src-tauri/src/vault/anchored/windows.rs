@@ -73,6 +73,40 @@ impl Root {
         open_component(&parent.path.join(name), false)
     }
 
+    pub(super) fn publish_index(
+        &self,
+        service: &Dir,
+        staging: &Dir,
+        bytes: &[u8],
+    ) -> CoreResult<()> {
+        use std::io::Write;
+        let mut temp = tempfile::Builder::new()
+            .prefix(".svc-")
+            .tempfile_in(&staging.path)
+            .map_err(io_error)?;
+        // Удерживаем имя временного файла, пока в него записываются данные.
+        let held = File::options()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(temp.path())
+            .map_err(io_error)?;
+        contour::check_opened_at(temp.as_file(), temp.path())?;
+        temp.write_all(bytes).map_err(io_error)?;
+        temp.as_file().sync_all().map_err(io_error)?;
+        drop(held);
+        temp.persist(service.path.join(crate::index::store::FILE_NAME))
+            .map_err(|e| io_error(e.error))?;
+        match std::fs::remove_file(
+            service
+                .path
+                .join(crate::vault::ServiceFile::LegacyIndex.name()),
+        ) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(io_error(error)),
+            _ => Ok(()),
+        }
+    }
+
     pub(super) fn publish(
         &self,
         _staging: &Dir,

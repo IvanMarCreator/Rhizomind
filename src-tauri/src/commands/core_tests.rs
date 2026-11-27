@@ -1389,6 +1389,42 @@ fn utf16_slice(text: &str, from: u32, to: u32) -> String {
 }
 
 #[test]
+fn vault_search_all_words_filters_and_current_line() {
+    let app = app();
+    let (w, _dir, _root) = indexed_vault(
+        &app,
+        "search",
+        &[
+            (
+                "Работа/Квартал/План.md",
+                "---\ntags: [проект]\n---\nПосле проверки отчёт готов",
+            ),
+            ("Работа/Проверка отчёт.md", "Только имя"),
+            ("Работа-архив/План.md", "После проверки отчёт #проект"),
+            ("Работа/Другой.md", "После проверки #проект"),
+        ],
+    );
+    let search = |request| invoke(&w, "vault_search", json!({"request":request})).expect("поиск");
+    let result = search(json!({"text":"проверка отчёт","folder":["Работа"],"tag":"проект"}));
+    assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        result["items"][0]["path"],
+        json!(["Работа", "Квартал", "План.md"])
+    );
+    assert_eq!(result["items"][0]["location"]["line"], 4);
+    assert_eq!(
+        result["items"][0]["location"]["snippet"],
+        "После проверки отчёт готов"
+    );
+    let by_title = search(json!({"text":"Проверка отчёт"}));
+    assert_eq!(
+        by_title["items"][0]["path"],
+        json!(["Работа", "Проверка отчёт.md"])
+    );
+    assert!(by_title["items"][0]["location"].is_null());
+}
+
+#[test]
 fn backlinks_list_real_core() {
     let app = app();
     let (w, _dir, _root) = indexed_vault(
@@ -1567,9 +1603,14 @@ fn backlinks_forged_index_positions_do_not_panic() {
         crate::index::rebuild(&vault, &index, &|_| {}).expect("индекс");
         crate::index::store::IndexStore::new().write_now(&vault, &index);
     }
-    let file = root.join(".rhizomind").join("index.json");
-    let mut json: Value =
-        serde_json::from_slice(&std::fs::read(&file).expect("индекс")).expect("JSON");
+    let file = root.join(".rhizomind").join("index.db");
+    let db = rusqlite::Connection::open(file).expect("тестовый индекс");
+    let raw: Vec<u8> = db
+        .query_row("SELECT snapshot FROM link_index WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let mut json: Value = serde_json::from_slice(&raw).unwrap();
     let size = std::fs::metadata(root.join("Подмена.md"))
         .expect("файл")
         .len();
@@ -1594,7 +1635,12 @@ fn backlinks_forged_index_positions_do_not_panic() {
         forged(0, 6),           // не ссылка
         forged(13, 25),         // настоящая ссылка `[[Узел]]`
     ]);
-    std::fs::write(&file, serde_json::to_vec(&json).expect("JSON")).expect("подмена");
+    db.execute(
+        "UPDATE link_index SET snapshot=?1 WHERE id=1",
+        [serde_json::to_vec(&json).unwrap()],
+    )
+    .unwrap();
+    drop(db);
 
     let w = window(&app, "forged");
     open_vault(

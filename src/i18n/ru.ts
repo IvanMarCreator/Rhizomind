@@ -4,6 +4,17 @@
 // их полноту проверяет completeness.test.ts.
 export const ru = {
   'app.name': 'Rhizomind',
+  'search.title': 'Поиск по хранилищу',
+  'search.words': 'Слова в названии и тексте',
+  'search.folder': 'Папка',
+  'search.tag': 'Тег',
+  'search.allFolders': 'Все папки',
+  'search.allTags': 'Все теги',
+  'search.mentions': 'Упоминания без ссылки',
+  'search.results': 'Результаты поиска',
+  'search.failed': 'Не удалось выполнить поиск.',
+  'search.empty': 'Совпадений нет',
+  'search.truncated': 'Показаны первые 50 заметок. Уточните запрос или фильтры.',
 
   // Лента иконок
   'shell.ribbon.label': 'Лента иконок',

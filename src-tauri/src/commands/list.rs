@@ -57,6 +57,7 @@ macro_rules! with_core_commands {
             backlinks_list,
             tags_list,
             tag_notes,
+            vault_search,
             // Обновление ссылок при переименовании, выпуск 0.2
             relink_preview,
             relink_answer,

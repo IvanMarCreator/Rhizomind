@@ -1,0 +1,39 @@
+---
+source: src/commands/contract_tests.rs
+---
+{
+  "command": "vault_search",
+  "errors": [
+    {
+      "code": "invalid_argument",
+      "field": "query",
+      "message_key": "errors.invalid_argument"
+    },
+    {
+      "code": "no_vault_open",
+      "message_key": "errors.no_vault_open"
+    }
+  ],
+  "request": {
+    "folder": null,
+    "mentions_of": null,
+    "tag": null,
+    "text": "проверка"
+  },
+  "response": {
+    "items": [
+      {
+        "location": {
+          "column_utf16": 6,
+          "line": 2,
+          "snippet": "После проверки"
+        },
+        "path": [
+          "План.md"
+        ]
+      }
+    ],
+    "status": "ready",
+    "truncated": false
+  }
+}
