@@ -1372,6 +1372,59 @@ fn template_settings_and_copy_preserve_the_selected_bytes() {
 }
 
 #[test]
+fn embed_resolves_attachments_and_existing_notes_without_creating_any_file() {
+    let app = app();
+    let w = window(&app, "embeds");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    put(&root, "Наблюдатель.md", b"source");
+    put(&root, "Схема.PNG.md", b"explicit note");
+    put(
+        &root,
+        "Схема.PNG",
+        include_bytes!("../../../tests/fixtures/embeds/sample.png"),
+    );
+    let jpeg = include_bytes!("../../../tests/fixtures/embeds/sample.jpg");
+    put(&root, "Фото.JpEg", jpeg);
+    put(&root, "А/Дубль.JPG", jpeg);
+    put(&root, "Б/Дубль.jpg", jpeg);
+    put(&root, "А/План.md", b"first");
+    put(&root, "Б/План.md", b"second");
+    open_vault(
+        &app,
+        "embeds",
+        "embeds",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let from = json!(["Наблюдатель.md"]);
+    let embed = |target: &str| {
+        call(
+            &w,
+            "embed_read",
+            json!({"source":{"kind":"target","from":from,"target":target}}),
+        )
+        .unwrap()
+    };
+    assert_eq!(embed("схема.PNG")["kind"], "image");
+    assert_eq!(embed("схема.PNG.md")["text"], "explicit note");
+    assert_eq!(embed("фото.JPEG")["kind"], "image");
+    assert_eq!(embed("Дубль.jpg")["reason"], "ambiguous");
+    assert_eq!(embed("А/Дубль.jpg")["kind"], "image");
+    let usual = call(&w, "links_resolve", json!({"from":from,"targets":["План"]})).unwrap();
+    assert_eq!(embed("План")["path"], usual["results"][0]["path"]);
+    for target in [
+        "Нет",
+        "../Нет",
+        "https://example.invalid/файл.png",
+        ".rhizomind/Закрыто",
+    ] {
+        assert_eq!(embed(target)["kind"], "unavailable");
+    }
+    assert!(!root.join("Нет.md").exists());
+}
+
+#[test]
 fn attachment_clipboard_rejects_a_supplied_external_path_before_reading_the_os() {
     let invalid = json!({"note":["Заметка.md"], "source":{"kind":"clipboard","path":["C:/внешний/файл.png"]}, "name":"Фото.png"});
     assert!(serde_json::from_value::<AttachmentRequest>(invalid).is_err());

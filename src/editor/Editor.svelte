@@ -31,6 +31,7 @@
     focusOnOpen = false,
     onOpenNote,
     onOpenTag,
+    onPreviewEmbed,
   }: {
     path: VaultPath | null;
     /** Живой предпросмотр или исходный текст (решение 72). */
@@ -53,6 +54,7 @@
     onOpenNote?: (path: VaultPath) => void;
     /** Щелчок по тегу в тексте: открыть вид «Теги» с раскрытым тегом (0.2-3.1). */
     onOpenTag?: (tag: string) => void;
+    onPreviewEmbed?: (source: import('../api/index.ts').EmbedSource, origin: HTMLElement) => void;
   } = $props();
 
   let pane = $state.raw<EditorPane>({ kind: 'empty' });
@@ -73,6 +75,7 @@
 
   /** Вики-ссылки открытой заметки (С3.4): только заметки хранилища, не `open_external`. */
   const wiki = new WindowWikiHost({
+    previewEmbed: (source, origin) => onPreviewEmbed?.(source, origin),
     from: () => (pane.kind === 'open' ? pane.session.path : null),
     openNote: (next) => onOpenNote?.(next),
     notify: (text) => notify(text),
@@ -112,6 +115,7 @@
    */
   export function changed(changedPath: VaultPath, version: FileVersion): void {
     sessions.changed(changedPath, version);
+    wiki.refresh();
   }
 
   /** Полная сверка с диском (`vault:changed` с `rescan`): открытые заметки сверяются с диском. */

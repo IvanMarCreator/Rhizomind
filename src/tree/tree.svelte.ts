@@ -54,6 +54,7 @@ export interface TreeHost {
   /** Галочка «Больше не спрашивать» с ответом «Обновить ссылки» (решение 109): записать настройку. */
   setRenameLinks?(mode: RenameLinks): void;
   open(path: VaultPath): void;
+  previewAttachment?(path: VaultPath): void;
   /** Элемент переименован или перемещён в приложении: пути внутри меняются. */
   entryRenamed(from: VaultPath, to: VaultPath): void;
   /** Элемент удалён в приложении: открытая заметка внутри закрывается. */
@@ -271,6 +272,7 @@ export class FileTreeState {
     this.selected = entry.path;
     if (entry.kind === 'folder') this.toggle(entry.path);
     else if (entry.kind === 'note') this.host.open(entry.path);
+    else this.host.previewAttachment?.(entry.path);
   }
 
   // ---- Создание ------------------------------------------------------------

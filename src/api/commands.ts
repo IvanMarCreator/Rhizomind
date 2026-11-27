@@ -38,6 +38,7 @@ export const core = {
   treeList: withoutRequest('tree_list'),
   noteCreate: withRequest('note_create'),
   attachmentInsert: withRequest('attachment_insert'),
+  embedRead: withRequest('embed_read'),
   noteCreateFromTemplate: withRequest('note_create_from_template'),
   folderCreate: withRequest('folder_create'),
   entryRename: withRequest('entry_rename'),

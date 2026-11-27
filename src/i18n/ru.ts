@@ -4,6 +4,19 @@
 // их полноту проверяет completeness.test.ts.
 export const ru = {
   'app.name': 'Rhizomind',
+  'embed.preview': 'Просмотр вложения',
+  'embed.close': 'Закрыть просмотр',
+  'embed.loading': 'Открывается…',
+  'embed.missing': 'Файл не найден',
+  'embed.ambiguous': 'Несколько файлов с таким именем. Уточните путь.',
+  'embed.invalid_target': 'Недопустимый путь',
+  'embed.invalid_data': 'Файл повреждён или имеет другой формат',
+  'embed.too_large': 'Превышен предел размера для просмотра',
+  'embed.unsupported': 'Этот формат изображения не поддерживается',
+  'embed.unavailable': 'Файл недоступен или изменился',
+  'embed.file': 'Файл',
+  'embed.empty': 'Пустая заметка',
+  'embed.more': 'Показаны первые {count} строк',
   'search.title': 'Поиск по хранилищу',
   'search.words': 'Слова в названии и тексте',
   'search.folder': 'Папка',
@@ -51,7 +64,7 @@ export const ru = {
   'textMenu.selectAll': 'Выделить всё',
   'textMenu.pasteTooLarge': 'Текст в буфере обмена слишком большой для вставки: больше «Максимального размера файла для редактирования» (Настройки → Файлы и ссылки).',
   'tree.rename.label': 'Новое имя',
-  'tree.notOpenable': 'В этой версии открываются только заметки. Файл можно переименовать, переместить или удалить.',
+
   'tree.delete.titleFile': 'Удалить «{name}»?',
   'tree.delete.titleFolder': 'Удалить папку «{name}»?',
   'tree.delete.bodyFile': 'Файл будет перемещён в корзину.',

@@ -81,9 +81,13 @@ getrandom = { version = "=0.4.3", default-features = false }
 # Уже был в дереве через tauri: новых крейтов нет.
 dirs = "=7.0.0"
 
-[target.'cfg(windows)'.dependencies]
-# Преобразование непосредственно переданной ОС битовой карты скриншота (CF_DIB) в PNG.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+# Декодирование локальных растров и кодирование чистого PNG для просмотра.
 png = "=0.18.1"
+jpeg-decoder = { version = "=0.3.2", default-features = false }
+base64 = "=0.23.1"
+
+[target.'cfg(windows)'.dependencies]
 # Те же версии, что уже приходят через wry: новых крейтов нет.
 # Один экземпляр программы (задача 0.5, src/single_instance/windows.rs):
 # CreateMutexW (Win32_Security — тип атрибутов), окно для сообщений

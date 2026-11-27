@@ -5,6 +5,8 @@
 #[cfg(any(windows, target_os = "linux"))]
 mod attachment;
 mod contour;
+#[cfg(any(windows, target_os = "linux"))]
+mod embed;
 mod hardening;
 mod ops;
 mod parent;

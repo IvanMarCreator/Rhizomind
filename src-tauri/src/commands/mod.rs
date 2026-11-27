@@ -27,6 +27,7 @@
 
 mod attachment;
 mod clipboard;
+mod embed;
 mod error;
 mod events;
 mod files;
@@ -59,6 +60,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub use attachment::*;
 pub use clipboard::*;
+pub use embed::*;
 pub use error::{CoreError, CoreResult, ErrorCode, NameProblem};
 pub use events::{
     EVENT_NAMES, IndexChangedPayload, LinksFlushRequestedPayload, LinksPendingPayload,

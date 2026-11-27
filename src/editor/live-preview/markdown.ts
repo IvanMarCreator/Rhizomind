@@ -55,6 +55,7 @@ export interface MarkPiece extends Span {
 export type Piece =
   | ({ kind: 'hide'; owner: Span } & Span)
   | ({ kind: 'widget'; widget: WidgetKind; owner: Span } & Span)
+  | ({ kind: 'embed'; target: string; owner: Span } & Span)
   | MarkPiece;
 
 export interface LineMarkup {
@@ -419,9 +420,16 @@ function codeStartsIn(ctx: InlineContext, from: number, to: number): boolean {
 function wikiLink(ctx: InlineContext, start: number, to: number, out: Piece[]): number {
   const close = wikiPairs(ctx).get(start);
   if (close === undefined || close + 2 > to || codeStartsIn(ctx, start + 2, close)) return start + 2;
-  // Встраивание `![[…]]` — выпуск 0.3: исходный текст.
-  const embed = start > ctx.from && ctx.text[start - 1] === '!';
-  const pieces = embed ? null : wikiPieces(ctx.text, start, close);
+  if (start > ctx.from && ctx.text[start - 1] === '!') {
+    let escape = start - 2;
+    while (escape >= ctx.from && ctx.text[escape] === '\\') escape--;
+    if ((start - 2 - escape) % 2 === 0) {
+      const owner = { from: start - 1, to: close + 2 };
+      out.push({ kind: 'embed', target: ctx.text.slice(start + 2, close), ...owner, owner });
+    }
+    return close + 2;
+  }
+  const pieces = wikiPieces(ctx.text, start, close);
   if (pieces) out.push(...pieces);
   return close + 2;
 }

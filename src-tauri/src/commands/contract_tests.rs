@@ -392,6 +392,23 @@ fn note_create() {
 }
 
 #[test]
+fn embed_read() {
+    command_with(
+        "embed_read",
+        &EmbedRequest {
+            source: EmbedSource::Target {
+                from: path(&["План.md"]),
+                target: "Схема.svg".into(),
+            },
+        },
+        &EmbedOutcome::File {
+            name: "Схема.svg".into(),
+        },
+        &[err(ErrorCode::InvalidPath), err(ErrorCode::OutsideVault)],
+    );
+}
+
+#[test]
 fn attachment_insert() {
     assert_eq!(
         serde_json::to_value(AttachmentOutcome::ChooseName {

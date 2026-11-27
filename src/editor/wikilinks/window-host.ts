@@ -3,7 +3,7 @@
 // (`note_create`, `folder_create`, `tree_list`). Вики-ссылка открывается
 // только как заметка хранилища — через `openNote` окна (история переходов),
 // никогда через `open_external`.
-import { core, type VaultPath } from '../../api/index.ts';
+import { core, type EmbedSource, type VaultPath } from '../../api/index.ts';
 import { LIMITS } from '../../api/limits.ts';
 import { userMessage } from '../../i18n/errors.ts';
 import { t } from '../../i18n/index.ts';
@@ -11,6 +11,7 @@ import type { LinkPosition, WikiEvent, WikiHost } from './host.ts';
 import { followWikilink, type FollowDeps } from './open.ts';
 
 export interface WindowWikiOptions {
+  previewEmbed?: (source: EmbedSource, origin: HTMLElement) => void;
   /** Открытая заметка — откуда ведут ссылки; `null` — заметки нет. */
   from: () => VaultPath | null;
   /** Открыть заметку в окне (новый шаг истории). */
@@ -42,6 +43,9 @@ export class WindowWikiHost implements WikiHost {
     this.#options = options;
     this.#deps = deps;
   }
+
+  embedFrom(): VaultPath | null { return this.#options.from(); }
+  previewEmbed(source: EmbedSource, origin: HTMLElement): void { this.#options.previewEmbed?.(source, origin); }
 
   async resolve(keys: readonly string[]): Promise<ReadonlyMap<string, boolean>> {
     const from = this.#options.from();
