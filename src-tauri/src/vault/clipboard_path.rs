@@ -31,7 +31,7 @@ fn file_uri(text: &str) -> Option<PathBuf> {
         return None;
     }
     let uri = url::Url::parse(text).ok()?;
-    if uri.host_str().is_some_and(|host| host != "localhost") || uri.path().starts_with("//") {
+    if uri.path().starts_with("//") {
         return None;
     }
     uri.to_file_path().ok()
@@ -52,8 +52,7 @@ pub(super) fn relative(root: &Path, reference: &str) -> Option<VaultPath> {
     {
         file_uri(text)?
     } else {
-        if text.starts_with(r"\\")
-            || text.starts_with("//")
+        if (!cfg!(windows) && (text.starts_with("//") || text.starts_with(r"\\")))
             || text
                 .split(['/', '\\'])
                 .any(|part| matches!(part, "." | ".."))
@@ -63,6 +62,17 @@ pub(super) fn relative(root: &Path, reference: &str) -> Option<VaultPath> {
         PathBuf::from(text)
     };
     if !path.is_absolute() {
+        return None;
+    }
+    // Разрешены только обычный путь на диске и обычный UNC. Из буфера не
+    // принимаются пространства имён устройств и verbatim-префиксы. Уже
+    // открытый корень может быть каноническим: strip_root сравнивает компоненты.
+    #[cfg(windows)]
+    if !matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::Disk(_) | std::path::Prefix::UNC(..))
+    ) {
         return None;
     }
     let tail = contour::strip_root(root, &path)?;
@@ -79,4 +89,43 @@ pub(super) fn relative(root: &Path, reference: &str) -> Option<VaultPath> {
     let path = VaultPath::from_components(parts);
     checked_path(&path, "source.path").ok()?;
     Some(path)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_clipboard_accepts_only_matching_open_unc_root_without_io() {
+        let plain = Path::new(r"\\rhz-fixture.invalid\Share\Vault");
+        let canonical = Path::new(r"\\?\UNC\rhz-fixture.invalid\Share\Vault");
+        let raw = r"\\RHZ-FIXTURE.INVALID\share\vault\Папка\Фото +1.png";
+        let uri =
+            "file://rhz-fixture.invalid/Share/Vault/%D0%9F%D0%B0%D0%BF%D0%BA%D0%B0/Фото%20+1.png";
+        let expected = VaultPath::from_components(["Папка", "Фото +1.png"]);
+
+        for root in [plain, canonical] {
+            for valid in [raw, uri] {
+                assert_eq!(relative(root, valid), Some(expected.clone()), "{valid}");
+            }
+            for outside in [
+                r"\\other.invalid\Share\Vault\file.png",
+                r"\\rhz-fixture.invalid\Share2\Vault\file.png",
+                r"\\rhz-fixture.invalid\Share\Vault-copy\file.png",
+                r"\\?\UNC\rhz-fixture.invalid\Share\Vault\file.png",
+                r"\\.\UNC\rhz-fixture.invalid\Share\Vault\file.png",
+                r"\\?\GLOBALROOT\Device\file.png",
+                "file://other.invalid/Share/Vault/file.png",
+                "file://rhz-fixture.invalid/Share2/Vault/file.png",
+                "file://rhz-fixture.invalid/Share/Vault-copy/file.png",
+                "file://rhz-fixture.invalid/Share/Vault/a%2fb.png",
+                "file://rhz-fixture.invalid/Share/Vault/%2e%2e/file.png",
+            ] {
+                assert_eq!(relative(root, outside), None, "{outside}");
+            }
+        }
+        for network in [raw, uri] {
+            assert_eq!(relative(Path::new(r"C:\Vault"), network), None);
+        }
+    }
 }
