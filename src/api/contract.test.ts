@@ -171,6 +171,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: { path: ['Проекты', 'Без названия.md'] },
     errors: [invalidName('duplicate'), err('invalid_path'), err('outside_vault')],
   },
+  embed_read: {
+    command: 'embed_read',
+    request: { source: { kind: 'target', from: ['План.md'], target: 'Схема.svg' } },
+    response: { kind: 'file', name: 'Схема.svg' },
+    errors: [err('invalid_path'), err('outside_vault')],
+  },
   attachment_insert: {
     command: 'attachment_insert',
     request: { note: ['План.md'], source: { kind: 'file', path: ['Фото.png'] }, name: 'Копия.png' },

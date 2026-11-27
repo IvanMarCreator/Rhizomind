@@ -8,6 +8,14 @@ export const API_VERSION = 1;
 
 /** Путь в хранилище по компонентам: `["Проекты", "Встреча.md"]`; корень — `[]`. */
 export type VaultPath = string[];
+export type EmbedSource = { kind: 'path'; path: VaultPath } | { kind: 'target'; from: VaultPath; target: string };
+export type EmbedReason = 'missing' | 'ambiguous' | 'invalid_target' | 'invalid_data' | 'too_large' | 'unsupported' | 'unavailable';
+export type EmbedOutcome =
+  | { kind: 'image'; name: string; width: number; height: number; png: string }
+  | { kind: 'note'; name: string; path: VaultPath; text: string }
+  | { kind: 'file'; name: string }
+  | { kind: 'unavailable'; reason: EmbedReason };
+
 export type AttachmentOutcome =
   | { outcome: 'choose_name'; path: VaultPath }
   | { outcome: 'created'; path: VaultPath | null; target: string | null }
@@ -537,6 +545,7 @@ export interface CoreCommands {
   folder_pick: { request: null; response: FolderPickOutcome };
   tree_list: { request: null; response: TreeListResponse };
   note_create: { request: NameInDirRequest; response: EntryPathResponse };
+  embed_read: { request: { source: EmbedSource }; response: EmbedOutcome };
   attachment_insert: { request: { note: VaultPath; source: { kind: 'file'; path: VaultPath } | { kind: 'clipboard' }; name: string }; response: AttachmentOutcome };
   note_create_from_template: { request: NameInDirRequest & { template: VaultPath }; response: { path: VaultPath | null } };
   folder_create: { request: NameInDirRequest; response: EntryPathResponse };

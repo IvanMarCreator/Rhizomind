@@ -28,6 +28,7 @@
     'note_create',
     'note_create_from_template',
     'attachment_insert',
+    'embed_read',
     'folder_create',
     'entry_rename',
     'entry_move',

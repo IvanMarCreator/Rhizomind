@@ -14,6 +14,7 @@
     "allow-note-create",
     "allow-note-create-from-template",
     "allow-attachment-insert",
+    "allow-embed-read",
     "allow-folder-create",
     "allow-entry-rename",
     "allow-entry-move",

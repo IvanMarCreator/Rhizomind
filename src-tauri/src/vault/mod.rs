@@ -40,6 +40,7 @@ mod clipboard_path;
 mod contour;
 #[cfg(any(windows, target_os = "linux"))]
 mod copy;
+mod embed;
 pub(crate) mod fsops;
 mod local_time;
 mod settings;

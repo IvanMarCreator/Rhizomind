@@ -9,7 +9,7 @@ pub(crate) enum AttachmentInput<'a> {
     Png(&'a [u8]),
 }
 
-fn visible_path(path: &VaultPath) -> CoreResult<()> {
+pub(super) fn visible_path(path: &VaultPath) -> CoreResult<()> {
     path.check()?;
     if path.components().is_empty() || path.components().iter().any(|part| part.starts_with('.')) {
         return Err(contour::invalid_path());
@@ -46,7 +46,7 @@ fn link_target(path: &VaultPath, entries: &[VaultPath]) -> Option<String> {
 }
 
 #[cfg(any(windows, target_os = "linux"))]
-fn file_paths(root: &super::anchored::Root) -> CoreResult<Vec<VaultPath>> {
+pub(super) fn file_paths(root: &super::anchored::Root) -> CoreResult<Vec<VaultPath>> {
     use std::path::PathBuf;
     let mut pending = vec![VaultPath::root()];
     let mut files = Vec::new();

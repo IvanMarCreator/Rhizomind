@@ -1,0 +1,29 @@
+---
+source: src-tauri/src/commands/contract_tests.rs
+---
+{
+  "command": "embed_read",
+  "errors": [
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "outside_vault",
+      "message_key": "errors.outside_vault"
+    }
+  ],
+  "request": {
+    "source": {
+      "from": [
+        "План.md"
+      ],
+      "kind": "target",
+      "target": "Схема.svg"
+    }
+  },
+  "response": {
+    "kind": "file",
+    "name": "Схема.svg"
+  }
+}
