@@ -6,21 +6,24 @@
 // заметок того же хранилища (заголовки, списки, ссылки, код), чтобы живой
 // предпросмотр размечал обычный Markdown, а не одну повторённую строку.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { findTags, tagKey } from '../../src/core/tags/index.ts';
 
 const ROOT = path.join(import.meta.dirname, '..', '..');
 export const NOTES = 10_000;
 export const LONG_LINES = 5_000;
 export const SEED = 1;
-export const VAULT_NAME = 'Нагрузка 10000';
 export const LONG_TITLE = 'Длинная заметка 5000 строк';
 /** Первая строка длинной заметки: по ней видно, что заметка открыта. */
 export const LONG_MARKER = 'Длинная заметка для замера ввода';
 
 export interface PerfVault {
   root: string;
+  fixture: ReturnType<typeof releaseFixture>;
+  tagKeys: string[];
+  movedLinks: { source: string; oldLink: string; newLink: string; expectedCount: number; target: string }[];
   /** Записей в корне без скрытых: столько строк у дерева сразу после открытия. */
   rootEntries: number;
   /** Запросы быстрого перехода: имена настоящих заметок без пробела. */
@@ -67,23 +70,88 @@ export function longNoteText(sources: readonly string[]): string {
   return `${lines.join('\n')}\n`;
 }
 
-export function prepareVault(): PerfVault {
+interface ReleaseManifest {
+  format_version: number;
+  notes: number;
+  tags: { key: string }[];
+  hub: { path: string; backlinks: { source: string }[] } | null;
+  folder_1000: { path: string; notes: number; incoming_links: number } | null;
+}
+
+/** Проверить, что бинарник генератора действительно подготовил нагрузку С2-8.3. */
+export function releaseFixture(manifest: ReleaseManifest, count: number) {
+  const folder = manifest.folder_1000;
+  const hub = manifest.hub;
+  const hubSources = new Set(hub?.backlinks.map((link) => link.source));
+  if (manifest.format_version !== 2 || manifest.notes !== count - 1 || !manifest.tags?.length ||
+      !hub || hubSources.size !== 100 || !folder || folder.notes !== 1_000 || folder.incoming_links !== 5_000) {
+    throw new Error('Манифест не соответствует нагрузке С2-8.3');
+  }
+  return { hub: path.posix.basename(hub.path, '.md'), hubSources, folder: folder.path };
+}
+
+export const MOVE_TARGET = 'Приёмник перемещения';
+
+/** Манифест описывает сгенерированные файлы, а длинную заметку добавляет
+ * сам оконный тест. Бывший блок свойств посреди склеенного текста — уже абзац. */
+export function expectedTagKeys(manifestKeys: string[], longText: string): string[] {
+  return [...new Set([...manifestKeys, ...findTags(longText).map((tag) => tagKey(tag.name))])].sort();
+}
+
+/** Независимые свидетели переноса: абсолютный путь от корня перестаёт работать,
+ * уникальная заметка генератора получает кратчайшую ссылку по имени. */
+function moveExamples(root: string, notes: string[], folder: string): PerfVault['movedLinks'] {
+  const samples: PerfVault['movedLinks'] = [];
+  for (const source of notes) {
+    if (source.startsWith(`${folder}/`)) continue;
+    const text = readFileSync(path.join(root, source), 'utf8');
+    for (const [oldLink, target] of text.matchAll(/\[\[\/([^\]|#]+)\]\]/gu)) {
+      if (!target?.startsWith(`${folder}/`)) continue;
+      const newLink = `[[${path.posix.basename(target)}]]`;
+      samples.push({ source, oldLink, newLink, target: `${target}.md`,
+        expectedCount: text.split(newLink).length + text.split(oldLink).length - 2 });
+      break;
+    }
+    if (samples.length === 3) return samples;
+  }
+  throw new Error('В нагрузке нет трёх независимых исходных заметок с абсолютной ссылкой в папку');
+}
+
+export function prepareVault(count = NOTES): PerfVault {
   const parent = mkdtempSync(path.join(os.tmpdir(), 'rhizomind-perf-'));
-  const root = path.join(parent, VAULT_NAME);
+  try {
+    return generateIn(parent, count);
+  } catch (error) {
+    rmSync(parent, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function generateIn(parent: string, count: number): PerfVault {
+  const root = path.join(parent, `Нагрузка ${count}`);
   const started = Date.now();
   execFileSync(
     genVaultPath(),
-    ['--notes', String(NOTES - 1), '--seed', String(SEED), '--out', root, '--manifest', path.join(parent, 'manifest.json')],
+    ['--notes', String(count - 1), '--seed', String(SEED), '--out', root, '--manifest', path.join(parent, 'manifest.json')],
     { stdio: 'inherit' },
   );
   const generateMs = Date.now() - started;
   const notes = notesOf(root);
-  writeFileSync(
-    path.join(root, `${LONG_TITLE}.md`),
-    longNoteText(notes.slice(0, 2_000).map((note) => readFileSync(path.join(root, note), 'utf8'))),
-  );
-  const count = notesOf(root).length;
-  if (count !== NOTES) throw new Error(`в хранилище ${count} заметок, а нужно ${NOTES}`);
+  const manifest = JSON.parse(readFileSync(path.join(parent, 'manifest.json'), 'utf8')) as ReleaseManifest;
+  const fixture = releaseFixture(manifest, count);
+  mkdirSync(path.join(root, MOVE_TARGET));
+  // При копировании текста в длинную заметку не добавлять 101-й источник
+  // узла и дополнительные входящие ссылки в папку с нагрузкой 5 000.
+  const folderNames = new Set(notes.filter((note) => note.startsWith(`${fixture.folder}/`))
+    .map((note) => path.posix.basename(note, '.md').normalize('NFC').toLowerCase()));
+  const sources = notes.filter((note) => !fixture.hubSources.has(note)).slice(0, 2_000)
+    .map((note) => readFileSync(path.join(root, note), 'utf8'))
+    .filter((text) => ![...text.matchAll(/\[\[([^|#\]]+)/g)].some((match) =>
+      folderNames.has(path.posix.basename(match[1] ?? '', '.md').normalize('NFC').toLowerCase())));
+  const longText = longNoteText(sources);
+  writeFileSync(path.join(root, `${LONG_TITLE}.md`), longText);
+  const tagKeys = expectedTagKeys(manifest.tags.map((tag) => tag.key), longText);
+  if (notes.length + 1 !== count) throw new Error(`в хранилище ${notes.length + 1} заметок, а нужно ${count}`);
 
   // Пять имён вида «Слово 123» через равные промежутки списка; запрос — имя
   // без пробела строчными («протокол422»): пробел в конце запроса не меняет
@@ -98,7 +166,7 @@ export function prepareVault(): PerfVault {
   });
 
   const rootEntries = readdirSync(root).filter((name) => !name.startsWith('.')).length;
-  return { root, rootEntries, queries, generateMs };
+  return { root, fixture, tagKeys, movedLinks: moveExamples(root, notes, fixture.folder), rootEntries, queries, generateMs };
 }
 
 export function removeVault(vault: PerfVault): void {

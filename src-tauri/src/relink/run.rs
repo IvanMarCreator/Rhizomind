@@ -89,9 +89,9 @@ impl RunReport {
 /// Выполняет план `plan` (или план повтора [`RunReport::retry`]): журнал,
 /// запись заметок, удаление журнала. `after` — список заметок после
 /// переименований `renames` (их вызывающий уже выполнил на диске);
-/// `renames` пишутся в журнал. `progress(сделано, всего)` — перед каждой
-/// заметкой и в конце (для `links:progress`, частоту ограничивает
-/// вызывающий). Блокирует поток (диск).
+/// `renames` пишутся в журнал. `progress(сделано, всего)` сообщает, сколько
+/// результатов уже обработано в порядке плана, и вызывается в конце
+/// (для `links:progress`, частоту ограничивает вызывающий). Блокирует поток (диск).
 pub fn run(
     vault: &Vault,
     after: &NotesView<'_>,
@@ -106,7 +106,7 @@ pub fn run(
     if plan.notes.is_empty() {
         return report;
     }
-    let Ok(mut writer) = journal::start(vault, renames, &plan.notes) else {
+    let Ok(writer) = journal::start(vault, renames, &plan.notes) else {
         // Без журнала доделка после падения невозможна: не начинать.
         for note in &plan.notes {
             report.fail(note, RelinkFailureReason::Io);
@@ -119,8 +119,8 @@ pub fn run(
         after,
         &plan.notes,
         &todo,
-        &HashMap::new(),
-        &mut writer,
+        None,
+        &writer,
         progress,
         &mut report,
     );
@@ -154,7 +154,7 @@ pub fn resume_on_open(
         }
         Read::Found(journal) => journal,
     };
-    let Ok(mut writer) = journal::reopen(vault) else {
+    let Ok(writer) = journal::reopen(vault, &journal) else {
         return None;
     };
     let todo: Vec<usize> = (0..journal.notes.len())
@@ -167,8 +167,8 @@ pub fn resume_on_open(
         &after,
         &journal.notes,
         &todo,
-        &journal.started,
-        &mut writer,
+        Some(&journal.started),
+        &writer,
         progress,
         &mut report,
     );
@@ -245,8 +245,8 @@ fn execute(
     after: &NotesView<'_>,
     notes: &[NotePlan],
     todo: &[usize],
-    started: &HashMap<usize, Vec<Started>>,
-    writer: &mut Writer,
+    started: Option<&HashMap<usize, Vec<Started>>>,
+    writer: &Writer,
     progress: &mut dyn FnMut(usize, usize),
     report: &mut RunReport,
 ) -> bool {
@@ -255,10 +255,24 @@ fn execute(
         .map(|settings| settings.max_edit_size_bytes)
         .unwrap_or_else(|_| Settings::default().max_edit_size_bytes);
     let total = todo.len();
-    for (done, &i) in todo.iter().enumerate() {
+    let rebuild = |i: usize, byte_limit| {
+        let note = &notes[i];
+        let build = |text: &str| {
+            rewrite(text, &|link: &WikiLink| {
+                new_target(after, &note.links, &link.target)
+            })
+        };
+        vault.write_note_rebuilt(&note.path, byte_limit, &build, &mut |before, after| {
+            writer.started(i, before, after)
+        })
+    };
+    // Журнал с диска недоверенный: доделка и все проверки хэшей идут по очереди.
+    let parallel = cfg!(windows) && started.is_none() && total >= 16;
+    let mut jobs = todo.iter().copied().enumerate().peekable();
+    while let Some((done, i)) = jobs.next() {
         progress(done, total);
         let note = &notes[i];
-        if let Some(started) = started.get(&i) {
+        if let Some(started) = started.and_then(|marks| marks.get(&i)) {
             match check_started(vault, &note.path, started) {
                 Resumed::Written(version) => {
                     report.updated.push((note.path.clone(), version));
@@ -272,25 +286,88 @@ fn execute(
                 Resumed::Proceed => {}
             }
         }
-        let build = |text: &str| {
-            rewrite(text, &|link: &WikiLink| {
-                new_target(after, &note.links, &link.target)
-            })
-        };
-        let mut mark = |before: &str, after: &str| writer.started(i, before, after);
-        match vault.write_note_rebuilt(&note.path, limit, &build, &mut mark) {
-            Ok(Rebuilt::Written(version)) => {
-                report.updated.push((note.path.clone(), version));
-                if crashed(report.updated.len()) {
-                    return false;
-                }
-                writer.done(i);
+        let peer = jobs
+            .peek()
+            .copied()
+            .filter(|&(_, j)| parallel && independent_names(&note.path, &notes[j].path));
+        if let Some((next_done, j)) = peer {
+            jobs.next();
+            let [first, second] = write_pair(i, j, limit, &rebuild);
+            if !record(report, writer, i, note, first) {
+                return false;
             }
-            Ok(Rebuilt::Unchanged | Rebuilt::Gone) => writer.done(i),
-            Err(reason) => report.fail(note, reason),
+            progress(next_done, total);
+            if !record(report, writer, j, &notes[j], second) {
+                return false;
+            }
+        } else if !record(report, writer, i, note, rebuild(i, limit)) {
+            return false;
         }
     }
     progress(total, total);
+    true
+}
+
+type WriteResult = Result<Rebuilt, RelinkFailureReason>;
+
+// Разные ключи имён исключают одно и то же имя файла NTFS (в том числе по
+// регистру и NFC). Тёзки в разных папках тоже пройдут по очереди.
+fn independent_names(a: &VaultPath, b: &VaultPath) -> bool {
+    match (a.file_name(), b.file_name()) {
+        (Some(a), Some(b)) => crate::names::key(a) != crate::names::key(b),
+        _ => false,
+    }
+}
+
+// Одновременно на диске работают максимум с двумя заметками. Дополнительный
+// поток читает лишь небольшой исходник; если он больше, обычная попытка с
+// настройкой пользователя начинается после завершения предыдущей записи.
+const PEER_SOURCE_LIMIT: u64 = 64 * 1024;
+
+fn write_pair(
+    i: usize,
+    j: usize,
+    limit: u64,
+    rebuild: &(impl Fn(usize, u64) -> WriteResult + Sync),
+) -> [WriteResult; 2] {
+    std::thread::scope(|scope| {
+        let peer = std::thread::Builder::new()
+            .spawn_scoped(scope, || rebuild(j, limit.min(PEER_SOURCE_LIMIT)));
+        let first = rebuild(i, limit);
+        let second = match peer {
+            Ok(handle) => match handle
+                .join()
+                .unwrap_or_else(|err| std::panic::resume_unwind(err))
+            {
+                Err(RelinkFailureReason::TooLarge) if limit > PEER_SOURCE_LIMIT => {
+                    rebuild(j, limit)
+                }
+                result => result,
+            },
+            Err(_) => rebuild(j, limit),
+        };
+        [first, second]
+    })
+}
+
+fn record(
+    report: &mut RunReport,
+    writer: &Writer,
+    i: usize,
+    note: &NotePlan,
+    result: WriteResult,
+) -> bool {
+    match result {
+        Ok(Rebuilt::Written(version)) => {
+            report.updated.push((note.path.clone(), version));
+            if crashed(report.updated.len()) {
+                return false;
+            }
+            writer.done(i);
+        }
+        Ok(Rebuilt::Unchanged | Rebuilt::Gone) => writer.done(i),
+        Err(reason) => report.fail(note, reason),
+    }
     true
 }
 
@@ -311,8 +388,8 @@ thread_local! {
     static CRASH_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
-/// Тестовый шов: выполнение «падает» (выходит, не удаляя журнал) после
-/// замены `n`-й записанной заметки в этом потоке, до отметки «готова».
+/// Тестовый шов: выполнение «падает» (выходит, не удаляя журнал) до отметки «готова»
+/// у `n`-й записи плана. Вторая заметка пары уже могла быть заменена.
 #[cfg(test)]
 pub(crate) fn crash_after(n: usize) {
     CRASH_AFTER.with(|cell| cell.set(Some(n)));

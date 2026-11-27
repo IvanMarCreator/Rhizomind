@@ -36,7 +36,7 @@ const LOCAL_URL: &str = if cfg!(windows) {
 /// на CI).
 const WAIT: Duration = Duration::from_secs(10);
 
-fn app() -> App<MockRuntime> {
+pub(crate) fn app() -> App<MockRuntime> {
     // Оболочка 0.3 — для новых окон хранилищ (`crate::create_window`).
     let data_dir = std::env::temp_dir().join(format!("rhz-core-test-{}", std::process::id()));
     std::fs::create_dir_all(&data_dir).expect("папка");
@@ -97,7 +97,7 @@ fn invoke(window: &WebviewWindow<MockRuntime>, command: &str, args: Value) -> Re
     .map(|body| body.deserialize::<Value>().expect("ответ JSON"))
 }
 
-fn call(
+pub(crate) fn call(
     window: &WebviewWindow<MockRuntime>,
     command: &str,
     request: Value,
@@ -179,7 +179,7 @@ fn open_vault(
 }
 
 /// События окна, полученные слушателем на стороне Rust.
-fn record_events(
+pub(crate) fn record_events(
     window: &WebviewWindow<MockRuntime>,
     names: &[&str],
 ) -> Arc<Mutex<Vec<(String, Value)>>> {
@@ -1302,7 +1302,7 @@ fn wait_index_ready_within(w: &WebviewWindow<MockRuntime>, limit: Duration) {
 
 /// Хранилище с индексом на настоящем ядре: открыто той же функцией, что
 /// `vault_open`; ждём готовности индекса.
-fn indexed_vault(
+pub(crate) fn indexed_vault(
     app: &App<MockRuntime>,
     label: &str,
     files: &[(&str, &str)],
@@ -1908,7 +1908,7 @@ fn answer_flush(
 }
 
 /// Окно сразу отвечает «ввод записан».
-fn flush_ok(w: &WebviewWindow<MockRuntime>) {
+pub(crate) fn flush_ok(w: &WebviewWindow<MockRuntime>) {
     answer_flush(w, true, |_| {});
 }
 
@@ -1926,14 +1926,18 @@ fn preview(w: &WebviewWindow<MockRuntime>, request: Value) -> RelinkPreview {
     }
 }
 
-fn preview_rename(w: &WebviewWindow<MockRuntime>, path: &[&str], new_name: &str) -> RelinkPreview {
+pub(crate) fn preview_rename(
+    w: &WebviewWindow<MockRuntime>,
+    path: &[&str],
+    new_name: &str,
+) -> RelinkPreview {
     preview(
         w,
         json!({ "op": "rename", "path": path, "new_name": new_name }),
     )
 }
 
-fn rename_update(
+pub(crate) fn rename_update(
     w: &WebviewWindow<MockRuntime>,
     path: &[&str],
     new_name: &str,

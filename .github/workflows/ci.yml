@@ -368,14 +368,17 @@ jobs:
   # verify (артефакт perf-bin-*). Вывод по медиане повторов — разброс общих
   # раннеров (tests/perf/stats.ts, docs/reviews/2026-11-01-task-3.2-perf.md).
   perf:
-    name: perf (${{ matrix.os }})
+    name: perf (${{ matrix.os }}${{ matrix.notes == 50000 && ', 50000' || '' }})
     needs: verify
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
+        notes: [10000, 50000]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 65
+    env:
+      RHIZOMIND_PERF_NOTES: ${{ matrix.notes }}
     steps:
       - name: Получить код
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -453,7 +456,7 @@ jobs:
 
       - name: Замер производительности (Linux)
         if: runner.os == 'Linux'
-        timeout-minutes: 20
+        timeout-minutes: 50
         env:
           WEBKIT_DISABLE_DMABUF_RENDERER: "1"
           NO_AT_BRIDGE: "1"
@@ -461,14 +464,14 @@ jobs:
 
       - name: Замер производительности (Windows)
         if: runner.os == 'Windows'
-        timeout-minutes: 20
+        timeout-minutes: 50
         run: npm run test:perf
 
       - name: Отчёт о производительности
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: perf-report-${{ runner.os }}
+          name: perf-report-${{ runner.os }}${{ matrix.notes == 50000 && '-50000' || '' }}
           path: test-results/
           retention-days: 14
           if-no-files-found: warn

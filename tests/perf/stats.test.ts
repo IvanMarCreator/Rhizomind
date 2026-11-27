@@ -1,6 +1,6 @@
 // Сводка замеров производительности (задача 3.2): статистики и таблица.
 import { describe, expect, it } from 'vitest';
-import { median, percentile, renderTable, summarize, type Measured } from './stats.ts';
+import { median, percentile, renderTable, summarize, windowRun, type Measured } from './stats.ts';
 
 describe('статистики', () => {
   it('медиана: нечётное и чётное число значений, порядок не важен', () => {
@@ -53,6 +53,22 @@ describe('сводка критерия', () => {
 });
 
 describe('таблица', () => {
+  it('неполный прогон сохраняет наблюдения и все пропуски, без итоговой медианы и приёмки', () => {
+    const report = windowRun([{ ...base, repeats: [[18]] }, { ...base, id: 'y', repeats: [] }], 3, 0);
+    expect(report.complete).toBe(false);
+    expect(report.summaries).toEqual([]);
+    expect(report.progress.map((p) => p.completedRepeats)).toEqual([1, 0]);
+    expect(report.markdown).toContain('Прогон неполный, приёмка открыта');
+    expect(report.markdown).toContain('1 из 3 | 18');
+    expect(report.markdown).toContain('0 из 3 | —');
+    expect(report.markdown).not.toContain('укладывается');
+  });
+  it('ошибка после последнего наблюдения оставляет приёмку открытой', () => {
+    const report = windowRun([{ ...base, repeats: [[18], [19], [20]] }], 3, 2);
+    expect(report.complete).toBe(false);
+    expect(report.summaries).toEqual([]);
+    expect(report.markdown).toContain('Сценарии целиком: 2 из 3');
+  });
   it('строка критерия: предел, медиана, худший, значения повторов и вывод', () => {
     const table = renderTable([
       summarize({ ...base, title: 'Быстрый переход', repeats: [[40], [55], [41]] }),

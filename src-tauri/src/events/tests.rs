@@ -86,6 +86,80 @@ fn changed(changes: Vec<TreeChange>) -> WatcherEvent {
 }
 
 #[test]
+fn pending_watcher_snapshot_cannot_overwrite_a_later_own_update() {
+    let f = fixture(&["Встреча.md"]);
+    let current = f.open.read_notes().note_refs();
+    let mut stale = current.clone();
+    stale[0].created_ms -= 1;
+    let change = TreeChange::Modified {
+        path: stale[0].path.clone(),
+    };
+    let (snapshot_ready, snapshot) = std::sync::mpsc::channel();
+    let (write_started, writer) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let open = &f.open;
+        let before = &current;
+        scope.spawn(move || {
+            snapshot.recv().expect("снимок подготовлен");
+            // Чтение списка во время обхода не ждёт писателя.
+            assert_eq!(&open.read_notes().note_refs(), before);
+            write_started.send(()).expect("своя запись началась");
+            open.apply_own(std::slice::from_ref(&change));
+        });
+        let watcher = f.open.note_update_guard();
+        snapshot_ready.send(()).expect("снимок");
+        writer.recv().expect("пишущая команда");
+        f.open.write_notes().replace(stale);
+        drop(watcher);
+    });
+    assert_eq!(f.open.read_notes().note_refs(), current);
+}
+
+#[test]
+fn modified_refreshes_creation_time_and_the_oldest_link_target() {
+    let f = fixture(&["А/Встреча.md", "Б/Встреча.md"]);
+    let current = f.open.read_notes().note_refs();
+    let candidates = f.open.read_notes().links().candidates("Встреча");
+    let replaced = &candidates[1];
+    let mut stale = current.clone();
+    // До замены файл был старше обоих нынешних файлов. Подстановка прежней
+    // даты делает тест независимым от точности часов и поведения ФС.
+    let old_date = current
+        .iter()
+        .map(|note| note.created_ms)
+        .min()
+        .expect("две заметки")
+        - 1;
+    stale
+        .iter_mut()
+        .find(|note| note.path == *replaced)
+        .expect("файл в списке")
+        .created_ms = old_date;
+    let change = TreeChange::Modified {
+        path: replaced.clone(),
+    };
+    for own in [true, false] {
+        f.open.write_notes().replace(stale.clone());
+        assert_eq!(
+            f.open.read_notes().links().candidates("Встреча")[0],
+            *replaced
+        );
+        if own {
+            f.open.apply_own(std::slice::from_ref(&change));
+        } else {
+            f.events.handle(changed(vec![change.clone()]));
+        }
+        let list = f.open.read_notes();
+        assert_eq!(list.note_refs(), current);
+        assert_eq!(list.links().candidates("Встреча"), candidates);
+        assert_eq!(
+            list.links().view().resolve("Встреча").as_ref(),
+            candidates.first()
+        );
+    }
+}
+
+#[test]
 fn unavailable_and_available_become_availability_events() {
     let f = fixture(&[]);
     f.events.handle(WatcherEvent::Unavailable);

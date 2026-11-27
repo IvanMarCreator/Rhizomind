@@ -431,42 +431,41 @@ mod tests {
     /// Ошибка из теста следов 0.2-8.1: после `TerminateProcess` процесса
     /// браузера его дочерние ещё живы, и ожидание при выходе должно их
     /// охватить. Модель: `cmd` (браузер) с дочерним `powershell`, который
-    /// спит 3 с; завершение `cmd` дочерний не трогает.
+    /// ждёт закрытия канала ввода; завершение `cmd` дочерний не трогает.
     #[cfg(windows)]
     #[test]
     fn wait_covers_children_alive_after_terminate() {
+        use std::io::{BufRead, BufReader};
         use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
+        use std::sync::mpsc;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut parent = std::process::Command::new("cmd")
-            .args([
-                "/c",
-                "powershell -NoProfile -NonInteractive -Command Start-Sleep -Seconds 3",
-            ])
+            .raw_arg(r#"/D /C powershell -NoProfile -NonInteractive -Command "[Console]::WriteLine($PID); [void][Console]::ReadLine()""#)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .expect("cmd запущен");
+        // Забираем канал: Child::wait иначе закроет stdin, отпустив дочерний.
+        // При выходе из теста (в том числе при панике) Drop также даст EOF.
+        let release = parent.stdin.take().expect("канал ввода");
         let pid = parent.id();
         let root = imp::open_any(pid).expect("дескриптор cmd");
-        let start = Instant::now();
-        // Среди дочерних cmd бывает conhost.exe: нужен именно powershell.
-        let (child_pid, child) = loop {
-            let found = imp::process_tree(pid)
-                .into_iter()
-                .filter(|&p| p != pid)
-                .filter_map(|p| imp::open_any(p).map(|h| (p, h)))
-                .find(|(_, h)| {
-                    imp::image_path(h)
-                        .is_some_and(|path| path.to_ascii_lowercase().ends_with("\\powershell.exe"))
-                });
-            if let Some(found) = found {
-                break found;
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(20),
-                "дочерний не появился"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        };
+        // Получаем PID от самого дочернего процесса, когда он уже запущен.
+        let stdout = parent.stdout.take().expect("канал готовности");
+        let (ready, child_pid) = mpsc::channel();
+        std::thread::spawn(move || {
+            let pid = BufReader::new(stdout).lines().next().and_then(Result::ok);
+            let _ = ready.send(pid.and_then(|line| line.trim().parse().ok()));
+        });
+        let child = imp::open_any(
+            child_pid
+                .recv_timeout(Duration::from_secs(20))
+                .expect("дочерний сообщил о готовности")
+                .expect("PID PowerShell"),
+        )
+        .expect("дескриптор PowerShell");
         let browser = BrowserProcess::from_handle(pid, root);
 
         assert!(browser.terminate(Duration::from_secs(2)));
@@ -477,14 +476,26 @@ mod tests {
             "дочерний жив после завершения родителя"
         );
 
-        browser.wait_tree_exit(Duration::from_secs(15));
-        let alive = imp::handle_alive(&child);
-        if alive {
-            // Не оставлять процесс после упавшего теста.
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &child_pid.to_string()])
-                .status();
-        }
-        assert!(!alive, "ожидание не охватило дочерний процесс");
+        std::thread::scope(|scope| {
+            let (started, entering) = mpsc::channel();
+            let (finished, result) = mpsc::channel();
+            scope.spawn(move || {
+                started.send(()).unwrap();
+                browser.wait_tree_exit(Duration::from_secs(15));
+                finished.send(imp::handle_alive(&child)).unwrap();
+            });
+            entering.recv().unwrap();
+            let before_release = result.recv_timeout(Duration::from_millis(200));
+            drop(release);
+            assert_eq!(
+                before_release,
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "ожидание вернулось до освобождения дочернего процесса"
+            );
+            assert!(
+                !result.recv().unwrap(),
+                "ожидание не охватило дочерний процесс"
+            );
+        });
     }
 }

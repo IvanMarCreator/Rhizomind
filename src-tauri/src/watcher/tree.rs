@@ -194,8 +194,8 @@ impl TreeModel {
         self.failing.clear();
     }
 
-    /// Сверка, в которой исчезнувший файл с идентификатором (его папка на
-    /// месте) не выдаётся сразу: он остаётся в модели и возвращается в
+    /// Сверка, в которой исчезнувший элемент с идентификатором (его родитель на
+    /// месте) не выдаётся сразу: он и поддерево папки остаются в модели и возвращаются в
     /// [`Reconciled::held`]. Если в следующей пачке он появится по новому
     /// пути, это будет перенос; окончательная проверка — обычной сверкой
     /// этих путей ([`TreeModel::reconcile`]).
@@ -548,28 +548,42 @@ impl TreeModel {
         }
         modified.extend(displaced.into_keys());
 
-        // Исчезнувший без пары файл с идентификатором, чья папка не исчезла, —
-        // возможно, перенос, о новом пути которого событие ещё не пришло.
+        // Исчезнувший без пары элемент с идентификатором может появиться
+        // по новому пути только в следующей пачке. Папка удерживается со
+        // всем поддеревом, иначе её дети потеряли бы прежнюю идентичность.
         let mut held = Vec::new();
         if hold {
-            held = removed
-                .iter()
-                .filter(|(key, node)| {
-                    !node.is_folder()
-                        && node.id.is_some()
-                        && key
-                            .split_last()
-                            .is_some_and(|(_, parent)| !removed.contains_key(parent))
-                        // Папка не уехала: иначе путь в модели повис бы.
-                        && !renamed.iter().any(|(from, _)| key.starts_with(from))
-                })
-                .map(|(key, _)| key.clone())
-                .collect();
+            let renamed_roots: BTreeSet<Key> =
+                renamed.iter().map(|(from, _)| from.clone()).collect();
+            // Ключи упорядочены: потомки корня идут подряд. Держим один
+            // текущий корень, не ищем каждого потомка среди всех папок.
+            let mut held_folder: Option<&Key> = None;
+            for (key, node) in &removed {
+                // Под уже сопоставленной папкой старые пути не держим,
+                // даже если выше есть другой удерживаемый предок.
+                if (0..=key.len()).any(|n| renamed_roots.contains(&key[..n])) {
+                    continue;
+                }
+                if held_folder.is_some_and(|root| key.starts_with(root)) {
+                    held.push(key.clone());
+                    continue;
+                }
+                held_folder = None;
+                if node.id.is_some()
+                    && key
+                        .split_last()
+                        .is_some_and(|(_, parent)| !removed.contains_key(parent))
+                {
+                    held.push(key.clone());
+                    if node.is_folder() {
+                        held_folder = Some(key);
+                    }
+                }
+            }
             for key in &held {
                 removed.remove(key);
             }
         }
-
         for key in removed.keys() {
             own.forget(&VaultPath::from_components(key.clone()));
         }
@@ -1291,6 +1305,101 @@ mod tests {
                 TreeChange::Created {
                     path: vp("Новая/x.md"),
                     entry_kind: EntryKind::Note
+                },
+            ]
+        );
+    }
+    #[test]
+    fn held_folder_keeps_descendants_without_ids() {
+        let removed = BTreeMap::from([
+            (key("Old"), folder(1)),
+            (key("Old/unknown.md"), file(4, 1, None)),
+        ]);
+        let (changes, held) = model().resolve(
+            Diff {
+                removed,
+                created: BTreeMap::new(),
+                changed: Vec::new(),
+            },
+            &BTreeMap::new(),
+            &OwnWrites::new(),
+            true,
+        );
+        assert!(changes.is_empty());
+        assert_eq!(held, vec![key("Old"), key("Old/unknown.md")]);
+    }
+
+    #[test]
+    fn matched_folder_does_not_hold_unmatched_old_descendants() {
+        let removed = BTreeMap::from([
+            (key("Old"), folder(1)),
+            (key("Old/a.md"), file(4, 1, Some(2))),
+            (key("Old/gone.md"), file(8, 1, Some(3))),
+        ]);
+        let created = BTreeMap::from([
+            (key("New"), folder(1)),
+            (key("New/a.md"), file(4, 1, Some(2))),
+        ]);
+        let (changes, held) = model().resolve(
+            Diff {
+                removed,
+                created: created.clone(),
+                changed: Vec::new(),
+            },
+            &created,
+            &OwnWrites::new(),
+            true,
+        );
+        assert!(held.is_empty(), "старый путь не остаётся фантомом");
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Renamed {
+                    from: vp("Old"),
+                    to: vp("New")
+                },
+                TreeChange::Removed {
+                    path: vp("New/gone.md")
+                },
+            ]
+        );
+    }
+    #[test]
+    fn nested_matched_folder_does_not_hold_old_descendants_under_held_ancestor() {
+        let removed = BTreeMap::from([
+            (key("Old"), folder(1)),
+            (key("Old/Inner"), folder(2)),
+            (key("Old/Inner/a.md"), file(4, 1, Some(3))),
+            (key("Old/Inner/gone.md"), file(8, 1, Some(4))),
+        ]);
+        let created = BTreeMap::from([
+            (key("Out"), folder(2)),
+            (key("Out/a.md"), file(4, 1, Some(3))),
+        ]);
+        let (changes, held) = model().resolve(
+            Diff {
+                removed,
+                created: created.clone(),
+                changed: Vec::new(),
+            },
+            &created,
+            &OwnWrites::new(),
+            true,
+        );
+        assert_eq!(
+            held,
+            vec![key("Old")],
+            "под перемещённой дочерней папкой фантомов нет"
+        );
+        assert_eq!(
+            changes,
+            vec![
+                TreeChange::Renamed {
+                    from: vp("Old/Inner"),
+                    to: vp("Out")
+                },
+                TreeChange::Removed {
+                    path: vp("Out/gone.md")
                 },
             ]
         );

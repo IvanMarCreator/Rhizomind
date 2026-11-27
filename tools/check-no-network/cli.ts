@@ -46,7 +46,7 @@ const { problems, allowed } = await checkNetwork({
 
 if (problems.length > 0) {
   console.error(
-    'Проверка сети не пройдена (инвариант 1 в CLAUDE.md, решение владельца 52):\n' +
+    'Проверка сети не пройдена (инвариант 1 в AGENTS.md, решение владельца 52):\n' +
       problems.map((p) => `  ${p}`).join('\n') +
       '\nСвой код — уберите эти места. Чужой код — разберите находку и внесите исключение в ' +
       path.relative(base, allowlistFile).split(path.sep).join('/') +
