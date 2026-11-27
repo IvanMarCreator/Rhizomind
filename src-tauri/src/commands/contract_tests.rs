@@ -987,6 +987,11 @@ fn event_index_changed() {
 }
 
 #[test]
+fn event_search_changed() {
+    event(event::SEARCH_CHANGED, &IndexChangedPayload {});
+}
+
+#[test]
 fn event_links_flush_requested() {
     event(
         event::LINKS_FLUSH_REQUESTED,

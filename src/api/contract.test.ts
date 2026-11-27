@@ -469,6 +469,7 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
     event: 'index:changed',
     payload: {},
   },
+  'search:changed': { event: 'search:changed', payload: {} },
   'links:flush-requested': {
     event: 'links:flush-requested',
     payload: { token: token('f') },

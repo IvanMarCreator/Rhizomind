@@ -43,7 +43,7 @@
   onMount(() => {
     field.focus();
     const listeners = [
-      onCoreEvent('index:changed', () => { revision++; }),
+      onCoreEvent('search:changed', () => { revision++; }),
       onCoreEvent('index:status', (status) => {
         if (status.state === 'ready') revision++;
         else reply = { status: 'index_building', done: status.done, total: status.total };

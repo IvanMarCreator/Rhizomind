@@ -691,6 +691,8 @@ export interface CoreEvents {
   'window:close-requested': WindowCloseRequestedPayload;
   'index:status': IndexStatus;
   'index:changed': IndexChangedPayload;
+  /** Обновились тексты или пути в индексе поиска. */
+  'search:changed': IndexChangedPayload;
   'links:flush-requested': LinksFlushRequestedPayload;
   'links:pending': LinksPendingPayload;
   'links:updated': LinksUpdatedPayload;

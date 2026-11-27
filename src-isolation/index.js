@@ -71,6 +71,7 @@
     'window:close-requested',
     'index:status',
     'index:changed',
+    'search:changed',
     'links:flush-requested',
     'links:pending',
     'links:updated',
