@@ -21,6 +21,7 @@
   const MIB = 1024 * 1024;
   const [minBytes, maxBytes] = LIMITS.edit_size_range;
   let picking = $state(false);
+  let pickingTemplate = $state(false);
   /** Папка «В указанной папке», пока выбран другой вариант: возвращается при повторном выборе. */
   let lastFolder = $state.raw<VaultPath>(
     untrack(() => (settings.new_note_location.kind === 'folder' ? settings.new_note_location.path : [])),
@@ -71,6 +72,15 @@
     </div>
   {/if}
 </div>
+<Row title={t('templates.folder')}>
+  <div class="anchor">
+    <span>{settings.template_folder ? settings.template_folder.join(' / ') || t('settings.newNote.rootFolder') : t('templates.unconfigured')}</span>
+    <button type="button" class="button" onclick={() => (pickingTemplate = !pickingTemplate)}>{t('templates.chooseFolder')}</button>
+    {#if pickingTemplate}
+      <FolderPicker title={t('templates.folder')} onPick={(path) => { pickingTemplate = false; onChange({ template_folder: path }); }} onCancel={() => (pickingTemplate = false)} />
+    {/if}
+  </div>
+</Row>
 <Row
   id="settings-rename-links"
   title={t('settings.renameLinks.title')}

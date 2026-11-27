@@ -25,6 +25,7 @@ macro_rules! with_core_commands {
             // Файлы
             tree_list,
             note_create,
+            note_create_from_template,
             folder_create,
             entry_rename,
             entry_move,

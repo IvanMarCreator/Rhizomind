@@ -229,6 +229,13 @@ pub fn settings(settings: &Settings) -> CoreResult<()> {
         (min_font..=max_font).contains(&settings.font_size),
         "settings.font_size",
     )?;
+    if let Some(folder) = &settings.template_folder {
+        path(folder, "settings.template_folder")?;
+        folder.check()?;
+        if folder.components().iter().any(|c| c.starts_with('.')) {
+            return Err(CoreError::new(super::ErrorCode::InvalidPath));
+        }
+    }
     if let NewNoteLocation::Folder { path: folder } = &settings.new_note_location {
         path(folder, "settings.new_note_location.path")?;
     }
@@ -260,6 +267,7 @@ mod tests {
             max_edit_size_bytes: 10 * MIB,
             hotkeys: Default::default(),
             rename_links: RenameLinks::Ask,
+            template_folder: None,
         }
     }
 

@@ -226,6 +226,18 @@ fn named_on_disk(parent: &Path, name: &str) -> bool {
     })
 }
 
+/// Дескриптор принадлежит именно выбранному пути. Учитывает различие между
+/// обычной и длинной записью пути Windows.
+#[cfg(any(windows, target_os = "linux"))]
+pub(super) fn check_opened_at(file: &File, expected: &Path) -> CoreResult<()> {
+    let real = final_path(file).ok_or_else(outside_vault)?;
+    if strip_root(expected, &real).is_some_and(|tail| tail.as_os_str().is_empty()) {
+        Ok(())
+    } else {
+        Err(outside_vault())
+    }
+}
+
 /// Остаток пути после корня. На Windows компоненты сравниваются без учёта
 /// регистра (NTFS), а `C:` и `\\?\C:` (длинные пути больше 260 символов
 /// `GetFinalPathNameByHandleW` и `dunce` оставляют с префиксом) — один и тот
@@ -304,8 +316,7 @@ pub fn final_path(file: &File) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
 }
 
-/// Итоговый путь открытого файла по дескриптору; на этой ОС — проверка по
-/// пути (`canonicalize`), см. `docs/SECURITY.md`.
+/// На остальных ОС применяется canonicalize (см. SECURITY.md).
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn final_path(_file: &File) -> Option<PathBuf> {
     None

@@ -171,6 +171,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: { path: ['Проекты', 'Без названия.md'] },
     errors: [invalidName('duplicate'), err('invalid_path'), err('outside_vault')],
   },
+  note_create_from_template: {
+    command: 'note_create_from_template',
+    request: { template: ['Шаблоны', 'План.md'], dir: [], name: 'Итоги.md' },
+    response: { path: ['Итоги.md'] },
+    errors: [err('already_exists'), err('invalid_path'), err('outside_vault'), err('not_found')],
+  },
   folder_create: {
     command: 'folder_create',
     request: { dir: [], name: 'Архив' },

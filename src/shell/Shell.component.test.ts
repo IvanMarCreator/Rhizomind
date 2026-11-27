@@ -391,7 +391,10 @@ describe('сочетания браузерного движка (решение
   });
 
   it('не назначенные Ctrl+P, Ctrl+F, F5, Ctrl+=, Ctrl+U, Ctrl+S, F12 гасятся и ничего не открывают', async () => {
-    await renderShell(WITH_VAULT);
+    await renderShell({
+      ...WITH_VAULT,
+      settings_read: () => ({ settings: { ...SETTINGS, hotkeys: { 'palette.open': [] } } }),
+    });
     await screen.findByText('Нет открытой заметки');
 
     for (const init of [

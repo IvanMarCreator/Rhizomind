@@ -134,6 +134,8 @@ libc = "=0.2.191"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "=0.18.2"
 webkit2gtk = "=2.0.2"
+# Структуры ABI ядра для Landlock, крейт уже входит в сборку через rustix.
+linux-raw-sys = { version = "=0.12.1", default-features = false, features = ["std", "landlock"] }
 
 # Передача подтверждённого адреса ОС на macOS и Linux (ADR 0009). Без функций
 # `insecure` (запуск через оболочку) и `shellexecute-on-windows`.

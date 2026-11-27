@@ -40,6 +40,26 @@ pub struct NameInDirRequest {
     pub name: String,
 }
 
+/// Запрос на создание копии выбранного шаблона.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateCreateRequest {
+    /// Markdown-файл внутри настроенной папки шаблонов.
+    pub template: VaultPath,
+    /// Папка назначения в текущем хранилище.
+    pub dir: VaultPath,
+    /// Имя создаваемой заметки с расширением.
+    pub name: String,
+}
+
+/// Копия создана. Путь отсутствует, если пользователь переместил или
+/// удалил уже опубликованный файл и открыть его в этом хранилище нельзя.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateCreateResponse {
+    pub path: Option<VaultPath>,
+}
+
 /// Запрос `name_check`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -205,6 +225,32 @@ impl NameCheck {
             message_key: problem.message_key(),
         }
     }
+}
+
+/// Создаёт заметку из шаблона хранилища этого окна и сразу обновляет список заметок.
+#[tauri::command]
+pub async fn note_create_from_template<R: Runtime>(
+    window: Window<R>,
+    core: State<'_, Core>,
+    request: TemplateCreateRequest,
+) -> CoreResult<TemplateCreateResponse> {
+    checked_path(&request.template, "template")?;
+    checked_path(&request.dir, "dir")?;
+    check_entry_name(&request.name, "name")?;
+    let open = core.require_vault(window.label())?;
+    blocking(move || {
+        let path =
+            open.vault
+                .create_from_template(&request.template, &request.dir, &request.name)?;
+        if let Some(path) = &path {
+            open.apply_own(&[TreeChange::Created {
+                path: path.clone(),
+                entry_kind: EntryKind::Note,
+            }]);
+        }
+        Ok(TemplateCreateResponse { path })
+    })
+    .await
 }
 
 /// Все видимые папки и файлы хранилища окна.

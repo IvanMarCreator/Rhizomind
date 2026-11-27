@@ -18,8 +18,10 @@ import type { MessageKey } from '../i18n/index.ts';
 export type HotkeyScope = 'window' | 'tree';
 
 export type CommandId =
+  | 'palette.open'
   | 'quick_switcher.open'
   | 'note.new'
+  | 'note.from-template'
   | 'editor.toggle-mode'
   | 'history.back'
   | 'history.forward'
@@ -39,8 +41,10 @@ export interface HotkeyCommand {
 
 /** Команды в порядке показа в настройках. */
 export const COMMANDS: readonly HotkeyCommand[] = [
+  { id: 'palette.open', scope: 'window', label: 'palette.title', defaults: ['F12'] },
   { id: 'quick_switcher.open', scope: 'window', label: 'hotkeys.command.quickSwitcher', defaults: ['Ctrl+KeyO'] },
   { id: 'note.new', scope: 'window', label: 'hotkeys.command.newNote', defaults: ['Ctrl+KeyN'] },
+  { id: 'note.from-template', scope: 'window', label: 'templates.title', defaults: [] },
   {
     id: 'editor.toggle-mode',
     scope: 'window',
@@ -159,12 +163,16 @@ function command(id: CommandId): HotkeyCommand {
 
 /** Сочетания команды: назначенные пользователем или по умолчанию. */
 export function bindingsOf(overrides: HotkeyOverrides, id: CommandId): readonly string[] {
-  return Object.hasOwn(overrides, id) ? (overrides[id] ?? []) : command(id).defaults;
+  if (Object.hasOwn(overrides, id)) return overrides[id] ?? [];
+  // В старом хранилище клавиша новой команды уже могла быть назначена
+  // действию другой области (например, F12 — переименованию в дереве).
+  return command(id).defaults.filter((chord) => !COMMANDS.some((other) => overrides[other.id]?.includes(chord)));
 }
 
 /** Сочетания команды отличаются от стандартных. */
 export function isChanged(overrides: HotkeyOverrides, id: CommandId): boolean {
-  const current = bindingsOf(overrides, id);
+  const current = overrides[id];
+  if (!current) return false;
   const defaults = command(id).defaults;
   return current.length !== defaults.length || current.some((chord, i) => chord !== defaults[i]);
 }

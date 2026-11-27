@@ -11,6 +11,8 @@
   import { t } from '../i18n/index.ts';
   import { newNoteDir } from '../quick-switcher/create.ts';
   import QuickSwitcher from '../quick-switcher/QuickSwitcher.svelte';
+  import Palette from '../palette/Palette.svelte';
+  import TemplateDialog from '../templates/TemplateDialog.svelte';
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
@@ -181,6 +183,8 @@
 
   /** Окно быстрого перехода (задача 2.7) открыто. */
   let switcherOpen = $state(false);
+  let templateOpen = $state(false);
+  let palette = $state.raw<{ origin: HTMLElement | null; treePath: VaultPath | null } | null>(null);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
   let settingsSection = $state<SettingsSection | null>(null);
 
@@ -189,7 +193,7 @@
    * настройки, вопрос об обновлении ссылок): горячие клавиши окна под ним не действуют.
    */
   const modalOpen = $derived(
-    switcherOpen || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
+    palette !== null || switcherOpen || templateOpen || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
   );
 
   /** Меню правки текста (решение 97); `null` — закрыто. */
@@ -244,13 +248,46 @@
     void files.createNote(newNoteDir(model.settings.new_note_location, model.currentPath));
   }
 
-  function run(command: CommandId) {
+  function openPalette() {
+    if (modalOpen || document.querySelector('[aria-modal="true"],dialog[open]')) return;
+    const origin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    palette = { origin, treePath: origin?.matches('[role="tree"]') ? files.selected : null };
+  }
+
+  function available(command: CommandId) {
     switch (command) {
+      case 'tree.rename':
+      case 'tree.delete':
+        return Boolean(palette?.treePath && files.entry(palette.treePath));
+      case 'history.back': return model.canGoBack;
+      case 'history.forward': return model.canGoForward;
+      case 'editor.toggle-mode': return model.currentPath !== null;
+      default: return true;
+    }
+  }
+
+  async function closePalette(command?: CommandId) {
+    const context = palette;
+    if (!context || (command && !available(command))) return;
+    palette = null;
+    await tick();
+    if (context.origin?.isConnected) context.origin.focus({ preventScroll: true });
+    if (command) run(command, context.treePath);
+  }
+
+  function run(command: CommandId, treePath: VaultPath | null = null) {
+    switch (command) {
+      case 'palette.open':
+        openPalette();
+        return;
       case 'quick_switcher.open':
         openSwitcher();
         return;
       case 'note.new':
         createNote();
+        return;
+      case 'note.from-template':
+        templateOpen = true;
         return;
       case 'editor.toggle-mode':
         // Режим — у открытой заметки; запоминается в настройках хранилища.
@@ -270,7 +307,7 @@
         return;
       case 'tree.rename':
       case 'tree.delete':
-        // Команды дерева: их обрабатывает дерево файлов (FileTree.svelte).
+        if (treePath) files.runCommand(command, treePath);
         return;
     }
   }
@@ -368,8 +405,10 @@
     <Ribbon
       filesOpen={model.sidebarOpen}
       onToggleFiles={() => model.toggleSidebar()}
-      onQuickSwitcher={openSwitcher}
+      onQuickSwitcher={() => run('quick_switcher.open')}
       quickSwitcherShortcut={shortcutOf('quick_switcher.open')}
+      onPalette={() => run('palette.open')}
+      paletteShortcut={shortcutOf('palette.open')}
       onSettings={() => openSettings()}
     />
     {#if model.sidebarOpen}
@@ -386,8 +425,8 @@
         backShortcut={shortcutOf('history.back')}
         forwardShortcut={shortcutOf('history.forward')}
         readOnly={saveStatus?.kind === 'read_only' || saveStatus?.kind === 'deleted'}
-        onBack={() => model.back()}
-        onForward={() => model.forward()}
+        onBack={() => run('history.back')}
+        onForward={() => run('history.forward')}
         panelOpen={rightPanel.open}
         onTogglePanel={() => rightPanel.toggle()}
       >
@@ -437,6 +476,12 @@
   </div>
   <!-- Окно вопроса при переименовании (0.2-5.2): и для дерева, и для заголовка заметки. -->
   <RenameDialog tree={files} />
+  {#if palette}
+    <Palette hotkeys={model.hotkeys} {available} onChoose={(id) => void closePalette(id)} onCancel={() => void closePalette()} />
+  {/if}
+  {#if templateOpen}
+    <TemplateDialog {model} onClose={() => (templateOpen = false)} />
+  {/if}
   {#if switcherOpen}
     <QuickSwitcher
       currentPath={model.currentPath}

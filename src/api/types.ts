@@ -302,6 +302,8 @@ export interface Settings {
   text_width: TextWidth;
   font_size: number;
   new_note_location: NewNoteLocation;
+  /** Путь папки шаблонов внутри хранилища; пустой массив означает корень. */
+  template_folder?: VaultPath | null;
   confirm_delete: boolean;
   max_edit_size_bytes: number;
   hotkeys: HotkeyOverrides;
@@ -511,6 +513,7 @@ export interface CoreCommands {
   folder_pick: { request: null; response: FolderPickOutcome };
   tree_list: { request: null; response: TreeListResponse };
   note_create: { request: NameInDirRequest; response: EntryPathResponse };
+  note_create_from_template: { request: NameInDirRequest & { template: VaultPath }; response: { path: VaultPath | null } };
   folder_create: { request: NameInDirRequest; response: EntryPathResponse };
   entry_rename: { request: EntryRenameRequest; response: EntryMovedResponse };
   entry_move: { request: EntryMoveRequest; response: EntryMovedResponse };

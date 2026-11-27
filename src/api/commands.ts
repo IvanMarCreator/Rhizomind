@@ -37,6 +37,7 @@ export const core = {
   // Файлы
   treeList: withoutRequest('tree_list'),
   noteCreate: withRequest('note_create'),
+  noteCreateFromTemplate: withRequest('note_create_from_template'),
   folderCreate: withRequest('folder_create'),
   entryRename: withRequest('entry_rename'),
   entryMove: withRequest('entry_move'),

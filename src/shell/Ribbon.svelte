@@ -8,6 +8,8 @@
     onToggleFiles,
     onQuickSwitcher,
     quickSwitcherShortcut = null,
+    onPalette,
+    paletteShortcut,
     onSettings,
   }: {
     filesOpen: boolean;
@@ -16,6 +18,8 @@
     onQuickSwitcher?: () => void;
     /** Сочетание быстрого перехода для подсказки (переназначается, решение 72); `null` — нет. */
     quickSwitcherShortcut?: string | null;
+    onPalette: () => void;
+    paletteShortcut: string | null;
     /** Окно «Настройки хранилища» — задача 2.8б. */
     onSettings: () => void;
   } = $props();
@@ -25,6 +29,7 @@
       ? t('shell.ribbon.quickSwitcherWith', { shortcut: quickSwitcherShortcut })
       : t('shell.ribbon.quickSwitcher'),
   );
+  const paletteLabel = $derived(paletteShortcut ? `${t('palette.title')} (${paletteShortcut})` : t('palette.title'));
 </script>
 
 <div class="ribbon" role="toolbar" aria-label={t('shell.ribbon.label')} aria-orientation="vertical">
@@ -48,6 +53,9 @@
       onclick={() => onQuickSwitcher?.()}
     >
       <Icon name="square-arrow-right" />
+    </button>
+    <button type="button" class="action" aria-label={paletteLabel} title={paletteLabel} onclick={onPalette}>
+      <Icon name="keyboard" />
     </button>
   </div>
   <div class="group">

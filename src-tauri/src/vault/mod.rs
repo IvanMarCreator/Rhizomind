@@ -33,6 +33,7 @@ mod contour;
 pub(crate) mod fsops;
 mod local_time;
 mod settings;
+mod templates;
 mod text;
 
 use std::fs::File;
@@ -1151,6 +1152,11 @@ impl Vault {
     /// прежних копий).
     pub fn write_settings(&self, settings: &Settings) -> CoreResult<()> {
         let (mut file, broken) = self.read_settings_state()?;
+        if let Some(folder) = &settings.template_folder
+            && file.to_settings().template_folder.as_ref() != Some(folder)
+        {
+            self.check_template_folder(folder)?;
+        }
         if broken {
             self.backup_service_file(SETTINGS_FILE)?;
         }

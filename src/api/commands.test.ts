@@ -76,6 +76,7 @@ describe('обёртки команд ядра', () => {
       'folder_pick',
       'tree_list',
       'note_create',
+      'note_create_from_template',
       'folder_create',
       'entry_rename',
       'entry_move',

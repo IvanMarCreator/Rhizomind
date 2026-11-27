@@ -31,8 +31,10 @@ describe('реестр команд', () => {
   it('все сочетания интерфейса 0.1 в одном реестре, без повторов', () => {
     const defaults = Object.fromEntries(COMMANDS.map((c) => [c.id, c.defaults]));
     expect(defaults).toEqual({
+      'palette.open': ['F12'],
       'quick_switcher.open': ['Ctrl+KeyO'],
       'note.new': ['Ctrl+KeyN'],
+      'note.from-template': [],
       'editor.toggle-mode': ['Ctrl+KeyE'],
       'history.back': ['Alt+ArrowLeft'],
       'history.forward': ['Alt+ArrowRight'],
@@ -45,6 +47,14 @@ describe('реестр команд', () => {
     expect(new Set(all).size).toBe(all.length);
     for (const chord of all) expect(checkChord(chord)).toBeNull();
   });
+});
+
+it('пользовательское назначение 0.2 важнее нового сочетания другой области', () => {
+  const overrides = { 'tree.rename': ['F12'] };
+  expect(matchCommand(overrides, key({ code: 'F12' }), 'window')).toBeNull();
+  expect(matchCommand(overrides, key({ code: 'F12' }), 'tree')).toBe('tree.rename');
+  expect(bindingsOf(overrides, 'palette.open')).toEqual([]);
+  expect(matchCommand({}, key({ code: 'F12' }), 'window')).toBe('palette.open');
 });
 
 describe('команды правой панели (0.2-2.1, С2-3.1)', () => {
