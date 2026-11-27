@@ -91,7 +91,7 @@
       <label>{t('search.folder')} <input bind:value={folder} placeholder={t('search.allFolders')} autocomplete="off" spellcheck="false"/></label>
       <label>{t('search.tag')} <input bind:value={tag} placeholder={t('search.allTags')} autocomplete="off" spellcheck="false" maxlength={LIMITS.max_tag_key_chars}/></label>
     </div>
-    <label class="mentions"><input type="checkbox" bind:checked={mentions} disabled={!current}/>{t('search.mentions')}{#if current}<span>{current.at(-1)}</span>{/if}</label>
+    <label class="mentions"><input type="checkbox" spellcheck="false" bind:checked={mentions} disabled={!current}/>{t('search.mentions')}{#if current}<span>{current.at(-1)}</span>{/if}</label>
     {#if failed}
       <p role="alert">{t('search.failed')}</p>
     {:else if reply?.status === 'index_building'}
