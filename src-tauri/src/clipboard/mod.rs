@@ -57,7 +57,7 @@ pub fn read_text<R: tauri::Runtime>(
     }
 }
 
-/// Ни один вариант не содержит путь ОС.
+/// Строка имени файла остаётся внутри ядра до сопоставления с открытым хранилищем.
 pub enum PasteData {
     FileReference(String),
     Png(Vec<u8>),

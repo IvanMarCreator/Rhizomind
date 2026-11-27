@@ -1,7 +1,7 @@
 import { copiedPath, setClipboard } from './attachment-clipboard.ts';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createTestVault, removeTestVault, startApp, type Session } from './driver.ts';
 import { openFromTree, TEXT, themeShots, waitForFileText } from './kt1.ts';
 
@@ -11,24 +11,44 @@ const dialog = '[role="dialog"][aria-label="Вставить вложение"]'
 describe('вставка вложений', () => {
   let vault: string;
   let session: Session;
+  async function openNote(name: string): Promise<string> {
+    await openFromTree(session.browser, name);
+    await session.browser.$(TEXT).click();
+    await session.browser.keys(['Control','End']);
+    return path.join(vault, `${name}.md`);
+  }
   beforeAll(async () => {
-    vault = createTestVault('Вставка', { 'План.md': 'Начало' });
+    const notes = ['План', 'Скриншот из буфера', 'Исправление имени',
+      ...['path','files','mixed'].flatMap((format) => [`Внешний ${format}`, `Внутренний ${format}`])];
+    vault = createTestVault('Вставка', Object.fromEntries(notes.map((name) => [`${name}.md`, 'Начало'])));
     mkdirSync(path.join(vault, 'Исходники'));
     writeFileSync(path.join(vault, 'Исходники', 'Таблица.csv'), 'яблоко;груша\r\n');
-    writeFileSync(path.join(vault, 'Исходники', 'Отчёт +ёж.bin'), Buffer.from([0, 255, 12, 99]));
+    for (const name of ['Отчёт +ёж.bin', 'Копия +ёж.bin', 'План +ёж.bin']) {
+      writeFileSync(path.join(vault, 'Исходники', name), Buffer.from([0, 255, 12, 99]));
+    }
+    for (const name of ['Копия +ёж.bin', 'План +ёж.bin', 'План +ёж 2.bin']) {
+      writeFileSync(path.join(vault, name), Buffer.from([22]));
+    }
     writeFileSync(path.join(vault, 'Исходники', 'Фото#1.bin'), Buffer.from([1, 128, 7]));
     session = await startApp({ vault });
+  });
+  afterEach(async ({ task }) => {
+    if (task.result?.state !== 'fail' || !session) return;
+    const state = await session.browser.execute(() => ({
+      focused: document.hasFocus(), active: document.activeElement?.getAttribute('class'),
+      notices: [...document.querySelectorAll('.notice p, [role="alert"], [role="status"]')].map((node) => node.textContent),
+      dialogs: [...document.querySelectorAll('[role="dialog"]')].map((node) => node.getAttribute('aria-label')),
+    }));
+    console.info('Видимое состояние окна после сбоя', state);
   });
   afterAll(async () => {
     await session?.stop();
     if (vault) removeTestVault(vault);
   });
 
-  it('выбирает внутренний файл, сохраняет его байты и вставляет различающую ссылку', async () => {
+  it('выбирает внутренний файл, сохраняет его байты и вставляет различающую ссылку', { timeout: 120_000 }, async () => {
     const { browser } = session;
-    await openFromTree(browser, 'План');
-    await browser.$(TEXT).click();
-    await browser.keys(['Control','End']);
+    const note = await openNote('План');
     await browser.keys('F12');
     const filter = browser.$('[role="dialog"] input[role="combobox"]');
     await filter.waitForDisplayed();
@@ -42,19 +62,20 @@ describe('вставка вложений', () => {
     await picker.$('input').waitForDisplayed();
     await shot(browser,'name');
     await picker.$('button=Вставить вложение').click();
-    await waitForFileText(path.join(vault,'План.md'), text => text.includes('![[/Таблица.csv]]'), 'ссылка на копию');
+    await waitForFileText(note, text => text.includes('![[/Таблица.csv]]'), 'ссылка на копию');
     expect(readFileSync(path.join(vault,'Таблица.csv'))).toEqual(readFileSync(path.join(vault,'Исходники','Таблица.csv')));
     await shot(browser,'inserted');
   });
 
   it('Ctrl+V записывает изображение из настоящего системного буфера', async () => {
     const { browser } = session;
+    const note = await openNote('Скриншот из буфера');
     const helper = await setClipboard('image');
     try {
       await browser.$(TEXT).click();
       await browser.keys(['Control','End']);
       await browser.keys(['Control','v']);
-      await waitForFileText(path.join(vault,'План.md'), text => text.includes('![[Скриншот.png]]'), 'ссылка на скриншот');
+      await waitForFileText(note, text => text.includes('![[Скриншот.png]]'), 'ссылка на скриншот');
       const image = readFileSync(path.join(vault,'Скриншот.png'));
       expect(image.subarray(0,8).toString('hex')).toBe('89504e470d0a1a0a');
       expect([image.readUInt32BE(16),image.readUInt32BE(20)]).toEqual([2,2]);
@@ -63,16 +84,17 @@ describe('вставка вложений', () => {
     } finally { if (helper.exitCode === null) helper.kill(); }
   });
 
-  it.each(['path','files'] as const)('Ctrl+V отклоняет внешний путь из формата %s и сохраняет заметку побайтно', async (format) => {
+  it.each(['path','files','mixed'] as const)('Ctrl+V отклоняет внешний путь из формата %s и сохраняет заметку побайтно', async (format) => {
     const { browser } = session;
-    const note = path.join(vault, 'План.md');
+    const note = await openNote(`Внешний ${format}`);
     const before = readFileSync(note);
-    const previous = browser.$('//div[@class="notice"][p[contains(.,"Сначала скопируйте файл")]]/button');
+    const images = readdirSync(vault).filter((name) => name.endsWith('.png'));
+    const previous = browser.$('//section[@aria-live="polite"]//p[contains(.,"Сначала скопируйте файл")]/following-sibling::button');
     if (await previous.isExisting()) await previous.click();
     await browser.waitUntil(async () => !(await browser.$('body').getText()).includes('Сначала скопируйте файл'));
     const helper = await setClipboard(format);
-    let requestedFileList = false;
-    helper.stdout?.on('data', (chunk: Buffer) => { if (chunk.toString().includes('requested-file-list')) requestedFileList = true; });
+    const requests: string[] = [];
+    helper.stdout?.on('data', (chunk: Buffer) => requests.push(chunk.toString()));
     try {
       await browser.$(TEXT).click();
       await browser.keys(['Control','v']);
@@ -81,31 +103,42 @@ describe('вставка вложений', () => {
       expect(await browser.$(TEXT).getText()).not.toContain(copiedPath);
       expect(readFileSync(note)).toEqual(before);
       expect(readdirSync(vault)).not.toContain('rhizomind-fixture.png');
-      if (process.platform === 'linux' && format === 'files') expect(requestedFileList).toBe(true);
-
-      await shot(browser,format === 'path' ? 'external-path' : 'external-file-list');
+      if (process.platform === 'linux' && format !== 'path') expect(requests.join('')).toContain('requested-file-list');
+      expect(requests.join('')).not.toContain('requested-image');
+      expect(readdirSync(vault).filter((file) => file.endsWith('.png'))).toEqual(images);
+      await shot(browser, 'external-' + format);
     } finally { if (helper.exitCode === null) helper.kill(); }
   });
 
-  it.each(['files','path'] as const)('копирует внутренний Unicode-файл из системного буфера формата %s', async (format) => {
+  it.each([
+    ['files', 'Отчёт +ёж.bin', 'Отчёт +ёж.bin', '/Отчёт +ёж.bin'],
+    ['path', 'Копия +ёж.bin', 'Копия +ёж 2.bin', 'Копия +ёж 2.bin'],
+    ['mixed', 'План +ёж.bin', 'План +ёж 3.bin', 'План +ёж 3.bin'],
+  ] as const)('копирует внутренний Unicode-файл из системного буфера формата %s', async (format, original, name, target) => {
     const { browser } = session;
-    const source = path.join(vault, 'Исходники', 'Отчёт +ёж.bin');
+    const note = await openNote(`Внутренний ${format}`);
+    const source = path.join(vault, 'Исходники', original);
+    const images = readdirSync(vault).filter((name) => name.endsWith('.png'));
     const helper = await setClipboard(format, source);
+    const requests: string[] = [];
+    helper.stdout?.on('data', (chunk: Buffer) => requests.push(chunk.toString()));
     try {
       await browser.$(TEXT).click();
       await browser.keys(['Control','End']);
       await browser.keys(['Control','v']);
-      const first = format === 'files';
-      const name = first ? 'Отчёт +ёж.bin' : 'Отчёт +ёж 2.bin';
-      const link = first ? '![[/Отчёт +ёж.bin]]' : '![[Отчёт +ёж 2.bin]]';
-      await waitForFileText(path.join(vault, 'План.md'), (text) => text.includes(link), link);
+      const link = `![[${target}]]`;
+      await waitForFileText(note, (text) => text.includes(link), link);
       expect(readFileSync(path.join(vault,name))).toEqual(readFileSync(source));
-      await shot(browser, first ? 'internal-file-list' : 'internal-text-path');
+      if (process.platform === 'linux' && format !== 'path') expect(requests.join('')).toContain('requested-file-list');
+      expect(requests.join('')).not.toContain('requested-image');
+      expect(readdirSync(vault).filter((file) => file.endsWith('.png'))).toEqual(images);
+      await shot(browser, 'internal-' + format);
     } finally { if (helper.exitCode === null) helper.kill(); }
   });
 
   it('просит допустимое имя внутреннего файла из буфера до создания копии', async () => {
     const { browser } = session;
+    const note = await openNote('Исправление имени');
     const source = path.join(vault, 'Исходники', 'Фото#1.bin');
     const helper = await setClipboard('files',source);
     try {
@@ -119,7 +152,7 @@ describe('вставка вложений', () => {
       expect(await name.getValue()).toBe('Фото#1.bin');
       await name.setValue('Фото 1.bin');
       await browser.keys('Enter');
-      await waitForFileText(path.join(vault, 'План.md'), (text) => text.includes('![[Фото 1.bin]]'), 'ссылка после исправления имени');
+      await waitForFileText(note, (text) => text.includes('![[Фото 1.bin]]'), 'ссылка после исправления имени');
       expect(readFileSync(path.join(vault,'Фото 1.bin'))).toEqual(readFileSync(source));
     } finally { if (helper.exitCode === null) helper.kill(); }
   });

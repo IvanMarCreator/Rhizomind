@@ -65,7 +65,8 @@ it('embed оставляет циклы компактными и блоки к�
 
 it('embed ограничивает суммарные пиксели видимых растров, открывает переполнение отдельно и освобождает бюджет', async () => {
   mockCore({embed_read: () => ({...picture,width:1024,height:1024})});
-  const nodes = Array.from({length:9}, () => document.createElement('span'));
+  const freed = document.createElement('span');
+  const nodes = [...Array.from({length:8}, () => document.createElement('span')), freed];
   const opened: string[] = [];
   const source = {kind:'path',path:['Схема.png']} as const;
   const cleanups = nodes.map(node => previewInto(node,{...source,path:[...source.path]},() => opened.push('open'),() => {}));
@@ -75,7 +76,7 @@ it('embed ограничивает суммарные пиксели видим�
     nodes[8]?.querySelector('button')?.click();
     expect(opened).toEqual(['open']);
     cleanups[0]?.(); cleanups[8]?.();
-    const freed = nodes[8]!;
+
     cleanups[8] = previewInto(freed,{kind:'path',path:['Схема.png']},()=>{},()=>{});
     await waitFor(() => expect(freed.querySelector('img')).toBeTruthy());
   } finally { for(const stop of cleanups) stop(); }
