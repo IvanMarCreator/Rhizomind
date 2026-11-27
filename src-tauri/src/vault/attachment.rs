@@ -77,6 +77,23 @@ fn file_paths(root: &super::anchored::Root) -> CoreResult<Vec<VaultPath>> {
 }
 
 impl Vault {
+    pub(crate) fn insert_clipboard_file(
+        &self,
+        note: &VaultPath,
+        reference: &str,
+    ) -> CoreResult<AttachmentOutcome> {
+        let Some(path) = super::clipboard_path::relative(self.root(), reference) else {
+            return Ok(AttachmentOutcome::ExternalPath);
+        };
+        let name = path.file_name().ok_or_else(contour::invalid_path)?;
+        match self.insert_attachment(note, AttachmentInput::File(&path), name) {
+            Err(err) if err.field.as_deref() == Some("name") => {
+                Ok(AttachmentOutcome::ChooseName { path })
+            }
+            other => other,
+        }
+    }
+
     #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn insert_attachment(
         &self,

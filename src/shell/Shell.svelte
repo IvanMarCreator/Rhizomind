@@ -189,6 +189,7 @@
   let switcherOpen = $state(false);
   let search = $state.raw<{ origin: HTMLElement | null } | null>(null);
   let attachment = $state.raw<AttachmentAnchor | null>(null);
+  let clipboardFile = $state.raw<VaultPath | null>(null);
   let templateOpen = $state(false);
   let palette = $state.raw<{ origin: HTMLElement | null; treePath: VaultPath | null } | null>(null);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
@@ -238,10 +239,13 @@
     if (!anchor) return;
     try {
       const result = await core.attachmentInsert({ note: anchor.note, source: { kind: 'clipboard' }, name: t('attachments.screenshot') });
-      if (result.outcome === 'text') anchor.pasteText(result.text);
+      if (result.outcome === 'choose_name') {
+        clipboardFile = result.path;
+        attachment = anchor;
+      } else if (result.outcome === 'text') anchor.pasteText(result.text);
       else finishAttachment(result, anchor.insert, (message) => model.notify(message));
     } catch (error) { model.notify(attachmentError(error)); }
-    finally { anchor.release(); }
+    finally { if (attachment !== anchor) anchor.release(); }
   }
 
   function onAttachmentPaste(event: ClipboardEvent) {
@@ -251,8 +255,7 @@
     if (!attachment && (!data.types.includes('text/plain') || !pastedExternalPath(data.getData('text/plain')))) return;
     event.preventDefault();
     event.stopPropagation();
-    if (attachment) void pasteInNote();
-    else model.notify(t('attachments.external'));
+    void pasteInNote();
   }
 
   function closeTextMenu() {
@@ -334,6 +337,7 @@
         createNote();
         return;
       case 'attachment.insert':
+        clipboardFile = null;
         attachment = editor?.attachmentAnchor() ?? null;
         return;
       case 'note.from-template':
@@ -544,8 +548,8 @@
       onOpen={(path, at) => void closeSearch({ path, at })} />
   {/if}
   {#if attachment}
-    <AttachmentDialog anchor={attachment} notify={(message) => model.notify(message)}
-      onClose={() => { attachment?.release(); attachment = null; editor?.focus(); }} />
+    <AttachmentDialog anchor={attachment} initialFile={clipboardFile} notify={(message) => model.notify(message)}
+      onClose={() => { attachment?.release(); attachment = null; clipboardFile = null; editor?.focus(); }} />
   {/if}
   {#if templateOpen}
     <TemplateDialog {model} onClose={() => (templateOpen = false)} />

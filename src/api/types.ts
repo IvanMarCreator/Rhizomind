@@ -9,6 +9,7 @@ export const API_VERSION = 1;
 /** Путь в хранилище по компонентам: `["Проекты", "Встреча.md"]`; корень — `[]`. */
 export type VaultPath = string[];
 export type AttachmentOutcome =
+  | { outcome: 'choose_name'; path: VaultPath }
   | { outcome: 'created'; path: VaultPath | null; target: string | null }
   | { outcome: 'external_path' | 'empty' | 'not_focused' | 'too_large' }
   | { outcome: 'text'; text: string };

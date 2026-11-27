@@ -41,6 +41,21 @@ it('attachment — непредставимое имя требует правк
   expect(anchor.insert).not.toHaveBeenCalled();
 });
 
+it('attachment — файл из буфера с непредставимым именем можно переименовать до копирования', async () => {
+  const { calls, anchor, onClose } = show({ attachment_insert: (request) => request.source.kind === 'clipboard'
+    ? { outcome: 'choose_name', path: ['Папка', 'Фото#1.png'] }
+    : { outcome: 'created', path: ['Фото 1.png'], target: 'Фото 1.png' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Вставить из буфера обмена' }));
+  const input = await screen.findByLabelText('Имя копии');
+  expect((input as HTMLInputElement).value).toBe('Фото#1.png');
+  expect(anchor.insert).not.toHaveBeenCalled();
+  await fireEvent.input(input, { target: { value: 'Фото 1.png' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Вставить вложение' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+  expect(calls.at(-1)?.[1]).toEqual({ request: { note: ['План.md'], source: { kind: 'file', path: ['Папка', 'Фото#1.png'] }, name: 'Фото 1.png' } });
+  expect(anchor.insert).toHaveBeenCalledWith('![[Фото 1.png]]');
+});
+
 it('attachment — следит за выделением исходной заметки при правках и прекращает вставку после закрытия', () => {
   const host = document.body.appendChild(document.createElement('div'));
   const view = new EditorView({ parent: host, state: EditorState.create({ doc: 'abc', selection: { anchor: 1 } }) });

@@ -1,4 +1,4 @@
-//! Буфер Windows: текст, PNG и DIB. Для списков файлов проверяется только наличие формата.
+//! Буфер Windows: текст, PNG, DIB или единственное имя из памяти CF_HDROP.
 
 use windows::Win32::Foundation::HGLOBAL;
 use windows::Win32::System::DataExchange::{
@@ -16,18 +16,42 @@ pub fn read_paste(text_limit: u64) -> Result<super::PasteData, String> {
     use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
     use windows::core::w;
     let _opened = open()?;
-    // SAFETY: регистрируются только константные NUL-строки. Наличие формата
-    // списка файлов проверяется без получения его данных или имён.
+    // SAFETY: буфер открыт, им владеет ОС. DragQueryFileW копирует имя из
+    // памяти DROPFILES. Строку передаём только в лексическое сопоставление корня.
     unsafe {
-        let files = [
-            15,
-            RegisterClipboardFormatW(w!("Shell IDList Array")),
+        let available = |id: u32| id != 0 && IsClipboardFormatAvailable(id).is_ok();
+        let virtual_files = [
             RegisterClipboardFormatW(w!("FileGroupDescriptorW")),
-            RegisterClipboardFormatW(w!("FileNameW")),
+            RegisterClipboardFormatW(w!("FileGroupDescriptor")),
+            RegisterClipboardFormatW(w!("FileContents")),
         ];
-        if files
-            .iter()
-            .any(|&id| id != 0 && IsClipboardFormatAvailable(id).is_ok())
+        if virtual_files.into_iter().any(available) {
+            return Ok(PasteData::ExternalPath);
+        }
+        if available(15) {
+            use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+            let data = GetClipboardData(15).map_err(|_| "нет списка файлов".to_owned())?;
+            let drop = HDROP(data.0);
+            if DragQueryFileW(drop, u32::MAX, None) != 1 {
+                return Ok(PasteData::ExternalPath);
+            }
+            let len = DragQueryFileW(drop, 0, None) as usize;
+            if len == 0 || len > 32767 {
+                return Ok(PasteData::ExternalPath);
+            }
+            let mut units = vec![0; len + 1];
+            if DragQueryFileW(drop, 0, Some(&mut units)) as usize != len {
+                return Ok(PasteData::ExternalPath);
+            }
+            return Ok(String::from_utf16(&units[..len])
+                .map_or(PasteData::ExternalPath, PasteData::FileReference));
+        }
+        if [
+            RegisterClipboardFormatW(w!("Shell IDList Array")),
+            RegisterClipboardFormatW(w!("FileNameW")),
+        ]
+        .into_iter()
+        .any(available)
         {
             return Ok(PasteData::ExternalPath);
         }

@@ -36,6 +36,7 @@ mod anchored;
 mod anchored;
 pub(crate) mod atomic;
 mod attachment;
+mod clipboard_path;
 mod contour;
 #[cfg(any(windows, target_os = "linux"))]
 mod copy;
@@ -477,25 +478,34 @@ impl Vault {
         require_note_name(path)?;
         let mut options = File::options();
         options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+            options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
         }
         let file = options.open(&abs).map_err(io_error)?;
-        self.contour.check_opened(&file, &abs, false)?;
+        contour::check_opened_at(&file, &abs)?;
         let meta = file.metadata().map_err(io_error)?;
         if !meta.is_file() {
             return Err(CoreError::new(ErrorCode::NotANote));
         }
         let limit = crate::commands::limits::MAX_NOTE_BYTES;
         if meta.len() > limit {
+            contour::check_opened_at(&file, &abs)?;
             return Ok(String::new());
         }
         let mut bytes = Vec::with_capacity(meta.len() as usize);
-        file.take(limit + 1)
+        (&file)
+            .take(limit + 1)
             .read_to_end(&mut bytes)
             .map_err(io_error)?;
+        contour::check_opened_at(&file, &abs)?;
         // Между metadata и read файл мог вырасти.
         if bytes.len() as u64 > limit {
             return Ok(String::new());

@@ -26,6 +26,9 @@ pub struct AttachmentRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AttachmentOutcome {
+    ChooseName {
+        path: VaultPath,
+    },
     Created {
         path: Option<VaultPath>,
         target: Option<String>,
@@ -90,36 +93,40 @@ pub async fn attachment_insert<R: Runtime>(
     }
     let app = window.app_handle().clone();
     blocking(move || {
-        let image;
-        let input = match &request.source {
-            AttachmentSource::File { path } => AttachmentInput::File(path),
+        let result = match &request.source {
+            AttachmentSource::File { path } => open.vault.insert_attachment(
+                &request.note,
+                AttachmentInput::File(path),
+                &request.name,
+            )?,
             AttachmentSource::Clipboard {} => {
                 let limit = open.vault.read_settings()?.max_edit_size_bytes;
                 match clipboard::read_paste(&app, limit)
                     .map_err(|_| CoreError::new(ErrorCode::IoFailed))?
                 {
+                    PasteData::FileReference(reference) => open
+                        .vault
+                        .insert_clipboard_file(&request.note, &reference)?,
+                    PasteData::Text(text) if looks_like_file_path(&text) => {
+                        open.vault.insert_clipboard_file(&request.note, &text)?
+                    }
+                    PasteData::Text(text) => AttachmentOutcome::Text { text },
                     PasteData::Png(bytes) => {
                         if !request.name.to_lowercase().ends_with(".png") {
                             return Err(CoreError::invalid_argument("name"));
                         }
-                        image = bytes;
-                        AttachmentInput::Png(&image)
+                        open.vault.insert_attachment(
+                            &request.note,
+                            AttachmentInput::Png(&bytes),
+                            &request.name,
+                        )?
                     }
-                    PasteData::Text(text) => {
-                        if looks_like_file_path(&text) {
-                            return Ok(AttachmentOutcome::ExternalPath);
-                        }
-                        return Ok(AttachmentOutcome::Text { text });
-                    }
-                    PasteData::Empty => return Ok(AttachmentOutcome::Empty),
-                    PasteData::ExternalPath => return Ok(AttachmentOutcome::ExternalPath),
-                    PasteData::TooLarge => return Ok(AttachmentOutcome::TooLarge),
+                    PasteData::Empty => AttachmentOutcome::Empty,
+                    PasteData::ExternalPath => AttachmentOutcome::ExternalPath,
+                    PasteData::TooLarge => AttachmentOutcome::TooLarge,
                 }
             }
         };
-        let result = open
-            .vault
-            .insert_attachment(&request.note, input, &request.name)?;
         if let AttachmentOutcome::Created {
             path: Some(path), ..
         } = &result

@@ -5,7 +5,7 @@
   import { userMessage } from '../i18n/errors.ts';
   import { finishAttachment, type AttachmentAnchor } from './attachment.ts';
 
-  let { anchor, notify, onClose }: { anchor: AttachmentAnchor; notify: (message: string) => void; onClose: () => void } = $props();
+  let { anchor, initialFile, notify, onClose }: { anchor: AttachmentAnchor; initialFile?: VaultPath | null; notify: (message: string) => void; onClose: () => void } = $props();
   let files = $state.raw<VaultPath[]>([]);
   let selected = $state.raw<VaultPath | null>(null);
   let filter = $state('');
@@ -21,6 +21,7 @@
   const valid = $derived(name.length > 0 && !name.startsWith('.') && !name.startsWith(' ') && !/[#[\]|\\/]/.test(name));
 
   onMount(() => {
+    if (initialFile) { void choose(initialFile); return; }
     input?.focus();
     void core.treeList().then(({ entries }) => {
       files = entries.filter(({ kind }) => kind !== 'folder').map(({ path }) => path)
@@ -48,6 +49,7 @@
         note: anchor.note, source,
         name: clipboard ? t('attachments.screenshot') : name,
       });
+      if (result.outcome === 'choose_name') { await choose(result.path); return; }
       if (result.outcome === 'text') anchor.pasteText(result.text);
       else finishAttachment(result, anchor.insert, notify);
       onClose();

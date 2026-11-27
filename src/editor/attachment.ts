@@ -13,7 +13,7 @@ export function pasteContainsAttachment(types: readonly string[]): boolean {
   return types.some((type) => type === 'Files' || type === 'text/uri-list' || type.startsWith('image/'));
 }
 
-export function finishAttachment(result: AttachmentOutcome, insert: (text: string) => boolean, notify: (message: string) => void): void {
+export function finishAttachment(result: Exclude<AttachmentOutcome, { outcome: 'choose_name' }>, insert: (text: string) => boolean, notify: (message: string) => void): void {
   switch (result.outcome) {
     case 'created':
       if (result.target && insert(`![[${result.target}]]`)) return;

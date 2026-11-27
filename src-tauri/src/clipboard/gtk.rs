@@ -1,5 +1,5 @@
 //! Буфер обмена Linux через GTK (тот же GTK, на котором работает окно Tauri):
-//! выбор `CLIPBOARD`: текст или байты PNG. Вызовы GTK — в главном потоке.
+//! выбор `CLIPBOARD`: текст, один URI файла или байты PNG. Вызовы GTK — в главном потоке.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -15,14 +15,18 @@ pub fn read_paste<R: tauri::Runtime>(
     app.run_on_main_thread(move || {
         let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
         let targets = clipboard.wait_for_targets().unwrap_or_default();
-        let names: Vec<_> = targets.iter().map(|atom| atom.name()).collect();
-        let result = if names.iter().any(|name| {
-            matches!(
-                name.as_str(),
-                "text/uri-list" | "x-special/gnome-copied-files" | "application/x-kde-cutselection"
-            )
-        }) {
-            // Не просим содержимое списка URI и не вызываем обработчик открытия файлов.
+        let find = |name: &str| targets.iter().find(|atom| atom.name().as_str() == name);
+        let list = find("text/uri-list")
+            .map(|target| (target, false))
+            .or_else(|| find("x-special/gnome-copied-files").map(|target| (target, true)));
+        let result = if let Some((target, gnome)) = list {
+            match clipboard.wait_for_contents(target) {
+                Some(data) if (1..=128 * 1024).contains(&data.length()) => {
+                    super::file_list::parse(&data.data(), gnome)
+                }
+                _ => PasteData::ExternalPath,
+            }
+        } else if find("application/x-kde-cutselection").is_some() {
             PasteData::ExternalPath
         } else if let Some(target) = targets.iter().find(|atom| atom.name() == "image/png") {
             match clipboard.wait_for_contents(target) {

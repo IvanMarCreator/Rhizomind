@@ -121,6 +121,51 @@ fn attachment_observes_a_second_filename_that_appears_during_publication() {
 }
 
 #[test]
+fn attachment_clipboard_references_stay_in_the_open_root() {
+    let t = TestVault::new();
+    t.put("Заметка.md", b"note");
+    let source = t.put("Исходники/Схема +ёж.png", b"\x89PNG\x00\xff");
+    let note = vp("Заметка.md");
+    let plain = source.to_str().unwrap();
+    let uri = url::Url::from_file_path(&source).unwrap().to_string();
+    for (index, name) in [plain, &uri].into_iter().enumerate() {
+        let result = t.vault.insert_clipboard_file(&note, name).unwrap();
+        let expected = if index == 0 {
+            "Схема +ёж.png"
+        } else {
+            "Схема +ёж 2.png"
+        };
+        assert!(
+            matches!(result, AttachmentOutcome::Created { path:Some(path),.. } if path == vp(expected))
+        );
+        assert_eq!(t.bytes(expected), b"\x89PNG\x00\xff");
+    }
+    let prefix = format!("{}-копия", t.vault.root().display());
+    for value in [
+        format!("{prefix}/Схема.png"),
+        t.outside().join("secret.md").display().to_string(),
+        "file://external-server/share/a.png".into(),
+        format!("{uri}/%2e%2e/x"),
+        format!("{uri}%2fsecret"),
+        format!("{uri}%5csecret"),
+    ] {
+        assert!(
+            matches!(
+                t.vault.insert_clipboard_file(&note, &value).unwrap(),
+                AttachmentOutcome::ExternalPath
+            ),
+            "{value}"
+        );
+    }
+    let invalid = t.put("Исходники/Фото#1.png", b"keep");
+    assert!(
+        matches!(t.vault.insert_clipboard_file(&note,invalid.to_str().unwrap()).unwrap(),
+        AttachmentOutcome::ChooseName { path } if path == vp("Исходники/Фото#1.png"))
+    );
+    assert!(!t.file("Фото#1.png").exists());
+}
+
+#[test]
 fn attachment_disk_error_preserves_source_and_leaves_no_copy() {
     let t = TestVault::new();
     t.put("Заметка.md", b"draft");

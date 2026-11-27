@@ -171,6 +171,7 @@ impl SearchQuery {
 
     fn results(&self, vault: &Vault, candidates: Vec<VaultPath>) -> SearchResults {
         let query = words(&self.text);
+        let mention = self.mention().map(Mention::new);
         let required: HashSet<_> = query.split_whitespace().collect();
         let tag = self
             .tag
@@ -185,8 +186,7 @@ impl SearchQuery {
                 .file_name()
                 .and_then(names::note_stem)
                 .unwrap_or_default();
-            let parsed =
-                (tag.is_some() || self.mention().is_some()).then(|| markdown::parse(&text));
+            let parsed = (tag.is_some() || mention.is_some()).then(|| markdown::parse(&text));
             if let (Some(key), Some(parsed)) = (&tag, &parsed)
                 && !parsed
                     .tags
@@ -196,7 +196,7 @@ impl SearchQuery {
                 continue;
             }
             if let Some(location) =
-                evidence(&text, name, &required, self.mention(), parsed.as_ref())
+                evidence(&text, name, &required, mention.as_ref(), parsed.as_ref())
             {
                 if items.len() == PAGE_SIZE {
                     return SearchResults {
@@ -220,7 +220,7 @@ fn spans(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
     text.char_indices()
         .chain(std::iter::once((text.len(), ' ')))
         .filter_map(move |(at, c)| {
-            if c.is_alphanumeric() || unicode_normalization::char::is_combining_mark(c) {
+            if word_char(c) {
                 start.get_or_insert(at);
                 None
             } else {
@@ -229,11 +229,68 @@ fn spans(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
         })
 }
 
+/// Сравниваем целые слова по тому же ключу, что и имена заметок.
+struct Mention {
+    key: names::NameKey,
+    units: usize,
+}
+
+impl Mention {
+    fn new(name: &str) -> Self {
+        Self {
+            key: names::key(name),
+            units: name_units(name).count(),
+        }
+    }
+
+    fn find(
+        &self,
+        line: &str,
+        offset: usize,
+        links: &[markdown::WikiLink],
+    ) -> Option<Range<usize>> {
+        // Два итератора очерчивают окно длиной в имя в исходной строке.
+        // Составная и разложенная буквы занимают одну единицу внутри слова.
+        let ends = name_units(line).skip(self.units.saturating_sub(1));
+        name_units(line)
+            .zip(ends)
+            .map(|(left, right)| left.start..right.end)
+            .find(|span| {
+                !line[..span.start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(word_char)
+                    && !line[span.end..].chars().next().is_some_and(word_char)
+                    && !links.iter().any(|link| {
+                        link.span.start < offset + span.end && offset + span.start < link.span.end
+                    })
+                    && names::key(&line[span.clone()]) == self.key
+            })
+    }
+}
+
+fn word_char(c: char) -> bool {
+    c.is_alphanumeric() || unicode_normalization::char::is_combining_mark(c)
+}
+
+/// Слово со всеми его комбинируемыми знаками или один разделитель имени.
+fn name_units(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+    let mut chars = text.char_indices().peekable();
+    std::iter::from_fn(move || {
+        let (start, c) = chars.next()?;
+        if word_char(c) {
+            while chars.next_if(|(_, next)| word_char(*next)).is_some() {}
+        }
+        let end = chars.peek().map_or(text.len(), |(i, _)| *i);
+        Some(start..end)
+    })
+}
+
 fn evidence(
     text: &str,
     title: &str,
     required: &HashSet<&str>,
-    mention: Option<&str>,
+    mention: Option<&Mention>,
     parsed: Option<&markdown::ParsedNote>,
 ) -> Option<Option<SearchPosition>> {
     if required.is_empty() && mention.is_none() {
@@ -257,47 +314,11 @@ fn evidence(
                 }
             }
         }
-        if let Some(name) = mention
-            && let Some(links) = links.as_ref()
+        if let (Some(mention), Some(links)) = (mention, links)
             && first.is_none()
+            && let Some(span) = mention.find(line, at, links)
         {
-            // Имена UTF-8 сравниваются в исходных границах, сохраняя адрес
-            // строки даже при изменении длины слова после приведения регистра.
-            for (start, _) in line.char_indices() {
-                if !line[start..]
-                    .chars()
-                    .next()
-                    .zip(name.chars().next())
-                    .is_some_and(|(a, b)| a.to_lowercase().eq(b.to_lowercase()))
-                {
-                    continue;
-                }
-                let end = line[start..]
-                    .char_indices()
-                    .nth(name.chars().count())
-                    .map_or(line.len(), |(n, _)| start + n);
-                if names::key(&line[start..end]) != names::key(name) {
-                    continue;
-                }
-                if line[..start]
-                    .chars()
-                    .next_back()
-                    .is_some_and(char::is_alphanumeric)
-                    || line[end..]
-                        .chars()
-                        .next()
-                        .is_some_and(char::is_alphanumeric)
-                {
-                    continue;
-                }
-                if !links
-                    .iter()
-                    .any(|l| l.span.start < at + end && at + start < l.span.end)
-                {
-                    first = Some(position(line, i, start..end));
-                    break;
-                }
-            }
+            first = Some(position(line, i, span));
         }
         if found.len() == required.len() && first.is_some() {
             return Some(first);

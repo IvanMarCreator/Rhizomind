@@ -393,6 +393,13 @@ fn note_create() {
 
 #[test]
 fn attachment_insert() {
+    assert_eq!(
+        serde_json::to_value(AttachmentOutcome::ChooseName {
+            path: path(&["Фото#1.png"])
+        })
+        .unwrap(),
+        json!({"outcome":"choose_name","path":["Фото#1.png"]})
+    );
     command_with(
         "attachment_insert",
         &AttachmentRequest {

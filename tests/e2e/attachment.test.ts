@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { copiedPath, setClipboard } from './attachment-clipboard.ts';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -8,49 +8,6 @@ import { openFromTree, TEXT, themeShots, waitForFileText } from './kt1.ts';
 const shot = themeShots('attachment');
 const dialog = '[role="dialog"][aria-label="Вставить вложение"]';
 
-// Независимый владелец системного буфера передаёт нарисованный пиксель.
-// В X11 он обслуживает запрос получения байтов до окончания вставки.
-const copiedPath = process.platform === 'win32' ? 'C:/external/rhizomind-fixture.png' : '/external/rhizomind-fixture.png';
-
-async function setClipboard(kind: 'image' | 'path'): Promise<ChildProcess> {
-  const windows = process.platform === 'win32';
-  const win = [
-    'Add-Type -AssemblyName System.Windows.Forms', 'Add-Type -AssemblyName System.Drawing',
-    ...(kind === 'image' ? [
-      '$image = New-Object System.Drawing.Bitmap 2,2',
-      '$image.SetPixel(0,0,[System.Drawing.Color]::Red)',
-      '[System.Windows.Forms.Clipboard]::SetImage($image)',
-    ] : [`[System.Windows.Forms.Clipboard]::SetText('${copiedPath}')`]),
-    "Write-Output 'ready'",
-  ].join('; ');
-  const linux = [
-    'import ctypes as c', "gtk=c.CDLL('libgtk-3.so.0')", "gdk=c.CDLL('libgdk-3.so.0')", "pix=c.CDLL('libgdk_pixbuf-2.0.so.0')",
-    'gtk.gtk_init(None,None)', 'gdk.gdk_atom_intern_static_string.restype=c.c_void_p',
-    'gtk.gtk_clipboard_get.argtypes=[c.c_void_p]', 'gtk.gtk_clipboard_get.restype=c.c_void_p',
-    "cb=gtk.gtk_clipboard_get(gdk.gdk_atom_intern_static_string(b'CLIPBOARD'))",
-    ...(kind === 'image' ? [
-      'pix.gdk_pixbuf_new.restype=c.c_void_p', 'p=pix.gdk_pixbuf_new(0,0,8,2,2)',
-      'pix.gdk_pixbuf_fill.argtypes=[c.c_void_p,c.c_uint32]', 'pix.gdk_pixbuf_fill(p,0xff0000ff)',
-      'gtk.gtk_clipboard_set_image.argtypes=[c.c_void_p,c.c_void_p]', 'gtk.gtk_clipboard_set_image(cb,p)',
-    ] : [
-      'gtk.gtk_clipboard_set_text.argtypes=[c.c_void_p,c.c_char_p,c.c_int]',
-      `gtk.gtk_clipboard_set_text(cb,b'${copiedPath}',-1)`,
-    ]),
-    "print('ready',flush=True)", 'gtk.gtk_main()',
-  ].join('\n');
-  const helper = windows
-    ? spawn('powershell.exe', ['-NoProfile','-STA','-Command',win], { windowsHide: true })
-    : spawn('python3', ['-c',linux]);
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => { helper.kill(); reject(new Error('буфер не готов')); }, 20_000);
-    const fail = (error: unknown) => { clearTimeout(timer); reject(error); };
-    helper.once('error', fail);
-    helper.once('exit', (code) => { clearTimeout(timer); if (code) reject(new Error('буфер: ' + String(code))); });
-    helper.stdout?.on('data', (chunk: Buffer) => { if (chunk.toString().includes('ready')) { clearTimeout(timer); resolve(); } });
-  });
-  return helper;
-}
-
 describe('вставка вложений', () => {
   let vault: string;
   let session: Session;
@@ -58,6 +15,8 @@ describe('вставка вложений', () => {
     vault = createTestVault('Вставка', { 'План.md': 'Начало' });
     mkdirSync(path.join(vault, 'Исходники'));
     writeFileSync(path.join(vault, 'Исходники', 'Таблица.csv'), 'яблоко;груша\r\n');
+    writeFileSync(path.join(vault, 'Исходники', 'Отчёт +ёж.bin'), Buffer.from([0, 255, 12, 99]));
+    writeFileSync(path.join(vault, 'Исходники', 'Фото#1.bin'), Buffer.from([1, 128, 7]));
     session = await startApp({ vault });
   });
   afterAll(async () => {
@@ -104,11 +63,16 @@ describe('вставка вложений', () => {
     } finally { if (helper.exitCode === null) helper.kill(); }
   });
 
-  it('Ctrl+V после «Копировать как путь» показывает подсказку и сохраняет заметку побайтно', async () => {
+  it.each(['path','files'] as const)('Ctrl+V отклоняет внешний путь из формата %s и сохраняет заметку побайтно', async (format) => {
     const { browser } = session;
     const note = path.join(vault, 'План.md');
     const before = readFileSync(note);
-    const helper = await setClipboard('path');
+    const previous = browser.$('//div[@class="notice"][p[contains(.,"Сначала скопируйте файл")]]/button');
+    if (await previous.isExisting()) await previous.click();
+    await browser.waitUntil(async () => !(await browser.$('body').getText()).includes('Сначала скопируйте файл'));
+    const helper = await setClipboard(format);
+    let requestedFileList = false;
+    helper.stdout?.on('data', (chunk: Buffer) => { if (chunk.toString().includes('requested-file-list')) requestedFileList = true; });
     try {
       await browser.$(TEXT).click();
       await browser.keys(['Control','v']);
@@ -117,8 +81,46 @@ describe('вставка вложений', () => {
       expect(await browser.$(TEXT).getText()).not.toContain(copiedPath);
       expect(readFileSync(note)).toEqual(before);
       expect(readdirSync(vault)).not.toContain('rhizomind-fixture.png');
+      if (process.platform === 'linux' && format === 'files') expect(requestedFileList).toBe(true);
 
-      await shot(browser,'external-path');
+      await shot(browser,format === 'path' ? 'external-path' : 'external-file-list');
+    } finally { if (helper.exitCode === null) helper.kill(); }
+  });
+
+  it.each(['files','path'] as const)('копирует внутренний Unicode-файл из системного буфера формата %s', async (format) => {
+    const { browser } = session;
+    const source = path.join(vault, 'Исходники', 'Отчёт +ёж.bin');
+    const helper = await setClipboard(format, source);
+    try {
+      await browser.$(TEXT).click();
+      await browser.keys(['Control','End']);
+      await browser.keys(['Control','v']);
+      const first = format === 'files';
+      const name = first ? 'Отчёт +ёж.bin' : 'Отчёт +ёж 2.bin';
+      const link = first ? '![[/Отчёт +ёж.bin]]' : '![[Отчёт +ёж 2.bin]]';
+      await waitForFileText(path.join(vault, 'План.md'), (text) => text.includes(link), link);
+      expect(readFileSync(path.join(vault,name))).toEqual(readFileSync(source));
+      await shot(browser, first ? 'internal-file-list' : 'internal-text-path');
+    } finally { if (helper.exitCode === null) helper.kill(); }
+  });
+
+  it('просит допустимое имя внутреннего файла из буфера до создания копии', async () => {
+    const { browser } = session;
+    const source = path.join(vault, 'Исходники', 'Фото#1.bin');
+    const helper = await setClipboard('files',source);
+    try {
+      await browser.$(TEXT).click();
+      await browser.keys(['Control','End']);
+      await browser.keys(['Control','v']);
+      const picker = browser.$(dialog);
+      await picker.waitForDisplayed({ timeout: 7000 });
+      expect(readdirSync(vault)).not.toContain('Фото#1.bin');
+      const name = picker.$('input');
+      expect(await name.getValue()).toBe('Фото#1.bin');
+      await name.setValue('Фото 1.bin');
+      await browser.keys('Enter');
+      await waitForFileText(path.join(vault, 'План.md'), (text) => text.includes('![[Фото 1.bin]]'), 'ссылка после исправления имени');
+      expect(readFileSync(path.join(vault,'Фото 1.bin'))).toEqual(readFileSync(source));
     } finally { if (helper.exitCode === null) helper.kill(); }
   });
 });
