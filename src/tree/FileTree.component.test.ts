@@ -128,17 +128,17 @@ describe('С3.2: сортировка — папки сверху, естест�
 });
 
 describe('открытие', () => {
-  it('клик по заметке открывает её; по папке — раскрывает; вложение не открывается', async () => {
-    const { host } = await setup();
+  it('клик открывает заметку, показывает вложение и раскрывает папку', async () => {
+    const previewAttachment = vi.fn();
+    const { host } = await setup(SAMPLE, { host: { previewAttachment } });
 
     await fireEvent.click(row('Заметка 2'));
     expect(host.open).toHaveBeenCalledWith(['Заметка 2.md']);
 
     await fireEvent.click(row('ТЗ'));
     expect(host.open).toHaveBeenCalledTimes(1);
-    expect(row('ТЗ').getAttribute('title')).toBe(
-      'В этой версии открываются только заметки. Файл можно переименовать, переместить или удалить.',
-    );
+    expect(previewAttachment).toHaveBeenCalledWith(['ТЗ.pdf']);
+    expect(row('ТЗ').getAttribute('title')).toBe('Просмотр вложения');
 
     expect(row('Проекты').getAttribute('aria-expanded')).toBe('false');
     await fireEvent.click(row('Проекты'));

@@ -1,0 +1,10 @@
+/* Один и тот же просмотр в строке редактора и в диалоге дерева. */
+.rz-embed { display: inline-block; max-width: 100%; vertical-align: top; overflow-wrap: anywhere; color: var(--text-secondary); }
+.rz-embed img { display: block; max-width: min(100%, 48rem); max-height: 52vh; height: auto; width: auto; object-fit: contain; }
+.rz-embed-note { display: block; max-height: 24rem; overflow: auto; padding: .5rem .9rem; border-inline-start: 2px solid var(--border-strong); background: var(--bg-secondary); color: var(--text-primary); white-space: pre-wrap; }
+.rz-embed-note .rz-embed-line { display: block; min-height: 1em; }
+.rz-embed-note .cm-rz-heading, .rz-embed-note .cm-rz-strong { font-weight: 650; }
+.rz-embed-note .cm-rz-em { font-style: italic; }
+.rz-embed-note .cm-rz-strike { text-decoration: line-through; }
+.rz-embed-note .cm-rz-code { font-family: monospace; }
+.rz-embed-link { padding: 0; background: transparent; color: var(--accent); font: inherit; border: 0; text-decoration: underline; cursor: pointer; }

@@ -282,7 +282,7 @@
         aria-expanded={folder ? tree.isExpanded(row.node.path) : undefined}
         aria-selected={tree.selected !== null && samePath(tree.selected, row.node.path)}
         aria-current={isCurrent(row.node.path) ? 'page' : undefined}
-        title={row.node.kind === 'attachment' ? t('tree.notOpenable') : undefined}
+        title={row.node.kind === 'attachment' ? t('embed.preview') : undefined}
         tabindex="-1"
         draggable={!editing}
         style:--level={row.level}

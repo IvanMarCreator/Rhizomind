@@ -29,12 +29,60 @@ fn embed_attachment_duplicates_require_a_distinguishing_suffix() {
 }
 
 #[test]
+fn embed_checks_the_selected_path_again_on_open() {
+    let fx = TestVault::new();
+    fx.put(
+        "Выбор.png",
+        include_bytes!("../../../../tests/fixtures/embeds/sample.png"),
+    );
+    let selected = fx
+        .vault
+        .embed_attachment_target(&p("Выбор.png"), false)
+        .unwrap()
+        .unwrap();
+    std::fs::rename(fx.file("Выбор.png"), fx.file("Прежний.png")).unwrap();
+    std::fs::hard_link(fx.outside().join("secret.md"), fx.file("Выбор.png")).unwrap();
+    assert!(fx.vault.embed_path(&selected).is_err());
+}
+#[test]
 fn embed_refuses_an_outside_hard_link() {
     let fx = TestVault::new();
     std::fs::hard_link(fx.outside().join("secret.md"), fx.file("План.md")).unwrap();
     assert!(fx.vault.embed_path(&p("План.md")).is_err());
 }
 
+#[test]
+fn embed_input_and_markdown_byte_limits_have_inclusive_bounds() {
+    let fx = TestVault::new();
+    for (name, limit) in [("Предел.png", 8 * 1024 * 1024), ("Предел.md", 256 * 1024)] {
+        let path = fx.put(name, b"");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(limit)
+            .unwrap();
+        let at = fx.vault.embed_path(&p(name)).unwrap();
+        assert!(!matches!(
+            at,
+            EmbedOutcome::Unavailable {
+                reason: EmbedReason::TooLarge
+            }
+        ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(limit + 1)
+            .unwrap();
+        assert!(matches!(
+            fx.vault.embed_path(&p(name)).unwrap(),
+            EmbedOutcome::Unavailable {
+                reason: EmbedReason::TooLarge
+            }
+        ));
+    }
+}
 #[test]
 fn embed_rejects_damaged_image_and_invalid_utf8() {
     let fx = TestVault::new();

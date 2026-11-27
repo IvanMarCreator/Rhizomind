@@ -6,6 +6,7 @@ use crate::commands::{CoreResult, EmbedOutcome, EmbedReason, VaultPath};
 #[cfg(any(windows, target_os = "linux"))]
 use crate::names;
 
+#[cfg(any(windows, target_os = "linux"))]
 mod image;
 
 #[cfg(any(windows, target_os = "linux"))]

@@ -81,6 +81,7 @@ getrandom = { version = "=0.4.3", default-features = false }
 # Уже был в дереве через tauri: новых крейтов нет.
 dirs = "=7.0.0"
 
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 # Декодирование локальных растров и кодирование чистого PNG для просмотра.
 png = "=0.18.1"
 jpeg-decoder = { version = "=0.3.2", default-features = false }

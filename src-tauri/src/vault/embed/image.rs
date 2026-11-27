@@ -4,7 +4,9 @@ use base64::prelude::*;
 use std::io::Cursor;
 
 pub(super) const MAX_INPUT: u64 = 8 * 1024 * 1024;
-const MAX_PIXELS: u64 = 4 * 1024 * 1024;
+const MAX_PIXELS: u64 = 8 * 1024 * 1024;
+const PREVIEW_SIDE: u32 = 1600;
+const PREVIEW_PIXELS: u64 = 1024 * 1024;
 const MAX_SIDE: u32 = 8192;
 const MAX_FRAME: usize = MAX_PIXELS as usize * 4;
 
@@ -23,6 +25,56 @@ struct Frame {
     height: u32,
     color: png::ColorType,
     bytes: Vec<u8>,
+}
+
+impl Frame {
+    /// Уменьшение после полной проверки кадра. Среднее по блоку сохраняет
+    /// тонкие линии скриншота; UI получает не более одного Ми-пикселя.
+    fn preview(self) -> Self {
+        let mut step = 1;
+        while self.width.div_ceil(step) > PREVIEW_SIDE
+            || self.height.div_ceil(step) > PREVIEW_SIDE
+            || u64::from(self.width.div_ceil(step)) * u64::from(self.height.div_ceil(step))
+                > PREVIEW_PIXELS
+        {
+            step += 1;
+        }
+        if step == 1 {
+            return self;
+        }
+        let width = self.width.div_ceil(step);
+        let height = self.height.div_ceil(step);
+        let channels = self.color.samples();
+        let mut bytes = Vec::with_capacity(width as usize * height as usize * channels);
+        for y in 0..height {
+            for x in 0..width {
+                let (x0, y0) = (x * step, y * step);
+                let (x1, y1) = ((x0 + step).min(self.width), (y0 + step).min(self.height));
+                let count = (x1 - x0) * (y1 - y0);
+                let mut sums = [0u32; 4];
+                for row in y0..y1 {
+                    let start = (row * self.width + x0) as usize * channels;
+                    let end = (row * self.width + x1) as usize * channels;
+                    for pixel in self.bytes[start..end].chunks_exact(channels) {
+                        for (sum, &value) in sums.iter_mut().zip(pixel) {
+                            *sum += u32::from(value);
+                        }
+                    }
+                }
+                bytes.extend(
+                    sums[..channels]
+                        .iter()
+                        .map(|sum| ((sum + count / 2) / count) as u8),
+                );
+            }
+        }
+        Self {
+            width,
+            height,
+            color: self.color,
+            bytes,
+        }
+    }
 }
 
 fn png_frame(bytes: &[u8]) -> Result<Frame, EmbedReason> {
@@ -77,7 +129,7 @@ fn jpeg_frame(bytes: &[u8]) -> Result<Frame, EmbedReason> {
         PixelFormat::L8 => (png::ColorType::Grayscale, data),
         PixelFormat::CMYK32 => {
             let mut rgb = Vec::with_capacity(data.len() / 4 * 3);
-            for cmyk in data.chunks_exact(4) {
+            for cmyk in data.as_chunks::<4>().0 {
                 let light = 255 - u16::from(cmyk[3]);
                 for &ink in &cmyk[..3] {
                     rgb.push((((255 - u16::from(ink)) * light + 127) / 255) as u8);
@@ -108,6 +160,7 @@ pub(super) fn decode(
     } else {
         jpeg_frame(encoded)?
     };
+    let frame = frame.preview();
     let mut clean = Vec::new();
     let mut encoder = png::Encoder::new(&mut clean, frame.width, frame.height);
     encoder.set_color(frame.color);
@@ -133,13 +186,34 @@ mod tests {
     use super::*;
     #[test]
     fn embed_bounds_apply_before_decoding() {
-        for (w, h) in [(2048, 2048), (8192, 512)] {
+        for (w, h) in [(3840, 2160), (4096, 2048), (8192, 1024)] {
             assert!(check_size(w, h).is_ok());
         }
-        for (w, h) in [(2049, 2048), (8193, 1), (1, 8193), (u32::MAX, u32::MAX)] {
+        for (w, h) in [(4097, 2048), (8193, 1), (1, 8193), (u32::MAX, u32::MAX)] {
             assert_eq!(check_size(w, h), Err(EmbedReason::TooLarge));
         }
         assert_eq!(check_size(0, 1), Err(EmbedReason::InvalidData));
+    }
+    #[test]
+    fn embed_full_4k_screenshot_is_decoded_to_a_bounded_preview() {
+        let start = std::time::Instant::now();
+        let original = include_bytes!("../../../../tests/fixtures/embeds/diagram-4k.png");
+        let EmbedOutcome::Image {
+            png, width, height, ..
+        } = decode("png", original, "Диаграмма.png".into()).unwrap()
+        else {
+            panic!("снимок 4K должен открыться")
+        };
+        assert_eq!((width, height), (1280, 720));
+        let clean = BASE64_STANDARD.decode(png).unwrap();
+        let frame = png_frame(&clean).unwrap();
+        assert_eq!(frame.bytes.len(), 1280 * 720 * 3);
+        eprintln!(
+            "embed 4K: вход {} байт, чистый PNG {} байт, {:?}",
+            original.len(),
+            clean.len(),
+            start.elapsed()
+        );
     }
     #[test]
     fn embed_jpeg_returns_metadata_free_png_pixels() {

@@ -35,6 +35,7 @@ import {
 } from '@codemirror/view';
 import { t } from '../../i18n/index.ts';
 import { wikiHost } from '../wikilinks/host.ts';
+import { EmbedWidget } from '../embeds/widget.ts';
 import { isUnresolved, resolutionField, resolvedEffect, staleEffect, type Resolution } from '../wikilinks/resolve.ts';
 import {
   MAX_BLOCK_TEXT,
@@ -545,6 +546,12 @@ export function previewDecorations(
           // У нераскрытой ссылки: в раскрытой адрес и так виден.
           if (piece.url !== undefined && isExternalUrl(piece.url) && !(piece.link && revealed(piece.link))) {
             out.push(Decoration.widget({ widget: new ExternalMarkWidget(piece.url), side: -1 }).range(to));
+          }
+        } else if (piece.kind === 'embed') {
+          const host = state.facet(wikiHost);
+          const path = host?.embedFrom?.();
+          if (path && host && state.doc.length <= MAX_BLOCK_TEXT && !revealed(piece.owner)) {
+            out.push(Decoration.replace({ widget: new EmbedWidget(path, piece.target, host) }).range(from, to));
           }
         } else if (revealed(piece.owner)) {
           out.push(MARKUP.range(from, to));

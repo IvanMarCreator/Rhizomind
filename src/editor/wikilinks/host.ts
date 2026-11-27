@@ -5,7 +5,7 @@
 // `links_suggest`, `note_create`, `folder_create`); вики-ссылка никогда не
 // уходит в `open_external`.
 import { Facet } from '@codemirror/state';
-import type { LinkSuggestion } from '../../api/index.ts';
+import type { EmbedSource, LinkSuggestion, VaultPath } from '../../api/index.ts';
 
 /** Место в тексте заметки: строка с 1 и столбец в единицах UTF-16 (как у ядра). */
 export interface LinkPosition {
@@ -25,6 +25,8 @@ export type WikiEvent =
   | { kind: 'arrive'; heading: string | null; at?: LinkPosition };
 
 export interface WikiHost {
+  embedFrom?(): VaultPath | null;
+  previewEmbed?(source: EmbedSource, origin: HTMLElement): void;
   /** Разрешены ли цели (ключи `targetKey`); ошибка — ответа нет. */
   resolve(keys: readonly string[]): Promise<ReadonlyMap<string, boolean>>;
   /** Щелчок по ссылке: текст между `[[` и `]]`. */

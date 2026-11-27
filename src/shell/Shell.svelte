@@ -17,6 +17,8 @@
   import AttachmentDialog from '../editor/AttachmentDialog.svelte';
   import { finishAttachment, pasteContainsAttachment, pastedExternalPath, type AttachmentAnchor } from '../editor/attachment.ts';
   import { userMessage as attachmentError } from '../i18n/errors.ts';
+  import EmbedDialog from '../editor/embeds/EmbedDialog.svelte';
+  import type { EmbedSource } from '../api/index.ts';
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
@@ -80,6 +82,7 @@
       // «Больше не спрашивать» с «Обновить ссылки» (решение 109).
       setRenameLinks: (rename_links) => void owner.updateSettings({ rename_links }),
       open: (path) => owner.open(path),
+      previewAttachment: (path) => showEmbed({ kind: 'path', path }, document.querySelector<HTMLElement>('[role="tree"]')),
       entryRenamed: (from, to) => {
         // Сначала редактор: смена пути после этого — не уход с заметки.
         editor?.renamed(from, to);
@@ -190,6 +193,17 @@
   let search = $state.raw<{ origin: HTMLElement | null } | null>(null);
   let attachment = $state.raw<AttachmentAnchor | null>(null);
   let clipboardFile = $state.raw<VaultPath | null>(null);
+  let preview = $state.raw<{ source: EmbedSource; origin: HTMLElement | null } | null>(null);
+  function showEmbed(source: EmbedSource, origin: HTMLElement | null) {
+    preview = { source, origin: preview?.origin ?? origin };
+  }
+  async function closeEmbed() {
+    const origin = preview?.origin;
+    preview = null;
+    await tick();
+    if (origin?.isConnected) origin.focus();
+    else editor?.focus();
+  }
   let templateOpen = $state(false);
   let palette = $state.raw<{ origin: HTMLElement | null; treePath: VaultPath | null } | null>(null);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
@@ -200,7 +214,7 @@
    * настройки, вопрос об обновлении ссылок): горячие клавиши окна под ним не действуют.
    */
   const modalOpen = $derived(
-    palette !== null || search !== null || switcherOpen || templateOpen || attachment !== null || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
+    palette !== null || search !== null || switcherOpen || templateOpen || attachment !== null || preview !== null || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
   );
 
   /** Меню правки текста (решение 97); `null` — закрыто. */
@@ -517,6 +531,7 @@
           onOpenSettings={() => openSettings('files')}
           onOpenNote={(path) => model.open(path)}
           onOpenTag={(tag) => tagsView.reveal(tag)}
+          onPreviewEmbed={showEmbed}
         />
       </div>
     </main>
@@ -546,6 +561,9 @@
   {#if search}
     <SearchDialog current={model.currentPath} onClose={() => void closeSearch()}
       onOpen={(path, at) => void closeSearch({ path, at })} />
+  {/if}
+  {#if preview}
+    <EmbedDialog source={preview.source} onClose={() => void closeEmbed()} onPreview={showEmbed} />
   {/if}
   {#if attachment}
     <AttachmentDialog anchor={attachment} initialFile={clipboardFile} notify={(message) => model.notify(message)}
