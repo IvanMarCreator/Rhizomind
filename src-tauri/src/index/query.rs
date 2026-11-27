@@ -40,6 +40,12 @@ pub struct SearchResults {
     pub truncated: bool,
 }
 
+#[derive(Default)]
+pub(crate) struct CandidatePage {
+    pub paths: Vec<VaultPath>,
+    pub has_more: bool,
+}
+
 impl SearchQuery {
     pub fn validate(&self) -> CoreResult<()> {
         limits::query(&self.text)?;
@@ -67,7 +73,11 @@ impl SearchQuery {
 
     /// Проверка путей по индексу в памяти защищает чтение заметок от подмены
     /// результатов в SQLite. Файлы перечитываются после освобождения замка.
-    pub fn candidates(&self, index: &VaultIndex) -> CoreResult<Vec<VaultPath>> {
+    pub(crate) fn candidates(
+        &self,
+        index: &VaultIndex,
+        limit: Option<usize>,
+    ) -> CoreResult<CandidatePage> {
         let unavailable = || CoreError::new(ErrorCode::IoFailed);
         if index.search_failed {
             return Err(unavailable());
@@ -77,7 +87,7 @@ impl SearchQuery {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let Some(db) = guard.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(CandidatePage::default());
         };
         let text = self.text.trim();
         let mut parameters = Vec::new();
@@ -102,19 +112,27 @@ impl SearchQuery {
             .as_deref()
             .map(|s| markdown::tag_key(s.trim_start_matches('#')));
         if terms.is_empty() && tag.is_none() && self.folder.is_none() && self.mention().is_none() {
-            return Ok(vec![]);
+            return Ok(CandidatePage::default());
         }
         parameters.push(text.to_lowercase());
         sql.push_str(&format!(" ORDER BY title=?{} DESC, path", parameters.len()));
-        let mut statement = db.prepare(&sql).map_err(|_| unavailable())?;
+        if let Some(limit) = limit {
+            // Одна дополнительная строка сообщает, есть ли ещё кандидаты.
+            sql.push_str(&format!(" LIMIT {}", limit.saturating_add(1)));
+        }
+        let mut statement = db.prepare_cached(&sql).map_err(|_| unavailable())?;
         let paths = statement
             .query_map(params_from_iter(parameters.iter()), |r| {
                 r.get::<_, String>(0)
             })
             .map_err(|_| unavailable())?;
-        let mut candidates = Vec::new();
-        for path in paths {
+        let mut page = CandidatePage::default();
+        for (offset, path) in paths.enumerate() {
             let path = path.map_err(|_| unavailable())?;
+            if Some(offset) == limit {
+                page.has_more = true;
+                break;
+            }
             let path = VaultPath::from_components(path.split('/'));
             if Some(&path) == self.mentions_of.as_ref() {
                 continue;
@@ -128,13 +146,30 @@ impl SearchQuery {
                         .any(|v| markdown::tag_key(&v.name) == *t)
                 })
             {
-                candidates.push(path);
+                page.paths.push(path);
             }
         }
-        Ok(candidates)
+        Ok(page)
     }
 
-    pub fn results(&self, vault: &Vault, candidates: Vec<VaultPath>) -> SearchResults {
+    /// Обычно достаточно 51 пути: последняя строка определяет признак усечения.
+    /// Если файлы устарели или фильтр убрал часть строк, проверяем всю выборку.
+    /// Замок индекса удерживается только внутри select, до чтения Markdown.
+    pub(crate) fn first_page(
+        &self,
+        vault: &Vault,
+        mut select: impl FnMut(Option<usize>) -> CoreResult<CandidatePage>,
+    ) -> CoreResult<SearchResults> {
+        let page = select(Some(PAGE_SIZE + 1))?;
+        let found = self.results(vault, page.paths);
+        if found.truncated || !page.has_more {
+            return Ok(found);
+        }
+        let all = select(None)?;
+        Ok(self.results(vault, all.paths))
+    }
+
+    fn results(&self, vault: &Vault, candidates: Vec<VaultPath>) -> SearchResults {
         let query = words(&self.text);
         let required: HashSet<_> = query.split_whitespace().collect();
         let tag = self
@@ -143,7 +178,7 @@ impl SearchQuery {
             .map(|key| markdown::tag_key(key.trim_start_matches('#')));
         let mut items = Vec::new();
         for path in candidates {
-            let Ok(note) = vault.read_note(&path) else {
+            let Ok(text) = vault.read_search_text(&path) else {
                 continue;
             };
             let name = path
@@ -151,7 +186,7 @@ impl SearchQuery {
                 .and_then(names::note_stem)
                 .unwrap_or_default();
             let parsed =
-                (tag.is_some() || self.mention().is_some()).then(|| markdown::parse(&note.text));
+                (tag.is_some() || self.mention().is_some()).then(|| markdown::parse(&text));
             if let (Some(key), Some(parsed)) = (&tag, &parsed)
                 && !parsed
                     .tags
@@ -161,7 +196,7 @@ impl SearchQuery {
                 continue;
             }
             if let Some(location) =
-                evidence(&note.text, name, &required, self.mention(), parsed.as_ref())
+                evidence(&text, name, &required, self.mention(), parsed.as_ref())
             {
                 if items.len() == PAGE_SIZE {
                     return SearchResults {

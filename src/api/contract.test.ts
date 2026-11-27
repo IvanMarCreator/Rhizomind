@@ -171,6 +171,12 @@ const commands: { [K in CommandName]: CommandExample<K> } = {
     response: { path: ['Проекты', 'Без названия.md'] },
     errors: [invalidName('duplicate'), err('invalid_path'), err('outside_vault')],
   },
+  attachment_insert: {
+    command: 'attachment_insert',
+    request: { note: ['План.md'], source: { kind: 'file', path: ['Фото.png'] }, name: 'Копия.png' },
+    response: { outcome: 'created', path: ['Копия.png'], target: 'Копия.png' },
+    errors: [err('invalid_path'), err('outside_vault')],
+  },
   note_create_from_template: {
     command: 'note_create_from_template',
     request: { template: ['Шаблоны', 'План.md'], dir: [], name: 'Итоги.md' },
@@ -469,6 +475,7 @@ const events: { [K in EventName]: { event: K; payload: CoreEvents[K] } } = {
     event: 'index:changed',
     payload: {},
   },
+  'search:changed': { event: 'search:changed', payload: {} },
   'links:flush-requested': {
     event: 'links:flush-requested',
     payload: { token: token('f') },

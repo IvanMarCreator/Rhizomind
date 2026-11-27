@@ -2,7 +2,7 @@ import { clearMocks } from '@tauri-apps/api/mocks';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { IndexReply, SearchResults } from '../api/index.ts';
-import { mockCore } from '../api/testing.ts';
+import { emitCoreEvent, mockCore } from '../api/testing.ts';
 import SearchDialog from './SearchDialog.svelte';
 
 afterEach(clearMocks);
@@ -43,4 +43,29 @@ it('объединяет фильтры с упоминаниями и пока�
     text: '', folder: ['Работа', 'Квартал'], tag: 'Проект', mentions_of: ['План.md'],
   }));
   expect((await screen.findByRole('status')).textContent).toMatch(/75\s*%/);
+});
+
+it('обновляет открытую выдачу после правки обычного текста', async () => {
+  let snippet = 'План на вчера';
+  mockCore({ vault_search: () => ({ status: 'ready', truncated: false, items: [
+    { path: ['День.md'], location: { line: 1, column_utf16: 0, snippet } },
+  ] }) });
+  render(SearchDialog, { current: null, onOpen: vi.fn(), onClose: vi.fn() });
+  await fireEvent.input(screen.getByRole('searchbox'), { target: { value: 'план' } });
+  await screen.findByText(/План на вчера/u);
+  snippet = 'План на сегодня';
+  await emitCoreEvent('search:changed', {});
+  await screen.findByText(/План на сегодня/u);
+});
+
+it('не отправляет пустой поиск при открытии и очистке поля', async () => {
+  const search = vi.fn(() => ({ status: 'ready' as const, truncated: false, items: [] }));
+  mockCore({ vault_search: search });
+  render(SearchDialog, { current: null, onOpen: vi.fn(), onClose: vi.fn() });
+  const field = screen.getByRole('searchbox');
+  await fireEvent.input(field, { target: { value: 'проект' } });
+  await screen.findByText('Совпадений нет');
+  await fireEvent.input(field, { target: { value: '' } });
+  await waitFor(() => expect(screen.queryByText('Совпадений нет')).toBeNull());
+  expect(search.mock.calls).toHaveLength(1);
 });

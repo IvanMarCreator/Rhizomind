@@ -1371,6 +1371,44 @@ fn template_settings_and_copy_preserve_the_selected_bytes() {
     assert!(!root.join("Запрет.md").exists());
 }
 
+#[test]
+fn attachment_clipboard_rejects_a_supplied_external_path_before_reading_the_os() {
+    let invalid = json!({"note":["Заметка.md"], "source":{"kind":"clipboard","path":["C:/внешний/файл.png"]}, "name":"Фото.png"});
+    assert!(serde_json::from_value::<AttachmentRequest>(invalid).is_err());
+}
+
+#[test]
+fn attachment_copies_an_internal_file_and_rejects_external_components() {
+    let app = app();
+    let w = window(&app, "attachments");
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    put(&vault, "Работа/План.md", b"note");
+    put(&vault, "Исходники/Карта.png", b"\x89PNG\0\xff");
+    open_vault(
+        &app,
+        "attachments",
+        "attachments",
+        &vault,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let request = json!({"note":["Работа","План.md"], "source":{"kind":"file","path":["Исходники","Карта.png"]}, "name":"Карта.png"});
+    let created = call(&w, "attachment_insert", request.clone()).expect("вложение");
+    assert_eq!(
+        created,
+        json!({"outcome":"created","path":["Работа","Карта.png"],"target":"Работа/Карта.png"})
+    );
+    assert_eq!(
+        std::fs::read(vault.join("Работа/Карта.png")).unwrap(),
+        b"\x89PNG\0\xff"
+    );
+    let another = call(&w, "attachment_insert", request.clone()).expect("коллизия");
+    assert_eq!(another["path"], json!(["Работа", "Карта 2.png"]));
+    let mut external = request;
+    external["source"]["path"] = json!(["..", "secret.png"]);
+    assert!(call(&w, "attachment_insert", external).is_err());
+}
+
 /// Ждёт готовности индекса окна (`index_status`).
 fn wait_index_ready(w: &WebviewWindow<MockRuntime>) {
     wait_index_ready_within(w, WAIT);

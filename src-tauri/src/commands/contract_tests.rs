@@ -392,6 +392,25 @@ fn note_create() {
 }
 
 #[test]
+fn attachment_insert() {
+    command_with(
+        "attachment_insert",
+        &AttachmentRequest {
+            note: path(&["План.md"]),
+            source: AttachmentSource::File {
+                path: path(&["Фото.png"]),
+            },
+            name: "Копия.png".into(),
+        },
+        &AttachmentOutcome::Created {
+            path: Some(path(&["Копия.png"])),
+            target: Some("Копия.png".into()),
+        },
+        &[err(ErrorCode::InvalidPath), err(ErrorCode::OutsideVault)],
+    );
+}
+
+#[test]
 fn note_create_from_template() {
     assert_eq!(
         serde_json::to_value(TemplateCreateResponse { path: None }).expect("результат публикации"),
@@ -985,6 +1004,11 @@ fn event_index_status() {
 #[test]
 fn event_index_changed() {
     event(event::INDEX_CHANGED, &IndexChangedPayload {});
+}
+
+#[test]
+fn event_search_changed() {
+    event(event::SEARCH_CHANGED, &IndexChangedPayload {});
 }
 
 #[test]

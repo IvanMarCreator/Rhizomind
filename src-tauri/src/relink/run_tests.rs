@@ -199,6 +199,82 @@ fn file_link(target: &Path, link: &Path) {
     std::os::windows::fs::symlink_file(target, link).expect("ссылка на файл");
 }
 
+#[cfg(windows)]
+#[test]
+fn interrupted_parallel_writes_preserve_external_edit_on_resume() {
+    let mut fx = meeting(&[]);
+    for i in 0..20 {
+        fx.put(&format!("A{i:02}.md"), "[[Встреча]]");
+    }
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+    crash_after(1);
+    fx.run(&plan, &renames);
+    let Read::Found(journal) = journal::read(&fx.vault) else {
+        panic!("после сбоя должен остаться читаемый журнал")
+    };
+    assert_eq!(journal.started.len(), 2);
+    assert!(journal.done.is_empty());
+    let edited = plan.notes[1].path.components().join("/");
+    assert_eq!(fx.text(&edited), "[[Планёрка]]");
+    fx.put(&edited, "Моя новая правка [[Встреча]]");
+
+    fx.reopen();
+    let report = fx.resume().expect("доделка по журналу");
+    assert_eq!(
+        report.failed,
+        [failed(&edited, RelinkFailureReason::Conflict)]
+    );
+    assert!(report.retry.notes.is_empty());
+    assert_eq!(report.updated.len(), plan.note_count() - 1);
+    for note in &plan.notes {
+        let path = note.path.components().join("/");
+        if path == edited {
+            assert_eq!(fx.text(&path), "Моя новая правка [[Встреча]]");
+        } else {
+            assert!(fx.text(&path).contains("[[Планёрка]]"), "{path}");
+        }
+    }
+    assert!(!fx.journal().exists());
+}
+
+#[test]
+fn parallel_peer_uses_the_configured_size_limit_for_large_notes() {
+    let fx = meeting(&[]);
+    for i in 0..19 {
+        fx.put(&format!("A{i:02}.md"), "[[Встреча]]");
+    }
+    let suffix = "x".repeat(1024 * 1024);
+    let allowed = format!("[[Встреча]]\n{suffix}");
+    let oversize = format!("{allowed}!");
+    fx.put("A01.md", &allowed);
+    fx.put("A03.md", &oversize);
+    fx.vault
+        .write_settings(&Settings {
+            max_edit_size_bytes: allowed.len() as u64,
+            ..Settings::default()
+        })
+        .expect("предел редактирования");
+    let (plan, renames) = fx.rename(&[("Встреча.md", "Планёрка.md")]);
+
+    let report = fx.run(&plan, &renames);
+
+    assert_eq!(report.updated.len(), plan.note_count() - 1);
+    assert_eq!(
+        report.failed,
+        [failed("A03.md", RelinkFailureReason::TooLarge)]
+    );
+    assert_eq!(fx.text("A01.md"), format!("[[Планёрка]]\n{suffix}"));
+    assert_eq!(fx.text("A03.md"), oversize);
+    assert!(!fx.journal().exists());
+}
+
+#[test]
+fn parallel_writes_require_distinct_file_names_under_vault_rules() {
+    assert!(!independent_names(&vp("A/I.md"), &vp("B/ı.MD")));
+    assert!(!independent_names(&vp("Й.md"), &vp("И\u{306}.md")));
+    assert!(independent_names(&vp("А.md"), &vp("Б.md")));
+}
+
 fn dir_link(target: &Path, link: &Path) {
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, link).expect("ссылка на папку");
@@ -756,8 +832,7 @@ fn started_but_not_replaced_rewritten_on_resume() {
         .position(|n| n.path == vp("Список.md"))
         .expect("в плане");
     let before = blake3::hash(&fx.bytes("Список.md")).to_hex().to_string();
-    let mut writer =
-        crate::relink::journal::start(&fx.vault, &renames, &plan.notes).expect("журнал");
+    let writer = crate::relink::journal::start(&fx.vault, &renames, &plan.notes).expect("журнал");
     writer
         .started(index, &before, "чужой-хэш")
         .expect("отметка");

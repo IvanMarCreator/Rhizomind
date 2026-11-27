@@ -245,7 +245,7 @@ impl Root {
         }
         let path = VaultPath::from_components(parts);
         path.check().ok()?;
-        crate::vault::require_note_name(&path).ok()?;
+        // При публикации принимаются и заметки, и другие обычные файлы.
         let visible = self
             .open_beneath(relative, libc::O_PATH)
             .ok()?

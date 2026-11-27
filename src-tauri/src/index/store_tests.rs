@@ -204,8 +204,60 @@ fn search_now(
     index: &RwLock<VaultIndex>,
     query: &crate::index::query::SearchQuery,
 ) -> crate::index::query::SearchResults {
-    let candidates = query.candidates(&index.read().unwrap()).unwrap();
-    query.results(&t.vault, candidates)
+    query
+        .first_page(&t.vault, |limit| {
+            query.candidates(&index.read().unwrap(), limit)
+        })
+        .unwrap()
+}
+
+#[test]
+fn search_limits_initial_selection_and_fills_page_past_outdated_notes() {
+    use crate::index::query::{PAGE_SIZE, SearchQuery};
+    let t = TestVault::new();
+    for n in 0..125 {
+        t.put(&format!("Заметка{n:03}.md"), "проверка");
+    }
+    let index = t.built();
+    let query = SearchQuery {
+        text: "проверка".into(),
+        ..Default::default()
+    };
+    let first = query
+        .candidates(&index.read().unwrap(), Some(PAGE_SIZE + 1))
+        .unwrap();
+    assert_eq!(first.paths.len(), PAGE_SIZE + 1);
+    assert!(first.has_more);
+    for n in 0..75 {
+        t.put(&format!("Заметка{n:03}.md"), "заменено");
+    }
+    let results = search_now(&t, &index, &query);
+    assert_eq!(results.items.len(), PAGE_SIZE);
+    assert_eq!(results.items[0].path, vp("Заметка075.md"));
+    assert!(!results.truncated, "осталось ровно пятьдесят");
+    t.put("Заметка000.md", "проверка");
+    let results = search_now(&t, &index, &query);
+    assert_eq!(results.items[0].path, vp("Заметка000.md"));
+    assert!(results.truncated, "пятьдесят первое актуальное совпадение");
+}
+
+#[test]
+fn search_snippets_read_the_current_note_without_editor_settings() {
+    use crate::index::query::SearchQuery;
+    let t = TestVault::new();
+    t.put("План.md", "Строка\nПосле проверки");
+    let index = t.built();
+    // Служебный каталог временно недоступен. В оперативной памяти уже есть
+    // индекс, а чтению самого Markdown ничто не мешает.
+    std::fs::rename(t.root.join(".rhizomind"), t.root.join(".служебная")).unwrap();
+    std::fs::write(t.root.join(".rhizomind"), b"busy").unwrap();
+    let query = SearchQuery {
+        text: "проверка".into(),
+        ..Default::default()
+    };
+    let results = search_now(&t, &index, &query);
+    assert_eq!(results.items.len(), 1);
+    assert_eq!(results.items[0].location.as_ref().unwrap().line, 2);
 }
 
 #[test]

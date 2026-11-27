@@ -23,6 +23,7 @@ export type CommandId =
   | 'quick_switcher.open'
   | 'note.new'
   | 'note.from-template'
+  | 'attachment.insert'
   | 'editor.toggle-mode'
   | 'history.back'
   | 'history.forward'
@@ -46,6 +47,7 @@ export const COMMANDS: readonly HotkeyCommand[] = [
   { id: 'quick_switcher.open', scope: 'window', label: 'hotkeys.command.quickSwitcher', defaults: ['Ctrl+KeyO'] },
   { id: 'note.new', scope: 'window', label: 'hotkeys.command.newNote', defaults: ['Ctrl+KeyN'] },
   { id: 'note.from-template', scope: 'window', label: 'templates.title', defaults: [] },
+  { id: 'attachment.insert', scope: 'window', label: 'attachments.insert', defaults: [] },
   {
     id: 'editor.toggle-mode',
     scope: 'window',

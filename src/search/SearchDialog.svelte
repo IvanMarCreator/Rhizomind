@@ -32,6 +32,7 @@
     let valid = true;
     reply = null;
     failed = false;
+    if (!request.text.trim() && !request.folder && !request.tag && !request.mentions_of) return;
     void core.vaultSearch(request).then((result) => {
       if (valid) reply = result;
     }, () => { if (valid) failed = true; });
@@ -43,7 +44,7 @@
   onMount(() => {
     field.focus();
     const listeners = [
-      onCoreEvent('index:changed', () => { revision++; }),
+      onCoreEvent('search:changed', () => { revision++; }),
       onCoreEvent('index:status', (status) => {
         if (status.state === 'ready') revision++;
         else reply = { status: 'index_building', done: status.done, total: status.total };

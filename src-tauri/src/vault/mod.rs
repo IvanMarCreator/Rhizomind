@@ -35,7 +35,10 @@ mod anchored;
 #[path = "anchored/windows.rs"]
 mod anchored;
 pub(crate) mod atomic;
+mod attachment;
 mod contour;
+#[cfg(any(windows, target_os = "linux"))]
+mod copy;
 pub(crate) mod fsops;
 mod local_time;
 mod settings;
@@ -52,6 +55,7 @@ use crate::commands::{
     TrashOutcome, TreeEntry, VaultPath, Workspace,
 };
 
+pub(crate) use attachment::AttachmentInput;
 pub use contour::{SERVICE_DIR, check_component, is_service_dir};
 pub use settings::{SETTINGS_FORMAT_VERSION, SettingsFile};
 
@@ -464,6 +468,39 @@ impl Vault {
             version,
             read_only,
         })
+    }
+
+    /// Текущий текст для поисковой выдачи. Для просмотра строки не нужны
+    /// настройки редактирования или хэш для будущего сохранения заметки.
+    pub(crate) fn read_search_text(&self, path: &VaultPath) -> CoreResult<String> {
+        let abs = self.contour.resolve(path)?;
+        require_note_name(path)?;
+        let mut options = File::options();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        }
+        let file = options.open(&abs).map_err(io_error)?;
+        self.contour.check_opened(&file, &abs, false)?;
+        let meta = file.metadata().map_err(io_error)?;
+        if !meta.is_file() {
+            return Err(CoreError::new(ErrorCode::NotANote));
+        }
+        let limit = crate::commands::limits::MAX_NOTE_BYTES;
+        if meta.len() > limit {
+            return Ok(String::new());
+        }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        // Между metadata и read файл мог вырасти.
+        if bytes.len() as u64 > limit {
+            return Ok(String::new());
+        }
+        Ok(text::decode(&bytes).text)
     }
 
     /// Версия файла больше [`limits::MAX_NOTE_BYTES`] — хэш потоком, без

@@ -1,0 +1,35 @@
+---
+source: src-tauri/src/commands/contract_tests.rs
+---
+{
+  "command": "attachment_insert",
+  "errors": [
+    {
+      "code": "invalid_path",
+      "message_key": "errors.invalid_path"
+    },
+    {
+      "code": "outside_vault",
+      "message_key": "errors.outside_vault"
+    }
+  ],
+  "request": {
+    "name": "Копия.png",
+    "note": [
+      "План.md"
+    ],
+    "source": {
+      "kind": "file",
+      "path": [
+        "Фото.png"
+      ]
+    }
+  },
+  "response": {
+    "outcome": "created",
+    "path": [
+      "Копия.png"
+    ],
+    "target": "Копия.png"
+  }
+}

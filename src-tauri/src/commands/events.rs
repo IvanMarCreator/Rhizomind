@@ -57,6 +57,8 @@ pub mod event {
     /// Изменились обратные ссылки или теги (0.2): интерфейс перезапрашивает
     /// видимый вид; не чаще 4 раз в секунду.
     pub const INDEX_CHANGED: &str = "index:changed";
+    /// Изменилась выдача поиска, в том числе обычный текст. До 4 раз в секунду.
+    pub const SEARCH_CHANGED: &str = "search:changed";
     /// Ядро собирается переписать ссылки: окно записывает несохранённый
     /// ввод всех своих заметок и отвечает `links_flush_done` (0.2, С2-5.4).
     pub const LINKS_FLUSH_REQUESTED: &str = "links:flush-requested";
@@ -72,7 +74,7 @@ pub mod event {
 }
 
 /// Все события API v1 — для тестов снимков.
-pub const EVENT_NAMES: [&str; 13] = [
+pub const EVENT_NAMES: [&str; 14] = [
     event::VAULT_CHANGED,
     event::NOTE_CHANGED,
     event::NOTE_RENAMED,
@@ -82,6 +84,7 @@ pub const EVENT_NAMES: [&str; 13] = [
     event::WINDOW_CLOSE_REQUESTED,
     event::INDEX_STATUS,
     event::INDEX_CHANGED,
+    event::SEARCH_CHANGED,
     event::LINKS_FLUSH_REQUESTED,
     event::LINKS_PENDING,
     event::LINKS_UPDATED,

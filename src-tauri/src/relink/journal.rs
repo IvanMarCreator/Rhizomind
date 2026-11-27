@@ -147,13 +147,15 @@ enum Mark<S> {
 /// Журнал, открытый для отметок.
 #[derive(Debug)]
 pub struct Writer {
-    file: ServiceAppend,
+    file: std::sync::Mutex<Option<ServiceAppend>>,
+    #[cfg(test)]
+    mark_bytes: std::sync::atomic::AtomicUsize,
 }
 
 impl Writer {
     /// Запись заметки `note` начата: хэши прочитанного и нового содержимого.
     /// Сбрасывается на диск до возврата — до замены файла заметки.
-    pub fn started(&mut self, note: usize, before: &str, after: &str) -> CoreResult<()> {
+    pub fn started(&self, note: usize, before: &str, after: &str) -> CoreResult<()> {
         self.mark(
             &Mark::Start(StartMark {
                 note,
@@ -166,16 +168,35 @@ impl Writer {
 
     /// Заметка `note` готова. Без сброса на диск; ошибка не важна (доделка
     /// сверит хэши).
-    pub fn done(&mut self, note: usize) {
+    pub fn done(&self, note: usize) {
         let _ = self.mark(&Mark::<&str>::Done(note), false);
     }
 
-    fn mark(&mut self, mark: &Mark<&str>, sync: bool) -> CoreResult<()> {
+    fn mark(&self, mark: &Mark<&str>, sync: bool) -> CoreResult<()> {
         let mut line = serde_json::to_vec(mark).map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
         line.push(b'\n');
-        self.file.append(&line, sync)?;
-        count(line.len());
+        // Одна целая строка и её sync под одним замком для обеих заметок.
+        // После частичной записи дописывать нельзя до восстановления хвоста.
+        let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
+        let stream = file
+            .as_mut()
+            .ok_or_else(|| CoreError::new(ErrorCode::IoFailed))?;
+        if let Err(error) = stream.append(&line, sync) {
+            *file = None;
+            return Err(error);
+        }
+        #[cfg(test)]
+        self.mark_bytes
+            .fetch_add(line.len(), std::sync::atomic::Ordering::Relaxed);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for Writer {
+    fn drop(&mut self) {
+        // Учёт замера — в потоке владельца журнала, включая строки помощника.
+        count(*self.mark_bytes.get_mut());
     }
 }
 
@@ -229,7 +250,9 @@ pub fn reopen(vault: &Vault, journal: &Journal) -> CoreResult<Writer> {
 
 fn open_writer(vault: &Vault) -> CoreResult<Writer> {
     Ok(Writer {
-        file: vault.open_service_append(FILE)?,
+        file: std::sync::Mutex::new(Some(vault.open_service_append(FILE)?)),
+        #[cfg(test)]
+        mark_bytes: std::sync::atomic::AtomicUsize::new(0),
     })
 }
 
@@ -354,7 +377,7 @@ mod tests {
             }],
         }];
 
-        let mut writer = start(&vault, &renames, &notes).expect("заголовок");
+        let writer = start(&vault, &renames, &notes).expect("заголовок");
         writer.started(0, "aaa", "bbb").expect("отметка");
         writer.done(0);
         drop(writer);
@@ -395,7 +418,7 @@ mod tests {
         let Read::Found(journal) = read(&vault) else {
             panic!("журнал не прочитан")
         };
-        let mut writer = reopen(&vault, &journal).expect("дописывание");
+        let writer = reopen(&vault, &journal).expect("дописывание");
         writer.done(0);
         drop(writer);
         expected.extend_from_slice(b"{\"done\":0}\n");

@@ -82,6 +82,8 @@ getrandom = { version = "=0.4.3", default-features = false }
 dirs = "=7.0.0"
 
 [target.'cfg(windows)'.dependencies]
+# Преобразование непосредственно переданной ОС битовой карты скриншота (CF_DIB) в PNG.
+png = "=0.18.1"
 # Те же версии, что уже приходят через wry: новых крейтов нет.
 # Один экземпляр программы (задача 0.5, src/single_instance/windows.rs):
 # CreateMutexW (Win32_Security — тип атрибутов), окно для сообщений

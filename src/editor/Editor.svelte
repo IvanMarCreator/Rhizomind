@@ -8,6 +8,8 @@
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { EditorView } from '@codemirror/view';
+  import { captureAttachment, type AttachmentAnchor } from './attachment.ts';
   import { core, onCoreEvent, type EditorMode, type FileVersion, type VaultPath } from '../api/index.ts';
   import { userMessage } from '../i18n/errors.ts';
   import { t } from '../i18n/index.ts';
@@ -140,6 +142,13 @@
   }
 
   /** Фокус в текст открытой заметки (закрыли правую панель командой); нет текста — ничего. */
+  export function attachmentAnchor(): AttachmentAnchor | null {
+    const content = article?.querySelector<HTMLElement>('.cm-content');
+    const view = content && EditorView.findFromDOM(content);
+    if (!view || pane.kind !== 'open' || pane.session.readOnly || saveStatus?.kind === 'deleted') return null;
+    return captureAttachment(view, pane.session.path);
+  }
+
   export function focus(): void {
     article?.querySelector<HTMLElement>('.cm-content')?.focus();
   }

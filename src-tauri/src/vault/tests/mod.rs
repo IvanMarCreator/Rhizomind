@@ -2,6 +2,8 @@
 //! хранилище — во временной папке, рядом с ним — папка «снаружи» для
 //! проверок контура.
 
+#[cfg(any(windows, target_os = "linux"))]
+mod attachment;
 mod contour;
 mod hardening;
 mod ops;

@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, statSync } from 'node:fs';
+import { cpus, freemem, totalmem } from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { startApp } from '../e2e/driver.ts';
@@ -10,7 +11,26 @@ const words = ['проект', 'отчёт', 'план', 'заметка', 'ра
 const count = Number(process.env.RHIZOMIND_PERF_NOTES ?? 10000);
 const repeats = 5;
 
-async function firstScreen(browser: WebdriverIO.Browser, text: string): Promise<number> {
+interface SearchSample {
+  total: number;
+  inputToIpc: number | null;
+  ipc: number | null;
+  render: number | null;
+  interval: number;
+  foreground: boolean;
+}
+
+function cpuTime() {
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus()) {
+    idle += cpu.times.idle;
+    total += Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
+  }
+  return { idle, total };
+}
+
+async function firstScreen(browser: WebdriverIO.Browser, text: string): Promise<SearchSample> {
   return browser.execute(async (word) => {
     const field = document.querySelector<HTMLInputElement>('.vault-search input[type="search"]');
     if (!field) throw new Error('Нет окна поиска');
@@ -18,6 +38,7 @@ async function firstScreen(browser: WebdriverIO.Browser, text: string): Promise<
       field.value = value;
       field.dispatchEvent(new Event('input', { bubbles: true }));
     };
+    const clearedAt = performance.now();
     enter('');
     await new Promise((resolve) => requestAnimationFrame(resolve));
     if (document.querySelector('.vault-search .result')) throw new Error('Остался результат предыдущего запроса');
@@ -25,7 +46,20 @@ async function firstScreen(browser: WebdriverIO.Browser, text: string): Promise<
     enter(word);
     while (performance.now() - start < 15000) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
-      if (document.querySelectorAll('.vault-search .result').length === 50) return performance.now() - start;
+      if (document.querySelectorAll('.vault-search .result').length === 50) {
+        const frame = performance.now();
+        const calls = performance.getEntriesByType('resource')
+          .filter((entry) => entry.startTime >= start && /vault_search/.test(entry.name)) as PerformanceResourceTiming[];
+        const call = calls.at(-1);
+        return {
+          total: frame - start,
+          inputToIpc: call ? call.startTime - start : null,
+          ipc: call ? call.responseEnd - call.startTime : null,
+          render: call ? frame - call.responseEnd : null,
+          interval: start - clearedAt,
+          foreground: document.visibilityState === 'visible' && document.hasFocus(),
+        };
+      }
     }
     throw new Error('Первая страница не отрисовала ожидаемые 50 заметок для ' + word);
   }, text);
@@ -46,7 +80,7 @@ async function switcher(browser: WebdriverIO.Browser): Promise<number> {
 
 it(`полнотекстовый поиск в окне на ${count} заметках`, async () => {
   const vault = prepareVault(count);
-  const report = [`Поиск в окне, ${process.platform}, ${count} заметок`];
+  const report = [`Поиск в окне, ${process.platform}, ${count} заметок, начало ${new Date().toISOString()}. ${cpus()[0]?.model}, ${cpus().length} потоков, ${Math.round(totalmem() / 1048576)} МиБ ОЗУ.`];
   const misses: string[] = [];
   const index = path.join(vault.root, '.rhizomind', 'index.db');
   try {
@@ -72,8 +106,16 @@ it(`полнотекстовый поиск в окне на ${count} замет
       await browser.keys('Enter');
       await browser.$('.vault-search input[type="search"]').waitForDisplayed();
       for (const word of words) {
-        const times: number[] = [];
-        for (let index = 0; index < repeats; index++) times.push(await firstScreen(browser, word));
+        const before = cpuTime();
+        const samples: SearchSample[] = [];
+        for (let index = 0; index < repeats; index++) samples.push(await firstScreen(browser, word));
+        const times = samples.map((sample) => sample.total);
+        const after = cpuTime();
+        const busy = 100 * (1 - (after.idle - before.idle) / Math.max(1, after.total - before.total));
+        const freeMiB = Math.round(freemem() / 1048576);
+        report.push(`${word}, CPU компьютера ${ms(busy)} %, доступно ${freeMiB} МиБ, активное окно в ${samples.filter((s) => s.foreground).length}/5; кадр после очистки ${samples.map((s) => ms(s.interval)).join(' / ')} мс.`);
+        const phases = (key: 'inputToIpc' | 'ipc' | 'render') => samples.map((sample) => sample[key] === null ? '—' : ms(sample[key])).join(' / ');
+        report.push(`${word}, ввод → IPC: ${phases('inputToIpc')}; IPC: ${phases('ipc')}; ответ → 50 строк: ${phases('render')} мс.`);
         const value = median(times);
         const verdict = count === 10000 ? value <= 200 ? '≤ 200 мс' : 'выше 200 мс' : 'справочно';
         report.push(`${word}: ${times.map(ms).join(' / ')} мс, медиана ${ms(value)} мс, ${verdict}.`);

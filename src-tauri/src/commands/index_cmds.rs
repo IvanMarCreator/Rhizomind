@@ -282,6 +282,7 @@ struct Signal {
     status: bool,
     /// Отправить `index:changed`.
     changed: bool,
+    search_changed: bool,
     /// Окно отвязано: потоки индекса выходят.
     stopped: bool,
     /// Поток событий сейчас отправляет события (флаги уже сняты).
@@ -342,7 +343,7 @@ impl WindowIndex {
     /// окно, ждущее готовности для переименования, спросило снова.
     fn mark_reconciled(&self) {
         self.reconciled.store(true, Ordering::Release);
-        self.notify(true, false);
+        self.notify(true, false, false);
     }
 
     /// Чтение индекса в памяти под замком (план переписывания, 0.2-4.6).
@@ -370,10 +371,11 @@ impl WindowIndex {
     }
 
     /// Ставит события в очередь потока событий.
-    fn notify(&self, status: bool, changed: bool) {
+    fn notify(&self, status: bool, changed: bool, search_changed: bool) {
         let mut signal = self.signal();
         signal.status |= status;
         signal.changed |= changed;
+        signal.search_changed |= search_changed;
         drop(signal);
         self.wake.notify_all();
     }
@@ -400,20 +402,20 @@ impl WindowIndex {
         match store::load(vault) {
             Load::Loaded(loaded) => {
                 let revision = loaded.revision();
+                let views = loaded.views_revision();
                 // Записи, вставленные до загрузки (наблюдатель), перекрываются
                 // файлом — сверка ниже перечитает всё, что на диске иначе.
                 *self.write() = *loaded;
                 *self.store.lock().unwrap_or_else(PoisonError::into_inner) =
                     IndexStore::loaded(revision);
-                self.notify(true, true);
+                self.notify(true, true, true);
                 store::reconcile(vault, &self.index)?;
-                let changed = self.read().revision() != revision;
-                self.notify(false, changed);
+                self.notify_changes_since(views, revision);
                 Ok(())
             }
             Load::Rebuild(_) => {
-                crate::index::rebuild(vault, &self.index, &|_| self.notify(true, false))?;
-                self.notify(true, true);
+                crate::index::rebuild(vault, &self.index, &|_| self.notify(true, false, false))?;
+                self.notify(true, true, true);
                 Ok(())
             }
         }
@@ -429,7 +431,10 @@ impl WindowIndex {
             return;
         }
         let _serial = self.updates.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut changed = false;
+        let (views, revision) = {
+            let index = self.read();
+            (index.views_revision(), index.revision())
+        };
         // Порядок изменений важен (`а → б`, затем новая `а`): переносы и
         // удаления — по порядку; чтение — в конце, по состоянию диска.
         let mut reads: Vec<VaultPath> = Vec::new();
@@ -443,14 +448,10 @@ impl WindowIndex {
                         }
                     }
                     Op::Remove(path) => {
-                        changed |= index.entry(&path).is_some();
                         index.remove(&path);
                     }
                     Op::Move(from, to) => {
-                        if !reads.contains(&from) && index.move_entry(&from, to.clone()) {
-                            changed = true;
-                        } else {
-                            changed |= index.entry(&from).is_some();
+                        if reads.contains(&from) || !index.move_entry(&from, to.clone()) {
                             index.remove(&from);
                             if !reads.contains(&to) {
                                 reads.push(to);
@@ -476,22 +477,26 @@ impl WindowIndex {
         {
             let mut index = self.write();
             for (path, entry) in read {
-                let revision = index.revision();
                 match entry {
                     Some(entry) => index.upsert_document(path, entry),
                     None => index.remove(&path),
                 }
-                changed |= index.revision() != revision;
             }
         }
         if update.rescan && self.status().state == IndexState::Ready {
-            let revision = self.read().revision();
             // Хранилище недоступно — сверка позже, при следующей пачке.
             let _ = store::reconcile(vault, &self.index);
-            changed |= self.read().revision() != revision;
         }
-        if changed {
-            self.notify(false, true);
+        self.notify_changes_since(views, revision);
+    }
+
+    fn notify_changes_since(&self, views: u64, revision: u64) {
+        let index = self.read();
+        let views_changed = index.views_revision() != views;
+        let search_changed = index.revision() != revision;
+        drop(index);
+        if views_changed || search_changed {
+            self.notify(false, views_changed, search_changed);
         }
     }
 
@@ -506,7 +511,12 @@ impl WindowIndex {
         loop {
             let ready = self.ready_for_relink();
             let signal = self.signal();
-            if ready && !signal.status && !signal.changed && !signal.sending {
+            if ready
+                && !signal.status
+                && !signal.changed
+                && !signal.search_changed
+                && !signal.sending
+            {
                 return;
             }
             drop(signal);
@@ -658,10 +668,13 @@ fn events_loop(open: &OpenVault, emit: &dyn Emit) {
         }
         let now = Instant::now();
         let send_status = signal.status && status_gate.try_fire(now);
-        let send_changed = signal.changed && changed_gate.try_fire(now);
+        let send_updates = (signal.changed || signal.search_changed) && changed_gate.try_fire(now);
+        let send_changed = send_updates && signal.changed;
+        let send_search = send_updates && signal.search_changed;
         signal.status &= !send_status;
         signal.changed &= !send_changed;
-        if send_status || send_changed {
+        signal.search_changed &= !send_search;
+        if send_status || send_updates {
             signal.sending = true;
             drop(signal);
             if send_status {
@@ -670,12 +683,15 @@ fn events_loop(open: &OpenVault, emit: &dyn Emit) {
             if send_changed {
                 send(emit, event::INDEX_CHANGED, &IndexChangedPayload {});
             }
+            if send_search {
+                send(emit, event::SEARCH_CHANGED, &IndexChangedPayload {});
+            }
             index.signal().sending = false;
             continue;
         }
         let wait = [
             signal.status.then(|| status_gate.wait(now)),
-            signal.changed.then(|| changed_gate.wait(now)),
+            (signal.changed || signal.search_changed).then(|| changed_gate.wait(now)),
         ]
         .into_iter()
         .flatten()
@@ -982,18 +998,17 @@ pub async fn vault_search<R: Runtime>(
     request.validate()?;
     let open = core.require_vault(window.label())?;
     blocking(move || {
-        let candidates = {
-            let index = open.index.read();
-            let status = index.status();
-            if status.state == IndexState::Building {
-                return Ok(IndexReply::IndexBuilding(IndexProgress {
-                    done: status.done,
-                    total: status.total,
-                }));
-            }
-            request.candidates(&index)?
-        };
-        Ok(IndexReply::Ready(request.results(&open.vault, candidates)))
+        let status = open.index.status();
+        if status.state == IndexState::Building {
+            return Ok(IndexReply::IndexBuilding(IndexProgress {
+                done: status.done,
+                total: status.total,
+            }));
+        }
+        let result = request.first_page(&open.vault, |limit| {
+            request.candidates(&open.index.read(), limit)
+        })?;
+        Ok(IndexReply::Ready(result))
     })
     .await
 }

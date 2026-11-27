@@ -516,9 +516,21 @@ fn perf_search() {
                 ..Default::default()
             };
             let mut samples = Vec::new();
+            let mut selections = Vec::new();
+            let mut snippets = Vec::new();
             for _ in 0..REPEATS {
-                let (elapsed, result) =
-                    timed(|| query.results(&vault, query.candidates(&index).expect("выборка")));
+                let mut selection = 0.0;
+                let (elapsed, result) = timed(|| {
+                    query
+                        .first_page(&vault, |limit| {
+                            let (duration, paths) = timed(|| query.candidates(&index, limit));
+                            selection += duration;
+                            paths
+                        })
+                        .expect("выдача")
+                });
+                selections.push(selection);
+                snippets.push(elapsed - selection);
                 assert_eq!(
                     result.items.len(),
                     super::query::PAGE_SIZE,
@@ -527,7 +539,7 @@ fn perf_search() {
                 samples.push(elapsed);
             }
             println!(
-                "{text}: пять запросов {samples:.2?} мс; медиана {:.2} мс",
+                "{text}: выборка путей {selections:.2?}; чтение и проверка строк {snippets:.2?}; пять запросов {samples:.2?} мс; медиана {:.2} мс",
                 median(&samples)
             );
             report.measure(text, &samples, "мс", Some(200.0), count == CHECKED_NOTES);

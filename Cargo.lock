@@ -2991,6 +2991,7 @@ dependencies = [
  "notify-debouncer-full",
  "nucleo-matcher",
  "open",
+ "png",
  "proptest",
  "rusqlite",
  "serde",

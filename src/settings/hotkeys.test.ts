@@ -36,6 +36,7 @@ describe('реестр команд', () => {
       'quick_switcher.open': ['Ctrl+KeyO'],
       'note.new': ['Ctrl+KeyN'],
       'note.from-template': [],
+      'attachment.insert': [],
       'editor.toggle-mode': ['Ctrl+KeyE'],
       'history.back': ['Alt+ArrowLeft'],
       'history.forward': ['Alt+ArrowRight'],

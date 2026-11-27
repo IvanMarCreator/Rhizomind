@@ -1,4 +1,4 @@
-//! Буфер обмена Windows: только формат `CF_UNICODETEXT`, только чтение.
+//! Буфер Windows: текст, PNG и DIB. Для списков файлов проверяется только наличие формата.
 
 use windows::Win32::Foundation::HGLOBAL;
 use windows::Win32::System::DataExchange::{
@@ -10,6 +10,57 @@ use super::{ClipboardText, classify};
 
 /// `CF_UNICODETEXT` — текст UTF-16 с нулём в конце (стандартный формат Windows).
 const CF_UNICODETEXT: u32 = 13;
+
+pub fn read_paste(text_limit: u64) -> Result<super::PasteData, String> {
+    use super::{MAX_IMAGE_BYTES, PasteData};
+    use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+    use windows::core::w;
+    let _opened = open()?;
+    // SAFETY: регистрируются только константные NUL-строки. Наличие формата
+    // списка файлов проверяется без получения его данных или имён.
+    unsafe {
+        let files = [
+            15,
+            RegisterClipboardFormatW(w!("Shell IDList Array")),
+            RegisterClipboardFormatW(w!("FileGroupDescriptorW")),
+            RegisterClipboardFormatW(w!("FileNameW")),
+        ];
+        if files
+            .iter()
+            .any(|&id| id != 0 && IsClipboardFormatAvailable(id).is_ok())
+        {
+            return Ok(PasteData::ExternalPath);
+        }
+        let png = RegisterClipboardFormatW(w!("PNG"));
+        for format in [png, 17, 8] {
+            if format == 0 || IsClipboardFormatAvailable(format).is_err() {
+                continue;
+            }
+            let handle = GetClipboardData(format).map_err(|_| "нет изображения".to_owned())?;
+            let global = HGLOBAL(handle.0);
+            let size = GlobalSize(global);
+            if size > MAX_IMAGE_BYTES {
+                return Ok(PasteData::TooLarge);
+            }
+            let ptr = GlobalLock(global).cast::<u8>();
+            if ptr.is_null() {
+                return Err("нет данных изображения".into());
+            }
+            let data = std::slice::from_raw_parts(ptr, size).to_vec();
+            let _ = GlobalUnlock(global);
+            drop(_opened);
+            if format == png {
+                return if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+                    Ok(PasteData::Png(data))
+                } else {
+                    Err("неверный PNG".into())
+                };
+            }
+            return super::dib::to_png(&data);
+        }
+    }
+    read_opened_text(text_limit).map(Into::into)
+}
 
 /// Закрывает буфер обмена при выходе из области видимости.
 struct Opened;
@@ -39,6 +90,10 @@ pub fn read_text(limit_bytes: u64) -> Result<ClipboardText, String> {
         return Ok(ClipboardText::Empty);
     }
     let _opened = open()?;
+    read_opened_text(limit_bytes)
+}
+
+fn read_opened_text(limit_bytes: u64) -> Result<ClipboardText, String> {
     // SAFETY: буфер открыт; данные принадлежат буферу, мы их только читаем
     // под GlobalLock до GlobalUnlock и до закрытия буфера.
     unsafe {

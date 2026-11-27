@@ -70,6 +70,8 @@ pub struct VaultIndex {
     state: State,
     /// Растёт при каждом изменении содержимого.
     revision: u64,
+    /// Изменение путей, ссылок или тегов для видов 0.2.
+    views_revision: u64,
     /// Номер последней начатой сборки.
     last_build: u64,
 }
@@ -196,9 +198,12 @@ impl VaultIndex {
         }
     }
 
-    /// Номер изменения содержимого: меняется, только если запись заметки
-    /// добавлена, стала другой или удалена (запись файла индекса «если
-    /// изменился», событие `index:changed`).
+    /// Изменения путей, ссылок и тегов для события `index:changed`.
+    pub(crate) fn views_revision(&self) -> u64 {
+        self.views_revision
+    }
+
+    /// Изменения производного индекса для сохранения на диск и события `search:changed`.
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -277,6 +282,7 @@ impl VaultIndex {
         self.touch(from);
         self.touch(&to);
         self.update_search(|db| super::search::rename(db, from, &to), false);
+        self.views_revision += 1;
         self.take(from);
         self.put(to, entry);
         true
@@ -286,6 +292,9 @@ impl VaultIndex {
     /// ничего не меняется.
     pub fn remove(&mut self, path: &VaultPath) {
         self.touch(path);
+        if self.entry(path).is_some() {
+            self.views_revision += 1;
+        }
         self.update_search(|db| super::search::remove(db, path), false);
         self.take(path);
     }
@@ -567,6 +576,11 @@ impl VaultIndex {
     fn put(&mut self, path: VaultPath, mut entry: NoteEntry) {
         if self.entry(&path) == Some(&entry) {
             return;
+        }
+        if self.entry(&path).is_none_or(|old| {
+            old.parsed.links != entry.parsed.links || old.parsed.tags != entry.parsed.tags
+        }) {
+            self.views_revision += 1;
         }
         self.take(&path);
         let id = match self.free.pop() {

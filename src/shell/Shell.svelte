@@ -14,6 +14,9 @@
   import Palette from '../palette/Palette.svelte';
   import SearchDialog from '../search/SearchDialog.svelte';
   import TemplateDialog from '../templates/TemplateDialog.svelte';
+  import AttachmentDialog from '../editor/AttachmentDialog.svelte';
+  import { finishAttachment, pasteContainsAttachment, pastedExternalPath, type AttachmentAnchor } from '../editor/attachment.ts';
+  import { userMessage as attachmentError } from '../i18n/errors.ts';
   import { applyTextSettings } from '../settings/apply.ts';
   import { bindingsOf, chordText, matchCommand, windowCommandInText, type CommandId } from '../settings/hotkeys.ts';
   import SettingsDialog, { type SettingsSection } from '../settings/SettingsDialog.svelte';
@@ -185,6 +188,7 @@
   /** Окно быстрого перехода (задача 2.7) открыто. */
   let switcherOpen = $state(false);
   let search = $state.raw<{ origin: HTMLElement | null } | null>(null);
+  let attachment = $state.raw<AttachmentAnchor | null>(null);
   let templateOpen = $state(false);
   let palette = $state.raw<{ origin: HTMLElement | null; treePath: VaultPath | null } | null>(null);
   /** Открытое окно «Настройки хранилища» и его раздел при открытии; `null` — закрыто. */
@@ -195,7 +199,7 @@
    * настройки, вопрос об обновлении ссылок): горячие клавиши окна под ним не действуют.
    */
   const modalOpen = $derived(
-    palette !== null || search !== null || switcherOpen || templateOpen || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
+    palette !== null || search !== null || switcherOpen || templateOpen || attachment !== null || settingsSection !== null || files.pendingDelete !== null || files.question !== null,
   );
 
   /** Меню правки текста (решение 97); `null` — закрыто. */
@@ -219,9 +223,36 @@
     // читается по щелчку по пункту, не здесь.
     const source =
       model.status.kind === 'ready' && model.vault
-        ? { read: () => core.clipboardReadText(), notify: (text: string) => model.notify(text) }
+        ? { read: () => core.clipboardReadText(), notify: (text: string) => model.notify(text),
+            ...(isNoteEditor(event.target) ? { pasteAttachment: () => void pasteInNote() } : {}) }
         : null;
     textMenu = { ...at, items: textMenuItems(target, source), target };
+  }
+
+  function isNoteEditor(target: EventTarget | null) {
+    return target instanceof Element && target.closest('.cm-content[contenteditable="true"]') !== null;
+  }
+
+  async function pasteInNote() {
+    const anchor = editor?.attachmentAnchor();
+    if (!anchor) return;
+    try {
+      const result = await core.attachmentInsert({ note: anchor.note, source: { kind: 'clipboard' }, name: t('attachments.screenshot') });
+      if (result.outcome === 'text') anchor.pasteText(result.text);
+      else finishAttachment(result, anchor.insert, (message) => model.notify(message));
+    } catch (error) { model.notify(attachmentError(error)); }
+    finally { anchor.release(); }
+  }
+
+  function onAttachmentPaste(event: ClipboardEvent) {
+    if (!event.isTrusted || modalOpen || !isNoteEditor(event.target) || !event.clipboardData) return;
+    const data = event.clipboardData;
+    const attachment = pasteContainsAttachment(data.types);
+    if (!attachment && (!data.types.includes('text/plain') || !pastedExternalPath(data.getData('text/plain')))) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (attachment) void pasteInNote();
+    else model.notify(t('attachments.external'));
   }
 
   function closeTextMenu() {
@@ -271,6 +302,7 @@
         return Boolean(palette?.treePath && files.entry(palette.treePath));
       case 'history.back': return model.canGoBack;
       case 'history.forward': return model.canGoForward;
+      case 'attachment.insert':
       case 'editor.toggle-mode': return model.currentPath !== null;
       default: return true;
     }
@@ -300,6 +332,9 @@
         return;
       case 'note.new':
         createNote();
+        return;
+      case 'attachment.insert':
+        attachment = editor?.attachmentAnchor() ?? null;
         return;
       case 'note.from-template':
         templateOpen = true;
@@ -345,8 +380,10 @@
     window.addEventListener('keydown', onKeydownCapture, true);
     window.addEventListener('keydown', onKeydownBubble);
     window.addEventListener('contextmenu', onContextMenu);
+    window.addEventListener('paste', onAttachmentPaste, true);
     return () => {
       window.removeEventListener('contextmenu', onContextMenu);
+      window.removeEventListener('paste', onAttachmentPaste, true);
       window.removeEventListener('keydown', onKeydownCapture, true);
       window.removeEventListener('keydown', onKeydownBubble);
       void unsubscribe.then((stop) => stop()).catch(() => undefined);
@@ -380,6 +417,14 @@
    * тексте заметки (решение 81).
    */
   function onKeydownCapture(event: KeyboardEvent) {
+    const pasteKey = ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === 'KeyV') ||
+      (event.shiftKey && !event.ctrlKey && !event.metaKey && event.key === 'Insert');
+    if (event.isTrusted && pasteKey && !event.altKey && !event.isComposing && !modalOpen && isNoteEditor(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) void pasteInNote();
+      return;
+    }
     if (isFormField(event.target)) return;
     const command = isEditableText(event.target)
       ? windowCommandInText(model.hotkeys, event)
@@ -497,6 +542,10 @@
   {#if search}
     <SearchDialog current={model.currentPath} onClose={() => void closeSearch()}
       onOpen={(path, at) => void closeSearch({ path, at })} />
+  {/if}
+  {#if attachment}
+    <AttachmentDialog anchor={attachment} notify={(message) => model.notify(message)}
+      onClose={() => { attachment?.release(); attachment = null; editor?.focus(); }} />
   {/if}
   {#if templateOpen}
     <TemplateDialog {model} onClose={() => (templateOpen = false)} />
