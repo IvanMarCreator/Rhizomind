@@ -32,6 +32,7 @@
     let valid = true;
     reply = null;
     failed = false;
+    if (!request.text.trim() && !request.folder && !request.tag && !request.mentions_of) return;
     void core.vaultSearch(request).then((result) => {
       if (valid) reply = result;
     }, () => { if (valid) failed = true; });

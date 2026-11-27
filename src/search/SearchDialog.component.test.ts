@@ -57,3 +57,15 @@ it('обновляет открытую выдачу после правки о�
   await emitCoreEvent('search:changed', {});
   await screen.findByText(/План на сегодня/u);
 });
+
+it('не отправляет пустой поиск при открытии и очистке поля', async () => {
+  const search = vi.fn(() => ({ status: 'ready' as const, truncated: false, items: [] }));
+  mockCore({ vault_search: search });
+  render(SearchDialog, { current: null, onOpen: vi.fn(), onClose: vi.fn() });
+  const field = screen.getByRole('searchbox');
+  await fireEvent.input(field, { target: { value: 'проект' } });
+  await screen.findByText('Совпадений нет');
+  await fireEvent.input(field, { target: { value: '' } });
+  await waitFor(() => expect(screen.queryByText('Совпадений нет')).toBeNull());
+  expect(search.mock.calls).toHaveLength(1);
+});

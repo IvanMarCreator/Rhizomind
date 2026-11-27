@@ -466,6 +466,39 @@ impl Vault {
         })
     }
 
+    /// Текущий текст для поисковой выдачи. Для просмотра строки не нужны
+    /// настройки редактирования или хэш для будущего сохранения заметки.
+    pub(crate) fn read_search_text(&self, path: &VaultPath) -> CoreResult<String> {
+        let abs = self.contour.resolve(path)?;
+        require_note_name(path)?;
+        let mut options = File::options();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+        }
+        let file = options.open(&abs).map_err(io_error)?;
+        self.contour.check_opened(&file, &abs, false)?;
+        let meta = file.metadata().map_err(io_error)?;
+        if !meta.is_file() {
+            return Err(CoreError::new(ErrorCode::NotANote));
+        }
+        let limit = crate::commands::limits::MAX_NOTE_BYTES;
+        if meta.len() > limit {
+            return Ok(String::new());
+        }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(limit + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        // Между metadata и read файл мог вырасти.
+        if bytes.len() as u64 > limit {
+            return Ok(String::new());
+        }
+        Ok(text::decode(&bytes).text)
+    }
+
     /// Версия файла больше [`limits::MAX_NOTE_BYTES`] — хэш потоком, без
     /// чтения в память; файл меньше — `None`.
     fn huge_note_version(&self, abs: &Path) -> CoreResult<Option<FileVersion>> {

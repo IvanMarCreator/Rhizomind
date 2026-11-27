@@ -998,18 +998,17 @@ pub async fn vault_search<R: Runtime>(
     request.validate()?;
     let open = core.require_vault(window.label())?;
     blocking(move || {
-        let candidates = {
-            let index = open.index.read();
-            let status = index.status();
-            if status.state == IndexState::Building {
-                return Ok(IndexReply::IndexBuilding(IndexProgress {
-                    done: status.done,
-                    total: status.total,
-                }));
-            }
-            request.candidates(&index)?
-        };
-        Ok(IndexReply::Ready(request.results(&open.vault, candidates)))
+        let status = open.index.status();
+        if status.state == IndexState::Building {
+            return Ok(IndexReply::IndexBuilding(IndexProgress {
+                done: status.done,
+                total: status.total,
+            }));
+        }
+        let result = request.first_page(&open.vault, |limit| {
+            request.candidates(&open.index.read(), limit)
+        })?;
+        Ok(IndexReply::Ready(result))
     })
     .await
 }
