@@ -7,16 +7,6 @@ use super::anchored as platform;
 
 #[cfg(any(windows, target_os = "linux"))]
 impl Vault {
-    pub(super) fn check_template_folder(&self, path: &VaultPath) -> CoreResult<()> {
-        path.check()?;
-        if path.components().iter().any(|part| part.starts_with('.')) {
-            return Err(super::contour::invalid_path());
-        }
-        let relative: std::path::PathBuf = path.components().iter().collect();
-        platform::Root::open(self.root())?.dir(&relative)?;
-        Ok(())
-    }
-
     /// Исходник читается через открытый дескриптор, без разбора Markdown и
     /// загрузки всего файла в память. Имя получает лишь готовая копия.
     pub fn create_from_template(
@@ -123,10 +113,6 @@ impl Vault {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 impl Vault {
-    pub(super) fn check_template_folder(&self, path: &VaultPath) -> CoreResult<()> {
-        self.existing_dir(path).map(|_| ())
-    }
-
     pub fn create_from_template(
         &self,
         _template: &VaultPath,

@@ -11,6 +11,7 @@
   import { t } from '../../i18n/index.ts';
   import Icon from '../../shell/Icon.svelte';
   import FolderPicker from '../FolderPicker.svelte';
+  import AttachmentFolders from '../AttachmentFolders.svelte';
   import NumberField from '../NumberField.svelte';
   import Row from '../Row.svelte';
   import Segmented from '../Segmented.svelte';
@@ -72,6 +73,7 @@
     </div>
   {/if}
 </div>
+<AttachmentFolders {settings} {onChange} />
 <Row title={t('templates.folder')}>
   <div class="anchor">
     <span>{settings.template_folder ? settings.template_folder.join(' / ') || t('settings.newNote.rootFolder') : t('templates.unconfigured')}</span>

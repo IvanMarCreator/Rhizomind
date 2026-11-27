@@ -1281,6 +1281,52 @@ fn settings_new_note_folder_must_be_a_vault_path() {
 
 #[cfg(any(windows, target_os = "linux"))]
 #[test]
+fn attachment_folder_rules_only_accept_existing_visible_vault_directories() {
+    let app = app();
+    let w = window(&app, "attachments");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("хранилище");
+    put(&root, "Файлы/Картинки/Образец.png", b"old");
+    open_vault(
+        &app,
+        "attachments",
+        "attach-rules",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let mut settings = invoke(&w, "settings_read", json!({})).unwrap()["settings"].clone();
+    assert!(settings.get("attachment_folders").is_none());
+    settings["attachment_folders"] = json!({ "png": ["Файлы","Картинки"], "pdf": [] });
+    call(
+        &w,
+        "settings_write",
+        json!({ "settings": settings.clone() }),
+    )
+    .expect("папки по типам");
+    assert_eq!(
+        invoke(&w, "settings_read", json!({})).unwrap()["settings"]["attachment_folders"],
+        settings["attachment_folders"]
+    );
+    for bad in [
+        json!({"png":[".."]}),
+        json!({"png":[".rhizomind"]}),
+        json!({"png":["Пропала"]}),
+        json!({"../jpg":[]}),
+    ] {
+        settings["attachment_folders"] = bad;
+        assert!(call(&w, "settings_write", json!({"settings":settings.clone()})).is_err());
+    }
+    settings["attachment_folders"] = json!({});
+    call(&w, "settings_write", json!({"settings":settings})).expect("сброс");
+    assert!(
+        invoke(&w, "settings_read", json!({})).unwrap()["settings"]
+            .get("attachment_folders")
+            .is_none()
+    );
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
 fn template_settings_and_copy_preserve_the_selected_bytes() {
     let app = app();
     let w = window(&app, "templates");

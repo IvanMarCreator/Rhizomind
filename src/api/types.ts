@@ -304,6 +304,8 @@ export interface Settings {
   new_note_location: NewNoteLocation;
   /** Путь папки шаблонов внутри хранилища; пустой массив означает корень. */
   template_folder?: VaultPath | null;
+  /** Расширение файла без точки → папка в открытом хранилище. */
+  attachment_folders?: Record<string, VaultPath>;
   confirm_delete: boolean;
   max_edit_size_bytes: number;
   hotkeys: HotkeyOverrides;

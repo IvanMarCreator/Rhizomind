@@ -181,6 +181,7 @@ fn settings_example() -> Settings {
         .collect(),
         rename_links: RenameLinks::Ask,
         template_folder: None,
+        attachment_folders: Default::default(),
     }
 }
 

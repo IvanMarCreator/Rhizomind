@@ -1152,23 +1152,48 @@ impl Vault {
         })
     }
 
+    /// Существующая видимая папка, выбранная в настройках открытого хранилища.
+    fn check_selected_folder(&self, path: &VaultPath) -> CoreResult<()> {
+        path.check()?;
+        if path.components().iter().any(|part| part.starts_with('.')) {
+            return Err(contour::invalid_path());
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            let relative: std::path::PathBuf = path.components().iter().collect();
+            anchored::Root::open(self.root())?.dir(&relative)?;
+            Ok(())
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        self.existing_dir(path).map(|_| ())
+    }
+
     /// Записывает настройки хранилища атомарно ([`SettingsFile::update`]).
     /// Испорченный файл (не разобрался, больше 4 МБ) не затирается молча:
     /// сначала копия `settings.json.bak` (`.bak.2`, … — без затирания
     /// прежних копий).
     pub fn write_settings(&self, settings: &Settings) -> CoreResult<()> {
         let (mut file, broken) = self.read_settings_state()?;
+        let current = file.to_settings();
         if let Some(folder) = &settings.template_folder
-            && file.to_settings().template_folder.as_ref() != Some(folder)
+            && current.template_folder.as_ref() != Some(folder)
         {
-            self.check_template_folder(folder)?;
+            self.check_selected_folder(folder)?;
         }
-        if broken {
-            self.backup_service_file(SETTINGS_FILE)?;
+        for (ext, folder) in &settings.attachment_folders {
+            if current.attachment_folders.get(ext) != Some(folder) {
+                self.check_selected_folder(folder)?;
+            }
         }
         file.update(settings);
         let bytes =
             serde_json::to_vec_pretty(&file).map_err(|_| CoreError::new(ErrorCode::IoFailed))?;
+        if bytes.len() as u64 > MAX_SERVICE_FILE_BYTES {
+            return Err(CoreError::invalid_argument("settings"));
+        }
+        if broken {
+            self.backup_service_file(SETTINGS_FILE)?;
+        }
         self.write_service_file(SETTINGS_FILE, &bytes)
     }
 
