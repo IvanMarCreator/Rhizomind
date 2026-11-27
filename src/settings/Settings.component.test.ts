@@ -290,7 +290,7 @@ describe('окно «Настройки хранилища»', () => {
   it('«О программе»: версия, редакция, лицензия, безопасность', async () => {
     setup();
     const dialog = await openSettings('О программе');
-    expect(within(dialog).getByText('0.1.0')).toBeTruthy();
+    expect(within(dialog).getByText('0.2.0')).toBeTruthy();
     expect(within(dialog).getByText('Secure')).toBeTruthy();
     expect(within(dialog).getByText('GPL-3.0')).toBeTruthy();
     expect(within(dialog).getByText('Приложение не выходит в сеть: в нём нет сетевых функций.')).toBeTruthy();

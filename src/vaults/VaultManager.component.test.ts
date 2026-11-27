@@ -51,7 +51,7 @@ describe('окно «Управление хранилищами»', () => {
     expect(screen.getByRole('button', { name: 'Создать' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Открыть папку как хранилище' })).toBeTruthy();
     expect(screen.queryByRole('listitem')).toBeNull();
-    expect(screen.getByText('Версия 0.1.0 · редакция Secure')).toBeTruthy();
+    expect(screen.getByText('Версия 0.2.0 · редакция Secure')).toBeTruthy();
     expect(screen.getByText('Список хранилищ хранится только на этом компьютере.')).toBeTruthy();
   });
 
