@@ -69,7 +69,7 @@ describe('номер версии', () => {
   it('package.json, tauri.conf.json и src-tauri/Cargo.toml — одна версия', () => {
     const root = path.join(import.meta.dirname, '..', '..');
     const versions = projectVersions(root);
-    expect(versions.version).toBe('0.1.0');
+    expect(versions.version).toBe('0.2.0');
   });
 
   it('разные версии в файлах проекта — ошибка с перечнем', () => {

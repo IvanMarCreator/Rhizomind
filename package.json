@@ -1,6 +1,6 @@
 {
   "name": "rhizomind",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local-only knowledge base with linked Markdown notes. No sync, no cloud, no telemetry.",
   "license": "GPL-3.0-only",
   "author": "Rhizomind contributors",
