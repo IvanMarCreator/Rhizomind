@@ -13,6 +13,16 @@ use super::types::{RelinkToken, VaultPath};
 
 const MIB: u64 = 1024 * 1024;
 
+/// Ключ правила папки вложений: расширение без точки.
+pub(crate) fn attachment_extension(ext: &str) -> bool {
+    !ext.is_empty()
+        && ext.encode_utf16().count() <= MAX_COMPONENT_UTF16
+        && ext
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && ext == ext.to_lowercase()
+}
+
 /// Не больше стольких целей в одном `links_resolve`.
 pub const MAX_LINK_TARGETS: usize = 10_000;
 /// Длина строки поиска (`links_suggest`, `switcher_search`), символов Unicode.
@@ -229,6 +239,14 @@ pub fn settings(settings: &Settings) -> CoreResult<()> {
         (min_font..=max_font).contains(&settings.font_size),
         "settings.font_size",
     )?;
+    for (ext, folder) in &settings.attachment_folders {
+        ensure(attachment_extension(ext), "settings.attachment_folders")?;
+        path(folder, "settings.attachment_folders")?;
+        folder.check()?;
+        if folder.components().iter().any(|c| c.starts_with('.')) {
+            return Err(CoreError::new(super::ErrorCode::InvalidPath));
+        }
+    }
     if let Some(folder) = &settings.template_folder {
         path(folder, "settings.template_folder")?;
         folder.check()?;
@@ -268,6 +286,7 @@ mod tests {
             hotkeys: Default::default(),
             rename_links: RenameLinks::Ask,
             template_folder: None,
+            attachment_folders: Default::default(),
         }
     }
 

@@ -266,7 +266,7 @@ pub(super) fn check_opened_at(_file: &File, _expected: &Path) -> CoreResult<()> 
 /// `GetFinalPathNameByHandleW` и `dunce` оставляют с префиксом) — один и тот
 /// же диск; так же `\\server\share` и `\\?\UNC\server\share`. На других
 /// ОС — как есть.
-fn strip_root<'a>(root: &Path, real: &'a Path) -> Option<&'a Path> {
+pub(super) fn strip_root<'a>(root: &Path, real: &'a Path) -> Option<&'a Path> {
     if cfg!(windows) {
         let mut real_parts = real.components();
         for root_part in root.components() {

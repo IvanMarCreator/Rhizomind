@@ -181,6 +181,7 @@ fn settings_example() -> Settings {
         .collect(),
         rename_links: RenameLinks::Ask,
         template_folder: None,
+        attachment_folders: Default::default(),
     }
 }
 
@@ -387,6 +388,32 @@ fn note_create() {
             err(ErrorCode::InvalidPath),
             err(ErrorCode::OutsideVault),
         ],
+    );
+}
+
+#[test]
+fn attachment_insert() {
+    assert_eq!(
+        serde_json::to_value(AttachmentOutcome::ChooseName {
+            path: path(&["Фото#1.png"])
+        })
+        .unwrap(),
+        json!({"outcome":"choose_name","path":["Фото#1.png"]})
+    );
+    command_with(
+        "attachment_insert",
+        &AttachmentRequest {
+            note: path(&["План.md"]),
+            source: AttachmentSource::File {
+                path: path(&["Фото.png"]),
+            },
+            name: "Копия.png".into(),
+        },
+        &AttachmentOutcome::Created {
+            path: Some(path(&["Копия.png"])),
+            target: Some("Копия.png".into()),
+        },
+        &[err(ErrorCode::InvalidPath), err(ErrorCode::OutsideVault)],
     );
 }
 

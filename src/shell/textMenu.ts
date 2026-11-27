@@ -39,6 +39,7 @@ export interface TextTarget {
 
 /** Откуда «Вставить» берёт текст: окно хранилища — команда ядра, иначе пункт неактивен. */
 export interface PasteSource {
+  pasteAttachment?: () => void;
   read(): Promise<ClipboardReadOutcome>;
   notify(text: string): void;
 }
@@ -182,7 +183,8 @@ export function textMenuItems(target: TextTarget, source: PasteSource | null = n
       // Без команды ядра (окно управления) пункт неактивен; Ctrl+V работает.
       disabled: source === null || target.readOnly,
       run: () => {
-        if (source) void paste(target, source);
+        if (source?.pasteAttachment) source.pasteAttachment();
+        else if (source) void paste(target, source);
       },
     },
     { id: 'select-all', label: t('textMenu.selectAll'), shortcut: 'Ctrl+A', run: () => target.selectAll() },

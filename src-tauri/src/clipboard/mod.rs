@@ -1,15 +1,12 @@
-//! Чтение текста из системного буфера обмена для пункта «Вставить» своего
-//! меню правки текста (решения 97, 98; команда `clipboard_read_text`).
-//!
-//! Только текст и только по запросу команды; ядро ничего не пишет и не
-//! хранит. Разрешение движка ClipboardRead странице не выдаётся — страница
-//! буфер сама не читает (`docs/SECURITY.md`).
-//!
-//! - Windows — формат `CF_UNICODETEXT` (`windows.rs`): длина проверяется до
-//!   перевода в UTF-8, текст длиннее предела не читается целиком.
-//! - Linux — буфер GTK (`CLIPBOARD`) в главном потоке (`gtk.rs`).
-//! - Другие ОС — буфер пуст.
+//! Буфер обмена ОС по явному действию в окне хранилища (решения 97, 98).
+//! Поля получают текст. Редактор также принимает изображение, переданное ОС
+//! непосредственно, или одно имя файла для проверки корня. Разрешение движка
+//! ClipboardRead странице не выдаётся. Промежуточные данные находятся в памяти.
 
+#[cfg(windows)]
+mod dib;
+#[cfg(any(target_os = "linux", test))]
+mod file_list;
 #[cfg(windows)]
 mod windows;
 
@@ -57,6 +54,48 @@ pub fn read_text<R: tauri::Runtime>(
     {
         let _ = (app, limit_bytes);
         Ok(ClipboardText::Empty)
+    }
+}
+
+/// Строка имени файла остаётся внутри ядра до сопоставления с открытым хранилищем.
+pub enum PasteData {
+    FileReference(String),
+    Png(Vec<u8>),
+    Text(String),
+    ExternalPath,
+    TooLarge,
+    Empty,
+}
+
+pub(crate) const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+pub fn read_paste<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    text_limit: u64,
+) -> Result<PasteData, String> {
+    #[cfg(windows)]
+    {
+        let _ = app;
+        windows::read_paste(text_limit)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        gtk::read_paste(app, text_limit)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (app, text_limit);
+        Ok(PasteData::Empty)
+    }
+}
+
+impl From<ClipboardText> for PasteData {
+    fn from(text: ClipboardText) -> Self {
+        match text {
+            ClipboardText::Empty => Self::Empty,
+            ClipboardText::Text(text) => Self::Text(text),
+            ClipboardText::TooLarge => Self::TooLarge,
+        }
     }
 }
 

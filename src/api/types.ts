@@ -8,6 +8,11 @@ export const API_VERSION = 1;
 
 /** Путь в хранилище по компонентам: `["Проекты", "Встреча.md"]`; корень — `[]`. */
 export type VaultPath = string[];
+export type AttachmentOutcome =
+  | { outcome: 'choose_name'; path: VaultPath }
+  | { outcome: 'created'; path: VaultPath | null; target: string | null }
+  | { outcome: 'external_path' | 'empty' | 'not_focused' | 'too_large' }
+  | { outcome: 'text'; text: string };
 
 /**
  * Версия файла: хэш blake3, размер, дата изменения. Для интерфейса —
@@ -304,6 +309,8 @@ export interface Settings {
   new_note_location: NewNoteLocation;
   /** Путь папки шаблонов внутри хранилища; пустой массив означает корень. */
   template_folder?: VaultPath | null;
+  /** Расширение файла без точки → папка в открытом хранилище. */
+  attachment_folders?: Record<string, VaultPath>;
   confirm_delete: boolean;
   max_edit_size_bytes: number;
   hotkeys: HotkeyOverrides;
@@ -530,6 +537,7 @@ export interface CoreCommands {
   folder_pick: { request: null; response: FolderPickOutcome };
   tree_list: { request: null; response: TreeListResponse };
   note_create: { request: NameInDirRequest; response: EntryPathResponse };
+  attachment_insert: { request: { note: VaultPath; source: { kind: 'file'; path: VaultPath } | { kind: 'clipboard' }; name: string }; response: AttachmentOutcome };
   note_create_from_template: { request: NameInDirRequest & { template: VaultPath }; response: { path: VaultPath | null } };
   folder_create: { request: NameInDirRequest; response: EntryPathResponse };
   entry_rename: { request: EntryRenameRequest; response: EntryMovedResponse };

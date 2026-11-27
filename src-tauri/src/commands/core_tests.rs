@@ -1281,6 +1281,52 @@ fn settings_new_note_folder_must_be_a_vault_path() {
 
 #[cfg(any(windows, target_os = "linux"))]
 #[test]
+fn attachment_folder_rules_only_accept_existing_visible_vault_directories() {
+    let app = app();
+    let w = window(&app, "attachments");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("хранилище");
+    put(&root, "Файлы/Картинки/Образец.png", b"old");
+    open_vault(
+        &app,
+        "attachments",
+        "attach-rules",
+        &root,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let mut settings = invoke(&w, "settings_read", json!({})).unwrap()["settings"].clone();
+    assert!(settings.get("attachment_folders").is_none());
+    settings["attachment_folders"] = json!({ "png": ["Файлы","Картинки"], "pdf": [] });
+    call(
+        &w,
+        "settings_write",
+        json!({ "settings": settings.clone() }),
+    )
+    .expect("папки по типам");
+    assert_eq!(
+        invoke(&w, "settings_read", json!({})).unwrap()["settings"]["attachment_folders"],
+        settings["attachment_folders"]
+    );
+    for bad in [
+        json!({"png":[".."]}),
+        json!({"png":[".rhizomind"]}),
+        json!({"png":["Пропала"]}),
+        json!({"../jpg":[]}),
+    ] {
+        settings["attachment_folders"] = bad;
+        assert!(call(&w, "settings_write", json!({"settings":settings.clone()})).is_err());
+    }
+    settings["attachment_folders"] = json!({});
+    call(&w, "settings_write", json!({"settings":settings})).expect("сброс");
+    assert!(
+        invoke(&w, "settings_read", json!({})).unwrap()["settings"]
+            .get("attachment_folders")
+            .is_none()
+    );
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+#[test]
 fn template_settings_and_copy_preserve_the_selected_bytes() {
     let app = app();
     let w = window(&app, "templates");
@@ -1323,6 +1369,44 @@ fn template_settings_and_copy_preserve_the_selected_bytes() {
     other["name"] = json!("Запрет.md");
     assert!(call(&w, "note_create_from_template", other).is_err());
     assert!(!root.join("Запрет.md").exists());
+}
+
+#[test]
+fn attachment_clipboard_rejects_a_supplied_external_path_before_reading_the_os() {
+    let invalid = json!({"note":["Заметка.md"], "source":{"kind":"clipboard","path":["C:/внешний/файл.png"]}, "name":"Фото.png"});
+    assert!(serde_json::from_value::<AttachmentRequest>(invalid).is_err());
+}
+
+#[test]
+fn attachment_copies_an_internal_file_and_rejects_external_components() {
+    let app = app();
+    let w = window(&app, "attachments");
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    put(&vault, "Работа/План.md", b"note");
+    put(&vault, "Исходники/Карта.png", b"\x89PNG\0\xff");
+    open_vault(
+        &app,
+        "attachments",
+        "attachments",
+        &vault,
+        trash_into(dir.path().join("bin"), true),
+    );
+    let request = json!({"note":["Работа","План.md"], "source":{"kind":"file","path":["Исходники","Карта.png"]}, "name":"Карта.png"});
+    let created = call(&w, "attachment_insert", request.clone()).expect("вложение");
+    assert_eq!(
+        created,
+        json!({"outcome":"created","path":["Работа","Карта.png"],"target":"Работа/Карта.png"})
+    );
+    assert_eq!(
+        std::fs::read(vault.join("Работа/Карта.png")).unwrap(),
+        b"\x89PNG\0\xff"
+    );
+    let another = call(&w, "attachment_insert", request.clone()).expect("коллизия");
+    assert_eq!(another["path"], json!(["Работа", "Карта 2.png"]));
+    let mut external = request;
+    external["source"]["path"] = json!(["..", "secret.png"]);
+    assert!(call(&w, "attachment_insert", external).is_err());
 }
 
 /// Ждёт готовности индекса окна (`index_status`).

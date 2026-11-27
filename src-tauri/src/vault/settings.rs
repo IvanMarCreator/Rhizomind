@@ -79,6 +79,22 @@ impl SettingsFile {
                     && path.check().is_ok()
                     && !path.components().iter().any(|c| c.starts_with('.'))
             }),
+            attachment_folders: self
+                .values
+                .get("attachment_folders")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(ext, value)| {
+                    let path: crate::commands::VaultPath =
+                        serde_json::from_value(value.clone()).ok()?;
+                    (limits::attachment_extension(ext)
+                        && limits::path(&path, "attachment_folders").is_ok()
+                        && path.check().is_ok()
+                        && !path.components().iter().any(|c| c.starts_with('.')))
+                    .then(|| (ext.clone(), path))
+                })
+                .collect(),
             confirm_delete: field(&self.values, "confirm_delete")
                 .unwrap_or(defaults.confirm_delete),
             max_edit_size_bytes: field(&self.values, "max_edit_size_bytes")
@@ -106,9 +122,30 @@ impl SettingsFile {
         if current.template_folder.is_some() && settings.template_folder.is_none() {
             self.values.remove("template_folder");
         }
+        if current.attachment_folders != settings.attachment_folders {
+            let mut rules = match self.values.remove("attachment_folders") {
+                Some(Value::Object(rules)) => rules,
+                _ => Map::new(),
+            };
+            for ext in current.attachment_folders.keys() {
+                if !settings.attachment_folders.contains_key(ext) {
+                    rules.remove(ext);
+                }
+            }
+            for (ext, folder) in &settings.attachment_folders {
+                rules.insert(ext.clone(), serde_json::json!(folder));
+            }
+            if !rules.is_empty() {
+                self.values
+                    .insert("attachment_folders".into(), Value::Object(rules));
+            }
+        }
         let presented = serde_json::to_value(current).ok();
         if let Ok(Value::Object(known)) = serde_json::to_value(settings) {
             for (key, value) in known {
+                if key == "attachment_folders" {
+                    continue;
+                }
                 let unchanged = presented.as_ref().and_then(|p| p.get(&key)) == Some(&value);
                 if unchanged && self.values.contains_key(&key) {
                     continue;
@@ -244,6 +281,26 @@ mod tests {
         });
         let written = serde_json::to_value(&file).expect("запись");
         assert_eq!(written["rename_links"], "update");
+    }
+
+    #[test]
+    fn attachment_edit_preserves_unknown_rules_in_future_settings() {
+        let future = json!({"id": 7});
+        let mut file: SettingsFile = serde_json::from_value(json!({
+            "attachment_folders": { "png": ["Схемы"], "pdf": future }
+        }))
+        .unwrap();
+        let mut settings = file.to_settings();
+        assert_eq!(
+            settings.attachment_folders.keys().collect::<Vec<_>>(),
+            vec!["png"]
+        );
+        settings.attachment_folders.clear();
+        file.update(&settings);
+        assert_eq!(
+            serde_json::to_value(file).unwrap()["attachment_folders"],
+            json!({"pdf": future})
+        );
     }
 
     #[test]

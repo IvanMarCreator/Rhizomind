@@ -65,6 +65,17 @@ afterEach(() => {
 });
 
 describe('окно «Настройки хранилища»', () => {
+  it('attachment: задаёт папку для расширения и возвращает папку заметки удалением правила', async () => {
+    const { calls } = setup();
+    const dialog = await openSettings('Файлы и ссылки');
+    await fireEvent.input(within(dialog).getByRole('textbox', { name: 'Расширение файла' }), { target: { value: '.PNG' } });
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Выбрать папку для расширения' }));
+    const picker = within(dialog).getByRole('dialog', { name: 'Папка вложений' });
+    await fireEvent.click(await within(picker).findByRole('button', { name: 'Альфа' }));
+    await waitFor(() => expect(lastWrite(calls)?.attachment_folders).toEqual({ png: ['Проекты', 'Альфа'] }));
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Удалить правило .png' }));
+    await waitFor(() => expect(lastWrite(calls)?.attachment_folders).toEqual({}));
+  });
   it('template: папку шаблонов выбирают в открытом хранилище независимо от папки новых заметок', async () => {
     const { calls } = setup();
     const dialog = await openSettings('Файлы и ссылки');

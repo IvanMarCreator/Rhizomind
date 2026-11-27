@@ -94,6 +94,10 @@ pub struct Settings {
     /// Папка шаблонов. None — ещё не выбрана, пустой путь — корень.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_folder: Option<VaultPath>,
+    /// Папки вложений по расширению в нижнем регистре. Без правила файл
+    /// сохраняется рядом с заметкой, пустой путь правила означает корень.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub attachment_folders: std::collections::BTreeMap<String, VaultPath>,
     /// Спрашивать подтверждение перед удалением в корзину.
     pub confirm_delete: bool,
     /// Максимальный размер файла для редактирования, байты (по умолчанию 10 МБ).
@@ -120,6 +124,7 @@ impl Default for Settings {
             font_size: 16,
             new_note_location: NewNoteLocation::VaultRoot,
             template_folder: None,
+            attachment_folders: Default::default(),
             confirm_delete: true,
             max_edit_size_bytes: 10 * 1024 * 1024,
             hotkeys: HotkeyOverrides::new(),
