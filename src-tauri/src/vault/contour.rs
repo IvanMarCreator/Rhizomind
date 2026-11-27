@@ -238,6 +238,29 @@ pub(super) fn check_opened_at(file: &File, expected: &Path) -> CoreResult<()> {
     }
 }
 
+/// Если платформа Unix не возвращает путь по дескриптору, сверяем реальный
+/// путь и идентификатор открытого файла с текущей записью каталога.
+#[cfg(all(unix, not(target_os = "linux")))]
+pub(super) fn check_opened_at(file: &File, expected: &Path) -> CoreResult<()> {
+    use std::os::unix::fs::MetadataExt;
+    let current = std::fs::canonicalize(expected).map_err(|_| outside_vault())?;
+    if current != expected {
+        return Err(outside_vault());
+    }
+    let opened = file.metadata().map_err(|_| outside_vault())?;
+    let named = std::fs::symlink_metadata(&current).map_err(|_| outside_vault())?;
+    if (opened.dev(), opened.ino()) == (named.dev(), named.ino()) {
+        Ok(())
+    } else {
+        Err(outside_vault())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn check_opened_at(_file: &File, _expected: &Path) -> CoreResult<()> {
+    Err(outside_vault())
+}
+
 /// Остаток пути после корня. На Windows компоненты сравниваются без учёта
 /// регистра (NTFS), а `C:` и `\\?\C:` (длинные пути больше 260 символов
 /// `GetFinalPathNameByHandleW` и `dunce` оставляют с префиксом) — один и тот

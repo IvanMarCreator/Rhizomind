@@ -312,6 +312,28 @@ fn search_uses_current_text_and_tag_and_tracks_reconcile_after_reopen() {
 }
 
 #[test]
+fn search_unlinked_mentions_normalizes_russian_names_and_preserves_utf16() {
+    use crate::index::query::SearchQuery;
+    let t = TestVault::new();
+    t.put("Ёлка.md", "");
+    t.put("День.md", "[[Ёлка]]\n📝 После встречи нужна Е\u{308}лка.");
+    let index = t.built();
+    let query = SearchQuery {
+        mentions_of: Some(vp("Ёлка.md")),
+        ..Default::default()
+    };
+    let hits = search_now(&t, &index, &query).items;
+    assert_eq!(hits.len(), 1);
+    let pos = hits[0].location.as_ref().unwrap();
+    assert_eq!(pos.line, 2);
+    assert_eq!(
+        pos.column_utf16,
+        "📝 После встречи нужна ".encode_utf16().count() as u32
+    );
+    assert!(pos.snippet.contains("Е\u{308}лка"));
+}
+
+#[test]
 fn search_unlinked_mentions_uses_real_occurrence_and_utf16() {
     use crate::index::query::SearchQuery;
     let t = TestVault::new();
